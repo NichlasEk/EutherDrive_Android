@@ -26799,6 +26799,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly List<uint> _fifoBuffer = new();
     private readonly uint[] _textureMemory = new uint[TextureWords];
     private readonly bool[] _textureTouchedWords = new bool[TextureWords];
+    private readonly Dictionary<int, TextureWordLastWriter> _textureWordLastWriters = [];
     private readonly int[] _textureZeroSampleBuckets = new int[TextureZeroSampleBucketCount];
     private readonly int[] _textureZeroWriteBuckets = new int[TextureZeroSampleBucketCount];
     private readonly int[] _textureNonZeroWriteBuckets = new int[TextureZeroSampleBucketCount];
@@ -26953,6 +26954,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
     private readonly bool _traceTexturedTriangleSampleSummary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
+    private readonly bool _traceTexturedTriangleSampleWriters =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_WRITERS"));
     private readonly int _traceTexturedTriangleSampleSummaryLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_LIMIT"), 16);
     private readonly int[] _traceTexturedTriangleSampleSummaryBuffers =
@@ -26969,6 +26972,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS"));
     private readonly int _traceTextureWriteBucketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT"), 240);
+    private readonly int _traceTextureWriteBucketsPerBucketLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_PER_BUCKET_LIMIT"), 0);
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
     private readonly bool _traceType0JumpsOnly = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_JUMPS_ONLY"));
@@ -27405,6 +27410,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _texturedTriangleSampleSummaryTraceCount;
     private int _textureFetchCompareTraceCount;
     private int _textureWriteBucketTraceCount;
+    private readonly int[] _textureWriteBucketTraceCounts = new int[TextureZeroSampleBucketCount];
     private int _textureZeroSampleBucketTotal;
     private uint _textureZeroSampleFirstAddress = uint.MaxValue;
     private uint _textureZeroSampleLastAddress;
@@ -27478,6 +27484,14 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _currentType5TextureWriteCount;
     private bool _currentType5TextureWriteStreaming;
     private int _currentType5TextureWriteReadIndex;
+    private bool _currentTextureWriteActive;
+    private uint _currentTextureWriteValue;
+    private uint _currentTextureWriteMode;
+    private uint _currentTextureWriteTexLod;
+    private uint _currentTextureWriteBase;
+    private uint _currentTextureWriteLod;
+    private int _currentTextureWriteBytesPerTexel;
+    private bool _currentTextureWriteSeq8;
     private int _fastFillSwapOrderTraceCount;
     private int _commandFifoValidityTraceCount;
     private int _commandFifoBulkResyncTraceCount;
@@ -29207,53 +29221,91 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (((texLod >> 26) & 1u) != 0)
             value = (value >> 16) | (value << 16);
 
-        int bytesPerTexel = ((mode >> 8) & 0x0fu) < 8 ? 1 : 2;
-        if (_fixLinearTextureDownloadAddressing)
-        {
-            WriteTextureLinear32(wordOffset, value, bytesPerTexel);
-            _textureWriteCount++;
-            return;
-        }
-
         uint seqMode = _experimentTextureUploadTmuBanks
             ? ReadTextureRegisterForTmu(0, RegTextureMode)
             : mode;
+        int bytesPerTexel = ((mode >> 8) & 0x0fu) < 8 ? 1 : 2;
         bool seq8Downld = ((seqMode >> 31) & 1u) != 0 || (_fixSequential8BitTextureDownload && bytesPerTexel == 1);
-        uint tt = (wordOffset >> 7) & 0xffu;
-        uint ts = (wordOffset << ((seq8Downld && bytesPerTexel == 1) ? 2 : 1)) & 0xffu;
-        uint width = GetTextureWidth(texLod);
-        uint height = GetTextureHeight(texLod);
-        uint xMask = Math.Max(1u, width >> (int)lod) - 1u;
-        uint yMask = Math.Max(1u, height >> (int)lod) - 1u;
-        uint texel = (tt & yMask) * (xMask + 1u) + (ts & xMask);
-        uint byteOffset = (GetTextureLodOffset((int)lod, bytesPerTexel, texLod, textureBase) + texel * (uint)bytesPerTexel) & (TextureBytes - 1u);
-        if (_fixTextureDownloadAlign32)
-            byteOffset &= ~3u;
-        TraceTextureWriteBucket(wordOffset, byteOffset, value, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
-
-        if (bytesPerTexel == 1)
+        BeginTextureWriteContext(value, mode, texLod, textureBase, lod, bytesPerTexel, seq8Downld);
+        try
         {
-            bool previousSuppressZero = _suppressZeroTextureBytesForCurrentWrite;
-            _suppressZeroTextureBytesForCurrentWrite = _fixSparse8BitTextureUpload;
-            try
+            if (_fixLinearTextureDownloadAddressing)
             {
-                WriteTextureByte(byteOffset + 0u, (byte)value);
-                WriteTextureByte(byteOffset + 1u, (byte)(value >> 8));
-                WriteTextureByte(byteOffset + 2u, (byte)(value >> 16));
-                WriteTextureByte(byteOffset + 3u, (byte)(value >> 24));
+                WriteTextureLinear32(wordOffset, value, bytesPerTexel);
+                _textureWriteCount++;
+                return;
             }
-            finally
-            {
-                _suppressZeroTextureBytesForCurrentWrite = previousSuppressZero;
-            }
-        }
-        else
-        {
-            WriteTextureUInt16(byteOffset + 0u, (ushort)value);
-            WriteTextureUInt16(byteOffset + 2u, (ushort)(value >> 16));
-        }
 
-        _textureWriteCount++;
+            uint tt = (wordOffset >> 7) & 0xffu;
+            uint ts = (wordOffset << ((seq8Downld && bytesPerTexel == 1) ? 2 : 1)) & 0xffu;
+            uint width = GetTextureWidth(texLod);
+            uint height = GetTextureHeight(texLod);
+            uint xMask = Math.Max(1u, width >> (int)lod) - 1u;
+            uint yMask = Math.Max(1u, height >> (int)lod) - 1u;
+            uint texel = (tt & yMask) * (xMask + 1u) + (ts & xMask);
+            uint byteOffset = (GetTextureLodOffset((int)lod, bytesPerTexel, texLod, textureBase) + texel * (uint)bytesPerTexel) & (TextureBytes - 1u);
+            if (_fixTextureDownloadAlign32)
+                byteOffset &= ~3u;
+            TraceTextureWriteBucket(wordOffset, byteOffset, value, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
+
+            if (bytesPerTexel == 1)
+            {
+                bool previousSuppressZero = _suppressZeroTextureBytesForCurrentWrite;
+                _suppressZeroTextureBytesForCurrentWrite = _fixSparse8BitTextureUpload;
+                try
+                {
+                    WriteTextureByte(byteOffset + 0u, (byte)value);
+                    WriteTextureByte(byteOffset + 1u, (byte)(value >> 8));
+                    WriteTextureByte(byteOffset + 2u, (byte)(value >> 16));
+                    WriteTextureByte(byteOffset + 3u, (byte)(value >> 24));
+                }
+                finally
+                {
+                    _suppressZeroTextureBytesForCurrentWrite = previousSuppressZero;
+                }
+            }
+            else
+            {
+                WriteTextureUInt16(byteOffset + 0u, (ushort)value);
+                WriteTextureUInt16(byteOffset + 2u, (ushort)(value >> 16));
+            }
+
+            _textureWriteCount++;
+        }
+        finally
+        {
+            EndTextureWriteContext();
+        }
+    }
+
+    private void BeginTextureWriteContext(
+        uint value,
+        uint mode,
+        uint texLod,
+        uint textureBase,
+        uint lod,
+        int bytesPerTexel,
+        bool seq8Downld)
+    {
+        if (!_traceTexturedTriangleSampleWriters)
+            return;
+
+        _currentTextureWriteActive = true;
+        _currentTextureWriteValue = value;
+        _currentTextureWriteMode = mode;
+        _currentTextureWriteTexLod = texLod;
+        _currentTextureWriteBase = textureBase;
+        _currentTextureWriteLod = lod;
+        _currentTextureWriteBytesPerTexel = bytesPerTexel;
+        _currentTextureWriteSeq8 = seq8Downld;
+    }
+
+    private void EndTextureWriteContext()
+    {
+        if (!_traceTexturedTriangleSampleWriters)
+            return;
+
+        _currentTextureWriteActive = false;
     }
 
     private void TraceTextureWriteBucket(
@@ -29275,6 +29327,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint bucket = (byteOffset & (TextureBytes - 1u)) >> TextureZeroSampleBucketShift;
         if (!_traceTextureWriteBuckets.Contains(bucket))
             return;
+        int bucketIndex = (int)bucket;
+        if (_traceTextureWriteBucketsPerBucketLimit > 0 &&
+            _textureWriteBucketTraceCounts[bucketIndex] >= _traceTextureWriteBucketsPerBucketLimit)
+            return;
+        int bucketTraceCount = ++_textureWriteBucketTraceCounts[bucketIndex];
 
         int nonZeroBytes = 0;
         if ((byte)value != 0)
@@ -29292,7 +29349,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             ? $" type5=cmd=0x{_currentType5TextureWriteCommand:X8}:space={_currentType5TextureWriteSpace}:targetStart=0x{_currentType5TextureWriteTargetStart:X6}:target=0x{_currentType5TextureWriteTargetWord:X6}:i={_currentType5TextureWriteIndex}/{_currentType5TextureWriteCount}:packet=0x{_currentCommandFifoPacketStart * 4:X8}:rd=0x{_currentType5TextureWriteReadIndex * 4:X8}:stream={(_currentType5TextureWriteStreaming ? 1 : 0)}"
             : "";
         Console.WriteLine(
-            $"[GAUNTDL:VOODOO-TEXWRITE] n={++_textureWriteBucketTraceCount} bucket=0x{bucket << TextureZeroSampleBucketShift:X6} " +
+            $"[GAUNTDL:VOODOO-TEXWRITE] n={++_textureWriteBucketTraceCount} bn={bucketTraceCount} bucket=0x{bucket << TextureZeroSampleBucketShift:X6} " +
             $"word=0x{wordOffset:X6} addr=0x{byteOffset:X6} value=0x{value:X8} nzb={nonZeroBytes} " +
             $"lod={lod} ts=0x{ts:X2} tt=0x{tt:X2} bpp={bytesPerTexel} seq8={(seq8Downld ? 1 : 0)} " +
             $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8} " +
@@ -29340,7 +29397,35 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         _textureMemory[wordOffset] = (_textureMemory[wordOffset] & ~mask) | ((uint)value << shift);
+        TrackTextureLastWriter((int)wordOffset);
         TrackTextureMappedWrite((int)wordOffset, value);
+    }
+
+    private void TrackTextureLastWriter(int wordOffset)
+    {
+        if (!_traceTexturedTriangleSampleWriters || !_currentTextureWriteActive)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        _textureWordLastWriters[wordOffset] = new TextureWordLastWriter(
+            pc,
+            _currentTextureWriteValue,
+            _currentTextureWriteMode,
+            _currentTextureWriteTexLod,
+            _currentTextureWriteBase,
+            _currentTextureWriteLod,
+            _currentTextureWriteBytesPerTexel,
+            _currentTextureWriteSeq8,
+            _currentType5TextureWriteActive,
+            _currentType5TextureWriteCommand,
+            _currentType5TextureWriteSpace,
+            _currentType5TextureWriteTargetStart,
+            _currentType5TextureWriteTargetWord,
+            _currentType5TextureWriteIndex,
+            _currentType5TextureWriteCount,
+            _currentCommandFifoPacketStart,
+            _currentType5TextureWriteReadIndex,
+            _currentType5TextureWriteStreaming);
     }
 
     private void TrackTextureMappedWrite(int wordOffset, uint value)
@@ -32358,6 +32443,41 @@ internal class VoodooBringupBackend : IVoodooBackend
         int CommandFifoReadIndex,
         string Trigger);
 
+    private readonly record struct TextureWordLastWriter(
+        ulong Pc,
+        uint Value,
+        uint Mode,
+        uint TexLod,
+        uint TextureBase,
+        uint Lod,
+        int BytesPerTexel,
+        bool Seq8Downld,
+        bool Type5,
+        uint Type5Command,
+        uint Type5Space,
+        uint Type5TargetStart,
+        uint Type5TargetWord,
+        int Type5Index,
+        int Type5Count,
+        int PacketStart,
+        int ReadIndex,
+        bool Streaming);
+
+    private readonly record struct TextureSampleWriterKey(
+        ulong Pc,
+        uint Mode,
+        uint TexLod,
+        uint TextureBase,
+        uint Lod,
+        int BytesPerTexel,
+        bool Seq8Downld,
+        bool Type5,
+        uint Type5Command,
+        uint Type5TargetStart,
+        int PacketStart,
+        int ReadIndex,
+        bool Streaming);
+
     private sealed class SwapPcStats
     {
         public int Total;
@@ -33663,6 +33783,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         Dictionary<uint, int>? sampleRawBuckets = traceSampleSummary ? [] : null;
         Dictionary<uint, int>? sampleColorBuckets = traceSampleSummary ? [] : null;
         Dictionary<uint, int>? sampleAddressBuckets = traceSampleSummary ? [] : null;
+        Dictionary<TextureSampleWriterKey, int>? sampleWriterBuckets =
+            traceSampleSummary && _traceTexturedTriangleSampleWriters ? [] : null;
         int sampleCount = 0;
         uint sampleFirstAddress = uint.MaxValue;
         uint sampleLastAddress = 0;
@@ -33771,6 +33893,12 @@ sampledTexel:
                         sampleColorBuckets.TryGetValue(_lastTextureSampleResult, out int colorCount) ? colorCount + 1 : 1;
                     sampleAddressBuckets![address >> TextureZeroSampleBucketShift] =
                         sampleAddressBuckets.TryGetValue(address >> TextureZeroSampleBucketShift, out int addressCount) ? addressCount + 1 : 1;
+                    if (sampleWriterBuckets is not null)
+                    {
+                        TextureSampleWriterKey writerKey = GetTextureSampleWriterKey(address);
+                        sampleWriterBuckets[writerKey] =
+                            sampleWriterBuckets.TryGetValue(writerKey, out int writerCount) ? writerCount + 1 : 1;
+                    }
                     if (address < sampleFirstAddress)
                         sampleFirstAddress = address;
                     if (address > sampleLastAddress)
@@ -33841,6 +33969,7 @@ sampledTexel:
                     sampleRawBuckets!,
                     sampleColorBuckets!,
                     sampleAddressBuckets!,
+                    sampleWriterBuckets,
                     bufferIndex);
             }
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
@@ -34214,6 +34343,7 @@ sampledTexel:
         IReadOnlyDictionary<uint, int> sampleRawBuckets,
         IReadOnlyDictionary<uint, int> sampleColorBuckets,
         IReadOnlyDictionary<uint, int> sampleAddressBuckets,
+        IReadOnlyDictionary<TextureSampleWriterKey, int>? sampleWriterBuckets,
         int bufferIndex)
     {
         if (_texturedTriangleSampleSummaryTraceCount++ >= _traceTexturedTriangleSampleSummaryLimit)
@@ -34255,6 +34385,7 @@ sampledTexel:
             $"size={width}x{height} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} addrs=0x{sampleFirstAddress:X6}-0x{sampleLastAddress:X6} " +
             $"raw={FormatTopTextureSampleBuckets(sampleRawBuckets, 4)} rgb={FormatTopTextureSampleBuckets(sampleColorBuckets, 4)} " +
             $"addr={FormatTopTextureAddressBuckets(sampleAddressBuckets)} " +
+            $"writers={FormatTopTextureSampleWriterBuckets(sampleWriterBuckets)} " +
             $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
             $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} " +
@@ -34287,6 +34418,52 @@ sampledTexel:
             .ThenBy(pair => pair.Key)
             .Take(4)
             .Select(pair => $"0x{pair.Key << TextureZeroSampleBucketShift:X6}:{pair.Value}"));
+    }
+
+    private TextureSampleWriterKey GetTextureSampleWriterKey(uint byteAddress)
+    {
+        int wordOffset = (int)((byteAddress & (TextureBytes - 1u)) >> 2);
+        if (!_textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter writer))
+            return default;
+
+        return new TextureSampleWriterKey(
+            writer.Pc,
+            writer.Mode,
+            writer.TexLod,
+            writer.TextureBase,
+            writer.Lod,
+            writer.BytesPerTexel,
+            writer.Seq8Downld,
+            writer.Type5,
+            writer.Type5Command,
+            writer.Type5TargetStart,
+            writer.PacketStart,
+            writer.ReadIndex,
+            writer.Streaming);
+    }
+
+    private static string FormatTopTextureSampleWriterBuckets(IReadOnlyDictionary<TextureSampleWriterKey, int>? buckets)
+    {
+        if (buckets is null || buckets.Count == 0)
+            return "-";
+
+        return string.Join(",", buckets
+            .OrderByDescending(pair => pair.Value)
+            .ThenBy(pair => pair.Key.Pc)
+            .ThenBy(pair => pair.Key.TextureBase)
+            .Take(4)
+            .Select(pair => $"{FormatTextureSampleWriterKey(pair.Key)}:{pair.Value}"));
+    }
+
+    private static string FormatTextureSampleWriterKey(TextureSampleWriterKey key)
+    {
+        if (key.Equals(default(TextureSampleWriterKey)))
+            return "none";
+
+        string type5 = key.Type5
+            ? $"/t5=0x{key.Type5Command:X8}@0x{key.Type5TargetStart:X6}/pkt=0x{key.PacketStart * 4:X8}/rd=0x{key.ReadIndex * 4:X8}/s={(key.Streaming ? 1 : 0)}"
+            : "";
+        return $"pc={key.Pc & 0xffffffffUL:x8}/m=0x{key.Mode:X8}/lod=0x{key.TexLod:X8}/base=0x{key.TextureBase:X8}/l={key.Lod}/bpp={key.BytesPerTexel}/seq={((key.Seq8Downld) ? 1 : 0)}{type5}";
     }
 
     private void TraceTexturedTriangleReject(

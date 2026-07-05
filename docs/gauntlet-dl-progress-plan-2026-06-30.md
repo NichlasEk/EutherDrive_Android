@@ -4254,3 +4254,83 @@ Next continuation point:
 5. In parallel, trace Type5 writes into the sampled buckets
    `0x002000..0x010000` under the MAME-style path. TMU bank selection alone is
    not the missing piece, and `baseBias=0` is only a different wrong stripe.
+
+## 2026-07-05 - Texture Writer Ownership Trace
+
+Two diagnostic-only trace improvements were added:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_PER_BUCKET_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_WRITERS=1
+```
+
+The first prevents `VOODOO-TEXWRITE` from spending the whole trace budget on
+the first sampled bucket. The second records optional texture-word last-writer
+metadata and adds a compact `writers=` section to `VOODOO-TEXSUMMARY`.
+
+The per-bucket Type5 trace under the same MAME-style texture path remained
+visually unchanged:
+
+```text
+/tmp/gauntdl-mame-path-texwrite-perbucket-f420.ppm
+/tmp/gauntdl-texwrite-perbucket-f420.log
+frameHash=0x3cce6946
+frameSha256=75ad57a15b453bb7779f33840cf213c04df32c3e6db94695672ae8222a23bcc2
+textured zero=6681926
+textureMap=16754480:8367795:8386685:558752
+```
+
+The sampled hot buckets now have concrete upload provenance:
+
+```text
+0x002000 pc=800fe7cc mode=0x00000B00 lod=0x00300804 base=0x1FFFE200 targetStart=0x008800
+0x003000 pc=800fe7cc mode=0x00000B00 lod=0x00300804 base=0x1FFFE200 targetStart=0x009000
+0x004000 pc=800fe7cc mode=0x00000B00 lod=0x00300804 base=0x1FFFE200 targetStart=0x009800
+0x005000 pc=800fe7cc mode=0x00000B00 lod=0x00700804 base=0x00000200 targetStart=0x008000
+0x00C000 pc=800fe5d4 mode=0x00000100 lod=0x0000080C base=0x1FFFEDA2 targetStart=0x018B80/0x018C00
+0x00D000 pc=800fe614 mode=0x00000000 lod=0x00700800 base=0x000019A0 targetStart=0x000180
+0x00E000 pc=800fe614 mode=0x00000000 lod=0x00700800 base=0x000019A0 targetStart=0x000980
+0x00F000 pc=800fe614 mode=0x00000000 lod=0x00700800 base=0x00001DA0 targetStart=0x000180
+0x010000 pc=800fe614 mode=0x00000000 lod=0x00700800 base=0x00001DA0 targetStart=0x000980
+```
+
+The writer-summary probe also stayed hash-identical:
+
+```text
+/tmp/gauntdl-mame-path-texsummary-writers-f420.ppm
+/tmp/gauntdl-texsummary-writers-f420.log
+frameHash=0x3cce6946
+framebuffer=640x480:307200:175015
+textured=tri:907:covered:693:rejected:214:pixels:57522088:zero:6681926
+```
+
+The repeated buffer-0 fullrect pair still samples `base=0x000510` from
+`pc=800c4e5c`, but the sampled words now resolve to specific upload runs:
+
+```text
+triangle A addr=0x00F000/0x00E000/0x00D000/0x00C000
+writers=pc=800fe614 mode=0x00000000 lod=0x00700800 base=0x00001DA0
+        targetStart=0x000B80/0x000A80/0x000980/0x000880
+
+triangle B addr=0x003000/0x002000/0x004000/0x005000
+writers=pc=800fe7cc mode=0x00000B00 lod=0x00300804 base=0x1FFFE200
+        targetStart=0x008900/0x008A00/0x008B00/0x008C00
+```
+
+Later repetitions of the same screen-sized packet shift the low-address half
+to `pc=800fe5d4` zero-base upload runs, and the `pc=80106a74` replay eventually
+overwrites one of the high buckets. This strongly points away from a generic
+texture sampler bug and toward payload/source ownership or repeated Type5
+upload source selection.
+
+Next continuation point:
+
+1. Use `TEXTURE_TRIANGLE_SAMPLE_WRITERS=1` as the main oracle for the stripe
+   page. It connects the visible fullrect texture samples to exact Type5
+   upload packets.
+2. Trace the Type5 payload/source chain for the target starts that dominate
+   the visible fullrect: `0x000B80`, `0x000A80`, `0x000980`, `0x000880`,
+   `0x008900..0x008C00`, and the later zero-base `0x001100..0x001400`.
+3. Compare those packet source addresses against the BGLoadModel indexed
+   source/body ownership. The next real fix is likely in upload payload
+   provenance or source selection, not in another broad triangle suppressor.
