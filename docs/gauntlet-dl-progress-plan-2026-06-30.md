@@ -4742,3 +4742,56 @@ Current conclusion:
 3. Next useful probe should compare the FIFO Type5 packet source word and
    payload memory side by side for the exact visible target buckets, especially
    whether the 0x200 packet-address stride is correct when `sourceBase==0`.
+
+## 2026-07-05 - Zero-Base Packet Address Stride Probe
+
+Added a default-off packet source address stride override for zero-base upload
+runs:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_PACKET_ADDRESS_STRIDE=0x100
+```
+
+The experiment keeps the same payload bytes but changes the Type5 packet source
+address calculation for `sourceBase==0` from `index * 0x200` to the requested
+stride. This directly tests the observed mismatch where the payload cursor moves
+by `0x100` bytes per 64-word packet while the Type5 target word advances as if
+the packet source address moved by `0x200` bytes.
+
+f420 run:
+
+```text
+/tmp/gauntdl-packetstride100-f420.log
+/tmp/gauntdl-packetstride100-f420.ppm
+/tmp/gauntdl-packetstride100-f420.png
+frameHash=0x9bea8154
+frameSha256=c159f41ac9bcae73246f7a1de86b03f955e7742858b666e962dec7da8257dfed
+framebuffer=640x480:307200:175099
+textureMap=18297344:7949314:10348030:175156:0x000000:0x704284
+textured=tri:981:covered:828:rejected:153:pixels:77609945:zero:4150187
+cmdstop=invalid-standard-window/0x00012609/.../pc=0xffffffff801066c4
+```
+
+The override hit both relevant zero-base runs:
+
+```text
+source=0xffffffff80312998 packetStride=0x100 index=0/31 words=64
+source=0xffffffff802e2c68 packetStride=0x100 index=0/255 words=64
+```
+
+Visual inspection is still negative: horizontal colored stripes with white
+fill, no recognizable Gauntlet scene/model graphics. The touched texture range
+changed substantially (`313172 -> 175156` compared with the boundary-stop
+run), and the zero-texture count improved, but the result remains the same
+artifact family and still stops on invalid standard-window command decode.
+
+Current conclusion:
+
+1. Keep `ZERO_BASE_UPLOAD_PACKET_ADDRESS_STRIDE` default-off as a diagnostic.
+2. The 0x200 packet-address stride is not the root visual blocker.
+3. This reinforces the older zero-base payload conclusion: Type5 routing is
+   faithfully consuming the data it is given, but the source payload itself is
+   float/geometry/control-looking data rather than real texture bytes.
+4. Next target should move upward to the source selector/hydration path that
+   populates `0xffffffff80312998` and `0xffffffff802e2c68`, not further
+   packet-address remapping.

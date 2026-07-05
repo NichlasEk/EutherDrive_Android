@@ -757,6 +757,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_STOP_AT_KNOWN_BOUNDARY"));
     private readonly ulong _experimentZeroBaseUploadStopAtKnownBoundaryMaxBytes =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_STOP_AT_KNOWN_BOUNDARY_MAX_BYTES") ?? 0x20000UL;
+    private readonly ulong? _experimentZeroBaseUploadPacketAddressStride =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_PACKET_ADDRESS_STRIDE");
     private readonly bool _experimentClampIndexedTextureUploadLimit =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
     private readonly bool _experimentZeroBaseUploadDiskWords =
@@ -978,6 +980,7 @@ internal sealed class MipsR5000Core
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixPacketTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadStopAtKnownBoundaryTraceSources = [];
+    private readonly HashSet<ulong> _zeroBaseUploadPacketAddressStrideTraceSources = [];
     private int _textureUploadPayloadCallerTransitionTraceCount;
     private int _textureUploadPayloadPacketSourceTraceCount;
     private int _textureUploadPayloadPacketTargetTraceCount;
@@ -4006,6 +4009,24 @@ internal sealed class MipsR5000Core
         source = NormalizeZeroBaseTextureUploadSourceStart(source, sourceBase, sourceBytes, payloadWords, index, limit);
         ulong uploadRunSource = source;
         uint uploadRunStartIndex = index;
+        uint packetAddressStride = 0x200U;
+        if (sourceBase == 0 &&
+            _experimentZeroBaseUploadPacketAddressStride.HasValue &&
+            _experimentZeroBaseUploadPacketAddressStride.Value >= 4UL &&
+            _experimentZeroBaseUploadPacketAddressStride.Value <= 0x10000UL &&
+            (_experimentZeroBaseUploadPacketAddressStride.Value & 3UL) == 0)
+        {
+            packetAddressStride = (uint)_experimentZeroBaseUploadPacketAddressStride.Value;
+            if (_textureUploadPayloadPointerStartTraceCount < 64 &&
+                _zeroBaseUploadPacketAddressStrideTraceSources.Add(source))
+            {
+                _textureUploadPayloadPointerStartTraceCount++;
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] zero-base-upload-packet-address-stride " +
+                    $"source=0x{source:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+                    $"packetStride=0x{packetAddressStride:x} default=0x200 index={index}/{limit} words={payloadWords}");
+            }
+        }
 
         uint fifo = pc == packetEntry ? (uint)_gpr[4] : _memory.Read32(state + 0x374UL);
         if ((fifo & 3U) != 0 || fifo is < 0xa8000000U or > 0xa83ffff8U)
@@ -4035,7 +4056,7 @@ internal sealed class MipsR5000Core
 
         uint currentPacketAddress = pc == roomReadyEntry || pc == packetEntry
             ? (uint)_gpr[17]
-            : unchecked(sourceBase + index * 0x200U);
+            : unchecked(sourceBase + index * packetAddressStride);
         uint fifoBase = _memory.Read32(state + 0x08UL);
         uint fifoRingBase = _memory.Read32(state + 0x378UL);
         uint fifoRingBytes = _memory.Read32(state + 0x380UL);
@@ -4116,7 +4137,7 @@ internal sealed class MipsR5000Core
                 uint oldPacketAddress = currentPacketAddress;
                 ulong oldSource = source;
                 source = SignExtend32((uint)(source + skippedBytes));
-                currentPacketAddress = unchecked(currentPacketAddress + packetsToSkip * 0x200U);
+                currentPacketAddress = unchecked(currentPacketAddress + packetsToSkip * packetAddressStride);
                 index += packetsToSkip;
                 packets -= packetsToSkip;
                 skippedInstructions += packetsToSkip * (30UL + (ulong)(payloadWords / 2U) * 9UL);
@@ -4149,7 +4170,7 @@ internal sealed class MipsR5000Core
             _gpr[3] = 0x01ffffffUL;
             _gpr[4] = SignExtend32(fifo);
             _gpr[5] = payloadWords;
-            _gpr[17] = SignExtend32(unchecked(currentPacketAddress + (packets - 1U) * 0x200U));
+            _gpr[17] = SignExtend32(unchecked(currentPacketAddress + (packets - 1U) * packetAddressStride));
             _gpr[18] = limit + 1U;
             _gpr[19] = packetBytes;
             _gpr[22] = SignExtend32(unchecked((uint)(source + sourceBytes)));
@@ -4169,7 +4190,7 @@ internal sealed class MipsR5000Core
         {
             for (uint packet = 0; packet < packets; packet++, index++)
             {
-                uint packetSourceAddress = unchecked(currentPacketAddress + packet * 0x200U);
+                uint packetSourceAddress = unchecked(currentPacketAddress + packet * packetAddressStride);
                 if (_experimentSkipMetadataTexturePayloads && IsLikelyTextureMetadataPayload(source, payloadWords))
                 {
                     if (_textureUploadMetadataSkipTraceCount++ < 64)
@@ -4267,7 +4288,7 @@ internal sealed class MipsR5000Core
         _gpr[3] = 0x01ffffffUL;
         _gpr[4] = SignExtend32(fifo);
         _gpr[5] = payloadWords;
-        _gpr[17] = SignExtend32(unchecked(currentPacketAddress + (packets - 1U) * 0x200U));
+        _gpr[17] = SignExtend32(unchecked(currentPacketAddress + (packets - 1U) * packetAddressStride));
         _gpr[18] = finalIndex;
         _gpr[19] = packetBytes;
         _gpr[22] = source;
