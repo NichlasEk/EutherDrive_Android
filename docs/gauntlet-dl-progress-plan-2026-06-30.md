@@ -4848,3 +4848,57 @@ Current conclusion:
 3. The next target is the payload content behind `0xffffffff803129a4` under the
    0x20000 stride path: current trace shows zero/stale-looking words after the
    descriptor, while older notes expected texture-looking words there.
+
+## 2026-07-05 - Focused GEI Zero-Disk-Word Probe
+
+Ran the existing zero-disk-word diagnostic against the newly normalized
+`0xffffffff803129a4` upload run only:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_PAYLOAD_INDEX1_LENGTH=0x20000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_INDEX_MASK=0x2
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MIN_OFFSET=0x1128c
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MAX_OFFSET=0x1ffff
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_RUN_SOURCE=0xffffffff803129a4
+```
+
+This proves the post-descriptor zeros can be mapped to dense `gei` disk bytes:
+
+```text
+zero-base-upload-zero-disk-word addr=0xffffffff803129a4 1:gei@0x1128c mem=0x00000000->disk=0x687e6884 packet=0 index=0/31 word=0/64
+```
+
+f420 run:
+
+```text
+/tmp/gauntdl-pointerunknown-gei-zero-disk-f420.log
+/tmp/gauntdl-pointerunknown-gei-zero-disk-f420.ppm
+/tmp/gauntdl-pointerunknown-gei-zero-disk-f420.png
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+framebuffer=640x480:307200:307200
+textureMap=10516480:6019596:4496884:325600:0x000000:0x70f3fc
+textured=tri:961:covered:20:rejected:941:pixels:863832:zero:82537
+cmdstop=invalid-standard-window/0x00012609/.../pc=0xffffffff801066c4
+```
+
+Visual inspection is negative and identical to the prior pointer-start run:
+two large flat colored polygons, no recognizable scene/model graphics. The
+frame hash and SHA are also identical even though draw/texture counters changed.
+The log again shows command-FIFO register noise when raw disk texture-looking
+bytes are substituted into the upload stream:
+
+```text
+cmd=0x57494639 words=22346 packet=0x00000004 pc=0xffffffff800fe5d4
+```
+
+Current conclusion:
+
+1. Do not promote zero-disk-word replacement for the `803129a4` run.
+2. The missing zeros are not the direct visible blocker; raw `gei` bytes at
+   `0x1128c+` are not valid command/FIFO payload structure for this run.
+3. Next target should identify the producer of the `80312998/803129a4`
+   descriptor and its intended source/extent, rather than substituting disk
+   bytes at upload-read time.
