@@ -6480,3 +6480,93 @@ Current conclusion:
    source-accurate way to recover the fullrect's horizontal coordinate, or
    instrument `WriteTexturePort32`/writer buckets for the `wtr@0xc200..0xde00`
    disk-backed Type5 writes to resolve the upload-vs-sample LOD/aspect mismatch.
+
+## 2026-07-05 - Vertex-FIFO Fullrect S-from-X Checkpoint
+
+The latest source-ownership trace closes the narrow `S=0` question one level
+earlier than the raster hack. Dumping and tracing `800b0760..800b07d0` shows
+that `800b0770` is a small float interpolator:
+
+```text
+800b0770: lwc1  f0, 0(a1)
+800b0774: lwc1  f1, 0(a0)
+800b0778: sub.s f0, f0, f1
+800b077c: mtc1  a2, f2
+800b0780: madd.s-style op
+800b0784: swc1  f0, 0(a0)
+...
+800b07ac: swc1  f0, 0x0c(a0)  ; S
+800b07c4: swc1  f0, 0x10(a0)  ; T
+```
+
+Focused CPU trace around the same range reached the visible fullrect builders:
+
+```text
+pc=800b0770 a0=802e1a28 a1=802e1a78 a2=b87c78a0 ra=800b0c50
+pc=800b0770 a0=802e1a50 a1=802e1aa0 a2=b87c78a0 ra=800b0c64
+pc=800b0770 a0=802e1a50 a1=802e1a28 a2=bf7ab6ac ra=800b0ca0
+pc=800b0770 a0=802e1aa0 a1=802e1a78 a2=bf7ab6ac ra=800b0cb4
+```
+
+That means the constant-S fullrect is not a stale FIFO artifact and not a
+Type3 field-order bug. The game code is clipping/interpolating source structs
+whose S endpoints are already all zero.
+
+Added a default-off source/FIFO-level diagnostic:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X_LIMIT=16
+```
+
+It matches only the large `0x0180A8CB` runtime vertex FIFO fullrects with
+constant S and a large T span. Instead of changing raster sampling, it patches
+the emitted FIFO packet's S words from screen X:
+
+```text
+dst=0xffffffffa822c90c bbox=(0,-1)-(512,383) scale=0.5
+s=0/0/0 -> 0/256/0
+t=256/0/0
+
+dst=0xffffffffa822c958 bbox=(0,-1)-(512,383) scale=0.5
+s=0/0/0 -> 256/0/256
+t=0/256/256
+```
+
+Test run:
+
+```text
+/tmp/gauntdl-vertexfifo-s-from-x-warm-f300.log
+/tmp/gauntdl-vertexfifo-s-from-x-warm-f300.png
+frameHash=0x38bc79b5
+textureMap=writes=5171464:nz=581292:zero=4590172:touched=22910:first=0x000000:last=0x01660c
+drawPackets=17111 directTriangles=647 setupTriangles=304
+textured=tri:8376:covered:1023:rejected:7353:pixels:108873600:zero:34469210
+colors=29689 signature=bb697b4fb2c3b20940ac93fc7c711ef1c410cef6232b4d39ecdf79fd43723177
+```
+
+Comparison:
+
+```text
+AE vs raster X-as-S diagnostic: 1403 pixels
+AE vs current stripe baseline: 195287 pixels
+```
+
+The source/FIFO experiment is visually the same useful signal as the raster
+X-as-S run: a real 2D texture-looking surface appears, but the output is still
+not correct scene graphics. The important improvement is diagnostic placement:
+we can now treat the old raster remap as a control and continue from FIFO/source
+packet evidence.
+
+Current next plan:
+
+1. Keep both S-from-X experiments default-off. Do not promote either as a real
+   fix yet.
+2. Use the source/FIFO experiment as the preferred visual diagnostic because it
+   proves the packet-level STQ path can carry the recovered horizontal span.
+3. Continue on the remaining blocker: the texture upload/sample layout mismatch
+   for the `wtr@0xc200..0xde00` disk-backed Type5 writes. The MAME upload
+   pointer trace found real LOD-tail address mismatches, but enabling it did not
+   change the f300 image, so the next useful trace is a focused writer-bucket
+   comparison for the visible fullrect sample buckets under source/FIFO
+   S-from-X.

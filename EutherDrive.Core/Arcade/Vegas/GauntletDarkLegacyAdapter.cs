@@ -705,6 +705,10 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeByteMoveFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE");
     private readonly bool _enableRuntimeBgLoadModelDispatchFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISPATCH");
     private readonly bool _enableRuntimeVertexFifoEmitFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT");
+    private readonly bool _experimentRuntimeVertexFifoFullrectSFromX =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X"));
+    private readonly int _experimentRuntimeVertexFifoFullrectSFromXTraceLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X_LIMIT", 24);
     private readonly bool _experimentDisableOuterPayloadFastPath =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISABLE_OUTER_PAYLOAD_FASTPATH"));
     private readonly bool _fixVoodooMameCommandFifoModel =
@@ -1052,6 +1056,7 @@ internal sealed class MipsR5000Core
     private int _vertexFifoFastPathTraceCount;
     private int _vertexFifoFastPathOddPayloadTraceCount;
     private int _vertexFifoFastPathRejectTraceCount;
+    private int _runtimeVertexFifoFullrectSFromXTraceCount;
     private int _lateRenderPumpTraceCount;
     private int _runtimeStatusBitfieldReadTraceCount;
     private int _runtimeDiagnosticOverlaySuppressTraceCount;
@@ -11401,6 +11406,15 @@ internal sealed class MipsR5000Core
                 $"range ctx={context:x16} dst={destination:x16} s0={source0:x16} s1={source1:x16} s2={source2:x16} ra={returnAddress:x16}");
         }
 
+        RuntimeVertexFifoSOverride sOverride = TryBuildRuntimeVertexFifoFullrectSFromX(
+            destination,
+            source0,
+            source1,
+            source2,
+            out RuntimeVertexFifoSOverride candidateOverride)
+            ? candidateOverride
+            : default;
+
         TraceVertexFifoFastPathEmit(context, destination, source0, source1, source2, returnAddress);
 
         _memory.Write32(context + 0x37cUL, unchecked((uint)_gpr[9]));
@@ -11408,37 +11422,115 @@ internal sealed class MipsR5000Core
         {
             _memory.Write32(destination + 0x00UL, 0x0180a8cbU);
             _memory.Write64(destination + 0x04UL, _memory.Read64(source0 + 0x00UL));
-            _memory.Write64(destination + 0x0cUL, PackLwuPair(source0 + 0x08UL, source0 + 0x14UL));
-            _memory.Write64(destination + 0x14UL, PackLwuPair(source0 + 0x0cUL, source0 + 0x10UL));
+            _memory.Write64(destination + 0x0cUL, PackLwuPair(source0 + 0x08UL, source0 + 0x14UL, sOverride));
+            _memory.Write64(destination + 0x14UL, PackLwuPair(source0 + 0x0cUL, source0 + 0x10UL, sOverride));
             _memory.Write64(destination + 0x1cUL, _memory.Read64(source1 + 0x00UL));
-            _memory.Write64(destination + 0x24UL, PackLwuPair(source1 + 0x08UL, source1 + 0x14UL));
-            _memory.Write64(destination + 0x2cUL, PackLwuPair(source1 + 0x0cUL, source1 + 0x10UL));
+            _memory.Write64(destination + 0x24UL, PackLwuPair(source1 + 0x08UL, source1 + 0x14UL, sOverride));
+            _memory.Write64(destination + 0x2cUL, PackLwuPair(source1 + 0x0cUL, source1 + 0x10UL, sOverride));
             _memory.Write64(destination + 0x34UL, _memory.Read64(source2 + 0x00UL));
-            _memory.Write64(destination + 0x3cUL, PackLwuPair(source2 + 0x08UL, source2 + 0x14UL));
-            _memory.Write64(destination + 0x44UL, PackLwuPair(source2 + 0x0cUL, source2 + 0x10UL));
-            _gpr[12] = PackLwuPair(source2 + 0x0cUL, source2 + 0x10UL);
+            _memory.Write64(destination + 0x3cUL, PackLwuPair(source2 + 0x08UL, source2 + 0x14UL, sOverride));
+            _memory.Write64(destination + 0x44UL, PackLwuPair(source2 + 0x0cUL, source2 + 0x10UL, sOverride));
+            _gpr[12] = PackLwuPair(source2 + 0x0cUL, source2 + 0x10UL, sOverride);
         }
         else
         {
-            _memory.Write64(destination + 0x00UL, PackConstantAndLwu(0x0180a8cbU, source0 + 0x00UL));
-            _memory.Write64(destination + 0x08UL, PackLwuPair(source0 + 0x04UL, source0 + 0x08UL));
-            _memory.Write64(destination + 0x10UL, PackLwuPair(source0 + 0x14UL, source0 + 0x0cUL));
-            _memory.Write64(destination + 0x18UL, PackLwuPair(source0 + 0x10UL, source1 + 0x00UL));
-            _memory.Write64(destination + 0x20UL, PackLwuPair(source1 + 0x04UL, source1 + 0x08UL));
-            _memory.Write64(destination + 0x28UL, PackLwuPair(source1 + 0x14UL, source1 + 0x0cUL));
-            _memory.Write64(destination + 0x30UL, PackLwuPair(source1 + 0x10UL, source2 + 0x00UL));
-            _memory.Write64(destination + 0x38UL, PackLwuPair(source2 + 0x04UL, source2 + 0x08UL));
-            _memory.Write64(destination + 0x40UL, PackLwuPair(source2 + 0x14UL, source2 + 0x0cUL));
-            _memory.Write32(destination + 0x48UL, _memory.Read32(source2 + 0x10UL));
-            _gpr[12] = SignExtend32(_memory.Read32(source2 + 0x10UL));
+            _memory.Write64(destination + 0x00UL, PackConstantAndLwu(0x0180a8cbU, source0 + 0x00UL, sOverride));
+            _memory.Write64(destination + 0x08UL, PackLwuPair(source0 + 0x04UL, source0 + 0x08UL, sOverride));
+            _memory.Write64(destination + 0x10UL, PackLwuPair(source0 + 0x14UL, source0 + 0x0cUL, sOverride));
+            _memory.Write64(destination + 0x18UL, PackLwuPair(source0 + 0x10UL, source1 + 0x00UL, sOverride));
+            _memory.Write64(destination + 0x20UL, PackLwuPair(source1 + 0x04UL, source1 + 0x08UL, sOverride));
+            _memory.Write64(destination + 0x28UL, PackLwuPair(source1 + 0x14UL, source1 + 0x0cUL, sOverride));
+            _memory.Write64(destination + 0x30UL, PackLwuPair(source1 + 0x10UL, source2 + 0x00UL, sOverride));
+            _memory.Write64(destination + 0x38UL, PackLwuPair(source2 + 0x04UL, source2 + 0x08UL, sOverride));
+            _memory.Write64(destination + 0x40UL, PackLwuPair(source2 + 0x14UL, source2 + 0x0cUL, sOverride));
+            _memory.Write32(destination + 0x48UL, sOverride.ReadWord(_memory, source2 + 0x10UL));
+            _gpr[12] = SignExtend32(sOverride.ReadWord(_memory, source2 + 0x10UL));
         }
 
         ulong updatedDestination = destination + 0x4cUL;
         _memory.Write32(context + 0x374UL, unchecked((uint)updatedDestination));
         _gpr[10] = SignExtend32(unchecked((uint)updatedDestination));
-        _gpr[13] = SignExtend32(_memory.Read32(source2 + 0x10UL));
+        _gpr[13] = SignExtend32(sOverride.ReadWord(_memory, source2 + 0x10UL));
         Pc = returnAddress;
         CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryBuildRuntimeVertexFifoFullrectSFromX(
+        ulong destination,
+        ulong source0,
+        ulong source1,
+        ulong source2,
+        out RuntimeVertexFifoSOverride sOverride)
+    {
+        sOverride = default;
+        if (!_experimentRuntimeVertexFifoFullrectSFromX)
+            return false;
+
+        float x0 = ReadRuntimeVertexFifoFloat(source0, 0x00UL);
+        float y0 = ReadRuntimeVertexFifoFloat(source0, 0x04UL);
+        float s0 = ReadRuntimeVertexFifoFloat(source0, 0x0cUL);
+        float t0 = ReadRuntimeVertexFifoFloat(source0, 0x10UL);
+        float x1 = ReadRuntimeVertexFifoFloat(source1, 0x00UL);
+        float y1 = ReadRuntimeVertexFifoFloat(source1, 0x04UL);
+        float s1 = ReadRuntimeVertexFifoFloat(source1, 0x0cUL);
+        float t1 = ReadRuntimeVertexFifoFloat(source1, 0x10UL);
+        float x2 = ReadRuntimeVertexFifoFloat(source2, 0x00UL);
+        float y2 = ReadRuntimeVertexFifoFloat(source2, 0x04UL);
+        float s2 = ReadRuntimeVertexFifoFloat(source2, 0x0cUL);
+        float t2 = ReadRuntimeVertexFifoFloat(source2, 0x10UL);
+
+        if (!AllFinite(x0, y0, s0, t0, x1, y1, s1, t1, x2, y2, s2, t2))
+            return false;
+
+        float minX = MathF.Min(x0, MathF.Min(x1, x2));
+        float maxX = MathF.Max(x0, MathF.Max(x1, x2));
+        float minY = MathF.Min(y0, MathF.Min(y1, y2));
+        float maxY = MathF.Max(y0, MathF.Max(y1, y2));
+        float minS = MathF.Min(s0, MathF.Min(s1, s2));
+        float maxS = MathF.Max(s0, MathF.Max(s1, s2));
+        float minT = MathF.Min(t0, MathF.Min(t1, t2));
+        float maxT = MathF.Max(t0, MathF.Max(t1, t2));
+        float width = maxX - minX;
+        float height = maxY - minY;
+        if (width < 480.0f ||
+            height < 300.0f ||
+            MathF.Abs(maxS - minS) > 0.001f ||
+            MathF.Abs(maxT - minT) < 128.0f)
+        {
+            return false;
+        }
+
+        float scale = 256.0f / width;
+        uint newS0 = BitConverter.SingleToUInt32Bits((x0 - minX) * scale);
+        uint newS1 = BitConverter.SingleToUInt32Bits((x1 - minX) * scale);
+        uint newS2 = BitConverter.SingleToUInt32Bits((x2 - minX) * scale);
+        sOverride = new RuntimeVertexFifoSOverride(source0, newS0, source1, newS1, source2, newS2);
+        if (_runtimeVertexFifoFullrectSFromXTraceCount++ < _experimentRuntimeVertexFifoFullrectSFromXTraceLimit)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] vertex-fifo-fullrect-s-from-x n={_runtimeVertexFifoFullrectSFromXTraceCount} " +
+                $"dst=0x{destination:x16} bbox=({minX:F3},{minY:F3})-({maxX:F3},{maxY:F3}) scale={scale:F6} " +
+                $"s={s0:F3}/{s1:F3}/{s2:F3}->" +
+                $"{BitConverter.UInt32BitsToSingle(newS0):F3}/{BitConverter.UInt32BitsToSingle(newS1):F3}/{BitConverter.UInt32BitsToSingle(newS2):F3} " +
+                $"t={t0:F3}/{t1:F3}/{t2:F3} " +
+                $"src=0x{source0:x16}/0x{source1:x16}/0x{source2:x16} ra=0x{_gpr[31]:x16}");
+        }
+
+        return true;
+    }
+
+    private float ReadRuntimeVertexFifoFloat(ulong source, ulong offset)
+        => BitConverter.UInt32BitsToSingle(_memory.Read32(source + offset));
+
+    private static bool AllFinite(params float[] values)
+    {
+        foreach (float value in values)
+        {
+            if (!float.IsFinite(value))
+                return false;
+        }
+
         return true;
     }
 
@@ -11602,8 +11694,50 @@ internal sealed class MipsR5000Core
     private ulong PackLwuPair(ulong lowWordAddress, ulong highWordAddress)
         => _memory.Read32(lowWordAddress) | ((ulong)_memory.Read32(highWordAddress) << 32);
 
+    private ulong PackLwuPair(ulong lowWordAddress, ulong highWordAddress, RuntimeVertexFifoSOverride sOverride)
+        => sOverride.ReadWord(_memory, lowWordAddress) | ((ulong)sOverride.ReadWord(_memory, highWordAddress) << 32);
+
     private ulong PackConstantAndLwu(uint lowWord, ulong highWordAddress)
         => lowWord | ((ulong)_memory.Read32(highWordAddress) << 32);
+
+    private ulong PackConstantAndLwu(uint lowWord, ulong highWordAddress, RuntimeVertexFifoSOverride sOverride)
+        => lowWord | ((ulong)sOverride.ReadWord(_memory, highWordAddress) << 32);
+
+    private readonly struct RuntimeVertexFifoSOverride
+    {
+        private readonly ulong _source0;
+        private readonly ulong _source1;
+        private readonly ulong _source2;
+        private readonly uint _s0;
+        private readonly uint _s1;
+        private readonly uint _s2;
+
+        public RuntimeVertexFifoSOverride(ulong source0, uint s0, ulong source1, uint s1, ulong source2, uint s2)
+        {
+            Enabled = true;
+            _source0 = source0;
+            _source1 = source1;
+            _source2 = source2;
+            _s0 = s0;
+            _s1 = s1;
+            _s2 = s2;
+        }
+
+        public bool Enabled { get; }
+
+        public uint ReadWord(VegasMemoryMap memory, ulong address)
+        {
+            if (!Enabled)
+                return memory.Read32(address);
+            if (address == _source0 + 0x0cUL)
+                return _s0;
+            if (address == _source1 + 0x0cUL)
+                return _s1;
+            if (address == _source2 + 0x0cUL)
+                return _s2;
+            return memory.Read32(address);
+        }
+    }
 
     private bool TryFastPathKnownRuntimeAlignedQwordCopy(ulong pc)
     {
@@ -28443,6 +28577,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES_LIMIT"), 80);
     private readonly bool _experimentTextureUploadTmuBanks =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS"));
+    private readonly bool _experimentTextureUploadMameWritePtr =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR"));
+    private readonly bool _traceTextureUploadMameWritePtr =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR"));
+    private readonly int _traceTextureUploadMameWritePtrLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR_LIMIT"), 80);
     private readonly int _experimentTextureSampleTmu =
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_TMU"), -1);
     private readonly bool _experimentSetupMameAuxDepth =
@@ -28520,6 +28660,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _textureSampleTraceCount;
     private int _texturedTriangleSampleSummaryTraceCount;
     private int _textureFetchCompareTraceCount;
+    private int _textureUploadMameWritePtrTraceCount;
     private int _textureWriteBucketTraceCount;
     private readonly int[] _textureWriteBucketTraceCounts = new int[TextureZeroSampleBucketCount];
     private int _textureZeroSampleBucketTotal;
@@ -30351,15 +30492,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         int tmu = (int)((wordOffset >> 19) & 0x03u);
-        uint mode = _experimentTextureUploadTmuBanks && tmu <= 1
-            ? ReadTextureRegisterForTmu(tmu, RegTextureMode)
-            : ReadTextureRegister(RegTextureMode);
-        uint texLod = _experimentTextureUploadTmuBanks && tmu <= 1
-            ? ReadTextureRegisterForTmu(tmu, RegTextureLod)
-            : ReadTextureRegister(RegTextureLod);
-        uint textureBase = _experimentTextureUploadTmuBanks && tmu <= 1
-            ? ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr)
-            : ReadTextureRegister(RegTextureBaseAddr);
+        uint mode = ReadTextureUploadRegister(tmu, RegTextureMode);
+        uint texLod = ReadTextureUploadRegister(tmu, RegTextureLod);
+        uint textureBase = ReadTextureUploadRegister(tmu, RegTextureBaseAddr);
         if (((texLod >> 25) & 1u) != 0)
             value = BinaryPrimitives.ReverseEndianness(value);
         if (((texLod >> 26) & 1u) != 0)
@@ -30390,6 +30525,22 @@ internal class VoodooBringupBackend : IVoodooBackend
             uint byteOffset = (GetTextureLodOffset((int)lod, bytesPerTexel, texLod, textureBase) + texel * (uint)bytesPerTexel) & (TextureBytes - 1u);
             if (_fixTextureDownloadAlign32)
                 byteOffset &= ~3u;
+            if (_traceTextureUploadMameWritePtr || _experimentTextureUploadMameWritePtr)
+            {
+                uint mameByteOffset = GetMameTextureWritePtrByteOffset(
+                    (int)lod,
+                    bytesPerTexel,
+                    texLod,
+                    textureBase,
+                    ReadTextureUploadRegister(tmu, RegTextureBaseAddr1),
+                    ReadTextureUploadRegister(tmu, RegTextureBaseAddr2),
+                    ReadTextureUploadRegister(tmu, RegTextureBaseAddr38),
+                    ts,
+                    tt);
+                TraceTextureUploadMameWritePtr(wordOffset, byteOffset, mameByteOffset, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
+                if (_experimentTextureUploadMameWritePtr)
+                    byteOffset = mameByteOffset;
+            }
             TraceTextureWriteBucket(wordOffset, byteOffset, value, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
 
             if (bytesPerTexel == 1)
@@ -30499,6 +30650,125 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8} " +
             $"global=0x{_registers[RegTextureMode]:X8}/0x{_registers[RegTextureLod]:X8}/0x{_registers[RegTextureBaseAddr]:X8} " +
             $"tmu0={FormatTmuDebugStatus(0)} tmu1={FormatTmuDebugStatus(1)}{type5Status}{pcStatus}");
+    }
+
+    private uint ReadTextureUploadRegister(int tmu, int register)
+        => _experimentTextureUploadTmuBanks && tmu <= 1
+            ? ReadTextureRegisterForTmu(tmu, register)
+            : ReadTextureRegister(register);
+
+    private uint GetMameTextureWritePtrByteOffset(
+        int targetLod,
+        int bytesPerTexel,
+        uint textureLod,
+        uint textureBase,
+        uint textureBase1,
+        uint textureBase2,
+        uint textureBase38,
+        uint s,
+        uint t)
+    {
+        targetLod = Math.Clamp(targetLod, 0, 8);
+
+        uint widthMask = 0xffu;
+        uint heightMask = 0xffu;
+        int aspect = (int)((textureLod >> 21) & 0x03u);
+        if (((textureLod >> 20) & 1u) != 0)
+            heightMask >>= aspect;
+        else
+            widthMask >>= aspect;
+
+        uint lodMask = 0x1ffu;
+        if (((textureLod >> 19) & 1u) != 0)
+            lodMask = ((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u;
+
+        int bppShift = bytesPerTexel == 1 ? 0 : 1;
+        uint baseAddress = GetTextureBaseAddress(textureBase);
+        uint lodOffset0 = baseAddress & (TextureBytes - 1u);
+        uint lodOffset1;
+        uint lodOffset2;
+        uint lodOffset3;
+        bool multiBase = ((textureLod >> 24) & 1u) != 0 && ((textureLod >> 28) & 0x0fu) == 0;
+        if (multiBase)
+        {
+            lodOffset1 = GetTextureBaseAddress(textureBase1);
+            lodOffset2 = GetTextureBaseAddress(textureBase2);
+            baseAddress = GetTextureBaseAddress(textureBase38);
+            lodOffset3 = baseAddress & (TextureBytes - 1u);
+        }
+        else
+        {
+            if ((lodMask & (1u << 0)) != 0)
+                baseAddress += ((widthMask >> 0) + 1u) * ((heightMask >> 0) + 1u) << bppShift;
+            lodOffset1 = baseAddress & (TextureBytes - 1u);
+            if ((lodMask & (1u << 1)) != 0)
+                baseAddress += ((widthMask >> 1) + 1u) * ((heightMask >> 1) + 1u) << bppShift;
+            lodOffset2 = baseAddress & (TextureBytes - 1u);
+            if ((lodMask & (1u << 2)) != 0)
+                baseAddress += ((widthMask >> 2) + 1u) * ((heightMask >> 2) + 1u) << bppShift;
+            lodOffset3 = baseAddress & (TextureBytes - 1u);
+        }
+
+        uint lodOffset = targetLod switch
+        {
+            0 => lodOffset0,
+            1 => lodOffset1,
+            2 => lodOffset2,
+            3 => lodOffset3,
+            _ => 0
+        };
+        for (int lod = 4; lod <= 8; lod++)
+        {
+            if ((lodMask & (1u << (lod - 1))) != 0)
+            {
+                uint size = ((widthMask >> (lod - 1)) + 1u) * ((heightMask >> (lod - 1)) + 1u);
+                if (size < 4u)
+                    size = 4u;
+                baseAddress += size << bppShift;
+            }
+            if (targetLod == lod)
+            {
+                lodOffset = baseAddress & (TextureBytes - 1u);
+                break;
+            }
+        }
+
+        uint texelOffset = t * ((widthMask >> targetLod) + 1u) + s;
+        return (lodOffset + ((uint)bytesPerTexel * texelOffset & ~3u)) & (TextureBytes - 1u);
+    }
+
+    private void TraceTextureUploadMameWritePtr(
+        uint wordOffset,
+        uint currentByteOffset,
+        uint mameByteOffset,
+        uint mode,
+        uint texLod,
+        uint textureBase,
+        uint lod,
+        uint ts,
+        uint tt,
+        int bytesPerTexel,
+        bool seq8Downld)
+    {
+        if (!_traceTextureUploadMameWritePtr ||
+            currentByteOffset == mameByteOffset ||
+            _textureUploadMameWritePtrTraceCount >= _traceTextureUploadMameWritePtrLimit)
+        {
+            return;
+        }
+
+        uint width = GetTextureWidth(texLod);
+        uint height = GetTextureHeight(texLod);
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string type5Status = _currentType5TextureWriteActive
+            ? $" type5=cmd=0x{_currentType5TextureWriteCommand:X8}:space={_currentType5TextureWriteSpace}:targetStart=0x{_currentType5TextureWriteTargetStart:X6}:target=0x{_currentType5TextureWriteTargetWord:X6}:i={_currentType5TextureWriteIndex}/{_currentType5TextureWriteCount}:packet=0x{_currentCommandFifoPacketStart * 4:X8}:rd=0x{_currentType5TextureWriteReadIndex * 4:X8}:stream={(_currentType5TextureWriteStreaming ? 1 : 0)}"
+            : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXUPLOAD-MAMEPTR] n={++_textureUploadMameWritePtrTraceCount} " +
+            $"word=0x{wordOffset:X6} current=0x{currentByteOffset:X6} mame=0x{mameByteOffset:X6} " +
+            $"lod={lod} ts=0x{ts:X2} tt=0x{tt:X2} size={width}x{height} bpp={bytesPerTexel} seq8={(seq8Downld ? 1 : 0)} " +
+            $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8}{type5Status}{pcStatus}");
     }
 
     private void WriteTextureLinear32(uint wordOffset, uint value, int bytesPerTexel)
