@@ -757,6 +757,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN"));
     private readonly bool _experimentZeroBaseUploadDescriptorSourceTableDerivedSource =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_TABLE_DERIVED_SOURCE"));
+    private readonly ulong? _experimentZeroBaseUploadDescriptorSourceAddOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_ADD_OFFSET");
     private readonly ulong? _experimentZeroBaseUploadDescriptorSourcePointerOffset =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_POINTER_OFFSET");
     private readonly ulong? _experimentZeroBaseUploadDescriptorSourceNodePointerOffset =
@@ -843,6 +845,12 @@ internal sealed class MipsR5000Core
     private readonly int _traceRuntimeBgLoadModelQioRequestLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUEST_LIMIT", 96);
     private readonly bool _traceRuntimeBgLoadModelAssetParser = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER") == "1";
+    private readonly bool _traceRuntimeBgLoadModelIndexedSourceState =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE"));
+    private readonly ulong? _traceRuntimeBgLoadModelIndexedSourceStateIndex =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE_INDEX");
+    private readonly int _traceRuntimeBgLoadModelIndexedSourceStateLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE_LIMIT", 96);
     private readonly bool _traceRuntimeWorldDataTableRepair = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_TABLE") == "1";
     private readonly bool _traceRuntimeWorldDataAllocation = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_ALLOCATION") == "1";
     private readonly bool _traceRuntimeWorldDataLoader = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_LOADER") == "1";
@@ -969,6 +977,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelQioRequestTraceCount;
     private int _runtimeBgLoadModelAssetParserTraceCount;
     private int _runtimeBgLoadModelGebSourceTraceCount;
+    private int _runtimeBgLoadModelIndexedSourceStateTraceCount;
     private int _runtimeBgLoadModelLookupHelperTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
     private int _runtimeBgLoadModelLateStreamScanTraceCount;
@@ -1179,6 +1188,7 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
         TraceKnownRuntimeBgLoadModelGebSourceState(pc, "step");
+        TraceKnownRuntimeBgLoadModelIndexedSourceState(pc, "step");
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
         TraceKnownRuntimeBgLoadModelLoop(pc);
         TraceKnownRuntimeBgLoadModelRecords(pc);
@@ -4451,6 +4461,39 @@ internal sealed class MipsR5000Core
                     }
 
                     return tableDerivedCandidate;
+                }
+            }
+        }
+
+        if (_experimentZeroBaseUploadDescriptorSourceAddOffset.HasValue &&
+            !knownSource)
+        {
+            ulong addOffset = _experimentZeroBaseUploadDescriptorSourceAddOffset.Value;
+            if (addOffset is >= 4UL and <= 0x400UL &&
+                (addOffset & 3UL) == 0)
+            {
+                ulong offsetCandidate = SignExtend32(unchecked((uint)(source + addOffset)));
+                if (offsetCandidate != source &&
+                    IsMainRamRange(offsetCandidate, sourceBytes))
+                {
+                    if (_traceTextureUploadPayload &&
+                        AllowsTextureUploadRunSourceTrace(offsetCandidate) &&
+                        _textureUploadPayloadPointerStartTraceCount++ < 64)
+                    {
+                        Console.WriteLine(
+                            $"[GAUNTDL:EXPERIMENT] zero-base-upload-descriptor-source-add-offset " +
+                            $"source=0x{source:x16}->0x{offsetCandidate:x16} offset=0x{addOffset:x} " +
+                            $"{DescribeKnownRuntimeBgLoadModelUploadSource(offsetCandidate)} " +
+                            $"bytes=0x{sourceBytes:x} index={index}/{limit} words={payloadWords} " +
+                            $"descriptor={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/" +
+                            $"{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8}/" +
+                            $"{ReadTraceWord(source + 0x10UL):x8}/{ReadTraceWord(source + 0x14UL):x8}/" +
+                            $"{ReadTraceWord(source + 0x18UL):x8}/{ReadTraceWord(source + 0x1cUL):x8} " +
+                            $"first={ReadTraceWord(offsetCandidate):x8}/{ReadTraceWord(offsetCandidate + 0x04UL):x8}/" +
+                            $"{ReadTraceWord(offsetCandidate + 0x08UL):x8}/{ReadTraceWord(offsetCandidate + 0x0cUL):x8}");
+                    }
+
+                    return offsetCandidate;
                 }
             }
         }
@@ -15215,6 +15258,78 @@ internal sealed class MipsR5000Core
             $"regs s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
             $"s6={_gpr[22]:x16} sp1c={ReadTraceWord(_gpr[29] + 0x1cUL):x8} " +
             $"asset={TraceKnownRuntimeBgLoadModelAssetTableSummary(6)}");
+    }
+
+    private void TraceKnownRuntimeBgLoadModelIndexedSourceState(ulong pc, string phase)
+    {
+        if (!_traceRuntimeBgLoadModelIndexedSourceState ||
+            _runtimeBgLoadModelIndexedSourceStateTraceCount >= _traceRuntimeBgLoadModelIndexedSourceStateLimit)
+        {
+            return;
+        }
+
+        if (phase == "step" &&
+            pc is not (0xffffffff800aac18UL or 0xffffffff800aac24UL or
+                       0xffffffff800aacb4UL or
+                       0xffffffff800aadb8UL or 0xffffffff800aaddcUL or
+                       0xffffffff800aadf0UL or 0xffffffff800aae60UL or
+                       0xffffffff800aae98UL or
+                       0xffffffff800b72fcUL or
+                       0xffffffff800c9088UL or 0xffffffff800c909cUL or
+                       0xffffffff800c90d4UL))
+        {
+            return;
+        }
+
+        ulong activeS0Index = _gpr[16] & 0xffffffffUL;
+        ulong activeA3Index = _gpr[7] & 0xffffffffUL;
+        ulong writerIndex = _gpr[2] & 0xffffffffUL;
+        ulong index = (_traceRuntimeBgLoadModelIndexedSourceStateIndex ?? activeS0Index) & 0xffffffffUL;
+        if (index >= 0x40UL)
+            return;
+        if (_traceRuntimeBgLoadModelIndexedSourceStateIndex.HasValue &&
+            phase == "step" &&
+            activeS0Index != index &&
+            activeA3Index != index &&
+            writerIndex != index)
+        {
+            return;
+        }
+
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong sideTable = 0xffffffff802549a0UL;
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        const ulong assetTableBase = 0xffffffff8024f9a0UL;
+        const ulong assetTableStride = 0x30UL;
+
+        ulong sourceTableSlot = sourceTable + index * 4UL;
+        ulong sideTableSlot = sideTable + index * 4UL;
+        ulong header = destinationBase + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
+        uint bodyOffset = IsMainRamRange(header + 0x5cUL, 4) ? _memory.Read32(header + 0x5cUL) : 0;
+        ulong body = header + bodyOffset;
+        uint sourceWord = ReadTraceWord(sourceTableSlot);
+        ulong source = SignExtend32(sourceWord);
+        ulong assetEntry = assetTableBase + index * assetTableStride;
+
+        _runtimeBgLoadModelIndexedSourceStateTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-indexed-source-state phase={phase} index={index:x8} " +
+            $"pc={pc:x16} op={ReadTraceWord(pc):x8} ra={_gpr[31]:x16} sp={_gpr[29]:x16} " +
+            $"activeS0={activeS0Index:x8} activeA3={activeA3Index:x8} writer={writerIndex:x8} " +
+            $"regs s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+            $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"slot={sourceTableSlot:x16}:{sourceWord:x8}->{source:x16} " +
+            $"side={sideTableSlot:x16}:{ReadTraceWord(sideTableSlot):x8} " +
+            $"header={header:x16} bodyOffset={bodyOffset:x8} body={body:x16} " +
+            $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)} " +
+            $"sourceText=\"{ReadAsciiTraceString(source, 48)}\" " +
+            $"headerWords={TraceKnownRuntimeBgLoadModelAssetParserWords(header)} " +
+            $"bodyFirst={ReadTraceWord(body + 0x00UL):x8}/{ReadTraceWord(body + 0x04UL):x8}/" +
+            $"{ReadTraceWord(body + 0x08UL):x8}/{ReadTraceWord(body + 0x0cUL):x8} " +
+            $"assetEntry={assetEntry:x16}:{ReadTraceWord(assetEntry):x8}/" +
+            $"{ReadTraceWord(assetEntry + 0x04UL):x8}/{ReadTraceWord(assetEntry + 0x08UL):x8}/" +
+            $"\"{ReadAsciiTraceString(assetEntry + 0x10UL, 24)}\" " +
+            $"asset={TraceKnownRuntimeBgLoadModelAssetTableSummary((long)index)}");
     }
 
     private void TraceKnownRuntimeBgLoadModelQioRequests(ulong pc, string phase)

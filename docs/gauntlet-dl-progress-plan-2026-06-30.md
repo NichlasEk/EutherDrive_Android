@@ -5421,3 +5421,103 @@ Current conclusion:
    the source/limit table selection around `801096ac` and the asset-table
    producer path for `font_story`, then connect that to the zero-base Type5
    upload source ownership.
+
+## 2026-07-05 - Indexed Source State Trace and Descriptor Offset Negatives
+
+Added a default-off indexed BGLoadModel source trace so we can inspect the real
+source-table slot instead of the old hardcoded `geb`/index-6 view:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE_INDEX=9
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE_LIMIT=96
+```
+
+The trace marker is:
+
+```text
+[GAUNTDL:TRACE] bgloadmodel-indexed-source-state
+```
+
+The filtered f300 run:
+
+```text
+/tmp/gauntdl-index9-source-state-filtered-f300.log
+frameHash=0x578ddca1
+drawPackets=18674 directTriangles=308 setupTriangles=139
+textureMap=8487424:3859486:4627938:47168:0x000000:0x1900cc
+framebuffer=640x480:249131:248011
+```
+
+Key source-chain result:
+
+```text
+802529c4:80312a08 -> 80312a08
+  assetEntry=8024fb50:80312a08/0002006f/00000000/"font_story"
+
+after-path-lookup / size-alloc:
+802529c4:80312998 -> 80312998
+  sourceWords=8012e528/00000000/803129a4/00000000
+
+after parser/normalize:
+assetEntry=8024fb50:80312998/00000000/00000000/"font_story"
+```
+
+So the hot upload source is not born inside `800fe5d4`; the source-table slot
+for index 9 is changed from the earlier `80312a08` body/source to the
+`80312998` descriptor before the upload helper consumes it. The asset-table
+entry also loses the previous `0002006f` length after the parser pass.
+
+Added a second default-off zero-base upload experiment to test descriptor-local
+source offsets without changing default behavior:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_ADD_OFFSET=0xNN
+```
+
+Two visible f420 controls are negative:
+
+```text
+/tmp/gauntdl-descriptor-add70-f420.log
+/tmp/gauntdl-descriptor-add70-f420.png
+SOURCE_ADD_OFFSET=0x70
+frameHash=0x44238545
+drawPackets=23868 directTriangles=3406 setupTriangles=1687
+textureMap=19717632:8653069:11064563:314934:0x000000:0x60fffc
+framebuffer=640x480:16447:16393
+colors=6
+visual=mostly black with magenta/cyan artifact
+
+/tmp/gauntdl-descriptor-add68-f420.log
+/tmp/gauntdl-descriptor-add68-f420.png
+SOURCE_ADD_OFFSET=0x68
+frameHash=0xd6f942b3
+drawPackets=23797 directTriangles=6614 setupTriangles=3271
+textureMap=17629952:7666944:9963008:175104:0x000000:0x38fffc
+framebuffer=640x480:307200:307200
+colors=2
+visual=full-screen blue/green artifact
+```
+
+The `0x70` trace confirms the redirect itself works:
+
+```text
+zero-base-upload-descriptor-source-add-offset
+source=80312998->80312a08 offset=0x70
+descriptor=8012e528/00000000/803129a4/00000000/00090000/00000068/802e1788/00000000
+first=00000001/00000004/00000000/00000000
+```
+
+Current conclusion:
+
+1. The old `geb` trace was misleading for this question because it read slot 6
+   while the active caller index was 9. Use
+   `TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE_INDEX=9` for future `font_story`
+   work.
+2. Blindly using descriptor-local offsets `+0x68` or `+0x70` is not a visible
+   fix. The payload head still looks like metadata, and the output remains a
+   low-color artifact.
+3. The next useful target is the helper path that changes index-9 source state
+   before `800aae60`/`800b72fc`: preserve or reconstruct the asset table's
+   `80312a08/0002006f` ownership through the parser, rather than changing the
+   Voodoo upload read cursor after the descriptor has already been selected.
