@@ -863,6 +863,14 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR"));
     private readonly int _traceTextureUploadSourceSelectorLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_LIMIT", 64);
+    private readonly bool _traceTextureUploadSourceSelectorSetup =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_SETUP"));
+    private readonly int _traceTextureUploadSourceSelectorSetupLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_SETUP_LIMIT", 128);
+    private readonly ulong? _traceTextureUploadSourceSelectorSetupPcMin =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_SETUP_PC_MIN");
+    private readonly ulong? _traceTextureUploadSourceSelectorSetupPcMax =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_SETUP_PC_MAX");
     private readonly bool _traceTextureUploadSourceProducer =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER"));
     private readonly int _traceTextureUploadSourceProducerLimit =
@@ -982,6 +990,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadAsciiTraceCount;
     private int _textureUploadPayloadRunTraceCount;
     private int _textureUploadSourceSelectorTraceCount;
+    private int _textureUploadSourceSelectorSetupTraceCount;
     private int _textureUploadSourceProducerTraceCount;
     private int _textureUploadPayloadSpanTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
@@ -1588,6 +1597,7 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
 
         TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
+        TraceTextureUploadSourceSelectorSetup(pc, op, "pre");
         TraceTextureUploadSourceSelector(pc, op);
         TraceTextureUploadSourceProducer(pc, op, "pre");
         TraceInstruction(pc, op);
@@ -1597,6 +1607,7 @@ internal sealed class MipsR5000Core
         ulong s8BeforeExecute = _gpr[30];
         Execute(pc, op);
         _gpr[0] = 0;
+        TraceTextureUploadSourceSelectorSetup(pc, op, "post");
         TraceTextureUploadSourceProducer(pc, op, "post");
         TraceTextureUploadCallerTransition(pc, op, textureUploadCallerBefore);
         AdvanceCp0Count(_cp0CountStep);
@@ -4648,6 +4659,143 @@ internal sealed class MipsR5000Core
 
     private bool AllowsTextureUploadRunSourceTrace(ulong source)
         => !_traceTextureUploadRunSource.HasValue || source == _traceTextureUploadRunSource.Value;
+
+    private void TraceTextureUploadSourceSelectorSetup(ulong pc, uint op, string phase)
+    {
+        const ulong defaultPcMin = 0xffffffff800fe180UL;
+        const ulong defaultPcMax = 0xffffffff800fe228UL;
+
+        if (!_traceTextureUploadSourceSelectorSetup ||
+            _textureUploadSourceSelectorSetupTraceCount >= _traceTextureUploadSourceSelectorSetupLimit)
+            return;
+
+        ulong pcMin = _traceTextureUploadSourceSelectorSetupPcMin ?? defaultPcMin;
+        ulong pcMax = _traceTextureUploadSourceSelectorSetupPcMax ?? defaultPcMax;
+        if (pc < pcMin || pc > pcMax)
+            return;
+
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(sp + 0x60UL, 0x1cUL))
+            return;
+
+        ulong selectedSource = SignExtend32(ReadTraceWord(sp + 0x6cUL));
+        bool decodedStackAccess = TryDecodeTextureUploadSelectorSetupStackAccess(
+            op,
+            out string stackAccess,
+            out int stackOffset,
+            out int stackRegister,
+            out bool stackWrite);
+        bool stackAccessInSelectorRange =
+            decodedStackAccess &&
+            stackOffset is >= 0x60 and <= 0x78;
+        ulong stackRegisterValue = stackRegister >= 0 ? _gpr[stackRegister] : 0UL;
+
+        bool hasTarget = _traceTextureUploadRunSource.HasValue;
+        ulong target = _traceTextureUploadRunSource ?? 0UL;
+        bool selectorMatchesTarget = hasTarget && selectedSource == target;
+        bool stackWriteMatchesTarget =
+            hasTarget &&
+            stackAccessInSelectorRange &&
+            stackWrite &&
+            stackRegisterValue == target;
+        bool registerMatchesTarget =
+            hasTarget &&
+            (_gpr[2] == target ||
+             _gpr[3] == target ||
+             _gpr[4] == target ||
+             _gpr[5] == target ||
+             _gpr[6] == target ||
+             _gpr[7] == target ||
+             _gpr[8] == target ||
+             _gpr[9] == target ||
+             _gpr[10] == target ||
+             _gpr[11] == target ||
+             _gpr[16] == target ||
+             _gpr[17] == target ||
+             _gpr[18] == target ||
+             _gpr[19] == target ||
+             _gpr[20] == target ||
+             _gpr[21] == target ||
+             _gpr[22] == target ||
+             _gpr[23] == target);
+
+        if (hasTarget && !selectorMatchesTarget && !stackWriteMatchesTarget && !registerMatchesTarget)
+            return;
+        if (!hasTarget && !stackAccessInSelectorRange)
+            return;
+
+        string accessText = stackAccessInSelectorRange
+            ? $"{stackAccess}@sp+0x{stackOffset:x2}:r{stackRegister}=0x{stackRegisterValue:x16}" +
+              (stackWrite ? "" : $":mem=0x{ReadTraceWord(sp + (ulong)stackOffset):x8}")
+            : "none";
+
+        _textureUploadSourceSelectorSetupTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-SOURCE-SETUP] phase={phase} pc=0x{pc:x16} op=0x{op:x8} {DisassembleBrief(op)} " +
+            $"match={(selectorMatchesTarget ? "selector," : "")}{(stackWriteMatchesTarget ? "stack-write," : "")}{(registerMatchesTarget ? "register," : "")} " +
+            $"target=0x{target:x16} access={accessText} ra=0x{_gpr[31]:x16} sp=0x{sp:x16} " +
+            $"selected=0x{selectedSource:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(selectedSource)} " +
+            $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} " +
+            $"a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} " +
+            $"t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} " +
+            $"s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} " +
+            $"s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
+            $"sp60={ReadTraceWord(sp + 0x60UL):x8} sp64={ReadTraceWord(sp + 0x64UL):x8} " +
+            $"sp68={ReadTraceWord(sp + 0x68UL):x8} sp6c={ReadTraceWord(sp + 0x6cUL):x8} " +
+            $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} sp78={ReadTraceWord(sp + 0x78UL):x8} " +
+            $"targetFirst={ReadTraceWord(target):x8}/{ReadTraceWord(target + 0x04UL):x8}/" +
+            $"{ReadTraceWord(target + 0x08UL):x8}/{ReadTraceWord(target + 0x0cUL):x8}");
+    }
+
+    private static bool TryDecodeTextureUploadSelectorSetupStackAccess(
+        uint op,
+        out string access,
+        out int offset,
+        out int register,
+        out bool write)
+    {
+        access = "";
+        offset = 0;
+        register = -1;
+        write = false;
+
+        uint opcode = op >> 26;
+        int baseRegister = (int)((op >> 21) & 0x1fU);
+        if (baseRegister != 29)
+            return false;
+
+        string? decodedAccess = opcode switch
+        {
+            0x20 => "lb",
+            0x21 => "lh",
+            0x22 => "lwl",
+            0x23 => "lw",
+            0x24 => "lbu",
+            0x25 => "lhu",
+            0x26 => "lwr",
+            0x27 => "lwu",
+            0x28 => "sb",
+            0x29 => "sh",
+            0x2a => "swl",
+            0x2b => "sw",
+            0x2e => "swr",
+            0x31 => "lwc1",
+            0x35 => "ldc1",
+            0x37 => "ld",
+            0x39 => "swc1",
+            0x3d => "sdc1",
+            0x3f => "sd",
+            _ => null
+        };
+        if (decodedAccess is null)
+            return false;
+
+        access = decodedAccess;
+        offset = unchecked((short)(op & 0xffffU));
+        register = (int)((op >> 16) & 0x1fU);
+        write = opcode is 0x28 or 0x29 or 0x2a or 0x2b or 0x2e or 0x39 or 0x3d or 0x3f;
+        return true;
+    }
 
     private void TraceTextureUploadSourceSelector(ulong pc, uint op)
     {

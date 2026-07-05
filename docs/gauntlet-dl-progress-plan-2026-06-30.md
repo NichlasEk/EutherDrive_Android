@@ -5342,3 +5342,82 @@ Current conclusion:
    and source selection before `800fe5d4`, especially why the upload service
    repeats `index=0/255` zero-base runs from the same descriptor instead of a
    bounded material/texture-body span.
+
+## 2026-07-05 - Descriptor Selector Setup Trace
+
+Added a default-off trace for the caller/setup window before the upload helper
+consumes `sp+0x6c`:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_SETUP=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_SETUP_PC_MIN=ffffffff800fe180
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_SELECTOR_SETUP_PC_MAX=ffffffff800fe228
+```
+
+The trace marker is:
+
+```text
+[GAUNTDL:TEXUPLOAD-SOURCE-SETUP]
+```
+
+The pointer-start unknown recheck stayed negative:
+
+```text
+/tmp/gauntdl-pointerstartunknown-f420.log
+/tmp/gauntdl-pointerstartunknown-f420.png
+frameHash=0x5ad95612
+framebuffer=640x480:307200:307200
+drawPackets=22813 directTriangles=3923 setupTriangles=1957 texWrites=4405669
+textureMap=17190656:7460189:9730467:320416:0x000000:0x704284
+colors=2
+```
+
+Visual inspection is the same two-field yellow/magenta artifact. Starting the
+unknown descriptor at `803129a4` is therefore not a visible fix.
+
+The new setup trace answers the previous selector question: the source and
+extent are already present when `800fe1fc` enters the helper. The prologue
+switches from the caller stack to a wrapper frame whose selector slots are
+already populated:
+
+```text
+pc=800fe1fc addiu sp,-0x50
+post sp68=00000003 sp6c=80312998 sp70=00000000 sp74=0000001f
+post sp60=00000003 sp64=00000000 sp68=00000003 sp6c=80312998 sp74=000000ff
+```
+
+The caller trace around `801095c0..80109708` resolves the immediate producer:
+
+```text
+/tmp/gauntdl-caller801095c8-source80312998-f300.log
+
+801095c0 jal 801096ac
+  caller sp+0x1c already equals 80312998
+
+801096c0 lw t2,0x4c(sp)
+  loads the source pointer from the shifted caller argument slot
+
+801096f0 sw t2,0x1c(sp)
+  stores the source slot later consumed as wrapper sp+0x6c
+
+801096dc lw v0,0x04(v0)
+801096f4 addiu v0,-1
+80109700 sw v0,0x24(sp)
+  stores the limit later consumed as wrapper sp+0x74
+```
+
+The `0x1f` and `0xff` extents are table-driven, not a local stack corruption.
+For the `0xff` case, `801096ac` computes a table address around `80158128`,
+loads `0x100`, subtracts one, and stores `0xff`. The hot `80312998` source also
+appears immediately after `bgloadmodel-asset-pointer-normalize ... index=9 ...
+name=font_story`.
+
+Current conclusion:
+
+1. `800fe1fc` and `800fe5d4` are downstream consumers for this descriptor run.
+2. The repeated `index=0/31` and `index=0/255` limits are intentional-looking
+   table selections, so packet count alone cannot classify the bad runs.
+3. The next target should move one level earlier than the helper call: trace
+   the source/limit table selection around `801096ac` and the asset-table
+   producer path for `font_story`, then connect that to the zero-base Type5
+   upload source ownership.
