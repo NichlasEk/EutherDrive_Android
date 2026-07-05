@@ -4334,3 +4334,131 @@ Next continuation point:
 3. Compare those packet source addresses against the BGLoadModel indexed
    source/body ownership. The next real fix is likely in upload payload
    provenance or source selection, not in another broad triangle suppressor.
+
+## 2026-07-05 - Type5 Target Source and Stride Triage
+
+Added a target-word filter to the upload-link trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_TARGET_WORDS=b80,8900
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_TARGET_LIMIT=96
+```
+
+`VOODOO-TYPE5-TARGET` now also prints `targetByte` and the last three FIFO
+storage writers (`w0/w1/w2`) for focused Type5 target packets.
+
+Baseline MAME-texture-path run stayed on the known wrong hash:
+
+```text
+/tmp/gauntdl-upload-link-targetwords-b80-8900-f420.log
+frameHash=0x3cce6946
+frameSha256=75ad57a15b453bb7779f33840cf213c04df32c3e6db94695672ae8222a23bcc2
+framebuffer=640x480:307200:175015
+textureMap=16754480:8367795:8386685:558752:0x000000:0x7fe444
+textured=tri:907:covered:693:rejected:214:pixels:57522088:zero:6681926
+```
+
+The `0x00000b80` target is definitely the bad low texture page:
+
+```text
+TEXUPLOAD-LINK targetWord=0x00000b80 targetByte=0x00002e00
+packetOffset=0x00002e00 source=0xffffffff803140a4
+bgsrc=18:cel+0xe98c(...hdr=bad),21:rat+0x898c(...hdr=bad),
+      22:ga2+0x698c(...hdr=bad),23:gam+0x498c(...hdr=bad),
+      24:ged+0x298c(...hdr=bad),25:gep+0x98c(...hdr=bad)
+raw=0x00a00000,0x00000000,0x00000000,0x00000000,...
+```
+
+The matching Type5 storage writers for that target are the same upload service
+PCs already suspected in the visible texture page:
+
+```text
+w0/w1/w2 pc=800fe5e8/800fe5f8/800fe60c for the full payload
+later sparse payloads from pc=800fe5d4 start with 0x00a00000 and zeros
+```
+
+`0x00008900` has Type5-target storage provenance but does not appear through
+`TEXUPLOAD-LINK`, which means it is not produced by the same fast-path
+`TryFastPathKnownGlideFifoOuterPayloadLoopTail` upload-link helper:
+
+```text
+VOODOO-TYPE5-TARGET targetWord=0x00008900 targetByte=0x00022400
+w0/w1/w2 pc=800fe7a0/800fe7b0/800fe7c4
+```
+
+The indexed BGLoadModel source-stride probe is the strongest diagnostic change
+from this pass:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000
+/tmp/gauntdl-stride20000-dump-f420.log
+/tmp/gauntdl-stride20000-f420.png
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+framebuffer=640x480:307200:307200
+textureMap=18297344:7949314:10348030:313172:0x000000:0x704284
+textured=tri:981:covered:828:rejected:153:pixels:77609945:zero:11835230
+```
+
+Visual inspection is still negative: it is a fully colored cyan/brown
+two-field artifact, not real scene graphics. The useful result is source
+ownership, not presentation:
+
+```text
+TEXUPLOAD-LINK targetWord=0x00000b80 source=0xffffffff80314098 bgsrc=none
+raw=0x00000000,0x00000000,0x00000000,0x00a00000,...
+```
+
+So `0x2000` indexed source stride was too small for the known payload sizes and
+caused overlapping body windows. `0x20000` removes the bad overlap, materially
+changes the frame, and should remain a diagnostic/foundation knob. Do not
+promote it to a default until the visible image becomes scene-like.
+
+Setup-wrap on top of the stride run did not improve presentation:
+
+```text
+/tmp/gauntdl-stride20000-setupwrap-f420.log
+/tmp/gauntdl-stride20000-setupwrap-f420.png
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_VERTEX_COORDINATE_WRAP=1
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+framebuffer=640x480:307200:307200
+textureMap=18297344:7949314:10348030:313172:0x000000:0x704284
+textured=tri:14843:covered:1648:rejected:13195:pixels:89196507:zero:23421544
+```
+
+Triangle triage on the stride variant rules out the direct-solid overlay as the
+main screen-filling artifact. The large `itri` packets mostly show up as
+suppressed `simp` groups, and the actual visible field is dominated by setup
+textured quads:
+
+```text
+pc=0xffffffff800c4e5c
+cmd=0x0180A8CB
+setup=0x0006002A
+fbz=0x00000460 or later 0xC0000205
+fbzcp=0x0C482435
+mode=0x8C24100F lod=0x00002000 regbase=0 base=0x000510
+xy=(0,-1)/(512,383)/(0,383) stq=(0,256)/(0,0)/(0,0)
+xy=(512,383)/(0,-1)/(512,-1) stq=(0,0)/(0,256)/(0,256)
+```
+
+The sample writer summaries for these quads still point at Type5 upload data:
+
+```text
+pc=800fe614 target ranges around 0x000100..0x001c00
+pc=800fe5d4 sparse target ranges around 0x001100/0x007f00
+plus none buckets
+```
+
+Next continuation point:
+
+1. Keep `0x20000` stride as a diagnostic run condition, but do not make it
+   default yet.
+2. Focus on the `pc=800c4e5c`, `cmd=0x0180A8CB`, `base=0x510` setup-textured
+   quad path. It is the current visible artifact owner.
+3. Trace or repair Type3 setup decode/texture-source mapping for that quad
+   before adding more broad direct-triangle suppressors.
+4. Keep `0x00000b80/0x00002e00` sparse `800fe5d4` writes and
+   `0x00008900/0x00022400` direct `800fe7a0` writes as separate source-chain
+   problems.

@@ -851,6 +851,10 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_SOURCE");
     private readonly int _traceTextureUploadPacketSourceLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_SOURCE_LIMIT", 16);
+    private readonly ulong[] _traceTextureUploadPacketTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_TARGET_WORDS"));
+    private readonly int _traceTextureUploadPacketTargetLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_TARGET_LIMIT", 64);
     private readonly ulong? _traceTextureUploadFifoPacket =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_FIFO_PACKET");
     private readonly int _traceTextureUploadFifoPacketLimit =
@@ -966,6 +970,7 @@ internal sealed class MipsR5000Core
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixTraceSources = [];
     private int _textureUploadPayloadCallerTransitionTraceCount;
     private int _textureUploadPayloadPacketSourceTraceCount;
+    private int _textureUploadPayloadPacketTargetTraceCount;
     private int _textureUploadFifoPacketTraceCount;
     private int _textureUploadMetadataSkipTraceCount;
     private int _vertexFifoFastPathTraceCount;
@@ -4763,17 +4768,25 @@ internal sealed class MipsR5000Core
         uint fifoRingBase,
         uint fifoRingBytes)
     {
+        uint packetSourceOffset = unchecked(packetSourceAddress - fifoBase) & 0x01ffffffU;
+        uint targetWord = packetSourceOffset / 4U;
         bool focusedSource = _traceTextureUploadPayload && AllowsTextureUploadRunSourceTrace(source);
         bool focusedPacketSource = _traceTextureUploadPacketSource.HasValue &&
                                    packetSourceAddress == (uint)_traceTextureUploadPacketSource.Value;
-        if ((!focusedSource && !focusedPacketSource) ||
-            _textureUploadPayloadLinkTraceCount++ >= 96)
+        bool focusedPacketTarget = _traceTextureUploadPacketTargetWords.Contains(targetWord);
+        if (!focusedSource && !focusedPacketSource && !focusedPacketTarget)
+            return;
+
+        if (focusedPacketTarget)
+        {
+            if (_textureUploadPayloadPacketTargetTraceCount++ >= _traceTextureUploadPacketTargetLimit)
+                return;
+        }
+        else if (_textureUploadPayloadLinkTraceCount++ >= 96)
         {
             return;
         }
 
-        uint packetSourceOffset = unchecked(packetSourceAddress - fifoBase) & 0x01ffffffU;
-        uint targetWord = packetSourceOffset / 4U;
         uint fifoLow = fifo & 0x0003ffffU;
         uint fifoDelta = unchecked(fifo - fifoBase) & 0x0003ffffU;
         uint fifoRingDelta = unchecked(fifo - fifoRingBase) & 0x0003ffffU;
@@ -21239,6 +21252,19 @@ internal sealed class MipsR5000Core
             ? parsed
             : null;
     }
+
+    private static ulong[] ParseOptionalHexUlongList(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return [];
+
+        return raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(item => item.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? item[2..] : item)
+            .Select(item => ulong.TryParse(item, System.Globalization.NumberStyles.HexNumber, null, out ulong value) ? value : 0)
+            .Where(value => value != 0)
+            .Distinct()
+            .ToArray();
+    }
 }
 
 internal sealed class VegasMemoryMap
@@ -33099,6 +33125,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint decodedLast = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(last) : last;
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        uint targetByte = _fifoBuffer.Count > 1 ? _fifoBuffer[1] : targetWord << 2;
+        string storageStatus = focusedTarget
+            ? $" targetByte=0x{targetByte:x8} " +
+              $"w0={FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart)} " +
+              $"w1={FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 1)} " +
+              $"w2={FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 2)}"
+            : "";
         string wordStatus = focusedTarget && _traceType5PayloadWords > 0
             ? $" rawWords={FormatType5PayloadWordList(count, _traceType5PayloadWords, decoded: false)} decWords={FormatType5PayloadWordList(count, _traceType5PayloadWords, decoded: true)}"
             : "";
@@ -33108,7 +33141,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"count={count} nz={nonZero} first=0x{first:x8}/dec=0x{decodedFirst:x8} " +
             $"second=0x{second:x8}/dec=0x{decodedSecond:x8} last=0x{last:x8}/dec=0x{decodedLast:x8} " +
             $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
-            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles}{wordStatus}{pcStatus}");
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles}{storageStatus}{wordStatus}{pcStatus}");
     }
 
     private string FormatType5PayloadWordList(int count, int limit, bool decoded)
