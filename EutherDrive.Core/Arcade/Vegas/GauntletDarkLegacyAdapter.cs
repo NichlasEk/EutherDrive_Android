@@ -749,6 +749,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_METADATA_TEXTURE_PAYLOADS"));
     private readonly bool _experimentSkipZeroBaseTexturePayloadRuns =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
+    private readonly int _experimentSkipZeroBaseTexturePayloadRunPackets =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUN_PACKETS", 0);
     private readonly bool _experimentZeroBaseUploadSkipUnknownPrefix =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX"));
     private readonly bool _experimentZeroBaseUploadPointerStartUnknown =
@@ -4158,15 +4160,21 @@ internal sealed class MipsR5000Core
             }
         }
 
-        if (_experimentSkipZeroBaseTexturePayloadRuns && sourceBase == 0)
+        if (_experimentSkipZeroBaseTexturePayloadRuns &&
+            sourceBase == 0 &&
+            (_experimentSkipZeroBaseTexturePayloadRunPackets <= 0 ||
+                packets == (uint)_experimentSkipZeroBaseTexturePayloadRunPackets))
         {
             if (_textureUploadMetadataSkipTraceCount++ < 64)
             {
+                string packetFilter = _experimentSkipZeroBaseTexturePayloadRunPackets > 0
+                    ? _experimentSkipZeroBaseTexturePayloadRunPackets.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                    : "all";
                 Console.WriteLine(
                     $"[GAUNTDL:EXPERIMENT] skip-zero-base-texture-payload-run " +
                     $"source=0x{source:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
                     $"sourceBase=0x{sourceBase:x8} packet=0x{currentPacketAddress:x8} " +
-                    $"index={index}/{limit} words={payloadWords} packets={packets}");
+                    $"index={index}/{limit} words={payloadWords} packets={packets} packetFilter={packetFilter}");
             }
 
             ulong skippedZeroBaseInstructions = packets * (30UL + (ulong)(payloadWords / 2U) * 9UL);

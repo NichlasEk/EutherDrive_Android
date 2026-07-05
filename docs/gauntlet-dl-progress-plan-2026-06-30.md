@@ -5022,3 +5022,81 @@ Current conclusion:
    runs from the `index=0/255` runs, then compare frame hashes and visible
    output. If one class removes the full-screen artifact while preserving more
    geometry, use that class as the next producer-trace target.
+
+## 2026-07-05 - Zero-Base Packet-Window Split Probe
+
+Added a default-off packet-count filter to the broad zero-base skip:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUN_PACKETS=...
+```
+
+When the existing
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS=1` flag is
+enabled, the optional packet-count filter restricts the skip to runs with a
+matching packet count. This keeps the broad skip available unchanged when the
+filter is unset.
+
+Common run setup:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=420
+EUTHERDRIVE_GAUNTDL_SUMMARY=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS=1
+```
+
+256-packet-only skip:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUN_PACKETS=256
+/tmp/gauntdl-skip-zero-base-packets256-f420.log
+/tmp/gauntdl-skip-zero-base-packets256-f420.ppm
+/tmp/gauntdl-skip-zero-base-packets256-f420.png
+skip lines=64
+frameHash=0x51aaa3c7
+frameSha256=9509b95ef9ef667701cf841a0172f66e9bd265dd906b1329bffe6cdaca8d1550
+framebuffer=640x480:307200:306975
+drawPackets=22725 directTriangles=886 setupTriangles=422 texWrites=1627045
+textureMap=6076160:2311063:3765097:37184:0x000000:0x50fffc
+textured=tri:14016:covered:1546:rejected:12470:pixels:158684996:zero:40763789
+```
+
+Visual inspection: still full-screen wrong graphics. It becomes a magenta field
+with horizontal stripe texture on the left, not the mostly-black broad-skip
+frame.
+
+32-packet-only skip:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUN_PACKETS=32
+/tmp/gauntdl-skip-zero-base-packets32-f420.log
+/tmp/gauntdl-skip-zero-base-packets32-f420.ppm
+/tmp/gauntdl-skip-zero-base-packets32-f420.png
+skip lines=45
+frameHash=0xec1494b8
+frameSha256=705b0448853aed3c3504a5d35e07ea9ac27283f81719f5d09e8a451667386e72
+framebuffer=640x480:307200:307200
+drawPackets=20845 directTriangles=4186 setupTriangles=2079 texWrites=4758181
+textureMap=18600704:8019012:10581692:369472:0x000000:0x7af22c
+textured=tri:12311:covered:1436:rejected:10875:pixels:136717806:zero:38854959
+```
+
+Visual inspection: still full-screen wrong graphics. It becomes the old
+two-field diagonal yellow/magenta style.
+
+Current conclusion:
+
+1. Packet count alone is not the correct classifier.
+2. Both `packets=32` and `packets=256` classes contribute bad visual state when
+   the other class is allowed through.
+3. The broad skip only improves the visible artifact when both classes are
+   suppressed, which proves the `803129a4` source family is bad but does not
+   identify a safe subset to drop.
+4. Next selector should key on producer/caller or payload structure instead of
+   packet count. The producer trace still points at the handoff around
+   `800af328..800a632c` and the later FIFO write path at `800fe5d4`.
