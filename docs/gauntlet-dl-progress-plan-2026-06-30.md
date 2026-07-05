@@ -5521,3 +5521,45 @@ Current conclusion:
    before `800aae60`/`800b72fc`: preserve or reconstruct the asset table's
    `80312a08/0002006f` ownership through the parser, rather than changing the
    Voodoo upload read cursor after the descriptor has already been selected.
+
+## 2026-07-05 - Index-9 Asset Source Preserve Negative
+
+Added a default-off source ownership probe before the parser caller consumes
+index 9:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_PRESERVE_ASSET_SOURCE_INDEX_MASK=0x200
+```
+
+The probe fires at `800aae60`/`800aae98` and writes the current asset-table
+source back into `802529a0 + index * 4`, also updating `s2`. The f420 run proves
+that preserving `80312a08/0002006f` through this caller point is not a visible
+fix:
+
+```text
+/tmp/gauntdl-preserve-asset-source9-f420.log
+/tmp/gauntdl-preserve-asset-source9-f420.png
+
+bgloadmodel-preserve-asset-source
+pc=800aae60 index=9 slot=802529c4:80312998->80312a08
+asset=8024fb50:80312a08/0002006f/00000000/"font_story"
+sourceWords=00000001/00000004/00000000/00000000...
+
+frameHash=0x5ad95612
+drawPackets=23431 directTriangles=2961 setupTriangles=1469
+textureMap=18297344:7949314:10348030:299060:0x000000:0x704284
+framebuffer=640x480:307200:307200
+colors=2
+visual=full-screen yellow/magenta artifact
+```
+
+Current conclusion:
+
+1. Merely preserving the `80312a08` asset source into the parser path is as
+   negative as moving the upload cursor to `+0x70`.
+2. The `80312a08` region is still a metadata/header-like structure
+   (`00000001/00000004/...`), not the texture payload the Voodoo upload should
+   consume.
+3. The next target should move one layer deeper into the asset object's internal
+   body/payload pointer fields or QIO body completion for index 9, instead of
+   preserving either `80312998` or `80312a08` as the direct upload source.

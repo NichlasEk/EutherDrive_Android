@@ -800,6 +800,8 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MASK") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMinOffset =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MIN_OFFSET") ?? 0UL;
+    private readonly ulong _runtimeBgLoadModelPreserveAssetSourceIndexMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_PRESERVE_ASSET_SOURCE_INDEX_MASK") ?? 0UL;
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioFillAllExperiment =
@@ -957,6 +959,7 @@ internal sealed class MipsR5000Core
     private int _runtimeLoadingResetHelperTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
+    private int _runtimeBgLoadModelPreserveAssetSourceTraceCount;
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
     private int _runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount;
     private int _runtimeWorldDataAllocationRepairTraceCount;
@@ -1183,6 +1186,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelQioAliasRepair(pc);
         ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
+        ApplyKnownRuntimeBgLoadModelPreserveAssetSource(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
@@ -12332,6 +12336,61 @@ internal sealed class MipsR5000Core
         }
 
         return false;
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelPreserveAssetSource(ulong pc)
+    {
+        if (_runtimeBgLoadModelPreserveAssetSourceIndexMask == 0 ||
+            pc is not (0xffffffff800aae60UL or 0xffffffff800aae98UL))
+        {
+            return;
+        }
+
+        ulong index = _gpr[16] & 0xffffffffUL;
+        if (index is 0 or >= 64UL ||
+            (_runtimeBgLoadModelPreserveAssetSourceIndexMask & (1UL << (int)index)) == 0)
+        {
+            return;
+        }
+
+        const ulong assetTable = 0xffffffff8024f9a0UL;
+        const ulong assetStride = 0x30UL;
+        const ulong sourceTable = 0xffffffff802529a0UL;
+
+        ulong assetEntry = assetTable + index * assetStride;
+        ulong sourceSlot = sourceTable + index * 4UL;
+        if (!IsMainRamRange(assetEntry + 0x2fUL, 1) ||
+            !IsMainRamRange(sourceSlot, 4))
+        {
+            return;
+        }
+
+        uint assetSource = _memory.Read32(assetEntry);
+        uint assetLength = _memory.Read32(assetEntry + 0x04UL);
+        ulong assetSourceAddress = SignExtend32(assetSource);
+        if (assetSource == 0 ||
+            assetLength == 0 ||
+            !IsMainRamRange(assetSourceAddress, 0x80UL))
+        {
+            return;
+        }
+
+        uint oldSlot = _memory.Read32(sourceSlot);
+        if (oldSlot == assetSource && _gpr[18] == assetSourceAddress)
+            return;
+
+        _memory.Write32(sourceSlot, assetSource);
+        _gpr[18] = assetSourceAddress;
+
+        if (_runtimeBgLoadModelPreserveAssetSourceTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-preserve-asset-source pc={pc:x16} " +
+                $"index={index} slot={sourceSlot:x16}:{oldSlot:x8}->{assetSource:x8} " +
+                $"asset={assetEntry:x16}:{assetSource:x8}/{assetLength:x8}/" +
+                $"{_memory.Read32(assetEntry + 0x08UL):x8}/\"{ReadAsciiTraceString(assetEntry + 0x10UL, 24)}\" " +
+                $"s2={_gpr[18]:x16} sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(assetSourceAddress)}");
+        }
     }
 
     private void ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(ulong pc)
