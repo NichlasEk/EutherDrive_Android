@@ -5563,3 +5563,92 @@ Current conclusion:
 3. The next target should move one layer deeper into the asset object's internal
    body/payload pointer fields or QIO body completion for index 9, instead of
    preserving either `80312998` or `80312a08` as the direct upload source.
+
+## 2026-07-05 - Zero-Base Upload Run Classifier
+
+Rechecked the existing QIO body-read experiment because it was present in code
+but had no current progress-plan result:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_QIO_OBJECT_STATE=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD=1
+
+/tmp/gauntdl-bodyread-f420.log
+/tmp/gauntdl-bodyread-f420.ppm
+/tmp/gauntdl-bodyread-f420.png
+```
+
+The run did not emit `bgloadmodel-indexed-texture-qio-body-read`; it only hit
+the existing stream-limit/object-metadata paths. The visible result stayed in
+the same artifact family:
+
+```text
+frameHash=0x5ad95612
+drawPackets=23431 directTriangles=2961 setupTriangles=1469
+textureMap=18297344:7949314:10348030:299060:0x000000:0x704284
+framebuffer=640x480:307200:307200
+colors=2
+```
+
+The payload trace is still useful because it proves the upload stream is
+consuming descriptor/scenegraph content, not texture bytes:
+
+```text
+packet=0 source=80312998 first=8012e528/00000000/803129a4/00000000
+packet=9 source=80313298 first=5f53454a/494b4e50/5349564e/00003223 text="JES_PNKINVIS#2"
+```
+
+Added a default-off zero-base upload classifier:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_ZERO_BASE_RUN_CLASSIFIER=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_ZERO_BASE_RUN_CLASSIFIER_LIMIT=80
+```
+
+The trace marker is:
+
+```text
+[GAUNTDL:TEXUPLOAD-ZEROBASE-CLASS]
+```
+
+It deduplicates by source/packet-address/packet-count/payload-word-count and
+prints descriptor words, the first source words, basic sample statistics, and
+the next known BGLoadModel source boundary.
+
+Focused f300 run:
+
+```text
+/tmp/gauntdl-zerobase-classifier-dedup-f300.log
+frameHash=0x578ddca1
+drawPackets=18674 directTriangles=308 setupTriangles=139
+textureMap=8487424:3859486:4627938:47168:0x000000:0x1900cc
+framebuffer=640x480:249131:248011
+```
+
+The deduplicated run list is decisive:
+
+```text
+class=descriptor source=80312998 packet=0 index=0/31 packets=32 words=64 bytes=0x2000
+  sampleWords=512 unique=104 zero=209 ptr=62 float=209 asciiBytes=246
+  nextKnown=none
+  descriptor=8012e528/00000000/803129a4/00000000/00090000/00000068/802e1788/00000000
+
+class=descriptor source=80312998 packet=0 index=0/255 packets=256 words=64 bytes=0x10000
+  sampleWords=512 unique=104 zero=209 ptr=62 float=209 asciiBytes=246
+  nextKnown=80321718:2:snm/+0xed80
+  descriptor=8012e528/00000000/803129a4/00000000/00090000/00000068/802e1788/00000000
+```
+
+Current conclusion:
+
+1. The bad zero-base uploads are not mixed texture/control subsets in this
+   window. The only distinct runs are the same `80312998` descriptor, with
+   32-packet and 256-packet extents.
+2. The descriptor is being sent directly as Type5 texture payload. Downstream
+   offset/pointer fixes and preserving `80312a08` only change which control or
+   scenegraph bytes get uploaded; they do not produce real graphics.
+3. The next target should move one call level before `800fe1fc/800fe5d4` and
+   repair or trace the source/limit table selection around `801096ac`: why the
+   caller chooses `80312998` as a texture payload source instead of deriving a
+   bounded material/texture body span from the descriptor.

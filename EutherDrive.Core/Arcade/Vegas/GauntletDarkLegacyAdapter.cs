@@ -867,6 +867,10 @@ internal sealed class MipsR5000Core
     private readonly bool _traceTextureUploadPayload = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD") == "1";
     private readonly int _traceTextureUploadPayloadLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAYLOAD_LIMIT", 96);
+    private readonly bool _traceTextureUploadZeroBaseRunClassifier =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_ZERO_BASE_RUN_CLASSIFIER"));
+    private readonly int _traceTextureUploadZeroBaseRunClassifierLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_ZERO_BASE_RUN_CLASSIFIER_LIMIT", 96);
     private readonly ulong? _traceTextureUploadRunSource =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE");
     private readonly bool _traceTextureUploadSourceSelector =
@@ -1016,11 +1020,13 @@ internal sealed class MipsR5000Core
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixPacketTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadStopAtKnownBoundaryTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadPacketAddressStrideTraceSources = [];
+    private readonly HashSet<string> _textureUploadZeroBaseRunClassifierKeys = [];
     private int _textureUploadPayloadCallerTransitionTraceCount;
     private int _textureUploadPayloadPacketSourceTraceCount;
     private int _textureUploadPayloadPacketTargetTraceCount;
     private int _textureUploadFifoPacketTraceCount;
     private int _textureUploadMetadataSkipTraceCount;
+    private int _textureUploadZeroBaseRunClassifierTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _lateRenderPumpTraceCount;
     private int _runtimeStatusBitfieldReadTraceCount;
@@ -4143,6 +4149,15 @@ internal sealed class MipsR5000Core
         ulong skippedInstructions = 0;
 
         TraceTextureUploadPayloadRun(pc, source, sourceBase, currentPacketAddress, payloadWords, index, limit, sp, state, fifo, room);
+        TraceTextureUploadZeroBaseRunClassifier(
+            originalSource,
+            source,
+            sourceBase,
+            currentPacketAddress,
+            payloadWords,
+            index,
+            limit,
+            sourceBytes);
 
         if (_experimentZeroBaseUploadStopAtKnownBoundary &&
             sourceBase == 0 &&
@@ -5316,6 +5331,194 @@ internal sealed class MipsR5000Core
            text.Contains("UPPER", StringComparison.Ordinal) ||
            text.Contains("TORSO", StringComparison.Ordinal) ||
            firstWord is 0x4457465fU or 0x57454150U;
+
+    private void TraceTextureUploadZeroBaseRunClassifier(
+        ulong originalSource,
+        ulong source,
+        uint sourceBase,
+        uint currentPacketAddress,
+        uint payloadWords,
+        uint index,
+        uint limit,
+        ulong sourceBytes)
+    {
+        if (!_traceTextureUploadZeroBaseRunClassifier ||
+            sourceBase != 0 ||
+            _textureUploadZeroBaseRunClassifierTraceCount >= _traceTextureUploadZeroBaseRunClassifierLimit ||
+            payloadWords == 0 ||
+            index > limit ||
+            sourceBytes < 4UL ||
+            !IsMainRamRange(source, Math.Min(sourceBytes, 4UL)) ||
+            !AllowsTextureUploadRunSourceTrace(source))
+        {
+            return;
+        }
+
+        uint packets = limit - index + 1U;
+        string traceKey = $"{source:x16}:{currentPacketAddress:x8}:{packets:x}:{payloadWords:x}";
+        if (!_textureUploadZeroBaseRunClassifierKeys.Add(traceKey))
+            return;
+
+        _textureUploadZeroBaseRunClassifierTraceCount++;
+
+        int sampleWords = (int)Math.Min(512UL, sourceBytes / 4UL);
+        int zeroWords = 0;
+        int allOnesWords = 0;
+        int pointerWords = 0;
+        int floatWords = 0;
+        int printableBytes = 0;
+        HashSet<uint> uniqueWords = new();
+        for (int i = 0; i < sampleWords; i++)
+        {
+            uint word = _memory.Read32(source + (ulong)i * 4UL);
+            uniqueWords.Add(word);
+            if (word == 0)
+                zeroWords++;
+            if (word == 0xffffffffU)
+                allOnesWords++;
+            if (IsLikelyTracePointerWord(word))
+                pointerWords++;
+            if (IsLikelyTraceFloatWord(word))
+                floatWords++;
+            printableBytes += CountPrintableAsciiBytes(word);
+        }
+
+        string text = ReadAsciiTraceString(source, Math.Min((int)Math.Min(sourceBytes, 64UL), 64));
+        int meaningfulText = CountMeaningfulAscii(text);
+        bool knownSource = IsKnownRuntimeBgLoadModelUploadSourceCandidate(source);
+        bool descriptorLike = IsLikelyZeroBaseUploadDescriptor(originalSource);
+        string classification = ClassifyZeroBaseTextureUploadRun(
+            knownSource,
+            descriptorLike,
+            meaningfulText,
+            sampleWords,
+            zeroWords,
+            pointerWords,
+            floatWords);
+        string nextKnown = TryFindNextKnownRuntimeBgLoadModelUploadSource(
+                source,
+                source + sourceBytes,
+                0x40000UL,
+                out ulong nextKnownSource,
+                out ulong nextKnownIndex,
+                out string nextKnownCode)
+            ? $"0x{nextKnownSource:x16}:{nextKnownIndex}:{nextKnownCode}/+0x{nextKnownSource - source:x}"
+            : "none";
+
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-ZEROBASE-CLASS] class={classification} " +
+            $"source=0x{source:x16} original=0x{originalSource:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+            $"packet=0x{currentPacketAddress:x8} index={index}/{limit} packets={packets} words={payloadWords} bytes=0x{sourceBytes:x} " +
+            $"sampleWords={sampleWords} unique={uniqueWords.Count} zero={zeroWords} ones={allOnesWords} " +
+            $"ptr={pointerWords} float={floatWords} asciiBytes={printableBytes} text=\"{text.Replace('"', '\'')}\" " +
+            $"nextKnown={nextKnown} descriptor={FormatTraceWords(originalSource, 8)} first={FormatTraceWords(source, 8)}");
+    }
+
+    private bool IsLikelyZeroBaseUploadDescriptor(ulong source)
+    {
+        if (!IsMainRamRange(source + 0x1fUL, 1))
+            return false;
+
+        uint word0 = _memory.Read32(source);
+        uint word2 = _memory.Read32(source + 0x08UL);
+        uint word4 = _memory.Read32(source + 0x10UL);
+        ulong pointer = SignExtend32(word2);
+        return IsLikelyTracePointerWord(word0) &&
+               pointer == source + 0x0cUL &&
+               (word4 >> 16) < 0x40U;
+    }
+
+    private bool IsLikelyTracePointerWord(uint word)
+    {
+        if (word == 0 || (word & 3U) != 0)
+            return false;
+
+        return IsMainRamRange(SignExtend32(word), 4UL);
+    }
+
+    private static bool IsLikelyTraceFloatWord(uint word)
+    {
+        float value = BitConverter.UInt32BitsToSingle(word);
+        if (!float.IsFinite(value))
+            return false;
+
+        float magnitude = MathF.Abs(value);
+        return magnitude is >= 0.000001f and <= 100000.0f;
+    }
+
+    private static int CountPrintableAsciiBytes(uint word)
+    {
+        int count = 0;
+        for (int shift = 0; shift <= 24; shift += 8)
+        {
+            uint value = (word >> shift) & 0xffU;
+            if (value is >= 0x20U and <= 0x7eU)
+                count++;
+        }
+
+        return count;
+    }
+
+    private static int CountMeaningfulAscii(string text)
+    {
+        int count = 0;
+        foreach (char ch in text)
+        {
+            if (ch is >= '0' and <= '9' ||
+                ch is >= 'A' and <= 'Z' ||
+                ch is >= 'a' and <= 'z' ||
+                ch == '_' ||
+                ch == '#')
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static string ClassifyZeroBaseTextureUploadRun(
+        bool knownSource,
+        bool descriptorLike,
+        int meaningfulText,
+        int sampleWords,
+        int zeroWords,
+        int pointerWords,
+        int floatWords)
+    {
+        if (knownSource)
+            return "known-bg";
+        if (descriptorLike)
+            return "descriptor";
+        if (meaningfulText >= 8)
+            return "ascii-control";
+        if (sampleWords == 0)
+            return "empty";
+        if (pointerWords >= Math.Max(2, sampleWords / 48))
+            return "pointer-control";
+        if (floatWords >= Math.Max(8, sampleWords / 8))
+            return "float-control";
+        if (zeroWords * 2 >= sampleWords)
+            return "sparse-zero";
+
+        return "texture-ish";
+    }
+
+    private string FormatTraceWords(ulong address, int words)
+    {
+        if (words <= 0 || !IsMainRamRange(address + (ulong)(words - 1) * 4UL, 4UL))
+            return "";
+
+        StringBuilder builder = new();
+        for (int i = 0; i < words; i++)
+        {
+            if (i > 0)
+                builder.Append('/');
+            builder.Append(_memory.Read32(address + (ulong)i * 4UL).ToString("x8"));
+        }
+
+        return builder.ToString();
+    }
 
     private void TraceTextureUploadPayloadRun(
         ulong pc,
