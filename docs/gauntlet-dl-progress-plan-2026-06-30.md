@@ -6171,3 +6171,72 @@ Next continuation:
 3. Move back up the source-selector chain around the index-9 `font_story`/`wtr`
    asset body and the path that hands descriptor-like data to Type5 upload
    runs.
+
+## 2026-07-05 - Constant-S Fullrect Negative and Type3 Ownership Trace
+
+Added a default-off diagnostic gate for the dominant full-screen stripe quads:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_CONSTANT_S_FULLRECT_TEXTURE_TRIANGLES=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_CONSTANT_S_FULLRECT_TEXTURE_TRIANGLES_LIMIT=12
+```
+
+The gate is intentionally narrow: it only suppresses large textured Type3
+triangles with `cmd=0x0180A8CB`, constant S, and a large T span. It still
+materializes pending clears before skipping the raster write, so the resulting
+image is useful as a diagnostic for what sits behind the stripe quads.
+
+Suppress result:
+
+```text
+/tmp/gauntdl-suppress-constant-s-fullrect-warm-f300.log
+/tmp/gauntdl-suppress-constant-s-fullrect-warm-f300.ppm
+/tmp/gauntdl-suppress-constant-s-fullrect-warm-f300.png
+frameHash=0x6d791e91
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+drawPackets=17111 directTriangles=647 setupTriangles=304
+```
+
+Visual result: the horizontal stripe quads disappear, but the frame becomes a
+large cyan/brown diagonal field, not real scene graphics. Therefore the stripe
+quad is not merely hiding a correct scene behind it; suppressing it is only a
+negative diagnostic, not a fix.
+
+Also extended `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS=1` so Type3 trace
+rows now include packet start, storage/read storage, valid-window count, bulk
+position, and `w0/w1/w2` last-writer metadata. This avoids relying on later
+storage-only source-chain snapshots after the FIFO ring has been reused by
+Type5 payloads.
+
+Focused ownership trace:
+
+```text
+/tmp/gauntdl-type3-ownership-rd2c90c-rd2c958-warm-f300.log
+frameHash=0x5ef40570
+```
+
+The visible fullrect pair is valid at decode time:
+
+```text
+rd=0x0002c90c cmd=0x0180a8cb validWindow=19/19 bulk=scan=outside:rel910/32
+w0 last=fifo/pc=800c4e5c value=0180a8cb
+w1 last=fifo/pc=800c4e5c value=00000000
+w2 last=fifo/pc=800c4e5c value=bf800000
+
+rd=0x0002c958 cmd=0x0180a8cb validWindow=19/19 bulk=scan=outside:rel929/32
+w0 last=fifo/pc=800c4e5c value=0180a8cb
+w1 last=fifo/pc=800c4e5c value=44000000
+w2 last=fifo/pc=800c4e5c value=43bf8000
+```
+
+Current conclusion:
+
+1. The constant-S fullrects are not an obvious stale Type5 payload misdecode at
+   the moment they are consumed. They are complete, valid Type3 packets written
+   by `pc=800c4e5c`.
+2. Storage-only source-chain traces are still useful, but they can be
+   misleading for this exact question because the same storage offsets are later
+   reused by Type5 bulk payloads.
+3. The next useful target is the state that makes `800c4e5c` emit the
+   full-screen texture pair with `S=0`, or the upstream runtime/FIFO state that
+   causes this draw path to dominate instead of real model/scene geometry.

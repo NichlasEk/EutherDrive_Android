@@ -27888,6 +27888,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _texturedRejectEmptyRasterCount;
     private int _texturedTriangleRejectTraceCount;
     private int _texturedTriangleCoveredTraceCount;
+    private int _constantSFullrectSuppressTraceCount;
     private int _statusReadCount;
     private long _lfbWriteCount;
     private int _textureWriteCount;
@@ -28362,6 +28363,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_REJECT_NONFINITE_TEXTURE_COORDS"));
     private readonly bool _experimentSuppressLargeNonFiniteSTextureTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_NONFINITE_S_TEXTURE_TRIANGLES"));
+    private readonly bool _experimentSuppressConstantSFullrectTextureTriangles =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_CONSTANT_S_FULLRECT_TEXTURE_TRIANGLES"));
+    private readonly int _experimentSuppressConstantSFullrectTextureTrianglesLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_CONSTANT_S_FULLRECT_TEXTURE_TRIANGLES_LIMIT"), 32);
     private readonly bool _experimentSuppressImplausibleSetupTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES"));
     private readonly int _experimentSuppressImplausibleSetupTrianglesTraceLimit =
@@ -33910,11 +33915,24 @@ internal class VoodooBringupBackend : IVoodooBackend
         string packet = FormatFifoPacketWords(wordsNeeded);
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        int packetStart = _currentCommandFifoPacketStart;
+        int packetStorage = CommandFifoReadStorageIndex(packetStart);
+        int readStorage = CommandFifoReadStorageIndex(_cmdFifoReadIndex);
+        int validWindowLimit = Math.Min(wordsNeeded, 64);
+        int validWindowWords = CountCommandFifoValidWindowWords(packetStart, validWindowLimit);
+        string bulkPosition = FormatCommandFifoBulkPacketPosition(packetStart).TrimStart();
+        if (bulkPosition.Length == 0)
+            bulkPosition = "none";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TYPE3] cmd=0x{command:x8} words={wordsNeeded} count={(command >> 6) & 0xfu} " +
             $"code={(command >> 3) & 7u} flags=0x{(command >> 10) & 0xffffu:x4} " +
-            $"rd=0x{_cmdFifoReadIndex * 4:x8} mame={(_fixMameCommandFifoModel ? 1 : 0)} " +
-            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} packet=0x{packet}{pcStatus}");
+            $"packetStart=0x{packetStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"storage=0x{packetStorage * 4:x5} readStorage=0x{readStorage * 4:x5} " +
+            $"validWindow={validWindowWords}/{validWindowLimit} mame={(_fixMameCommandFifoModel ? 1 : 0)} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} bulk={bulkPosition} " +
+            $"w0={FormatCommandFifoStorageWordDebug(packetStart)} " +
+            $"w1={FormatCommandFifoStorageWordDebug(packetStart + 1)} " +
+            $"w2={FormatCommandFifoStorageWordDebug(packetStart + 2)} packet=0x{packet}{pcStatus}");
         TraceType3PacketFields(command, wordsNeeded, pcStatus);
     }
 
@@ -34860,6 +34878,21 @@ internal class VoodooBringupBackend : IVoodooBackend
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
         int writerId = GetPixelLastWriterId("tex", "setup", fallbackColor);
+        if (ShouldSuppressConstantSFullrectTextureTriangle(
+                a,
+                b,
+                c,
+                fallbackColor,
+                area,
+                minX,
+                maxX,
+                minY,
+                maxY,
+                bufferIndex))
+        {
+            return true;
+        }
+
         bool coveredAny = false;
         int coveredPixels = 0;
         int zeroPixels = 0;
@@ -35065,6 +35098,67 @@ sampledTexel:
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
         }
         return coveredAny;
+    }
+
+    private bool ShouldSuppressConstantSFullrectTextureTriangle(
+        SetupVertex a,
+        SetupVertex b,
+        SetupVertex c,
+        ushort fallbackColor,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY,
+        int bufferIndex)
+    {
+        if (!_experimentSuppressConstantSFullrectTextureTriangles ||
+            _currentCommandFifoCommand != 0x0180a8cbu)
+        {
+            return false;
+        }
+
+        int width = maxX - minX;
+        int height = maxY - minY;
+        if (width < 480 || height < 300 || (long)width * height < 150_000L)
+            return false;
+
+        float minS = MathF.Min(a.S, MathF.Min(b.S, c.S));
+        float maxS = MathF.Max(a.S, MathF.Max(b.S, c.S));
+        float minT = MathF.Min(a.T, MathF.Min(b.T, c.T));
+        float maxT = MathF.Max(a.T, MathF.Max(b.T, c.T));
+        if (!float.IsFinite(minS) || !float.IsFinite(maxS) ||
+            !float.IsFinite(minT) || !float.IsFinite(maxT) ||
+            MathF.Abs(maxS - minS) > 0.001f ||
+            MathF.Abs(maxT - minT) < 128.0f)
+        {
+            return false;
+        }
+
+        if (_constantSFullrectSuppressTraceCount++ < _experimentSuppressConstantSFullrectTextureTrianglesLimit)
+        {
+            uint mode = ReadTextureSampleRegister(RegTextureMode);
+            uint lod = ReadTextureSampleRegister(RegTextureLod);
+            uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
+            int targetLod = GetTextureTargetLod(lod);
+            int format = (int)((mode >> 8) & 0x0fu);
+            bool sixteenBit = format is 10 or 11 or 12;
+            uint sampleBase = GetTextureBaseAddress(registerBase);
+            if (_textureSampleBaseBias != 0)
+                sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
+            uint resolvedBase = GetTextureLodOffsetFromBase(targetLod, sixteenBit ? 2 : 1, lod, sampleBase);
+            ulong pc = CpuPcProvider?.Invoke() ?? 0;
+            string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] suppress-constant-s-fullrect-texture-triangle " +
+                $"n={_constantSFullrectSuppressTraceCount} color=0x{fallbackColor:X4} area={area:F3} " +
+                $"bbox=({minX},{minY})-({maxX},{maxY}) buf={bufferIndex} " +
+                $"mode=0x{mode:X8} lod=0x{lod:X8} base=0x{resolvedBase:X6} " +
+                $"st=({a.S:F3},{a.T:F3})/({b.S:F3},{b.T:F3})/({c.S:F3},{c.T:F3}) " +
+                $"cmd=0x{_currentCommandFifoCommand:X8}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
+        }
+
+        return true;
     }
 
     private static int ComputeMameSetupDepthValue(uint fbzMode, uint fbzColorPath, int iterZ, long iterW, ushort zaColor)
