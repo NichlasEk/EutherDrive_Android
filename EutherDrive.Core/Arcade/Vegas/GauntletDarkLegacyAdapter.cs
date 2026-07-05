@@ -721,6 +721,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_POLL");
     private readonly bool _enableRuntimeBgLoadModelAssetPointerNormalize =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE");
+    private readonly ulong _experimentRuntimeBgLoadModelAssetPointerNormalizeSkipMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE_SKIP_INDEX_MASK") ?? 0UL;
     private readonly bool _enableRuntimeBgLoadModelAssetNameExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
     private readonly bool _enableRuntimeBgLoadModelAssetStaticAliasSourceRepair =
@@ -14629,6 +14631,20 @@ internal sealed class MipsR5000Core
             ulong entry = assetTableBase + index * assetTableStride;
             if (!IsMainRamRange(entry + 0x2fUL, 1))
                 return;
+
+            if (index < 64UL &&
+                (_experimentRuntimeBgLoadModelAssetPointerNormalizeSkipMask & (1UL << (int)index)) != 0)
+            {
+                if (_runtimeBgLoadModelAssetPointerNormalizeTraceCount++ < 16)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:EXPERIMENT] bgloadmodel-asset-pointer-normalize-skip pc={pc:x16} " +
+                        $"index={index} entry={entry:x16} ptr={_memory.Read32(entry):x8} " +
+                        $"name={ReadAsciiTraceString(entry + 0x10UL, 24)}");
+                }
+
+                continue;
+            }
 
             uint raw = _memory.Read32(entry);
             if (raw < pointerBias)

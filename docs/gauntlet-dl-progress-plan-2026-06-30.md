@@ -4902,3 +4902,67 @@ Current conclusion:
 3. Next target should identify the producer of the `80312998/803129a4`
    descriptor and its intended source/extent, rather than substituting disk
    bytes at upload-read time.
+
+## 2026-07-05 - Asset Pointer Normalize Skip Probe
+
+Added a default-off mask for the BGLoadModel asset pointer normalize repair:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE_SKIP_INDEX_MASK=...
+```
+
+The immediate target was asset-table index 9 (`0x200`), because the f420 byte
+dump showed the hot `0xffffffff80312998` upload window is a descriptor/control
+structure, not a texture stream:
+
+```text
+bytes[0xffffffff80312998]:
++0x000: 28 e5 12 80 00 00 00 00 a4 29 31 80 00 00 00 00
++0x010: 00 00 09 00 68 00 00 00 88 17 2e 80 00 00 6e 06
+```
+
+The cold f180 wide memory trace also exposed the relevant producer sequence.
+Important note: `EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS` parses the address as
+hex, but the optional length is decimal, so use `80312998:320`, not
+`80312998:0x140`.
+
+```text
+/tmp/gauntdl-producer-cold-f180-wide.log
+pc=ffffffff8004c850 write32 ffffffff80312998 8012e528
+pc=ffffffff8004c858 write32 ffffffff803129a0 803129a4
+pc=ffffffff800af344 write32 ffffffff803129a0 00000000
+pc=ffffffff800af34c write8  ffffffff803129a4 00000000
+pc=ffffffff800af34c write8  ffffffff803129a5 00000000
+pc=ffffffff800a6284 write32 ffffffff803129a8 00090000
+pc=ffffffff800a6288 write32 ffffffff803129ac 00000068
+```
+
+That explains why the unknown pointer-start probe sees a valid descriptor shape
+but still lands on zero/control data instead of the older texture-looking
+`07e3fc01...` words.
+
+f420 run with index 9 skipped:
+
+```text
+/tmp/gauntdl-skip-fontstory-normalize-f420.log
+/tmp/gauntdl-skip-fontstory-normalize-f420.ppm
+/tmp/gauntdl-skip-fontstory-normalize-f420.png
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+framebuffer=640x480:307200:307200
+textureMap=17190656:7460189:9730467:323136:0x000000:0x704284
+```
+
+Visual inspection is negative and identical to the previous pointer-start
+frame: two large flat colored polygons, no recognizable Gauntlet graphics.
+Skipping index 9 normalization logs `credits`/`font_story` skips, but the final
+hot `80312998` bytes, hash, and visible output do not move.
+
+Current conclusion:
+
+1. Keep the asset-pointer skip mask default-off as a diagnostic only.
+2. Index 9 asset pointer normalization is not the direct cause of the current
+   two-field visual artifact.
+3. The stronger next target is the caller/source selector around
+   `800af328..800a632c` and `800fe5d4`: the upload service is being handed a
+   descriptor/control structure as if it were a texture payload run.
