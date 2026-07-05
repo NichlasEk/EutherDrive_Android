@@ -4966,3 +4966,59 @@ Current conclusion:
 3. The stronger next target is the caller/source selector around
    `800af328..800a632c` and `800fe5d4`: the upload service is being handed a
    descriptor/control structure as if it were a texture payload run.
+
+## 2026-07-05 - Broad Zero-Base Run Skip Recheck
+
+Ran the pointer-start experiment again, this time with a deliberately broad
+zero-base texture payload skip:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS=1
+```
+
+Artifacts:
+
+```text
+/tmp/gauntdl-skip-zero-base-runs-f420.log
+/tmp/gauntdl-skip-zero-base-runs-f420.ppm
+/tmp/gauntdl-skip-zero-base-runs-f420.png
+```
+
+The skipped runs all hit the same normalized source/control address observed
+in the producer trace:
+
+```text
+skip-zero-base-texture-payload-run source=0xffffffff803129a4 bgsrc=none sourceBase=0x00000000 packet=0x00000000 index=0/31 words=64 packets=32
+skip-zero-base-texture-payload-run source=0xffffffff803129a4 bgsrc=none sourceBase=0x00000000 packet=0x00000000 index=0/255 words=64 packets=256
+```
+
+f420 result:
+
+```text
+frameHash=0x86a50545
+frameSha256=a8d81d4b4c363d24c010be1bc22254fa1d2bd65871dc0323e59eff2292e6ac12
+framebuffer=640x480:33600:33600
+drawPackets=23645 directTriangles=733 setupTriangles=346 texWrites=1573477
+textureMap=5861888:2312555:3549333:93696:0x000000:0x7e7d9c
+textured=tri:834:covered:817:rejected:17:pixels:76043864:zero:13415165
+cmdstop=invalid-standard-window/0x00012609/.../pc=0xffffffff801066c4
+```
+
+Visual inspection is meaningfully different but still not correct. The old
+full-screen two-field artifact is gone; the frame is mostly black with a red
+vertical strip on the right edge. Non-black pixels drop from full-screen
+`307200` to `33600`, so the zero-base runs are directly responsible for the
+dominant visible artifact. However, skipping all such runs also removes nearly
+all content.
+
+Current conclusion:
+
+1. Do not treat broad zero-base skipping as a fix.
+2. The next useful experiment should split or classify the `803129a4`
+   zero-base runs instead of blindly suppressing them all.
+3. Start with packet-window filters, especially separating the `index=0/31`
+   runs from the `index=0/255` runs, then compare frame hashes and visible
+   output. If one class removes the full-screen artifact while preserving more
+   geometry, use that class as the next producer-trace target.
