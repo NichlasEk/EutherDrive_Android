@@ -5813,3 +5813,121 @@ Next continuation:
    test a narrow default-off argument remap at the call site. Candidate targets
    are the seeded header `80401718` and the body pointer `8040d350`; choose only
    after the producer trace explains which object the original code expects.
+
+## 2026-07-05 - Texture Source Global Remap and Payload Bracket
+
+Added a default-off global source remap at `80054900`, the point proven by
+memtrace to write descriptor `80312998` into global `8019d1f0`:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_INDEX_MASK=0x200
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_TARGET=body|header
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET=0x...
+```
+
+The same slice also broadens known-source classification to the configured
+indexed source stride, so `body + offset` candidates remain classed as the same
+hydrated source slot when using:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000
+```
+
+Evidence that `80054900` is the producer:
+
+```text
+/tmp/gauntdl-overwrite-index9-memtrace-8019d1f0-f300.log
+[GAUNTDL:MEM] pc=ffffffff80054900 write32 ffffffff8019d1f0 80312998
+
+/tmp/gauntdl-overwrite-index9-cputrace-ffff800548d0-80054910-f300.log
+800548f4 after allocator return: v0=80312998
+80054900 delay slot writes v0 to 8019d1f0
+```
+
+Remap results:
+
+```text
+/tmp/gauntdl-source-global-remap-body-index9-f300.log
+/tmp/gauntdl-source-global-remap-body-index9-f300.png
+80312998 -> 8040d350
+frameHash=0x40395adc
+textureMap=11084552:661714:10422838:32768:0x000000:0x01fffc
+
+/tmp/gauntdl-source-global-remap-header-index9-f300.log
+/tmp/gauntdl-source-global-remap-header-index9-f300.png
+80312998 -> 80401718
+frameHash=0x5950fe0d
+textureMap=5961480:3119981:2841499:31886:0x000000:0x7b24ac
+```
+
+Body remap is causally correct but still starts at metadata:
+
+```text
+[GAUNTDL:TEXUPLOAD-ZEROBASE-CLASS] class=known-bg source=8040d350
+  bgsrc=9:wtr+0xbc38(body=0xbc38/+0x0)
+  text="BK_RED"
+```
+
+The raw disk confirms the source relationship:
+
+```text
+0x158b0600 + 0xbc38 = 0x158bc238
+0x158bc238 contains BK_RED / BTMBK_RED / KNI_NAME
+```
+
+Offset and payload tests:
+
+```text
+/tmp/gauntdl-source-global-remap-body-clamp-index9-f300.log
+/tmp/gauntdl-source-global-remap-body-clamp-index9-f300.png
+clamp 255->31 works for source 8040d350
+frameHash=0x0851d9bc
+textureMap=5171464:125892:5045572:22910:0x000000:0x01660c
+
+/tmp/gauntdl-source-global-remap-body-plus70-clamp2-index9-f300.log
+/tmp/gauntdl-source-global-remap-body-plus70-clamp2-index9-f300.png
+source=8040d3c0, clamp 255->31 still works after known-span broadening
+frameHash=0x10aac8bd
+
+/tmp/gauntdl-source-global-remap-body-plus3c8-clamp-index9-f300.log
+/tmp/gauntdl-source-global-remap-body-plus3c8-clamp-index9-f300.png
+source=8040d718, clamp 255->31
+frameHash=0x6ec1140c
+
+/tmp/gauntdl-source-global-remap-body-plus3c8-diskwords-clamp-index9-f300.log
+/tmp/gauntdl-source-global-remap-body-plus3c8-diskwords-clamp-index9-f300.png
+disk words replace sparse runtime RAM at wtr@0xc000
+frameHash=0x5ef40570
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+
+/tmp/gauntdl-plus3c8-diskwords-clamp-mamefetch-f300.log
+/tmp/gauntdl-plus3c8-diskwords-clamp-mamefetch-f300.png
+MAME fetch addressing did not move sampled addresses for the traced triangle
+frameHash=0x8ad291bb
+
+/tmp/gauntdl-plus3c8-diskwords-clamp-no-type5endian-f300.log
+/tmp/gauntdl-plus3c8-diskwords-clamp-no-type5endian-f300.png
+disabling Type5 texture endian changed output but kept the same stripe failure
+frameHash=0xec0597e1
+```
+
+Current conclusion:
+
+1. The source remap is now real: the descriptor global can be replaced with
+   hydrated index-9 header/body/offset candidates.
+2. The bad 256-packet repeat is independently controllable with
+   `EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT=1`.
+3. Disk-backed payload at `wtr@0xc000` increases real texture memory content
+   substantially, but the rendered frame is still striped. The next blocker is
+   likely Type5 texture download layout, TMU state, or the raw WTR payload's
+   internal swizzle/tiling, not just descriptor ownership.
+
+Next continuation:
+
+1. Trace texture writes for bucket `0x02f000`/sample address `0x02f420` while
+   using `body+0x3c8 + diskwords + clamp`.
+2. Compare `type5 target`, `textureMode`, `textureLod`, `textureBase`, and the
+   first bytes written at sampled addresses against raw WTR bytes.
+3. If the sampled address receives the right bytes but still displays stripes,
+   bracket 8-bit texture download addressing (`seq8`, align32, linear, TMU
+   banks) before adding any permanent decode logic.

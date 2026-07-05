@@ -796,6 +796,14 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK");
     private readonly ulong _runtimeBgLoadModelOverwriteIndexedSourceMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERWRITE_INDEXED_SOURCE_MASK") ?? 0UL;
+    private readonly ulong _runtimeBgLoadModelTextureSourceGlobalRemapIndexMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_INDEX_MASK") ?? 0UL;
+    private readonly string _runtimeBgLoadModelTextureSourceGlobalRemapTarget =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_TARGET") ?? "body")
+        .Trim()
+        .ToLowerInvariant();
+    private readonly ulong _runtimeBgLoadModelTextureSourceGlobalRemapBodyOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MASK") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMinOffset =
@@ -974,6 +982,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelPreserveAssetSourceTraceCount;
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
     private int _runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount;
+    private int _runtimeBgLoadModelTextureSourceGlobalRemapTraceCount;
     private int _runtimeWorldDataAllocationRepairTraceCount;
     private int _runtimeWorldDataAllocationTraceCount;
     private int _runtimeWorldValidityRepairTraceCount;
@@ -1203,6 +1212,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
         ApplyKnownRuntimeBgLoadModelPreserveAssetSource(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
+        ApplyKnownRuntimeBgLoadModelTextureSourceGlobalRemap(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
@@ -4420,7 +4430,7 @@ internal sealed class MipsR5000Core
             }
 
             ulong candidateBase = destinationBase + index * sourceStride;
-            ulong candidateEnd = candidateBase + textureByteLength;
+            ulong candidateEnd = candidateBase + GetKnownRuntimeBgLoadModelSourceSpanByteLength(textureByteLength);
             if (address < candidateBase || address >= candidateEnd)
                 continue;
 
@@ -5700,7 +5710,7 @@ internal sealed class MipsR5000Core
                 continue;
 
             ulong candidateBase = destinationBase + index * sourceStride;
-            ulong candidateEnd = candidateBase + textureByteLength;
+            ulong candidateEnd = candidateBase + GetKnownRuntimeBgLoadModelSourceSpanByteLength(textureByteLength);
             if (source >= candidateBase && source < candidateEnd)
                 return true;
         }
@@ -5750,7 +5760,7 @@ internal sealed class MipsR5000Core
                 continue;
 
             ulong candidateBase = destinationBase + index * sourceStride;
-            ulong candidateEnd = candidateBase + textureByteLength;
+            ulong candidateEnd = candidateBase + GetKnownRuntimeBgLoadModelSourceSpanByteLength(textureByteLength);
             if (address >= candidateBase && address < candidateEnd)
             {
                 if (matches.Length > 0)
@@ -5804,7 +5814,7 @@ internal sealed class MipsR5000Core
                 continue;
 
             ulong candidateBase = destinationBase + index * sourceStride;
-            ulong candidateEnd = candidateBase + textureByteLength;
+            ulong candidateEnd = candidateBase + GetKnownRuntimeBgLoadModelSourceSpanByteLength(textureByteLength);
             if (address < candidateBase || address >= candidateEnd)
                 continue;
 
@@ -5847,7 +5857,7 @@ internal sealed class MipsR5000Core
                 continue;
 
             ulong candidateBase = destinationBase + index * sourceStride;
-            ulong candidateEnd = candidateBase + textureByteLength;
+            ulong candidateEnd = candidateBase + GetKnownRuntimeBgLoadModelSourceSpanByteLength(textureByteLength);
             if (source < candidateBase || source >= candidateEnd)
                 continue;
 
@@ -5920,7 +5930,7 @@ internal sealed class MipsR5000Core
                 continue;
 
             ulong candidateHeader = destinationBase + index * sourceStride;
-            ulong candidateEnd = candidateHeader + candidateTextureByteLength;
+            ulong candidateEnd = candidateHeader + GetKnownRuntimeBgLoadModelSourceSpanByteLength(candidateTextureByteLength);
             if (source < candidateHeader || source >= candidateEnd)
                 continue;
 
@@ -5964,6 +5974,9 @@ internal sealed class MipsR5000Core
                countWord is > 0 and < 0x10000U &&
                strideWord is > 0 and < 0x10000U;
     }
+
+    private ulong GetKnownRuntimeBgLoadModelSourceSpanByteLength(uint textureByteLength)
+        => Math.Max((ulong)textureByteLength, (ulong)Math.Max(_runtimeBgLoadModelIndexedSourceStride, 0));
 
     private static string FormatSignedHex(long value)
     {
@@ -12721,6 +12734,64 @@ internal sealed class MipsR5000Core
                 $"index={index} slot={slot:x16}:{current:x8}->{(uint)source:x8} " +
                 $"cloned={clonedSource} seededIndexedHeader={seededIndexedHeader} " +
                 $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
+        }
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelTextureSourceGlobalRemap(ulong pc)
+    {
+        if (_runtimeBgLoadModelTextureSourceGlobalRemapIndexMask == 0 ||
+            pc != 0xffffffff80054900UL)
+        {
+            return;
+        }
+
+        const uint descriptorSource = 0x80312998U;
+        const ulong globalBase = 0xffffffff801a0000UL;
+        if ((uint)_gpr[2] != descriptorSource || _gpr[3] != globalBase)
+            return;
+
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex && index < 64UL; index++)
+        {
+            if ((_runtimeBgLoadModelTextureSourceGlobalRemapIndexMask & (1UL << (int)index)) == 0)
+                continue;
+
+            ulong slot = sourceTable + index * 4UL;
+            ulong header = destinationBase + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
+            if (!IsMainRamRange(slot, 4UL) || !IsMainRamRange(header + 0x60UL, 4UL))
+                continue;
+
+            uint slotValue = _memory.Read32(slot);
+            if (slotValue != (uint)header)
+                continue;
+
+            uint bodyOffset = _memory.Read32(header + 0x5cUL);
+            ulong body = header + bodyOffset;
+            if (bodyOffset == 0 || !IsMainRamRange(body, 4UL))
+                continue;
+
+            bool useHeader = _runtimeBgLoadModelTextureSourceGlobalRemapTarget == "header";
+            ulong replacementAddress = useHeader ? header : body + _runtimeBgLoadModelTextureSourceGlobalRemapBodyOffset;
+            if (!IsMainRamRange(replacementAddress, 4UL))
+                continue;
+
+            uint replacement = (uint)replacementAddress;
+            _gpr[2] = SignExtend32(replacement);
+
+            if (_runtimeBgLoadModelTextureSourceGlobalRemapTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] bgloadmodel-texture-source-global-remap pc={pc:x16} " +
+                    $"index={index} target={(useHeader ? "header" : "body")} bodyOffsetAdd=0x{(useHeader ? 0UL : _runtimeBgLoadModelTextureSourceGlobalRemapBodyOffset):x} " +
+                    $"global=ffffffff8019d1f0 {descriptorSource:x8}->{replacement:x8} " +
+                    $"slot={slot:x16}:{slotValue:x8} header={header:x16} bodyOffset={bodyOffset:x8} body={body:x16} " +
+                    $"headerWords={TraceKnownRuntimeBgLoadModelAssetParserWords(header)} " +
+                    $"bodyFirst={ReadTraceWord(body + 0x00UL):x8}/{ReadTraceWord(body + 0x04UL):x8}/" +
+                    $"{ReadTraceWord(body + 0x08UL):x8}/{ReadTraceWord(body + 0x0cUL):x8}");
+            }
+
+            return;
         }
     }
 
