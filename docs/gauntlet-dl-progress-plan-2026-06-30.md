@@ -3533,3 +3533,86 @@ Next continuation point:
 3. A narrow candidate should combine `trigger=bulk-end`, `pc=800fe5d4`, oversized
    Type1 (`words > 1025`), and storage provenance (`last=fifo` inside the known
    payload-read family) before deciding to skip direct register draw effects.
+
+#### 2026-07-05 payload direct-command suppression negative control
+
+Added a default-off Type1 direct-command suppression probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_PAYLOAD_DIRECT_TRIANGLE_COMMANDS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_PAYLOAD_DIRECT_TRIANGLE_COMMANDS_CMDS=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_PAYLOAD_DIRECT_TRIANGLE_COMMANDS_LIMIT=...
+```
+
+It suppresses only `triangleCommand` / `ftriangleCommand` register writes when:
+
+```text
+trigger=bulk-end
+pc=800fe5d4
+Type1 is oversized/implausible
+packet-head storage was last written by FIFO at pc=800fe5d4
+optional command filter matches
+```
+
+The trace marker is:
+
+```text
+[GAUNTDL:VOODOO-PAYLOAD-DIRECT-CMD-SUPPRESS]
+```
+
+This is useful as a negative control, but still not a visual fix.
+
+Unfiltered source-gate run, without the 224-line offscreen suppressor:
+
+```text
+/tmp/gauntdl-payloaddirectcmd-f420.ppm
+frameHash=0xa3750074
+frameSha256=cb9f4fb20d9a476d33eb50a5016f5d14c01c0397e576b5c1a07f7c8beced125f
+direct/setup=442/3001
+solidRaster=308574
+pdtc=5583
+```
+
+This reproduces the previously rejected over-suppressed visual family.
+
+Filtered to the focused `ftri` commands from the prior trace, plus the 224-line
+offscreen stack:
+
+```text
+CMDS=0xBDA7ECA1,0x3E1D9C71,0x3EDF8581
+/tmp/gauntdl-offscreen224-payloaddirectcmd-filtered-f420.ppm
+frameHash=0xa3750074
+direct/setup=1650/3001
+solidRaster=713081
+pdtc=4375
+```
+
+Even the narrower filter still falls into the same over-suppressed family.
+
+Filtered without `0xBDA7ECA1`, also with the 224-line stack:
+
+```text
+CMDS=0x3E1D9C71,0x3EDF8581
+/tmp/gauntdl-offscreen224-payloaddirectcmd-nobda-f420.ppm
+frameHash=0xa3750074
+direct/setup=4303/3001
+solidRaster=4494418
+pdtc=1722
+```
+
+This proves the command-side suppression point is still too late or too coarse.
+Suppressing selected payload direct commands reduces false solids, but it also
+changes buffer selection/coverage into the old fully-covered fallback family
+(`framebuffer=640x480:307200:144298`).
+
+Next continuation point:
+
+1. Keep the payload direct-command suppressor default-off as a diagnostic only.
+2. Do not promote command-side direct suppression, even with command filters.
+3. Move one level earlier: gate or classify the stale oversized Type1 packet
+   before `DecodeFifoType1()` writes any register effects, using packet-head
+   ownership/read-window evidence rather than draw-command side effects.
+4. A useful next probe should emit a per-packet ownership summary for the first
+   few `0xBDA7ECA1`, `0x3E1D9C71`, and `0x3EDF8581` Type1 packets: packet start,
+   storage last writer, current bulk window relation, valid-window length, depth,
+   holes, and whether it is inside Type5 payload data.

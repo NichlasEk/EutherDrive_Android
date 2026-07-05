@@ -27147,6 +27147,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES"));
     private readonly int _experimentIgnoreImplausibleCommandFifoRenderStateWritesTraceLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES_LIMIT"), 120);
+    private readonly bool _experimentSuppressPayloadDirectTriangleCommands =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_PAYLOAD_DIRECT_TRIANGLE_COMMANDS"));
+    private readonly ulong[] _experimentSuppressPayloadDirectTriangleCommandsFilter =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_PAYLOAD_DIRECT_TRIANGLE_COMMANDS_CMDS"));
+    private readonly int _experimentSuppressPayloadDirectTriangleCommandsTraceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_PAYLOAD_DIRECT_TRIANGLE_COMMANDS_LIMIT"), 80);
     private readonly bool _experimentDropImplausibleCommandFifoType5Packets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE5_PACKETS"));
     private readonly bool _experimentMameCommandFifoResyncInvalidStorageToAddressMin =
@@ -27383,6 +27389,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoImplausiblePacketTraceCount;
     private int _commandFifoImplausibleSelfRegisterPacketIgnoreTraceCount;
     private int _commandFifoImplausibleRenderStateWriteIgnoreTraceCount;
+    private int _commandFifoPayloadDirectTriangleCommandSuppressCount;
     private int _implausibleSetupTriangleIgnoreTraceCount;
     private int _lfbDetailTraceCount;
     private int _largeDirectTriangleTraceCount;
@@ -27457,7 +27464,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"cmdio={_cmdFifoDepthWordsAdded}/{_cmdFifoDepthWordsDecoded}/{_cmdFifoDepthWordsStreamed} " +
            GetCommandFifoDecodeStopDebugStatus() +
            $"peek=0x{PeekCommandFifoWord():X8}:{GetFifoPacketWordsNeeded(PeekCommandFifoWord())} " +
-           $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8}";
+           $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8} pdtc={_commandFifoPayloadDirectTriangleCommandSuppressCount}";
     public string RecentEventStatus => FormatRecentVoodooEvents();
     public string StatusPcProfile => GetStatusPcProfile();
 
@@ -30597,6 +30604,12 @@ internal class VoodooBringupBackend : IVoodooBackend
             TraceCommandFifoImplausibleRenderStateWriteIgnore(target, register, value);
             return;
         }
+        if (ShouldSuppressPayloadDirectTriangleCommand(register))
+        {
+            CountCommandFifoTargetRegisterPc(register, value);
+            TraceCommandFifoPayloadDirectTriangleCommandSuppress(target, register, value);
+            return;
+        }
 
         CountCommandFifoTargetRegisterPc(register, value);
         TraceCommandFifoRegisterValue(target, value);
@@ -30627,6 +30640,51 @@ internal class VoodooBringupBackend : IVoodooBackend
         return IsGlobalRenderStateRegister(register) ||
                IsTmuTextureRegister(register) ||
                value == 0x437f0000u;
+    }
+
+    private bool ShouldSuppressPayloadDirectTriangleCommand(uint register)
+    {
+        if (!_experimentSuppressPayloadDirectTriangleCommands ||
+            register is not (RegTriangleCommand or RegFtriangleCommand) ||
+            !_decodingCommandFifo ||
+            (_currentCommandFifoCommand & 7u) != 1u ||
+            _commandFifoDecodeTrigger != "bulk-end" ||
+            !IsImplausibleCommandFifoPacket(_currentCommandFifoCommand, _currentCommandFifoWordsNeeded))
+        {
+            return false;
+        }
+        if (_experimentSuppressPayloadDirectTriangleCommandsFilter.Length != 0 &&
+            !_experimentSuppressPayloadDirectTriangleCommandsFilter.Contains(_currentCommandFifoCommand))
+        {
+            return false;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if ((pc & 0xffffffffUL) != 0x800fe5d4UL)
+            return false;
+
+        int storageIndex = CommandFifoReadStorageIndex(_currentCommandFifoPacketStart);
+        return _cmdFifoValid[storageIndex] &&
+               _cmdFifoStorageLastWriteSource[storageIndex] == CmdFifoStorageWriteSourceFifo &&
+               (_cmdFifoStorageLastWritePc[storageIndex] & 0xffffffffUL) == 0x800fe5d4UL;
+    }
+
+    private void TraceCommandFifoPayloadDirectTriangleCommandSuppress(uint target, uint register, uint value)
+    {
+        _commandFifoPayloadDirectTriangleCommandSuppressCount++;
+        if (_commandFifoPayloadDirectTriangleCommandSuppressCount > _experimentSuppressPayloadDirectTriangleCommandsTraceLimit)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        int storageIndex = CommandFifoReadStorageIndex(_currentCommandFifoPacketStart);
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-PAYLOAD-DIRECT-CMD-SUPPRESS] n={_commandFifoPayloadDirectTriangleCommandSuppressCount} " +
+            $"target=0x{target:x3} reg=0x{register:x2} value=0x{value:x8} " +
+            $"cmd=0x{_currentCommandFifoCommand:x8} words={_currentCommandFifoWordsNeeded} " +
+            $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"storage=0x{storageIndex * 4:x5} last=0x{_cmdFifoStorageLastWriteValue[storageIndex]:x8}/pc0x{_cmdFifoStorageLastWritePc[storageIndex]:x16} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} trigger={_commandFifoDecodeTrigger}{pcStatus}");
     }
 
     private static bool IsGlobalRenderStateRegister(uint register)
