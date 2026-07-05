@@ -4109,3 +4109,97 @@ Next continuation point:
 3. Compare buffer selection and the stripe-producing setup/textured triangles
    between `0x2376d83f` and `0xa3750074`; the direct overlay is not the only
    blocker to visible graphics.
+
+#### 2026-07-05 pixel last-writer texture-stack probe
+
+Added a default-off selected-pixel writer profiler:
+
+```text
+EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_LAST_WRITERS=1
+```
+
+It samples a fixed 20x15 grid across the visible 640x480 area for each color
+buffer and reports the final writer buckets as `plw=...` in `DebugStatus`.
+This avoids dumping every pixel while still answering which renderer path is
+actually visible after all overdraw.
+
+The `0xa3750074` stack with setup suppress enabled confirms that the selected
+frame is buffer 0, not the heavier buffer-1 raster profile:
+
+```text
+rbuf=0
+frameHash=0xa3750074
+frameSha256=cb9f4fb20d9a476d33eb50a5016f5d14c01c0397e576b5c1a07f7c8beced125f
+framebuffer=640x480:307200:144298
+textured=tri:907:covered:693:rejected:214:pixels:57522088:zero:11941765
+```
+
+The buffer-0 sampled last writers are:
+
+```text
+b0:
+171/300 pc=801027cc fill fastfill cFFFF cmd=0104824C
+ 75/300 pc=800c4e5c tex setup c07FF cmd=0180A8CB rdCF50
+ 50/300 pc=800c4e5c tex setup c07FF cmd=0180A8CB rdCF3D
+  4/300 pc=800fe5d4 tex setup c07E0 cmd=0180A8CB rd9E2E
+```
+
+So the early giant `800c4e5c` setup triangles are only one layer. After those
+are suppressed, later `800c4e5c` Type3 setup-texture draws with plausible
+framebuffer state still write the visible stripe band. The white area is a real
+late fastfill from `801027cc`.
+
+The next behavior probe used the same stack plus the MAME-style texture setup
+and fetch path:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FETCH_ADDRESSING=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH=1
+```
+
+This is a real but incomplete improvement:
+
+```text
+/tmp/gauntdl-mame-texture-path-f420.ppm
+/tmp/gauntdl-mame-texture-path-f420.png
+frameHash=0x3cce6946
+frameSha256=75ad57a15b453bb7779f33840cf213c04df32c3e6db94695672ae8222a23bcc2
+framebuffer=640x480:307200:175015
+textured=tri:907:covered:693:rejected:214:pixels:57522088:zero:6681926
+```
+
+Visual inspection is still negative: the frame is darker/more textured but is
+still horizontal bands, not scene graphics. However, the texture-zero count is
+nearly halved and the selected frame hash changes, so this is the strongest
+current renderer-side direction.
+
+Adding TMU-bank-aware texture upload on top of the MAME-style path:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS=1
+```
+
+does not change the visible frame:
+
+```text
+/tmp/gauntdl-mame-texture-upload-tmubanks-f420.ppm
+frameHash=0x3cce6946
+frameSha256=75ad57a15b453bb7779f33840cf213c04df32c3e6db94695672ae8222a23bcc2
+framebuffer=640x480:307200:175015
+textureMap=16754480:8367795:8386685:569824
+```
+
+Next continuation point:
+
+1. Keep `PIXEL_LAST_WRITERS` as the primary visual oracle for the selected
+   buffer. It shows the actual visible writers instead of total raster work.
+2. Do not chase more broad setup/direct suppressors. The selected frame is now
+   dominated by late `800c4e5c` setup-texture writes and `801027cc` fastfill.
+3. Use the MAME-style setup/fixed-fetch path as the next diagnostic baseline,
+   but do not promote it yet; it changes the frame and reduces zero samples,
+   yet still renders stripes.
+4. Next probe should trace the surviving `800c4e5c` `cmd=0x0180A8CB`
+   triangles under the MAME-style path and compare their sampled texture bytes
+   against the Type5 upload provenance. TMU bank selection alone is not the
+   missing piece.

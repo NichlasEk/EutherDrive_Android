@@ -26790,6 +26790,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         new ushort[LfbPixels],
         new ushort[LfbPixels]
     ];
+    private const int PixelLastWriterSampleColumns = 20;
+    private const int PixelLastWriterSampleRows = 15;
+    private const int PixelLastWriterSampleCellWidth = 640 / PixelLastWriterSampleColumns;
+    private const int PixelLastWriterSampleCellHeight = 480 / PixelLastWriterSampleRows;
+    private const int PixelLastWriterSampleCount = PixelLastWriterSampleColumns * PixelLastWriterSampleRows;
     private readonly ushort[] _auxBuffer = new ushort[LfbPixels];
     private readonly List<uint> _fifoBuffer = new();
     private readonly uint[] _textureMemory = new uint[TextureWords];
@@ -26829,6 +26834,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int[] _lastFastFillY0 = new int[3];
     private readonly int[] _lastFastFillY1 = new int[3];
     private readonly ushort[] _lastFastFillColor = new ushort[3];
+    private readonly int[] _pixelLastWriterSampleIds = new int[3 * PixelLastWriterSampleCount];
+    private readonly Dictionary<PixelLastWriterKey, int> _pixelLastWriterIds = [];
+    private readonly List<PixelLastWriterKey> _pixelLastWriterKeys = [];
     private readonly bool[] _pendingClearValid = new bool[3];
     private readonly int[] _pendingClearX0 = new int[3];
     private readonly int[] _pendingClearX1 = new int[3];
@@ -27351,6 +27359,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _profileFastFillSwapPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FASTFILL_SWAP_PCS") == "1";
     private readonly bool _profileSolidTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_SOLID_TRIANGLES"));
+    private readonly bool _profilePixelLastWriters =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_LAST_WRITERS"));
     private readonly bool _experimentSuppressLargeSolidTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_SOLID_TRIANGLES"));
     private readonly bool _experimentSuppressImplausibleBulkDirectTriangles =
@@ -27499,6 +27509,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"swc={_swapClearBackBufferCount} swlast=0x{_lastSwapCommand:X8} " +
            GetFastFillSwapPcDebugStatus() +
            GetSolidTriangleDebugStatus() +
+           GetPixelLastWriterDebugStatus() +
            GetCommandFifoPacketPcDebugStatus() +
            GetCommandFifoDecodeCallPcDebugStatus() +
            $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} cmd={_cmdFifoDepth}/{_cmdFifoHoles}/{_cmdFifoValidCount}/0x{_cmdFifoAddressMin:X}/0x{_cmdFifoAddressMax:X} " +
@@ -29086,11 +29097,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (TryExpandLfbPixel(value, format, rgbaLanes, highHalf: false, out first))
         {
             buffer[pixel & (LfbPixels - 1)] = first;
+            TrackPixelLastWriterByPixel(bufferIndex, pixel, GetPixelLastWriterId("lfb", "normal", first));
             wroteFirst = true;
         }
         if (twoPixels && TryExpandLfbPixel(value, format, rgbaLanes, highHalf: true, out second))
         {
             buffer[(pixel + 1) & (LfbPixels - 1)] = second;
+            TrackPixelLastWriterByPixel(bufferIndex, pixel + 1, GetPixelLastWriterId("lfb", "normal", second));
             wroteSecond = true;
         }
         TraceLfbWriteDetail("normal", offset, value, lfbMode, format, rgbaLanes, bufferIndex, pixel, wroteFirst, first, wroteSecond, second);
@@ -29115,6 +29128,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort second = ConvertXrgb1555Lane0((ushort)(value >> 16));
         buffer[pixel & (LfbPixels - 1)] = first;
         buffer[(pixel + 1) & (LfbPixels - 1)] = second;
+        TrackPixelLastWriterByPixel(bufferIndex, pixel, GetPixelLastWriterId("lfb", "mode2011", first));
+        TrackPixelLastWriterByPixel(bufferIndex, pixel + 1, GetPixelLastWriterId("lfb", "mode2011", second));
         TraceLfbWriteDetail("mode2011", offset, value, _registers[RegLfbMode], 0x11, 0, bufferIndex, pixel, firstValid: true, first, secondValid: true, second);
         _lfbWriteCount++;
     }
@@ -29636,6 +29651,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int width = x1 - x0;
         if (!IsCachedFastFill(bufferIndex, x0, x1, y0, y1, color))
         {
+            TrackPixelLastWriterRect(bufferIndex, x0, x1, y0, y1, GetPixelLastWriterId("fill", "fastfill", color));
             SetPendingClear(bufferIndex, x0, x1, y0, y1, color);
             CacheFastFill(bufferIndex, x0, x1, y0, y1, color);
         }
@@ -32119,6 +32135,176 @@ internal class VoodooBringupBackend : IVoodooBackend
             .Select(pair => $"0x{pair.Key:x16}:{pair.Value}"));
     }
 
+    private int GetPixelLastWriterId(string kind, string source, ushort color)
+    {
+        if (!_profilePixelLastWriters)
+            return 0;
+
+        PixelLastWriterKey key = new(
+            CpuPcProvider?.Invoke() ?? 0,
+            kind,
+            source,
+            color,
+            _registers[RegFbzMode],
+            _registers[RegFbzColorPath],
+            _currentCommandFifoCommand,
+            _currentCommandFifoWordsNeeded,
+            _currentCommandFifoPacketStart,
+            _cmdFifoReadIndex,
+            _commandFifoDecodeTrigger);
+        if (_pixelLastWriterIds.TryGetValue(key, out int id))
+            return id;
+
+        id = _pixelLastWriterKeys.Count + 1;
+        _pixelLastWriterIds[key] = id;
+        _pixelLastWriterKeys.Add(key);
+        return id;
+    }
+
+    private void TrackPixelLastWriter(int bufferIndex, int x, int y, int writerId)
+    {
+        if (!_profilePixelLastWriters ||
+            writerId == 0 ||
+            (uint)bufferIndex >= 3u ||
+            (uint)x >= 640u ||
+            (uint)y >= 480u)
+        {
+            return;
+        }
+
+        int sampleX = x - PixelLastWriterSampleCellWidth / 2;
+        int sampleY = y - PixelLastWriterSampleCellHeight / 2;
+        if (sampleX < 0 || sampleY < 0 ||
+            sampleX % PixelLastWriterSampleCellWidth != 0 ||
+            sampleY % PixelLastWriterSampleCellHeight != 0)
+        {
+            return;
+        }
+
+        int column = sampleX / PixelLastWriterSampleCellWidth;
+        int row = sampleY / PixelLastWriterSampleCellHeight;
+        if ((uint)column >= PixelLastWriterSampleColumns ||
+            (uint)row >= PixelLastWriterSampleRows)
+        {
+            return;
+        }
+
+        _pixelLastWriterSampleIds[bufferIndex * PixelLastWriterSampleCount + row * PixelLastWriterSampleColumns + column] = writerId;
+    }
+
+    private void TrackPixelLastWriterByPixel(int bufferIndex, int pixel, int writerId)
+    {
+        if (!_profilePixelLastWriters || writerId == 0)
+            return;
+
+        int normalizedPixel = pixel & (LfbPixels - 1);
+        int x = normalizedPixel & (LfbRowPixels - 1);
+        int y = normalizedPixel / LfbRowPixels;
+        TrackPixelLastWriter(bufferIndex, x, y, writerId);
+    }
+
+    private void TrackPixelLastWriterRect(int bufferIndex, int x0, int x1, int y0, int y1, int writerId)
+    {
+        if (!_profilePixelLastWriters ||
+            writerId == 0 ||
+            (uint)bufferIndex >= 3u)
+        {
+            return;
+        }
+
+        x0 = Math.Clamp(x0, 0, 640);
+        x1 = Math.Clamp(x1, 0, 640);
+        y0 = Math.Clamp(y0, 0, 480);
+        y1 = Math.Clamp(y1, 0, 480);
+        if (x1 <= x0 || y1 <= y0)
+            return;
+
+        for (int row = 0; row < PixelLastWriterSampleRows; row++)
+        {
+            int y = row * PixelLastWriterSampleCellHeight + PixelLastWriterSampleCellHeight / 2;
+            if (y < y0 || y >= y1)
+                continue;
+
+            int baseIndex = bufferIndex * PixelLastWriterSampleCount + row * PixelLastWriterSampleColumns;
+            for (int column = 0; column < PixelLastWriterSampleColumns; column++)
+            {
+                int x = column * PixelLastWriterSampleCellWidth + PixelLastWriterSampleCellWidth / 2;
+                if (x >= x0 && x < x1)
+                    _pixelLastWriterSampleIds[baseIndex + column] = writerId;
+            }
+        }
+    }
+
+    private string GetPixelLastWriterDebugStatus()
+    {
+        if (!_profilePixelLastWriters)
+            return "";
+
+        StringBuilder builder = new("plw=");
+        for (int bufferIndex = 0; bufferIndex < 3; bufferIndex++)
+        {
+            if (bufferIndex != 0)
+                builder.Append(';');
+
+            Span<int> topIds = stackalloc int[4];
+            Span<int> topCounts = stackalloc int[4];
+            CollectTopPixelLastWriters(bufferIndex, topIds, topCounts);
+            builder.Append('b').Append(bufferIndex).Append(':');
+            for (int i = 0; i < topIds.Length; i++)
+            {
+                if (i != 0)
+                    builder.Append(',');
+
+                builder.Append(FormatPixelLastWriter(topIds[i], topCounts[i]));
+            }
+        }
+
+        builder.Append(' ');
+        return builder.ToString();
+    }
+
+    private void CollectTopPixelLastWriters(int bufferIndex, Span<int> topIds, Span<int> topCounts)
+    {
+        Dictionary<int, int> counts = [];
+        int start = bufferIndex * PixelLastWriterSampleCount;
+        for (int i = 0; i < PixelLastWriterSampleCount; i++)
+        {
+            int id = _pixelLastWriterSampleIds[start + i];
+            if (id == 0)
+                continue;
+
+            counts[id] = counts.TryGetValue(id, out int count) ? count + 1 : 1;
+        }
+
+        foreach ((int id, int count) in counts.OrderByDescending(pair => pair.Value).ThenBy(pair => pair.Key))
+        {
+            for (int i = 0; i < topCounts.Length; i++)
+            {
+                if (count <= topCounts[i])
+                    continue;
+
+                for (int j = topCounts.Length - 1; j > i; j--)
+                {
+                    topCounts[j] = topCounts[j - 1];
+                    topIds[j] = topIds[j - 1];
+                }
+
+                topCounts[i] = count;
+                topIds[i] = id;
+                break;
+            }
+        }
+    }
+
+    private string FormatPixelLastWriter(int id, int count)
+    {
+        if (id <= 0 || count <= 0 || id > _pixelLastWriterKeys.Count)
+            return "-";
+
+        PixelLastWriterKey key = _pixelLastWriterKeys[id - 1];
+        return $"{count}@0x{key.Pc:x16}:{key.Kind}:{key.Source}:c{key.Color:X4}:cmd{key.Command:X8}:{key.CommandWords}:rd{key.CommandFifoReadIndex:X}:pkt{key.CommandFifoPacketStart:X}:fbz{key.FbzMode:X8}:cp{key.FbzColorPath:X8}:tr{key.Trigger}";
+    }
+
     private static bool TouchesInterestingEventRegister(uint target, uint count)
     {
         for (uint i = 0; i < count; i++)
@@ -32158,6 +32344,19 @@ internal class VoodooBringupBackend : IVoodooBackend
         public int LastBufferIndex;
         public bool LastSuppressed;
     }
+
+    private readonly record struct PixelLastWriterKey(
+        ulong Pc,
+        string Kind,
+        string Source,
+        ushort Color,
+        uint FbzMode,
+        uint FbzColorPath,
+        uint Command,
+        int CommandWords,
+        int CommandFifoPacketStart,
+        int CommandFifoReadIndex,
+        string Trigger);
 
     private sealed class SwapPcStats
     {
@@ -33137,6 +33336,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
+        int writerId = GetPixelLastWriterId("solid", source, color);
         long drawnPixels = 0;
         for (int y = minY; y < maxY; y++)
         {
@@ -33151,6 +33351,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (positive ? e0 >= 0 && e1 >= 0 && e2 >= 0 : e0 <= 0 && e1 <= 0 && e2 <= 0)
                 {
                     buffer[(row + x) & (LfbPixels - 1)] = color;
+                    TrackPixelLastWriter(bufferIndex, x, y, writerId);
                     drawnPixels++;
                     _solidRasterPixelCount++;
                     if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
@@ -33352,6 +33553,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
+        int writerId = GetPixelLastWriterId("gsolid", "direct", fallbackColor);
         bool coveredAny = false;
         for (int y = minY; y < maxY; y++)
         {
@@ -33376,6 +33578,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     color = fallbackColor;
 
                 buffer[(row + x) & (LfbPixels - 1)] = color;
+                TrackPixelLastWriter(bufferIndex, x, y, writerId);
                 coveredAny = true;
                 _solidRasterPixelCount++;
                 if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
@@ -33449,6 +33652,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
+        int writerId = GetPixelLastWriterId("tex", "setup", fallbackColor);
         bool coveredAny = false;
         int coveredPixels = 0;
         int zeroPixels = 0;
@@ -33599,6 +33803,7 @@ sampledTexel:
                 if (mameRgbMask)
                 {
                     buffer[pixel] = texel;
+                    TrackPixelLastWriter(bufferIndex, x, y, writerId);
                     _texturedRasterPixelCount++;
                     if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
                         _rasterBufferPixelCounts[bufferIndex]++;
@@ -33797,6 +34002,7 @@ sampledTexel:
         MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
+        int writerId = GetPixelLastWriterId("tex", "direct", fallbackColor);
         bool coveredAny = false;
         int coveredPixels = 0;
         int zeroPixels = 0;
@@ -33838,6 +34044,7 @@ sampledTexel:
                     texel = ApplyFbzColorPathRgb(texel, fallbackColor);
 
                 buffer[(row + x) & (LfbPixels - 1)] = texel;
+                TrackPixelLastWriter(bufferIndex, x, y, writerId);
                 coveredAny = true;
                 _texturedRasterPixelCount++;
                 if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
@@ -34681,6 +34888,7 @@ sampledTexel:
         MaterializePendingClear(bufferIndex);
         InvalidateFastFillCache(bufferIndex);
         _colorBuffers[bufferIndex][(y * LfbRowPixels + x) & (LfbPixels - 1)] = color;
+        TrackPixelLastWriter(bufferIndex, x, y, GetPixelLastWriterId("lfb", "line", color));
         _lfbWriteCount++;
     }
 
@@ -35289,6 +35497,7 @@ sampledTexel:
         if (clearBackBuffer)
         {
             _swapClearBackBufferCount++;
+            TrackPixelLastWriterRect(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, GetPixelLastWriterId("fill", "swapclear", 0));
             SetPendingClear(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
             CacheFastFill(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
         }
