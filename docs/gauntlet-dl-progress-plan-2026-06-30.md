@@ -3680,3 +3680,48 @@ Next continuation point:
    consuming potentially real FIFO words.
 3. If stop/gate stalls too often, try a separate default-off header-drop variant
    and compare f420 frame hash, `direct/setup`, and `cmdstop`.
+
+#### 2026-07-05 outside-bulk Type1 stop-gate negative control
+
+Added a default-off pre-Type1 stop gate:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_GATE_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_GATE_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW_COMMANDS=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_GATE_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW_LIMIT=...
+```
+
+It stops before `DecodeFifoType1()` when:
+
+```text
+Type1 is oversized/implausible
+trigger is bulk-end or write
+bulk scanner says scan=outside
+packet-head storage is valid FIFO data
+packet-head last-writer pc low32 is 800fe5d4
+```
+
+The first f420 behavior probe proved this is not the final fix:
+
+```text
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+direct/setup=317/141
+framebuffer=640x480:307200:307200
+t1ob=46901
+cmdstop=invalid-standard-window/0xbda7eca1/48552
+```
+
+The gate removed most stale direct/setup triangle work, but it over-gated real
+progress and produced a fully covered frame. Early trace hits repeatedly stopped
+on `cmd=0xf00b0001` at `packet=0x0000be5c`, which appears to be asset/model data
+(`sourceWords` from the `gei` BGLoadModel path) being interpreted as Type1 after
+the read pointer entered old storage outside the active bulk window.
+
+Next continuation point:
+
+1. Keep the stop-gate default-off as a negative control.
+2. The next behavior probe should advance past invalid outside-bulk Type1 heads
+   instead of repeatedly stopping on them.
+3. Implement this as a separate default-off header-drop variant so it can be
+   compared against the stop-gate and payload direct-command suppressor.

@@ -27063,6 +27063,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE1_PACKET_OWNERSHIP_COMMANDS"));
     private readonly int _traceCommandFifoType1PacketOwnershipLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE1_PACKET_OWNERSHIP_LIMIT"), 80);
+    private readonly bool _experimentGateImplausibleType1OutsideBulkWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_GATE_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW"));
+    private readonly ulong[] _experimentGateImplausibleType1OutsideBulkWindowCommands =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_GATE_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW_COMMANDS"));
+    private readonly int _experimentGateImplausibleType1OutsideBulkWindowTraceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_GATE_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW_LIMIT"), 80);
     private readonly bool _experimentResetCommandFifoOnBulkWrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET"));
     private readonly bool _experimentRewindCommandFifoOnBulkWrite =
@@ -27394,6 +27400,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoSelfRegisterPacketTraceCount;
     private int _commandFifoImplausiblePacketTraceCount;
     private int _commandFifoType1PacketOwnershipTraceCount;
+    private int _commandFifoImplausibleType1OutsideBulkWindowGateCount;
     private int _commandFifoImplausibleSelfRegisterPacketIgnoreTraceCount;
     private int _commandFifoImplausibleRenderStateWriteIgnoreTraceCount;
     private int _commandFifoPayloadDirectTriangleCommandSuppressCount;
@@ -27471,7 +27478,8 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"cmdio={_cmdFifoDepthWordsAdded}/{_cmdFifoDepthWordsDecoded}/{_cmdFifoDepthWordsStreamed} " +
            GetCommandFifoDecodeStopDebugStatus() +
            $"peek=0x{PeekCommandFifoWord():X8}:{GetFifoPacketWordsNeeded(PeekCommandFifoWord())} " +
-           $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8} pdtc={_commandFifoPayloadDirectTriangleCommandSuppressCount}";
+           $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8} " +
+           $"pdtc={_commandFifoPayloadDirectTriangleCommandSuppressCount} t1ob={_commandFifoImplausibleType1OutsideBulkWindowGateCount}";
     public string RecentEventStatus => FormatRecentVoodooEvents();
     public string StatusPcProfile => GetStatusPcProfile();
 
@@ -29608,6 +29616,13 @@ internal class VoodooBringupBackend : IVoodooBackend
             bool implausiblePacket = IsImplausibleCommandFifoPacket(command, wordsNeeded);
             if (implausiblePacket)
                 TraceCommandFifoImplausiblePacket(command, wordsNeeded, packetStart);
+            if (ShouldGateImplausibleType1OutsideBulkWindow(command, wordsNeeded, packetStart, implausiblePacket, out string outsideBulkPosition))
+            {
+                CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "type1-outside-bulk-window");
+                TraceCommandFifoImplausibleType1OutsideBulkWindowGate(command, wordsNeeded, packetStart, outsideBulkPosition);
+                TraceCommandFifoDecodeStop("type1-outside-bulk-window", command, wordsNeeded);
+                return;
+            }
             if (ShouldGateCollapsedBulkPayloadChain(command, wordsNeeded, packetStart, implausiblePacket))
             {
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "bulk-collapsed-payload-chain");
@@ -29880,6 +29895,54 @@ internal class VoodooBringupBackend : IVoodooBackend
                IsCommandFifoIndexInsideBulkWrite(packetStart) &&
                wordsNeeded == 1 &&
                (command == 0 || type > 5u);
+    }
+
+    private bool ShouldGateImplausibleType1OutsideBulkWindow(uint command, int wordsNeeded, int packetStart, bool implausiblePacket, out string bulkPosition)
+    {
+        bulkPosition = "";
+        if (!_experimentGateImplausibleType1OutsideBulkWindow ||
+            !implausiblePacket ||
+            (command & 7u) != 1u ||
+            _commandFifoDecodeTrigger is not ("bulk-end" or "write") ||
+            !_cmdFifoBulkSawWrite ||
+            _cmdFifoBulkWriteWordCount <= 0)
+        {
+            return false;
+        }
+        if (_experimentGateImplausibleType1OutsideBulkWindowCommands.Length != 0 &&
+            !_experimentGateImplausibleType1OutsideBulkWindowCommands.Contains(command))
+        {
+            return false;
+        }
+
+        bulkPosition = FormatCommandFifoBulkPacketPosition(packetStart).TrimStart();
+        if (!bulkPosition.StartsWith("scan=outside", StringComparison.Ordinal))
+            return false;
+
+        int storageIndex = CommandFifoReadStorageIndex(packetStart);
+        return _cmdFifoValid[storageIndex] &&
+               _cmdFifoStorageLastWriteSource[storageIndex] == CmdFifoStorageWriteSourceFifo &&
+               (_cmdFifoStorageLastWritePc[storageIndex] & 0xffffffffUL) == 0x800fe5d4UL;
+    }
+
+    private void TraceCommandFifoImplausibleType1OutsideBulkWindowGate(uint command, int wordsNeeded, int packetStart, string bulkPosition)
+    {
+        _commandFifoImplausibleType1OutsideBulkWindowGateCount++;
+        if (_commandFifoImplausibleType1OutsideBulkWindowGateCount > _experimentGateImplausibleType1OutsideBulkWindowTraceLimit)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        int storageIndex = CommandFifoReadStorageIndex(packetStart);
+        int validWindowLimit = Math.Min(wordsNeeded, 64);
+        int validWindowWords = CountCommandFifoValidWindowWords(packetStart, validWindowLimit);
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TYPE1-OUTSIDE-BULK-GATE] n={_commandFifoImplausibleType1OutsideBulkWindowGateCount} " +
+            $"cmd=0x{command:x8} words={wordsNeeded} packet=0x{packetStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"storage=0x{storageIndex * 4:x5} validWindow={validWindowWords}/{validWindowLimit} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
+            $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} trigger={_commandFifoDecodeTrigger} " +
+            $"last=0x{_cmdFifoStorageLastWriteValue[storageIndex]:x8}/pc0x{_cmdFifoStorageLastWritePc[storageIndex]:x16} bulk={bulkPosition}{pcStatus}");
     }
 
     private void TraceCommandFifoImplausiblePacket(uint command, int wordsNeeded, int packetStart)
