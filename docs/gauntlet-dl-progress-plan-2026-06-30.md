@@ -6329,3 +6329,118 @@ Current conclusion:
    normalized the source into a known `wtr` window; the next trace should focus
    on Type5 target/address layout and writer buckets for the `wtr@0xc000`
    texture-looking region, not generic unknown-prefix handling.
+
+## 2026-07-05 - Constant-S Fullrect Remap and Disk-Backed Type5 Layout
+
+Added a default-off raster experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_CONSTANT_S_FULLRECT_USE_X_AS_S=1
+```
+
+It only applies to the large `cmd=0x0180A8CB` fullrect pair whose S values are
+constant and whose T span is large. It leaves normal triangles and the MAME
+fixed-fetch branch alone. The experiment reconstructs S from screen X across a
+256-wide texture span and logs the first 12 remapped fullrects.
+
+Best diagnostic result from the current warm f300 stack:
+
+```text
+/tmp/gauntdl-constant-s-x-as-s-warm-f300.log
+/tmp/gauntdl-constant-s-x-as-s-warm-f300.png
+frameHash=0x26448ab8
+textureMap=writes=5171464:nz=581292:zero=4590172:touched=22910:first=0x000000:last=0x01660c
+drawPackets=17111 directTriangles=647 setupTriangles=304
+textured=tri:8376:covered:1023:rejected:7353:pixels:108873600:zero:34469210
+```
+
+This is the first run that breaks the pure horizontal-stripe failure into a
+real 2D texture-looking surface. It is not correct graphics yet, but it proves
+the `wtr@0xc000` upload region contains visible image data and that the previous
+frame was dominated by sampling a near-single texture column.
+
+Negative comparisons from the same X-as-S stack:
+
+```text
+sample base bias disabled:
+  /tmp/gauntdl-constant-s-x-as-s-nobias-warm-f300.log
+  /tmp/gauntdl-constant-s-x-as-s-nobias-warm-f300.png
+  frameHash=0x3c757efd
+  zero=39579145
+  visual=more noisy; worse than biased X-as-S
+
+8-bit sample lanes reversed:
+  /tmp/gauntdl-constant-s-x-as-s-revlane-warm-f300.log
+  /tmp/gauntdl-constant-s-x-as-s-revlane-warm-f300.png
+  frameHash=0xbc9c9c62
+  zero=44248635
+  visual=worse
+
+T origin flipped:
+  /tmp/gauntdl-constant-s-x-as-s-tflip-warm-f300.log
+  /tmp/gauntdl-constant-s-x-as-s-tflip-warm-f300.png
+  frameHash=0x85acba3c
+  zero=91100649
+  visual=clearly worse
+
+linear texture download addressing:
+  /tmp/gauntdl-constant-s-x-as-s-linear-warm-f300.log
+  /tmp/gauntdl-constant-s-x-as-s-linear-warm-f300.png
+  frameHash=0xc64c12d8
+  zero=38964686
+  visual=larger colored blocks, not more correct
+
+sequential 8-bit texture download disabled:
+  /tmp/gauntdl-constant-s-x-as-s-noseq8-warm-f300.log
+  /tmp/gauntdl-constant-s-x-as-s-noseq8-warm-f300.png
+  frameHash=0x4cdb237e
+  zero=37744493
+  visual=not better
+
+align32 disabled:
+  /tmp/gauntdl-constant-s-x-as-s-noalign-warm-f300.log
+  /tmp/gauntdl-constant-s-x-as-s-noalign-warm-f300.png
+  frameHash=0x26448ab8
+  zero=34469210
+  visual=unchanged from best X-as-S
+```
+
+Also extended `TEXUPLOAD-LINK` rows with a `disk=` column using the same
+disk-compare oracle as the focused FIFO-packet trace. Target-focused run:
+
+```text
+/tmp/gauntdl-type5-target-layout-diskcompare-warm-f300.log
+frameHash=0x5ef40570
+targetWords=100,200,280,300,400,d00,e00,f00
+```
+
+The focused Type5 target layout is stable: each target occurs 25 times and maps
+to the same `wtr` spans:
+
+```text
+target=0x100 -> source=8040d918 -> wtr@0xc200
+target=0x200 -> source=8040db18 -> wtr@0xc400
+target=0x280 -> source=8040dc18 -> wtr@0xc500
+target=0x300 -> source=8040dd18 -> wtr@0xc600
+target=0x400 -> source=8040df18 -> wtr@0xc800
+target=0xd00 -> source=8040f118 -> wtr@0xda00
+target=0xe00 -> source=8040f318 -> wtr@0xdc00
+target=0xf00 -> source=8040f518 -> wtr@0xde00
+```
+
+RAM is still mostly zero at these sources, while the disk oracle shows dense
+`wtr` texture data. The current best visible result therefore depends on
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS=1`, and the next
+useful target is texture upload/write layout for those disk words, not another
+RAM-source search.
+
+Current conclusion:
+
+1. `S=0` is real payload in the fresh source structs, but X-as-S proves the
+   texture data becomes visible when the fullrect samples across the X axis.
+2. Base bias stays enabled; no-bias, reverse lanes, T flip, linear addressing,
+   no-seq8, and no-align did not improve the visible image.
+3. Next graphics slice should either replace the diagnostic raster remap with a
+   source-accurate way to recover the fullrect's horizontal coordinate, or
+   instrument `WriteTexturePort32`/writer buckets for the `wtr@0xc200..0xde00`
+   disk-backed Type5 writes to find the remaining upload layout issue.

@@ -5393,6 +5393,7 @@ internal sealed class MipsR5000Core
         uint swapped1 = BinaryPrimitives.ReverseEndianness(first1);
         uint swapped2 = BinaryPrimitives.ReverseEndianness(first2);
         uint swapped3 = BinaryPrimitives.ReverseEndianness(first3);
+        string diskCompare = FormatKnownRuntimeBgLoadModelUploadDiskCompare(source, 4);
 
         Console.WriteLine(
             $"[GAUNTDL:TEXUPLOAD-LINK] packet={packet} index={index}/{limit} " +
@@ -5402,7 +5403,8 @@ internal sealed class MipsR5000Core
             $"fifo=0x{fifo:x8} fifoLow=0x{fifoLow:x6} fifoBase=0x{fifoBase:x8} fifoDelta=0x{fifoDelta:x6} " +
             $"fifoRingBase=0x{fifoRingBase:x8} fifoRingBytes=0x{fifoRingBytes:x8} fifoRingDelta=0x{fifoRingDelta:x6} " +
             $"raw=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} " +
-            $"swap=0x{swapped0:x8}/0x{swapped1:x8}/0x{swapped2:x8}/0x{swapped3:x8}");
+            $"swap=0x{swapped0:x8}/0x{swapped1:x8}/0x{swapped2:x8}/0x{swapped3:x8} " +
+            $"disk={diskCompare}");
     }
 
     private bool IsLikelyTextureMetadataPayload(ulong source, uint payloadWords)
@@ -27952,6 +27954,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _texturedTriangleRejectTraceCount;
     private int _texturedTriangleCoveredTraceCount;
     private int _constantSFullrectSuppressTraceCount;
+    private int _constantSFullrectRemapTraceCount;
     private int _statusReadCount;
     private long _lfbWriteCount;
     private int _textureWriteCount;
@@ -28430,6 +28433,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_CONSTANT_S_FULLRECT_TEXTURE_TRIANGLES"));
     private readonly int _experimentSuppressConstantSFullrectTextureTrianglesLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_CONSTANT_S_FULLRECT_TEXTURE_TRIANGLES_LIMIT"), 32);
+    private readonly bool _experimentConstantSFullrectUseXAsS =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_CONSTANT_S_FULLRECT_USE_X_AS_S"));
     private readonly bool _experimentSuppressImplausibleSetupTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES"));
     private readonly int _experimentSuppressImplausibleSetupTrianglesTraceLimit =
@@ -34956,6 +34961,23 @@ internal class VoodooBringupBackend : IVoodooBackend
             return true;
         }
 
+        bool remapConstantSFullrectS = _experimentConstantSFullrectUseXAsS &&
+            IsConstantSFullrectTextureTriangle(a, b, c, minX, maxX, minY, maxY);
+        float remapConstantSScale = remapConstantSFullrectS && maxX > minX
+            ? 256.0f / (maxX - minX)
+            : 0.0f;
+        if (remapConstantSFullrectS && _constantSFullrectRemapTraceCount++ < 12)
+        {
+            ulong pc = CpuPcProvider?.Invoke() ?? 0;
+            string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] constant-s-fullrect-use-x-as-s " +
+                $"n={_constantSFullrectRemapTraceCount} color=0x{fallbackColor:X4} area={area:F3} " +
+                $"bbox=({minX},{minY})-({maxX},{maxY}) scale={remapConstantSScale:F6} " +
+                $"st=({a.S:F3},{a.T:F3})/({b.S:F3},{b.T:F3})/({c.S:F3},{c.T:F3}) " +
+                $"cmd=0x{_currentCommandFifoCommand:X8}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
+        }
+
         bool coveredAny = false;
         int coveredPixels = 0;
         int zeroPixels = 0;
@@ -35065,6 +35087,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                     s = GetTextureS(a) * wa + GetTextureS(b) * wb + GetTextureS(c) * wc;
                     t = GetTextureT(a) * wa + GetTextureT(b) * wb + GetTextureT(c) * wc;
                 }
+                if (remapConstantSFullrectS)
+                    s = (px - minX) * remapConstantSScale;
                 texel = SampleTextureRgb565(s, t);
 sampledTexel:
                 if (traceSampleSummary && _lastTextureSampleValid)
@@ -35176,24 +35200,7 @@ sampledTexel:
         int bufferIndex)
     {
         if (!_experimentSuppressConstantSFullrectTextureTriangles ||
-            _currentCommandFifoCommand != 0x0180a8cbu)
-        {
-            return false;
-        }
-
-        int width = maxX - minX;
-        int height = maxY - minY;
-        if (width < 480 || height < 300 || (long)width * height < 150_000L)
-            return false;
-
-        float minS = MathF.Min(a.S, MathF.Min(b.S, c.S));
-        float maxS = MathF.Max(a.S, MathF.Max(b.S, c.S));
-        float minT = MathF.Min(a.T, MathF.Min(b.T, c.T));
-        float maxT = MathF.Max(a.T, MathF.Max(b.T, c.T));
-        if (!float.IsFinite(minS) || !float.IsFinite(maxS) ||
-            !float.IsFinite(minT) || !float.IsFinite(maxT) ||
-            MathF.Abs(maxS - minS) > 0.001f ||
-            MathF.Abs(maxT - minT) < 128.0f)
+            !IsConstantSFullrectTextureTriangle(a, b, c, minX, maxX, minY, maxY))
         {
             return false;
         }
@@ -35219,6 +35226,38 @@ sampledTexel:
                 $"mode=0x{mode:X8} lod=0x{lod:X8} base=0x{resolvedBase:X6} " +
                 $"st=({a.S:F3},{a.T:F3})/({b.S:F3},{b.T:F3})/({c.S:F3},{c.T:F3}) " +
                 $"cmd=0x{_currentCommandFifoCommand:X8}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
+        }
+
+        return true;
+    }
+
+    private bool IsConstantSFullrectTextureTriangle(
+        SetupVertex a,
+        SetupVertex b,
+        SetupVertex c,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY)
+    {
+        if (_currentCommandFifoCommand != 0x0180a8cbu)
+            return false;
+
+        int width = maxX - minX;
+        int height = maxY - minY;
+        if (width < 480 || height < 300 || (long)width * height < 150_000L)
+            return false;
+
+        float minS = MathF.Min(a.S, MathF.Min(b.S, c.S));
+        float maxS = MathF.Max(a.S, MathF.Max(b.S, c.S));
+        float minT = MathF.Min(a.T, MathF.Min(b.T, c.T));
+        float maxT = MathF.Max(a.T, MathF.Max(b.T, c.T));
+        if (!float.IsFinite(minS) || !float.IsFinite(maxS) ||
+            !float.IsFinite(minT) || !float.IsFinite(maxT) ||
+            MathF.Abs(maxS - minS) > 0.001f ||
+            MathF.Abs(maxT - minT) < 128.0f)
+        {
+            return false;
         }
 
         return true;
