@@ -4190,6 +4190,53 @@ framebuffer=640x480:307200:175015
 textureMap=16754480:8367795:8386685:569824
 ```
 
+The follow-up buffer-0 texture summary on the MAME-style path shows the
+surviving visible band source directly. The hot packets are repeated
+`0x0180A8CB` setup-texture full-rect pairs from `pc=800c4e5c`, later replayed
+from `pc=80106a74` and `pc=800fe5d4` as well:
+
+```text
+pc=800c4e5c cmd=0x0180A8CB
+xy=(0,-1)/(512,383)/(0,383)
+stq=(0,256,1)/(0,0,1)/(0,0,1)
+bbox=(0,41)-(512,383)
+pixels=97128 zero=105
+mode=0x8C24100F lod=0x00002000 regbase=0x00000000 base=0x000510
+raw=0x0000:9394,0x0023:2904,0x00FF:2898,0x0003:1920
+addr=0x00F000:11648,0x00E000:10880,0x00D000:10112,0x00C000:9344
+
+paired triangle:
+xy=(512,383)/(0,-1)/(512,-1)
+pixels=77976 zero=407
+raw=0x0000:13134,0x00FE:2132,0x00D4:2097,0x0002:1851
+addr=0x003000:9856,0x002000:9709,0x004000:9088,0x005000:8320
+```
+
+This means the remaining visual failure is no longer an arbitrary giant
+coordinate triangle; it is a repeated screen-sized texture page with simple
+`S/T` coordinates. The sampled texture data is still stripe-like.
+
+The old `0x510` sample-base bias was also tested as an override:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0
+```
+
+This changes the image but remains wrong:
+
+```text
+/tmp/gauntdl-mame-texture-nobias-f420.ppm
+/tmp/gauntdl-mame-texture-nobias-f420.png
+frameHash=0x62c2d545
+frameSha256=6ec73e4e88b9104ce5e2d40d6990e688c122d9268657c31b278c9270957ce703
+framebuffer=640x480:307200:175980
+textured zero=6829521
+```
+
+Visual inspection is still horizontal bands. Removing the bias is therefore
+not the fix, although it proves the stripe page is sensitive to the sampled
+texture base.
+
 Next continuation point:
 
 1. Keep `PIXEL_LAST_WRITERS` as the primary visual oracle for the selected
@@ -4199,7 +4246,11 @@ Next continuation point:
 3. Use the MAME-style setup/fixed-fetch path as the next diagnostic baseline,
    but do not promote it yet; it changes the frame and reduces zero samples,
    yet still renders stripes.
-4. Next probe should trace the surviving `800c4e5c` `cmd=0x0180A8CB`
-   triangles under the MAME-style path and compare their sampled texture bytes
-   against the Type5 upload provenance. TMU bank selection alone is not the
-   missing piece.
+4. Next probe should compare the full-rect `800c4e5c`/`80106a74`/`800fe5d4`
+   `0x0180A8CB` replays against command-FIFO packet ownership. The same
+   screen-sized texture packet appears at many read offsets, so packet replay
+   or stale source ownership is still suspicious even after direct-triangle
+   overlays are peeled away.
+5. In parallel, trace Type5 writes into the sampled buckets
+   `0x002000..0x010000` under the MAME-style path. TMU bank selection alone is
+   not the missing piece, and `baseBias=0` is only a different wrong stripe.
