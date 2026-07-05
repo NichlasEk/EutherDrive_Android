@@ -28435,6 +28435,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_CONSTANT_S_FULLRECT_TEXTURE_TRIANGLES_LIMIT"), 32);
     private readonly bool _experimentConstantSFullrectUseXAsS =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_CONSTANT_S_FULLRECT_USE_X_AS_S"));
+    private readonly int _experimentConstantSFullrectUseYAsTSpan =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_CONSTANT_S_FULLRECT_USE_Y_AS_T_SPAN"), 0);
     private readonly bool _experimentSuppressImplausibleSetupTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES"));
     private readonly int _experimentSuppressImplausibleSetupTrianglesTraceLimit =
@@ -34963,10 +34965,15 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         bool remapConstantSFullrectS = _experimentConstantSFullrectUseXAsS &&
             IsConstantSFullrectTextureTriangle(a, b, c, minX, maxX, minY, maxY);
+        bool remapConstantSFullrectT = _experimentConstantSFullrectUseYAsTSpan > 0 &&
+            IsConstantSFullrectTextureTriangle(a, b, c, minX, maxX, minY, maxY);
         float remapConstantSScale = remapConstantSFullrectS && maxX > minX
             ? 256.0f / (maxX - minX)
             : 0.0f;
-        if (remapConstantSFullrectS && _constantSFullrectRemapTraceCount++ < 12)
+        float remapConstantTScale = remapConstantSFullrectT && maxY > minY
+            ? _experimentConstantSFullrectUseYAsTSpan / (float)(maxY - minY)
+            : 0.0f;
+        if ((remapConstantSFullrectS || remapConstantSFullrectT) && _constantSFullrectRemapTraceCount++ < 12)
         {
             ulong pc = CpuPcProvider?.Invoke() ?? 0;
             string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
@@ -34974,6 +34981,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 $"[GAUNTDL:EXPERIMENT] constant-s-fullrect-use-x-as-s " +
                 $"n={_constantSFullrectRemapTraceCount} color=0x{fallbackColor:X4} area={area:F3} " +
                 $"bbox=({minX},{minY})-({maxX},{maxY}) scale={remapConstantSScale:F6} " +
+                $"tSpan={_experimentConstantSFullrectUseYAsTSpan} tScale={remapConstantTScale:F6} " +
                 $"st=({a.S:F3},{a.T:F3})/({b.S:F3},{b.T:F3})/({c.S:F3},{c.T:F3}) " +
                 $"cmd=0x{_currentCommandFifoCommand:X8}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
         }
@@ -35089,6 +35097,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
                 if (remapConstantSFullrectS)
                     s = (px - minX) * remapConstantSScale;
+                if (remapConstantSFullrectT)
+                    t = (maxY - py) * remapConstantTScale;
                 texel = SampleTextureRgb565(s, t);
 sampledTexel:
                 if (traceSampleSummary && _lastTextureSampleValid)

@@ -6403,6 +6403,20 @@ align32 disabled:
   frameHash=0x26448ab8
   zero=34469210
   visual=unchanged from best X-as-S
+
+Y-as-T span 32:
+  /tmp/gauntdl-constant-s-x-as-s-tspan32-warm-f300.log
+  /tmp/gauntdl-constant-s-x-as-s-tspan32-warm-f300.png
+  frameHash=0xe2796df3
+  zero=33233299
+  visual=more filled but vertically smeared; not a correct image
+
+Y-as-T span 64:
+  /tmp/gauntdl-constant-s-x-as-s-tspan64-warm-f300.log
+  /tmp/gauntdl-constant-s-x-as-s-tspan64-warm-f300.png
+  frameHash=0x8ff63a4d
+  zero=34883541
+  visual=worse than best X-as-S and still smeared
 ```
 
 Also extended `TEXUPLOAD-LINK` rows with a `disk=` column using the same
@@ -6434,13 +6448,35 @@ RAM is still mostly zero at these sources, while the disk oracle shows dense
 useful target is texture upload/write layout for those disk words, not another
 RAM-source search.
 
+Follow-up write-bucket trace:
+
+```text
+/tmp/gauntdl-texwrite-sample-buckets-diskwords-warm-f300.log
+frameHash=0x5ef40570
+```
+
+It targeted the sample buckets reported by the first fullrect summaries
+(`0x001000..0x004000` and `0x00a000..0x00d000`). The first writes in those
+buckets show `WriteTexturePort32` using upload `tlod=0x00700800`, while the
+fullrect sample summaries use draw/sample `lod=0x00002000`. In the current
+decode, `0x00700800` is a `256x32` upload layout and `0x00002000` is sampled as
+`256x256`.
+
+That LOD/aspect mismatch is a useful lead, but the T-span experiments show it
+is not solved by simply compressing the fullrect T coordinate:
+
+```text
+T_SPAN=32 reduces zero pixels, but smears the visible image.
+T_SPAN=64 is numerically and visually worse.
+```
+
 Current conclusion:
 
 1. `S=0` is real payload in the fresh source structs, but X-as-S proves the
    texture data becomes visible when the fullrect samples across the X axis.
 2. Base bias stays enabled; no-bias, reverse lanes, T flip, linear addressing,
-   no-seq8, and no-align did not improve the visible image.
+   no-seq8, no-align, and T-span remaps did not improve the visible image.
 3. Next graphics slice should either replace the diagnostic raster remap with a
    source-accurate way to recover the fullrect's horizontal coordinate, or
    instrument `WriteTexturePort32`/writer buckets for the `wtr@0xc200..0xde00`
-   disk-backed Type5 writes to find the remaining upload layout issue.
+   disk-backed Type5 writes to resolve the upload-vs-sample LOD/aspect mismatch.
