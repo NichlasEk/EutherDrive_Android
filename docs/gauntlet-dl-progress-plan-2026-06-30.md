@@ -3912,3 +3912,200 @@ Next continuation point:
    last-written by stale FIFO payload, the decode should resync to a valid
    packet head in the active producer window or gate until the producer installs
    a new read head, not consume the stale packet body.
+
+#### 2026-07-05 outside-stale-chain bulk-end gate
+
+Added a separate default-off bulk-end decode gate:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_OUTSIDE_STALE_CHAIN=1
+```
+
+It skips the automatic `bulk-end` decode when the current read head is outside
+the active producer bulk window, the storage word was last written by FIFO, and
+the last writer PC low32 is `800fe5d4`. This is narrower than packet dropping:
+it does not consume the stale Type1 packet and does not move the read pointer.
+
+The first f420 behavior probe used the same visual stack as the current
+offscreen/direct diagnostic run:
+
+```text
+/tmp/gauntdl-outside-stalechain-gate-f420.ppm
+/tmp/gauntdl-outside-stalechain-gate-f420.png
+frameHash=0x2376d83f
+frameSha256=1c0ea9d464e4f9075797c79151a308ecb36212d6d594a6df81c0cea2e766f646
+direct/setup=6025/3001
+drawPackets=21375
+framebuffer=640x480:305614:111993
+cmdstop=invalid-standard-window/0xbda7eca1/48552/.../pc=0xffffffff801066c8
+```
+
+The gate fires on the intended shape:
+
+```text
+[GAUNTDL:VOODOO-CMDFIFO-BULK-GATE]
+reason=outside-stale-chain:scan=outside:rel60594/16896
+rd=0x00000000 bulk=0x00004d38-0x00015534
+word=0x3eb84c4d start=0xc0000205 pc=0xffffffff800fe5d4
+```
+
+Visual inspection is still negative. The selected frame remains dominated by
+large cyan/white/red false surfaces and a horizontal noise band. The result
+matches the `0x2376d83f` offscreen-224 family, so gating only the `800fe5d4`
+outside-stale bulk-end entry does not remove the visible corruption.
+
+The important clue is that the summary's top surviving solid buckets moved to
+the follow-on command-FIFO service PC:
+
+```text
+solidtriDraw top: pc=800fe850 ftri ... rdAB85/rdA138/rd2E1D/rd800B
+```
+
+Next continuation point:
+
+1. Keep the outside-stale-chain bulk-end gate default-off as diagnostic.
+2. Do not promote it; it is visually neutral against the current false-surface
+   family.
+3. Run a focused direct-read/ownership trace on the same `0x2376d83f` stack to
+   confirm whether the remaining `ftri` blocks are the same stale Type1 payload
+   heads replayed from `pc=800fe850`.
+4. If confirmed, the next candidate should classify stale payload ownership by
+   packet storage provenance and active bulk window, not by the current CPU PC
+   alone.
+
+#### 2026-07-05 outside-stale write gate and resync probes
+
+The focused direct-read/ownership trace confirmed why the bulk-end gate was
+visually neutral. The remaining large direct blocks are not being emitted by
+`bulk-end`; they are repeated `write`-trigger decodes from the follow-on command
+FIFO service at `pc=800fe850`:
+
+```text
+cmd=0xbda7eca1 packet=0x00000210 rd0xAB85 trigger=write pc=800fe850
+bulk=scan=outside:rel29772/16896
+w0 last=fifo/pc0xffffffff800fe5d4
+
+cmd=0x3e1d9c71 packet=0x00000044 rd0xA138 trigger=write pc=800fe850
+bulk=scan=outside:rel59305/16896
+w0 last=fifo/pc0xffffffff800fe5d4
+
+cmd=0x3edf8581 packet=0x0000f8d0 rd0x2E1D/rd0x800B trigger=write pc=800fe850
+bulk=scan=outside:rel58308/16896
+w0 last=fifo/pc0xffffffff800fe5d4
+```
+
+So the stale payload ownership is real, but keying fixes to current CPU PC
+`800fe5d4` is too narrow. The stale packet heads can be replayed by the next
+service phase at `800fe850`.
+
+Added a separate default-off write-trigger gate:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_WRITE_GATE_OUTSIDE_STALE_CHAIN=1
+```
+
+It uses the same provenance predicate as the bulk-end gate, but applies before
+`DecodeCommandFifoPacketsIfNotPending("write")`. This is negative:
+
+```text
+/tmp/gauntdl-outside-stalechain-writegate-f420.ppm
+/tmp/gauntdl-outside-stalechain-writegate-f420.png
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+direct/setup=942/441
+drawPackets=22273
+framebuffer=640x480:307200:307200
+```
+
+The gate catches the intended trigger, but it leaves the stale read head in
+place while depth/valid data accumulate. The selected frame falls into the
+same fully covered cyan/brown family as earlier Type1 stop/drop controls.
+
+Added a second default-off write-trigger resync:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_WRITE_RESYNC_OUTSIDE_STALE_CHAIN=1
+```
+
+It moves the read head from the stale outside-bulk packet to the current bulk
+start, but only when the bulk start is a Type5 texture packet head:
+
+```text
+[GAUNTDL:VOODOO-CMDFIFO-BULK-RESYNC]
+kind=write-outside-stale
+oldRd=0x00000210 newRd=0x000020a0
+oldWord=0xbda7eca1 start=0xc0000205
+reason=scan=outside:rel63580/16896
+pc=0xffffffff800fe850
+```
+
+This is mechanically cleaner than the write gate, but the visual result is also
+negative:
+
+```text
+/tmp/gauntdl-outside-stalechain-writeresync-f420.ppm
+/tmp/gauntdl-outside-stalechain-writeresync-f420.png
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+direct/setup=317/141
+drawPackets=24761
+texWrites=6372017
+textureMap=25056048:12682016:12374032:807808
+framebuffer=640x480:307200:307200
+```
+
+The resync increases texture traffic and repeatedly anchors stale reads to
+`0xc0000205` heads, but it still collapses real direct/setup work and produces
+the same fullcover image. Bulk-start is therefore too coarse as a universal
+resync target.
+
+Next continuation point:
+
+1. Keep `FIFO_WRITE_GATE_OUTSIDE_STALE_CHAIN` and
+   `FIFO_WRITE_RESYNC_OUTSIDE_STALE_CHAIN` default-off as negative controls.
+2. The productive trace direction is now narrower: for the repeated
+   `0xbda7eca1 @ 0x210` and `0x3e1d9c71 @ 0x44` write-trigger loops, compare
+   the stale read head to packet heads already decoded inside the current bulk
+   window. Do not always jump to bulk start.
+3. A candidate fix should select a valid next packet head or preserve the
+   producer-installed read phase, not gate/stall or reset every outside-stale
+   read to the Type5 header.
+
+#### 2026-07-05 lower implausible direct-draw threshold probe
+
+The remaining `0x2376d83f` visible corruption had moved to `ftri` blocks below
+the existing implausible direct-draw suppressor threshold (`640*240`). Added an
+env-controlled threshold while preserving the old default:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES_MIN_BOX_PIXELS=...
+```
+
+The behavior probe used `32768` with the current visual stack:
+
+```text
+/tmp/gauntdl-impldirect-min32768-f420.ppm
+/tmp/gauntdl-impldirect-min32768-f420.png
+frameHash=0xa3750074
+frameSha256=cb9f4fb20d9a476d33eb50a5016f5d14c01c0397e576b5c1a07f7c8beced125f
+direct/setup=6025/3001
+drawPackets=21375
+framebuffer=640x480:307200:144298
+```
+
+This is also not correct graphics. Unlike the earlier packet/command-side
+suppression controls, it preserves direct/setup counters, but visual inspection
+shows a white/stripe frame instead of scene geometry. That means simply peeling
+more stale direct-solid surfaces is not enough; the underlying selected buffer
+is still dominated by bad texture/stripe output.
+
+Next continuation point:
+
+1. Keep the min-box threshold env defaulted to the old value as a diagnostic
+   knob only.
+2. The next visual target should move from direct-solid overlays to the
+   selected-buffer texture/stripe source. The direct counters can remain high
+   while the revealed frame is still wrong.
+3. Compare buffer selection and the stripe-producing setup/textured triangles
+   between `0x2376d83f` and `0xa3750074`; the direct overlay is not the only
+   blocker to visible graphics.

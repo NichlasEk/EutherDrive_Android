@@ -27099,6 +27099,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_PAYLOAD_READ"));
     private readonly bool _experimentCommandFifoBulkGateStaleRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_STALE_READ"));
+    private readonly bool _experimentCommandFifoBulkGateOutsideStaleChain =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_OUTSIDE_STALE_CHAIN"));
+
+    private readonly bool _experimentCommandFifoWriteGateOutsideStaleChain =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_WRITE_GATE_OUTSIDE_STALE_CHAIN"));
+
+    private readonly bool _experimentCommandFifoWriteResyncOutsideStaleChain =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_WRITE_RESYNC_OUTSIDE_STALE_CHAIN"));
     private readonly bool _experimentCommandFifoWriteGateStaleRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_WRITE_GATE_STALE_READ"));
     private readonly bool _experimentCommandFifoBulkResyncPayloadToHead =
@@ -27347,6 +27355,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_LARGE_SOLID_TRIANGLES"));
     private readonly bool _experimentSuppressImplausibleBulkDirectTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES"));
+
+    private readonly int _experimentSuppressImplausibleBulkDirectTrianglesMinBoxPixels =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES_MIN_BOX_PIXELS"), 640 * 240);
     private readonly bool _experimentSuppressOffscreenDirectTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_OFFSCREEN_DIRECT_TRIANGLES"));
     private readonly bool _experimentDisableTriangleWireEdges =
@@ -27816,8 +27827,19 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_cmdFifoBulkWriteDepth == 0 &&
             (!_fixMameCommandFifoModel || !_experimentMameCommandFifoDeferWriteDecode))
         {
-            if (ShouldGateCommandFifoStaleWriteRead(out string staleWriteReason))
+            if (ShouldResyncCommandFifoOutsideStaleWriteRead(out string outsideStaleWriteResyncReason))
+            {
+                int oldReadIndex = _cmdFifoReadIndex;
+                uint oldReadWord = ReadCommandFifoWordAt(oldReadIndex);
+                SetCommandFifoReadIndex(_cmdFifoBulkStartIndex, "write-outside-stale");
+                _cmdFifoDepth = Math.Max(_cmdFifoDepth, _cmdFifoBulkWriteWordCount);
+                TraceCommandFifoBulkResync("write-outside-stale", outsideStaleWriteResyncReason, oldReadIndex, oldReadWord);
+                DecodeCommandFifoPacketsIfNotPending("write");
+            }
+            else if (ShouldGateCommandFifoStaleWriteRead(out string staleWriteReason))
                 TraceCommandFifoBulkDecodeGate($"stale-write:{staleWriteReason}", _cmdFifoReadIndex, ReadCommandFifoWordAt(_cmdFifoReadIndex));
+            else if (ShouldGateCommandFifoOutsideStaleWriteRead(out string outsideStaleWriteReason))
+                TraceCommandFifoBulkDecodeGate($"outside-stale-write:{outsideStaleWriteReason}", _cmdFifoReadIndex, ReadCommandFifoWordAt(_cmdFifoReadIndex));
             else
                 DecodeCommandFifoPacketsIfNotPending("write");
         }
@@ -28271,6 +28293,11 @@ internal class VoodooBringupBackend : IVoodooBackend
                 skipBulkEndDecode = true;
                 bulkEndDecodeGateReason = $"stale-read:{staleReadReason}";
             }
+            else if (ShouldGateCommandFifoOutsideStaleBulkChain(out string outsideStaleChainReason))
+            {
+                skipBulkEndDecode = true;
+                bulkEndDecodeGateReason = $"outside-stale-chain:{outsideStaleChainReason}";
+            }
         }
         if (skipBulkEndDecode)
             TraceCommandFifoBulkDecodeGate(bulkEndDecodeGateReason, _cmdFifoReadIndex, ReadCommandFifoWordAt(_cmdFifoReadIndex));
@@ -28341,6 +28368,54 @@ internal class VoodooBringupBackend : IVoodooBackend
         return _experimentCommandFifoWriteGateStaleRead &&
                !_decodingCommandFifo &&
                ShouldResyncCommandFifoStalePacketReadToBulkStart(out reason);
+    }
+
+    private bool ShouldGateCommandFifoOutsideStaleBulkChain(out string reason)
+    {
+        reason = "";
+        return _experimentCommandFifoBulkGateOutsideStaleChain &&
+               IsCommandFifoOutsideStaleBulkChain(out reason);
+    }
+
+    private bool ShouldGateCommandFifoOutsideStaleWriteRead(out string reason)
+    {
+        reason = "";
+        return _experimentCommandFifoWriteGateOutsideStaleChain &&
+               !_decodingCommandFifo &&
+               IsCommandFifoOutsideStaleBulkChain(out reason);
+    }
+
+    private bool ShouldResyncCommandFifoOutsideStaleWriteRead(out string reason)
+    {
+        reason = "";
+        return _experimentCommandFifoWriteResyncOutsideStaleChain &&
+               !_decodingCommandFifo &&
+               IsType5TexturePacketHeader(ReadCommandFifoWordAt(_cmdFifoBulkStartIndex)) &&
+               IsCommandFifoOutsideStaleBulkChain(out reason);
+    }
+
+    private bool IsCommandFifoOutsideStaleBulkChain(out string reason)
+    {
+        reason = "";
+        if (!_cmdFifoBulkSawWrite ||
+            _cmdFifoBulkWriteWordCount <= 0)
+        {
+            return false;
+        }
+
+        string bulkPosition = FormatCommandFifoBulkPacketPosition(_cmdFifoReadIndex).TrimStart();
+        if (!bulkPosition.StartsWith("scan=outside", StringComparison.Ordinal))
+            return false;
+
+        int storageIndex = CommandFifoReadStorageIndex(_cmdFifoReadIndex);
+        if (_cmdFifoStorageLastWriteSource[storageIndex] != CmdFifoStorageWriteSourceFifo ||
+            (_cmdFifoStorageLastWritePc[storageIndex] & 0xffffffffUL) != 0x800fe5d4UL)
+        {
+            return false;
+        }
+
+        reason = bulkPosition;
+        return true;
     }
 
     private bool ShouldResyncCommandFifoWrappedBulkTailToStart()
@@ -33091,7 +33166,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         if (!_experimentSuppressImplausibleBulkDirectTriangles ||
             (source != "itri" && source != "ftri") ||
-            boxPixels < 640L * 240L ||
+            boxPixels < _experimentSuppressImplausibleBulkDirectTrianglesMinBoxPixels ||
             !_decodingCommandFifo ||
             (_currentCommandFifoCommand & 7u) != 1u)
         {
