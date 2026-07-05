@@ -6079,3 +6079,95 @@ Next continuation:
    before the first writer-backed `TEXSUMMARY` rows with constant S.
 3. Compare captured S/T with hardware gradient registers and MAME setup
    semantics before making another default-on rendering change.
+
+## 2026-07-05 - Type3 Constant-S Confirmation and Trace Oracle Fix
+
+Rechecked the current best `body+0x3c8 + diskwords + clamp` f300 stripe frame
+with the existing Type3 TMU selector experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST=1
+/tmp/gauntdl-plus3c8-diskwords-clamp-prefertmu0-warm-f300.log
+/tmp/gauntdl-plus3c8-diskwords-clamp-prefertmu0-warm-f300.ppm
+frameHash=0x5ef40570
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+drawPackets=17111 directTriangles=647 setupTriangles=304
+```
+
+Result: no frame/hash/texture-map movement. The visible stripe artifact is not
+caused by picking TMU1 S/T over TMU0 S/T in the simplified Type3 path.
+
+Focused Type3 read trace for the first writer-backed fullrect pair:
+
+```text
+/tmp/gauntdl-plus3c8-type3-fields-rd2c90c-rd2c958-warm-f300.log
+frameHash=0x5ef40570
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+```
+
+The raw packet words confirm the visible clean fullrect pair has constant S in
+the Type3 payload itself:
+
+```text
+rd=0x0002c90c cmd=0x0180a8cb
+v0 x=0 y=-1   s0=0 t0=256
+v1 x=512 y=383 s0=0 t0=0
+v2 x=0 y=383 s0=0 t0=0
+
+rd=0x0002c958 cmd=0x0180a8cb
+v0 x=512 y=383 s0=0 t0=0
+v1 x=0 y=-1   s0=0 t0=256
+v2 x=512 y=-1 s0=0 t0=256
+```
+
+This resolves the local Type3 question: the decoder field order is still
+consistent with MAME, and the fullrect's `S=0,T=0..256` shape is
+intentional-looking payload data, not a field-shift bug. The strongest next
+target remains upload/source ownership for the texture data consumed by the
+`base=0x510` fullrect, especially why the source selector keeps feeding
+descriptor or metadata streams into Type5 texture uploads.
+
+Also fixed a trace-oracle bug introduced in the writer-summary slice:
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_REQUIRE_WRITER=1`
+now collects writer buckets even when the more verbose
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_WRITERS=1` flag is not
+set. Before this fix, `REQUIRE_WRITER=1` could silently filter out all summaries
+because the write context, last-writer map, and summary buckets were only active
+under the verbose `SAMPLE_WRITERS` flag.
+
+Verified fixed oracle:
+
+```text
+/tmp/gauntdl-requirewriter-autobuckets-fixed-warm-f300.log
+frameHash=0x5ef40570
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+drawPackets=17111 directTriangles=647 setupTriangles=304
+```
+
+The first writer-backed fullrect summaries now point from visible pixels back to
+specific Type5 texture uploads:
+
+```text
+n=1 rd0x0002c90c base=0x000510 addrs=0x000510-0x00e810
+writers=none:1574,
+  pc=800fe614/lod=0x00700800/base=0/t5=0xC0000205@0x000280/pkt=0x00007334:1021,
+  pc=800fe614/lod=0x00700800/base=0/t5=0xC0000205@0x000300/pkt=0x0000743C:1016,
+  pc=800fe614/lod=0x00700800/base=0/t5=0xC0000205@0x000400/pkt=0x0000764C:1008
+
+n=2 rd0x0002c958 base=0x000510 addrs=0x000510-0x00e810
+writers=none:3034,
+  pc=800fe614/lod=0x00700800/base=0x1c00/t5=0xC0000205@0x000300/pkt=0x0001D1FC:904,
+  pc=800fe614/lod=0x00700800/base=0x1c00/t5=0xC0000205@0x000200/pkt=0x0001CFEC:896,
+  pc=800fe614/lod=0x00700800/base=0x1c00/t5=0xC0000205@0x000100/pkt=0x0001CDDC:888
+```
+
+Next continuation:
+
+1. Keep the Type3 fullrect as real geometry and stop spending time on S/T field
+   decode unless a new packet family appears.
+2. Use the fixed `REQUIRE_WRITER` trace as the oracle for upload/source
+   ownership, starting from Type5 packets `0x00007334`, `0x0000743C`,
+   `0x0000764C`, `0x0001CFEC`, `0x0001D1FC`, and `0x0001CDDC`.
+3. Move back up the source-selector chain around the index-9 `font_story`/`wtr`
+   asset body and the path that hands descriptor-like data to Type5 upload
+   runs.

@@ -30356,7 +30356,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int bytesPerTexel,
         bool seq8Downld)
     {
-        if (!_traceTexturedTriangleSampleWriters)
+        if (!_traceTexturedTriangleSampleWriters && !_traceTexturedTriangleSampleSummaryRequireWriter)
             return;
 
         _currentTextureWriteActive = true;
@@ -30371,7 +30371,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void EndTextureWriteContext()
     {
-        if (!_traceTexturedTriangleSampleWriters)
+        if (!_traceTexturedTriangleSampleWriters && !_traceTexturedTriangleSampleSummaryRequireWriter)
             return;
 
         _currentTextureWriteActive = false;
@@ -30472,7 +30472,8 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TrackTextureLastWriter(int wordOffset)
     {
-        if (!_traceTexturedTriangleSampleWriters || !_currentTextureWriteActive)
+        if ((!_traceTexturedTriangleSampleWriters && !_traceTexturedTriangleSampleSummaryRequireWriter) ||
+            !_currentTextureWriteActive)
             return;
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
@@ -34870,7 +34871,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         Dictionary<uint, int>? sampleColorBuckets = traceSampleSummary ? [] : null;
         Dictionary<uint, int>? sampleAddressBuckets = traceSampleSummary ? [] : null;
         Dictionary<TextureSampleWriterKey, int>? sampleWriterBuckets =
-            traceSampleSummary && _traceTexturedTriangleSampleWriters ? [] : null;
+            traceSampleSummary &&
+            (_traceTexturedTriangleSampleWriters || _traceTexturedTriangleSampleSummaryRequireWriter) ? [] : null;
         int sampleCount = 0;
         uint sampleFirstAddress = uint.MaxValue;
         uint sampleLastAddress = 0;
