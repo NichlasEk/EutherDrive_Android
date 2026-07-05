@@ -753,6 +753,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX_PACKETS"));
     private readonly ulong _experimentZeroBaseUploadSkipUnknownPrefixPacketsMaxBytes =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX_PACKETS_MAX_BYTES") ?? 0x20000UL;
+    private readonly bool _experimentZeroBaseUploadStopAtKnownBoundary =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_STOP_AT_KNOWN_BOUNDARY"));
+    private readonly ulong _experimentZeroBaseUploadStopAtKnownBoundaryMaxBytes =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_STOP_AT_KNOWN_BOUNDARY_MAX_BYTES") ?? 0x20000UL;
     private readonly bool _experimentClampIndexedTextureUploadLimit =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
     private readonly bool _experimentZeroBaseUploadDiskWords =
@@ -973,6 +977,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadLinkTraceCount;
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixPacketTraceSources = [];
+    private readonly HashSet<ulong> _zeroBaseUploadStopAtKnownBoundaryTraceSources = [];
     private int _textureUploadPayloadCallerTransitionTraceCount;
     private int _textureUploadPayloadPacketSourceTraceCount;
     private int _textureUploadPayloadPacketTargetTraceCount;
@@ -4050,6 +4055,44 @@ internal sealed class MipsR5000Core
         ulong skippedInstructions = 0;
 
         TraceTextureUploadPayloadRun(pc, source, sourceBase, currentPacketAddress, payloadWords, index, limit, sp, state, fifo, room);
+
+        if (_experimentZeroBaseUploadStopAtKnownBoundary &&
+            sourceBase == 0 &&
+            !IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) &&
+            TryFindNextKnownRuntimeBgLoadModelUploadSource(
+                source,
+                source + sourceBytes,
+                _experimentZeroBaseUploadStopAtKnownBoundaryMaxBytes,
+                out ulong boundarySource,
+                out ulong boundaryIndex,
+                out string boundaryCode))
+        {
+            ulong payloadBytes = payloadWords * 4UL;
+            uint packetsBeforeBoundary = (uint)Math.Min(
+                packets,
+                (boundarySource - source) / payloadBytes);
+            if (packetsBeforeBoundary != 0 && packetsBeforeBoundary < packets)
+            {
+                uint oldLimit = limit;
+                uint oldPackets = packets;
+                ulong oldSourceBytes = sourceBytes;
+                limit = unchecked(index + packetsBeforeBoundary - 1U);
+                packets = packetsBeforeBoundary;
+                sourceBytes = (ulong)packets * payloadBytes;
+                if (_textureUploadPayloadPointerStartTraceCount < 64 &&
+                    _zeroBaseUploadStopAtKnownBoundaryTraceSources.Add(source))
+                {
+                    _textureUploadPayloadPointerStartTraceCount++;
+                    ulong droppedBytes = oldSourceBytes - sourceBytes;
+                    Console.WriteLine(
+                        $"[GAUNTDL:EXPERIMENT] zero-base-upload-stop-at-known-boundary " +
+                        $"source=0x{source:x16} boundary=0x{boundarySource:x16}:{boundaryIndex}:{boundaryCode} " +
+                        $"packets={oldPackets}->{packets} limit={oldLimit}->{limit} " +
+                        $"bytes=0x{oldSourceBytes:x}->0x{sourceBytes:x} dropped=0x{droppedBytes:x} " +
+                        $"packet=0x{currentPacketAddress:x8} words={payloadWords}");
+                }
+            }
+        }
 
         if (_experimentZeroBaseUploadSkipUnknownPrefixPackets &&
             sourceBase == 0 &&

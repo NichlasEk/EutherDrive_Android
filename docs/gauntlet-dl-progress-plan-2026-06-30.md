@@ -4692,3 +4692,53 @@ Current conclusion:
    command/data alignment instead of forcing one continuous packet grid.
 4. The verification target remains strict: a f420 frame must show recognizable
    model/scene graphics, not only non-black/colorful rasterization.
+
+## 2026-07-05 - Zero-Base Stop At Known Boundary Probe
+
+Added another default-off boundary diagnostic:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_STOP_AT_KNOWN_BOUNDARY=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_STOP_AT_KNOWN_BOUNDARY_MAX_BYTES=0x20000
+```
+
+This variant does not skip forward. It truncates the current zero-base fast-path
+upload run before the next known BGLoadModel payload, so the run no longer
+crosses from the unknown `gei` gap into `snm`.
+
+f420 run:
+
+```text
+/tmp/gauntdl-boundary-stop-f420.log
+/tmp/gauntdl-boundary-stop-f420.ppm
+/tmp/gauntdl-boundary-stop-f420.png
+frameHash=0xead9850e
+frameSha256=582761465a2ddda3360ad074d8ba7a4fe9c36124a734b09bac55e9b300ce0729
+framebuffer=640x480:307200:173051
+textureMap=18297344:7263524:11033820:313172:0x000000:0x704284
+textured=tri:981:covered:828:rejected:153:pixels:77609945:zero:12050628
+cmdstop=invalid-standard-window/0x00012609/.../pc=0xffffffff801066c4
+```
+
+The boundary hit is exact:
+
+```text
+source=0xffffffff80312998
+boundary=0xffffffff80321718:2:snm
+packets=256->237 limit=255->236 bytes=0x10000->0xed00 dropped=0x1300
+```
+
+Visual inspection is negative: the frame is still horizontal colored stripes
+with white fill, not real scene/model graphics. Truncating the run did not
+repair the visible plane and did not remove the later invalid standard-window
+stop.
+
+Current conclusion:
+
+1. Keep `STOP_AT_KNOWN_BOUNDARY` default-off as a traceable negative candidate.
+2. The visible artifact does not come only from carrying too many packets into
+   `snm`; it is already wrong before that boundary or the packet target/source
+   pairing is wrong.
+3. Next useful probe should compare the FIFO Type5 packet source word and
+   payload memory side by side for the exact visible target buckets, especially
+   whether the 0x200 packet-address stride is correct when `sourceBase==0`.
