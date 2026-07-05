@@ -755,8 +755,12 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX"));
     private readonly bool _experimentZeroBaseUploadPointerStartUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN"));
+    private readonly bool _experimentZeroBaseUploadDescriptorSourceTableDerivedSource =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_TABLE_DERIVED_SOURCE"));
     private readonly ulong? _experimentZeroBaseUploadDescriptorSourcePointerOffset =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_POINTER_OFFSET");
+    private readonly ulong? _experimentZeroBaseUploadDescriptorSourceNodePointerOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_NODE_POINTER_OFFSET");
     private readonly ulong? _experimentZeroBaseUploadDescriptorPacketAddressOffset =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_PACKET_ADDRESS_OFFSET");
     private readonly bool _experimentZeroBaseUploadSkipUnknownPrefixPackets =
@@ -4401,6 +4405,45 @@ internal sealed class MipsR5000Core
             return source;
 
         bool knownSource = IsKnownRuntimeBgLoadModelUploadSourceCandidate(source);
+        if (_experimentZeroBaseUploadDescriptorSourceTableDerivedSource &&
+            !knownSource &&
+            IsMainRamRange(source + 0x10UL, 4))
+        {
+            const ulong sourceTable = 0xffffffff802529a0UL;
+            uint descriptorKey = _memory.Read32(source + 0x10UL);
+            uint sourceIndex = descriptorKey >> 16;
+            uint localIndex = descriptorKey & 0xffffU;
+            if (sourceIndex < 0x40U &&
+                IsMainRamRange(sourceTable + sourceIndex * 4UL, 4))
+            {
+                uint tableSource = _memory.Read32(sourceTable + sourceIndex * 4UL);
+                ulong localOffset = (ulong)localIndex * 0x8cUL + 0x68UL;
+                ulong tableDerivedCandidate = SignExtend32(unchecked(tableSource + (uint)localOffset));
+                if (tableSource != 0 &&
+                    tableDerivedCandidate != source &&
+                    IsMainRamRange(tableDerivedCandidate, sourceBytes))
+                {
+                    if (_traceTextureUploadPayload &&
+                        AllowsTextureUploadRunSourceTrace(tableDerivedCandidate) &&
+                        _textureUploadPayloadPointerStartTraceCount++ < 64)
+                    {
+                        Console.WriteLine(
+                            $"[GAUNTDL:EXPERIMENT] zero-base-upload-descriptor-source-table-derived-source " +
+                            $"source=0x{source:x16}->0x{tableDerivedCandidate:x16} index={sourceIndex} local=0x{localIndex:x} " +
+                            $"table=0x{tableSource:x8} localOffset=0x{localOffset:x} " +
+                            $"{DescribeKnownRuntimeBgLoadModelUploadSource(tableDerivedCandidate)} " +
+                            $"bytes=0x{sourceBytes:x} packets={limit - index + 1U} words={payloadWords} " +
+                            $"descriptor={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/" +
+                            $"{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8}/" +
+                            $"{ReadTraceWord(source + 0x10UL):x8}/{ReadTraceWord(source + 0x14UL):x8}/" +
+                            $"{ReadTraceWord(source + 0x18UL):x8}/{ReadTraceWord(source + 0x1cUL):x8}");
+                    }
+
+                    return tableDerivedCandidate;
+                }
+            }
+        }
+
         if (_experimentZeroBaseUploadDescriptorSourcePointerOffset.HasValue &&
             !knownSource)
         {
@@ -4410,6 +4453,46 @@ internal sealed class MipsR5000Core
                 IsMainRamRange(source + pointerOffset, 4))
             {
                 ulong pointerCandidate = SignExtend32(_memory.Read32(source + pointerOffset));
+                if (_experimentZeroBaseUploadDescriptorSourceNodePointerOffset.HasValue &&
+                    pointerCandidate != source &&
+                    pointerCandidate != 0 &&
+                    IsMainRamRange(pointerCandidate, 4))
+                {
+                    ulong nodePointerOffset = _experimentZeroBaseUploadDescriptorSourceNodePointerOffset.Value;
+                    if (nodePointerOffset is <= 0x100UL &&
+                        (nodePointerOffset & 3UL) == 0 &&
+                        IsMainRamRange(pointerCandidate + nodePointerOffset, 4))
+                    {
+                        ulong nodePointerCandidate = SignExtend32(_memory.Read32(pointerCandidate + nodePointerOffset));
+                        if (nodePointerCandidate != pointerCandidate &&
+                            nodePointerCandidate != source &&
+                            nodePointerCandidate != 0 &&
+                            IsMainRamRange(nodePointerCandidate, sourceBytes))
+                        {
+                            if (_traceTextureUploadPayload &&
+                                AllowsTextureUploadRunSourceTrace(nodePointerCandidate) &&
+                                _textureUploadPayloadPointerStartTraceCount++ < 64)
+                            {
+                                Console.WriteLine(
+                                    $"[GAUNTDL:EXPERIMENT] zero-base-upload-descriptor-source-node-pointer " +
+                                    $"source=0x{source:x16}->0x{pointerCandidate:x16}->0x{nodePointerCandidate:x16} " +
+                                    $"descriptorOffset=0x{pointerOffset:x} nodeOffset=0x{nodePointerOffset:x} " +
+                                    $"{DescribeKnownRuntimeBgLoadModelUploadSource(nodePointerCandidate)} " +
+                                    $"bytes=0x{sourceBytes:x} index={index}/{limit} words={payloadWords} " +
+                                    $"descriptor={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/" +
+                                    $"{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8}/" +
+                                    $"{ReadTraceWord(source + 0x10UL):x8}/{ReadTraceWord(source + 0x14UL):x8}/" +
+                                    $"{ReadTraceWord(source + 0x18UL):x8}/{ReadTraceWord(source + 0x1cUL):x8} " +
+                                    $"node={ReadTraceWord(pointerCandidate):x8}/{ReadTraceWord(pointerCandidate + 0x04UL):x8}/" +
+                                    $"{ReadTraceWord(pointerCandidate + 0x18UL):x8}/{ReadTraceWord(pointerCandidate + 0x1cUL):x8}/" +
+                                    $"{ReadTraceWord(pointerCandidate + 0x20UL):x8}/{ReadTraceWord(pointerCandidate + 0x90UL):x8}");
+                            }
+
+                            return nodePointerCandidate;
+                        }
+                    }
+                }
+
                 if (pointerCandidate != source &&
                     pointerCandidate != 0 &&
                     IsMainRamRange(pointerCandidate, sourceBytes))

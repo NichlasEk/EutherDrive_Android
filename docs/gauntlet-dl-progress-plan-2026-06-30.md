@@ -5230,3 +5230,115 @@ payload. It is a model/scenegraph-style node with child pointers and matrix-like
 float blocks. Blindly dereferencing one more node is unlikely to produce stable
 graphics; the next target should find the node-to-material/texture payload link
 or the real upload run extent generated from this node tree.
+
+## 2026-07-05 - Descriptor Node and Source-Table Probes
+
+Added two default-off descriptor source probes:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_NODE_POINTER_OFFSET=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_TABLE_DERIVED_SOURCE=1
+```
+
+The node-pointer probe applies after:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_POINTER_OFFSET=0x18
+```
+
+and lets the descriptor source `80312998 + 0x18 -> 802e1788` optionally follow a
+field inside that node. The source-table probe decodes descriptor word
+`+0x10` as `assetIndex:localIndex` and mirrors the producer code at
+`800a6240..800a6290`:
+
+```text
+source = sourceTable[assetIndex] + localIndex * 0x8c + 0x68
+```
+
+Evidence from the focused producer trace:
+
+```text
+/tmp/gauntdl-descriptor-producer-regs-f420.log
+pc=800a6254 reads sourceTable[9] from 802529c4
+s1=0x000948ef local=0x48ef sourceTable[9]=80312998
+computed source=80312998 + 0x27e31c = 80590cb4
+
+final sourceTable bytes at f420:
+802529c4 = 802e2c68
+hot descriptor:
+80312998 +0x10 = 00090000
+80312998 +0x14 = 00000068
+80312998 +0x18 = 802e1788
+```
+
+Screened node pointer offsets from the f180 warm state to f420:
+
+```text
+node+0x1c:
+/tmp/gauntdl-descriptor-node1c-f420-fast.log
+/tmp/gauntdl-descriptor-node1c-f420.ppm
+/tmp/gauntdl-descriptor-node1c-f420.png
+frameHash=0x53011381
+frameSha256=699c017a0b826bb2852c4434f883f1952c4b0ada558573fe706532913a271c53
+framebuffer=640x480:307200:292693
+drawPackets=22645 directTriangles=1285 setupTriangles=605 texWrites=4558693
+textureMap=17802752:8231317:9571435:539960:0x000000:0x78fffc
+colors=5
+
+node+0x20:
+/tmp/gauntdl-descriptor-node20-f420.log
+/tmp/gauntdl-descriptor-node20-f420.ppm
+/tmp/gauntdl-descriptor-node20-f420.png
+frameHash=0xfc5e919c
+frameSha256=b6548a051f9315e4deaf5e520d532197a4576bc6d9a0933eed502674d64688c4
+framebuffer=640x480:246400:72704
+drawPackets=23969 directTriangles=335 setupTriangles=136 texWrites=5345381
+textureMap=20949504:9071196:11878308:515768:0x000000:0x3efffc
+colors=114
+
+node+0x90:
+/tmp/gauntdl-descriptor-node90-f420.log
+/tmp/gauntdl-descriptor-node90-f420.ppm
+/tmp/gauntdl-descriptor-node90-f420.png
+frameHash=0xf6255035
+frameSha256=e7d0ba6972297ac9209a184dfacdc22ce48afd740b713fe6cb7a4286e62cd5b0
+framebuffer=640x480:307200:307200
+drawPackets=23627 directTriangles=1803 setupTriangles=888 texWrites=5575653
+textureMap=21870592:7850291:14020301:701760:0x000000:0x52a164
+colors=3
+```
+
+The source-table-derived candidate was also negative:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_TABLE_DERIVED_SOURCE=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_PACKET_ADDRESS_OFFSET=0x10
+/tmp/gauntdl-descriptor-table-source-f420.log
+/tmp/gauntdl-descriptor-table-source-f420.ppm
+/tmp/gauntdl-descriptor-table-source-f420.png
+frameHash=0xa796a405
+frameSha256=87d2bc6bcdc34b9c20b9b8f53bc8c61895a79e0812fb205324ae351300850092
+framebuffer=640x480:307200:307200
+drawPackets=23819 directTriangles=4085 setupTriangles=2003 texWrites=5272101
+textureMap=20656384:9102081:11554303:550464:0x000000:0x3dfffc
+colors=2
+```
+
+Visual inspection:
+
+1. `node+0x1c` is a flat dark/olive field with magenta strip.
+2. `node+0x20` has more colors but only horizontal stripe artifacts.
+3. `node+0x90` is a flat green field.
+4. source-table-derived source is a flat pale/pink field.
+
+Current conclusion:
+
+1. The node fields are real scenegraph child/sibling links. They are not raw
+   texture payloads.
+2. The constructor/source-table formula is real, but applying it at upload time
+   still produces a flat artifact; it is not the final source repair.
+3. Keep both probes default-off as useful diagnostics.
+4. The next target should trace the descriptor consumer's intended run extent
+   and source selection before `800fe5d4`, especially why the upload service
+   repeats `index=0/255` zero-base runs from the same descriptor instead of a
+   bounded material/texture-body span.
