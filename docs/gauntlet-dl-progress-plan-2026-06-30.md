@@ -3799,3 +3799,116 @@ Next continuation point:
 4. The visual target for the next slice is to remove the giant blue triangle and
    stripe bands from `/tmp/gauntdl-resync-stale-f420.png` while preserving the
    increased texture activity from stale-resync.
+
+#### 2026-07-05 payload Type1 packet skip and texture-cover filtering
+
+Added a trace quality-of-life filter for covered textured triangles:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED_MIN_PIXELS=...
+```
+
+With the stale-resync stack, a min-pixels trace confirmed that the blue/stripe
+image is still dominated by repeated large Type3 setup work from
+`pc=800c4e5c`, `cmd=0x0180A8CB`, with absurd coordinates such as
+`y=-16231` and `x=49076`. Stacking the existing setup suppressor on the
+stale-resync run catches some of these triangles, but the f420 image remains
+unchanged:
+
+```text
+/tmp/gauntdl-resync-setup-suppress-f420.ppm
+frameHash=0xa5684ec1
+frameSha256=1cf30de84221cf95c96dc7da930a91b45a6022fa2cf69d7a8eedee6a42671385
+direct/setup=321/141
+framebuffer=640x480:307200:166664
+```
+
+That rules out the simple "filter the huge setup triangle" shape as the real
+fix for the stale-resync visual family.
+
+Added another default-off upstream probe:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_PAYLOAD_TYPE1_PACKETS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_PAYLOAD_TYPE1_PACKETS_CMDS=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_PAYLOAD_TYPE1_PACKETS_LIMIT=...
+```
+
+It skips whole oversized Type1 packets before their payload words touch Voodoo
+register state, but only for the proven payload family:
+
+```text
+trigger=bulk-end
+pc=800fe5d4
+Type1 is implausible/oversized
+packet-head storage was last written by FIFO at pc=800fe5d4
+optional command filter matches
+```
+
+The broad run with the useful visual stack plus packet skip hit the intended
+outside-bulk payload heads:
+
+```text
+[GAUNTDL:VOODOO-PAYLOAD-TYPE1-SKIP]
+cmd=0x3e959c11 packet=0x00000020 bulk=scan=outside
+
+[GAUNTDL:VOODOO-PAYLOAD-TYPE1-SKIP]
+cmd=0xbda7eca1 packet=0x00000210 bulk=scan=outside
+```
+
+but it collapsed the frame into the same fully covered fallback family as the
+earlier Type1 stop/drop probes:
+
+```text
+/tmp/gauntdl-payloadtype1skip-offscreen-f420.ppm
+/tmp/gauntdl-payloadtype1skip-offscreen-f420.png
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+direct/setup=442/201
+framebuffer=640x480:307200:307200
+```
+
+The focused run filtered the skip to the three previously proven largest
+`ftri` offenders:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_PAYLOAD_TYPE1_PACKETS_CMDS=0xbda7eca1,0x3e1d9c71,0x3edf8581
+```
+
+It still produced the same fullcover family:
+
+```text
+/tmp/gauntdl-payloadtype1skip-focused-offscreen-f420.ppm
+/tmp/gauntdl-payloadtype1skip-focused-offscreen-f420.png
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+direct/setup=1650/810
+framebuffer=640x480:307200:307200
+```
+
+The useful part is not the visual result. The trace shows the same outside-bulk
+heads being replayed repeatedly at `bulk-end`:
+
+```text
+cmd=0xbda7eca1 packet=0x00000210 bulk=scan=outside:rel29772/16896
+cmd=0x3e1d9c71 packet=0x00000044 bulk=scan=outside:rel59305/16896
+cmd=0x3edf8581 packet=0x0000f8d0 bulk=scan=outside:rel58308/16896
+```
+
+So whole-packet skip is a negative control, not a candidate fix. It proves that
+the next fix must stop the stale outside-bulk heads from being selected/replayed
+in the first place, rather than consuming entire oversized packets after decode
+has already selected the wrong read head.
+
+Next continuation point:
+
+1. Keep `SKIP_PAYLOAD_TYPE1_PACKETS` default-off as evidence only.
+2. Do not add more geometry or packet-consumption suppressors; they collapse
+   direct/setup work and keep the `0x6d791e91` fullcover family.
+3. Trace why `bulk-end` repeatedly re-enters the same outside-bulk packet heads
+   (`0x210`, `0x44`, `0xf8d0`) after the skip/advance path.
+4. The likely productive fix is read-pointer provenance or generation validity:
+   once a bulk-end read head is proven outside the current bulk window and
+   last-written by stale FIFO payload, the decode should resync to a valid
+   packet head in the active producer window or gate until the producer installs
+   a new read head, not consume the stale packet body.

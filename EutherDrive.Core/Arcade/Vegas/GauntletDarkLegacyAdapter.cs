@@ -26938,6 +26938,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED"));
     private readonly int _traceTexturedTriangleCoveredLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED_LIMIT"), 80);
+    private readonly int _traceTexturedTriangleCoveredMinPixels =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED_MIN_PIXELS"), 0);
     private readonly int _traceTextureMinRenderFrame =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_MIN_RENDER_FRAME"), 0);
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
@@ -27075,6 +27077,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW_COMMANDS"));
     private readonly int _experimentDropImplausibleType1OutsideBulkWindowTraceLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW_LIMIT"), 80);
+    private readonly bool _experimentSkipPayloadType1Packets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_PAYLOAD_TYPE1_PACKETS"));
+    private readonly ulong[] _experimentSkipPayloadType1PacketsFilter =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_PAYLOAD_TYPE1_PACKETS_CMDS"));
+    private readonly int _experimentSkipPayloadType1PacketsTraceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_PAYLOAD_TYPE1_PACKETS_LIMIT"), 80);
     private readonly bool _experimentResetCommandFifoOnBulkWrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESET"));
     private readonly bool _experimentRewindCommandFifoOnBulkWrite =
@@ -27408,6 +27416,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoType1PacketOwnershipTraceCount;
     private int _commandFifoImplausibleType1OutsideBulkWindowGateCount;
     private int _commandFifoImplausibleType1OutsideBulkWindowDropCount;
+    private int _commandFifoPayloadType1PacketSkipCount;
     private int _commandFifoImplausibleSelfRegisterPacketIgnoreTraceCount;
     private int _commandFifoImplausibleRenderStateWriteIgnoreTraceCount;
     private int _commandFifoPayloadDirectTriangleCommandSuppressCount;
@@ -29750,6 +29759,31 @@ internal class VoodooBringupBackend : IVoodooBackend
                 TraceCommandFifoDecodeStop("invalid-standard-window", command, wordsNeeded);
                 return;
             }
+            if (ShouldSkipPayloadType1Packet(command, wordsNeeded, packetStart))
+            {
+                TraceCommandFifoPayloadType1PacketSkip(command, wordsNeeded, packetStart);
+                CountCommandFifoPacketPc(command, wordsNeeded, packetStart);
+                _fifoPacketCount++;
+                decodedThisCall++;
+                for (int i = 0; i < wordsNeeded; i++)
+                {
+                    int validIndex = CommandFifoReadStorageIndex(packetStart + i);
+                    if (_cmdFifoValid[validIndex])
+                    {
+                        _cmdFifoValid[validIndex] = false;
+                        _cmdFifoValidCount = Math.Max(0, _cmdFifoValidCount - 1);
+                    }
+                }
+
+                _cmdFifoDepth = Math.Max(0, _cmdFifoDepth - wordsNeeded);
+                _cmdFifoDepthWordsDecoded += wordsNeeded;
+                SetCommandFifoReadIndex(DecodeCommandFifoReadIndex(packetStart + wordsNeeded), "skip-payload-type1", command, wordsNeeded);
+                _lastDecodedCommandFifoCommand = command;
+                _lastDecodedCommandFifoWords = wordsNeeded;
+                _lastDecodedCommandFifoPacketStart = packetStart;
+                _lastDecodedCommandFifoReadAfter = _cmdFifoReadIndex;
+                continue;
+            }
 
             _fifoBuffer.Clear();
             for (int i = 0; i < wordsNeeded; i++)
@@ -29882,6 +29916,53 @@ internal class VoodooBringupBackend : IVoodooBackend
             return space == 2u && count > 0x10000u;
         }
         return false;
+    }
+
+    private bool ShouldSkipPayloadType1Packet(uint command, int wordsNeeded, int packetStart)
+    {
+        if (!_experimentSkipPayloadType1Packets ||
+            (command & 7u) != 1u ||
+            _commandFifoDecodeTrigger != "bulk-end" ||
+            !IsImplausibleCommandFifoPacket(command, wordsNeeded))
+        {
+            return false;
+        }
+        if (_experimentSkipPayloadType1PacketsFilter.Length != 0 &&
+            !_experimentSkipPayloadType1PacketsFilter.Contains(command))
+        {
+            return false;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if ((pc & 0xffffffffUL) != 0x800fe5d4UL)
+            return false;
+
+        int storageIndex = CommandFifoReadStorageIndex(packetStart);
+        return _cmdFifoValid[storageIndex] &&
+               _cmdFifoStorageLastWriteSource[storageIndex] == CmdFifoStorageWriteSourceFifo &&
+               (_cmdFifoStorageLastWritePc[storageIndex] & 0xffffffffUL) == 0x800fe5d4UL;
+    }
+
+    private void TraceCommandFifoPayloadType1PacketSkip(uint command, int wordsNeeded, int packetStart)
+    {
+        _commandFifoPayloadType1PacketSkipCount++;
+        if (_commandFifoPayloadType1PacketSkipCount > _experimentSkipPayloadType1PacketsTraceLimit)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        int storageIndex = CommandFifoReadStorageIndex(packetStart);
+        int validWindowLimit = Math.Min(wordsNeeded, 64);
+        int validWindowWords = CountCommandFifoValidWindowWords(packetStart, validWindowLimit);
+        string bulkPosition = FormatCommandFifoBulkPacketPosition(packetStart).TrimStart();
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-PAYLOAD-TYPE1-SKIP] n={_commandFifoPayloadType1PacketSkipCount} " +
+            $"cmd=0x{command:x8} words={wordsNeeded} packet=0x{packetStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
+            $"target=0x{(command >> 3) & 0xfffu:x3} count={command >> 16} " +
+            $"storage=0x{storageIndex * 4:x5} validWindow={validWindowWords}/{validWindowLimit} " +
+            $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} " +
+            $"last=0x{_cmdFifoStorageLastWriteValue[storageIndex]:x8}/pc0x{_cmdFifoStorageLastWritePc[storageIndex]:x16} " +
+            $"bulk={bulkPosition} trigger={_commandFifoDecodeTrigger}{pcStatus}");
     }
 
     private bool ShouldGateCollapsedBulkPayloadChain(uint command, int wordsNeeded, int packetStart, bool implausiblePacket)
@@ -33768,7 +33849,9 @@ sampledTexel:
         float dSdY,
         float dTdY)
     {
-        if (!_traceTexturedTriangleCovered || _renderFrame < _traceTextureMinRenderFrame ||
+        if (!_traceTexturedTriangleCovered ||
+            _renderFrame < _traceTextureMinRenderFrame ||
+            coveredPixels < _traceTexturedTriangleCoveredMinPixels ||
             _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
             return;
 
@@ -33805,7 +33888,9 @@ sampledTexel:
         int coveredPixels,
         int zeroPixels)
     {
-        if (!_traceTexturedTriangleCovered || _renderFrame < _traceTextureMinRenderFrame ||
+        if (!_traceTexturedTriangleCovered ||
+            _renderFrame < _traceTextureMinRenderFrame ||
+            coveredPixels < _traceTexturedTriangleCoveredMinPixels ||
             _texturedTriangleCoveredTraceCount++ >= _traceTexturedTriangleCoveredLimit)
             return;
 
