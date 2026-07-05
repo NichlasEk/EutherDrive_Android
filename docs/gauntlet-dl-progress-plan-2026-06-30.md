@@ -4637,3 +4637,58 @@ Current conclusion:
    bytes in the correct roles.
 4. Keep `TEXTURE_PAYLOAD_INDEX1_LENGTH` default-off as a diagnostic for mapping
    disk offsets, not as a renderer fix.
+
+## 2026-07-05 - Zero-Base Prefix Packet Skip Probe
+
+Added a default-off packet-level variant for the unknown-prefix experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX_PACKETS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX_PACKETS_MAX_BYTES=0x20000
+```
+
+The probe keeps baseline behavior unchanged unless the env is set. Instead of
+only normalizing the starting source pointer, it skips whole fixed-size Type5
+payload packets until the next known BGLoadModel payload is near the current
+zero-base source.
+
+f420 run:
+
+```text
+/tmp/gauntdl-prefix-packet-skip-f420.log
+/tmp/gauntdl-prefix-packet-skip-f420.ppm
+/tmp/gauntdl-prefix-packet-skip-f420.png
+frameHash=0x8b4d205d
+frameSha256=61d12e13c120936f1afff676ba78860edca00cabd1a97febb0675491d1dcd04c
+framebuffer=640x480:307200:306847
+textureMap=5932764:2588295:3344469:542400:0x000000:0x3e78dc
+textured=tri:652:covered:375:rejected:277:pixels:32874387:zero:3322031
+cmdstop=invalid-standard-window/0x00012609/.../pc=0xffffffff801066c4
+```
+
+Visual inspection is still negative for real Gauntlet graphics. It produces
+large flat colored polygon fields and a few diagonal artifacts, not the scene.
+The useful evidence is the skip position:
+
+```text
+source=0xffffffff80312998->0xffffffff80321798
+next=0xffffffff80321718:2:snm
+packets=238 bytes=0xee00 index=0->238/255 packet=0x00000000->0x0001dc00 words=64
+```
+
+That overshoots the known `snm` payload by `0x80` because the current fast path
+can only move in whole 0x100-byte payload packets. The result confirms that the
+current zero-base run is not just a harmless prefix problem: the source stream
+and Type5 packet framing are out of phase across BGLoadModel payload boundaries.
+
+Current conclusion:
+
+1. Keep the packet skip default-off as a diagnostic only.
+2. Do not promote whole-packet skipping to baseline; it improves raw coverage
+   but still feeds stale/shifted texture bytes through FIFO command decode.
+3. The next implementation candidate should be a segment-aware zero-base source
+   splitter/remapper: stop or split a fast-path upload run when it reaches a
+   known BGLoadModel payload boundary, then resume with that payload's native
+   command/data alignment instead of forcing one continuous packet grid.
+4. The verification target remains strict: a f420 frame must show recognizable
+   model/scene graphics, not only non-black/colorful rasterization.

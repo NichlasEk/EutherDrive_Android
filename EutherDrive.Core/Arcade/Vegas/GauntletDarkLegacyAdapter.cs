@@ -749,6 +749,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
     private readonly bool _experimentZeroBaseUploadSkipUnknownPrefix =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX"));
+    private readonly bool _experimentZeroBaseUploadSkipUnknownPrefixPackets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX_PACKETS"));
+    private readonly ulong _experimentZeroBaseUploadSkipUnknownPrefixPacketsMaxBytes =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX_PACKETS_MAX_BYTES") ?? 0x20000UL;
     private readonly bool _experimentClampIndexedTextureUploadLimit =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
     private readonly bool _experimentZeroBaseUploadDiskWords =
@@ -968,6 +972,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadPointerStartTraceCount;
     private int _textureUploadPayloadLinkTraceCount;
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixTraceSources = [];
+    private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixPacketTraceSources = [];
     private int _textureUploadPayloadCallerTransitionTraceCount;
     private int _textureUploadPayloadPacketSourceTraceCount;
     private int _textureUploadPayloadPacketTargetTraceCount;
@@ -4046,6 +4051,45 @@ internal sealed class MipsR5000Core
 
         TraceTextureUploadPayloadRun(pc, source, sourceBase, currentPacketAddress, payloadWords, index, limit, sp, state, fifo, room);
 
+        if (_experimentZeroBaseUploadSkipUnknownPrefixPackets &&
+            sourceBase == 0 &&
+            !IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) &&
+            TryFindNextKnownRuntimeBgLoadModelUploadSource(
+                source,
+                source + sourceBytes,
+                _experimentZeroBaseUploadSkipUnknownPrefixPacketsMaxBytes,
+                out ulong nextKnownSource,
+                out ulong nextKnownIndex,
+                out string nextKnownCode))
+        {
+            ulong payloadBytes = payloadWords * 4UL;
+            uint packetsToSkip = (uint)Math.Min(
+                packets - 1UL,
+                (nextKnownSource - source + payloadBytes - 1UL) / payloadBytes);
+            if (packetsToSkip != 0)
+            {
+                ulong skippedBytes = packetsToSkip * payloadBytes;
+                uint oldIndex = index;
+                uint oldPacketAddress = currentPacketAddress;
+                ulong oldSource = source;
+                source = SignExtend32((uint)(source + skippedBytes));
+                currentPacketAddress = unchecked(currentPacketAddress + packetsToSkip * 0x200U);
+                index += packetsToSkip;
+                packets -= packetsToSkip;
+                skippedInstructions += packetsToSkip * (30UL + (ulong)(payloadWords / 2U) * 9UL);
+                if (_textureUploadPayloadPointerStartTraceCount < 64 &&
+                    _zeroBaseUploadUnknownPrefixPacketTraceSources.Add(oldSource))
+                {
+                    _textureUploadPayloadPointerStartTraceCount++;
+                    Console.WriteLine(
+                        $"[GAUNTDL:EXPERIMENT] zero-base-upload-skip-unknown-prefix-packets " +
+                        $"source=0x{oldSource:x16}->0x{source:x16} next=0x{nextKnownSource:x16}:{nextKnownIndex}:{nextKnownCode} " +
+                        $"packets={packetsToSkip} bytes=0x{skippedBytes:x} index={oldIndex}->{index}/{limit} " +
+                        $"packet=0x{oldPacketAddress:x8}->0x{currentPacketAddress:x8} words={payloadWords}");
+                }
+            }
+        }
+
         if (_experimentSkipZeroBaseTexturePayloadRuns && sourceBase == 0)
         {
             if (_textureUploadMetadataSkipTraceCount++ < 64)
@@ -4254,6 +4298,7 @@ internal sealed class MipsR5000Core
             TryFindNextKnownRuntimeBgLoadModelUploadSource(
                 source,
                 source + sourceBytes,
+                0x2000UL,
                 out ulong nextKnownSource,
                 out ulong nextKnownIndex,
                 out string nextKnownCode))
@@ -4304,12 +4349,12 @@ internal sealed class MipsR5000Core
     private bool TryFindNextKnownRuntimeBgLoadModelUploadSource(
         ulong start,
         ulong end,
+        ulong maxUnknownPrefixBytes,
         out ulong source,
         out ulong index,
         out string code)
     {
         const ulong destinationBase = 0xffffffff802e1718UL;
-        const ulong maxUnknownPrefixBytes = 0x2000UL;
         ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
 
         source = 0;
