@@ -27980,6 +27980,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
     private readonly bool _traceTexturedTriangleSampleWriters =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_WRITERS"));
+    private readonly bool _traceTexturedTriangleSampleSummaryRequireWriter =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_REQUIRE_WRITER"));
+    private readonly bool _traceTexturedTriangleSampleGradients =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_GRADIENTS"));
     private readonly int _traceTexturedTriangleSampleSummaryLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_LIMIT"), 16);
     private readonly int[] _traceTexturedTriangleSampleSummaryBuffers =
@@ -35031,7 +35035,9 @@ sampledTexel:
             TraceTexturedTriangleReject("empty-raster", a, b, c, fallbackColor, area, minX, maxX, minY, maxY, clipX0, clipX1, clipY0, clipY1);
         else
         {
-            if (traceSampleSummary)
+            if (traceSampleSummary &&
+                (!_traceTexturedTriangleSampleSummaryRequireWriter ||
+                 HasNonDefaultTextureSampleWriter(sampleWriterBuckets)))
             {
                 TraceTexturedTriangleSampleSummary(
                     a,
@@ -35459,6 +35465,7 @@ sampledTexel:
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string gradientStatus = _traceTexturedTriangleSampleGradients ? FormatTextureGradientTraceStatus() : "";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TEXSUMMARY] n={_texturedTriangleSampleSummaryTraceCount} color=0x{fallbackColor:X4} area={area:F3} " +
             $"bbox=({minX},{minY})-({maxX},{maxY}) pixels={coveredPixels} zero={zeroPixels} samples={sampleCount} " +
@@ -35470,6 +35477,7 @@ sampledTexel:
             $"writers={FormatTopTextureSampleWriterBuckets(sampleWriterBuckets)} " +
             $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
+            $"{gradientStatus}" +
             $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} " +
             $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
     }
@@ -35501,6 +35509,18 @@ sampledTexel:
             .Take(4)
             .Select(pair => $"0x{pair.Key << TextureZeroSampleBucketShift:X6}:{pair.Value}"));
     }
+
+    private static bool HasNonDefaultTextureSampleWriter(IReadOnlyDictionary<TextureSampleWriterKey, int>? buckets)
+        => buckets is not null &&
+           buckets.Keys.Any(key => !key.Equals(default(TextureSampleWriterKey)));
+
+    private string FormatTextureGradientTraceStatus()
+        => string.Create(
+            CultureInfo.InvariantCulture,
+            $"gradRaw=0x{_registers[RegFstartS]:X8}/0x{_registers[RegFstartT]:X8}/0x{_registers[RegFstartW]:X8}/0x{_registers[RegFdSdX]:X8}/0x{_registers[RegFdTdX]:X8}/0x{_registers[RegFdSdY]:X8}/0x{_registers[RegFdTdY]:X8} " +
+            $"gradF=({FloatFromRegister(_registers[RegFstartS]):F6},{FloatFromRegister(_registers[RegFstartT]):F6},{FloatFromRegister(_registers[RegFstartW]):F6})/" +
+            $"({FloatFromRegister(_registers[RegFdSdX]):F6},{FloatFromRegister(_registers[RegFdTdX]):F6})/" +
+            $"({FloatFromRegister(_registers[RegFdSdY]):F6},{FloatFromRegister(_registers[RegFdTdY]):F6}) ");
 
     private TextureSampleWriterKey GetTextureSampleWriterKey(uint byteAddress)
     {

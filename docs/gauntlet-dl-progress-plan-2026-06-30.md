@@ -5931,3 +5931,151 @@ Next continuation:
 3. If the sampled address receives the right bytes but still displays stripes,
    bracket 8-bit texture download addressing (`seq8`, align32, linear, TMU
    banks) before adding any permanent decode logic.
+
+## 2026-07-05 - Texture Writer Summary and S/T Coordinate Bracket
+
+Added two default-off trace controls for narrowing whether visible textured
+triangles are sampling uploaded texture memory or default/unwritten memory:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_REQUIRE_WRITER=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_GRADIENTS=1
+```
+
+Important reproducibility note: the current `body+0x3c8 + diskwords + clamp`
+case must be run from the e27b warm snapshot with `WARMUP_FRAMES=180` and an
+explicit indexed-header mask that includes bit 9:
+
+```text
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK=0x3fe
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET=0x3c8
+```
+
+Without the explicit `0x3fe` mask, the default `0x1fe` misses index 9 and the
+remap path falls back toward the old descriptor/gei source state.
+
+Focused writer-backed run:
+
+```text
+/tmp/gauntdl-plus3c8-diskwords-clamp-requirewriter-warm-f300.log
+/tmp/gauntdl-plus3c8-diskwords-clamp-requirewriter-warm-f300.ppm
+/tmp/gauntdl-plus3c8-diskwords-clamp-requirewriter-warm-f300.png
+frameHash=0x5ef40570
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+```
+
+The remap and clamp are active in the same run:
+
+```text
+[GAUNTDL:FIX] bgloadmodel-texture-source-global-remap pc=80054900 index=9
+  80312998->8040d718 bodyOffsetAdd=0x3c8
+
+[GAUNTDL:FIX] texture-upload-indexed-clamp source=8040d718 index=9 limit=255->31
+```
+
+The first large writer-backed visible quads sample real uploaded texture
+memory, but their setup vertices carry constant S:
+
+```text
+base=0x000510 samples=0x000510-0x00E810 buckets=0x001000..0x00D000
+stq=(0.000,256.000,1.000000)/(0.000,0.000,1.000000)/(0.000,0.000,1.000000)
+stq=(0.000,0.000,1.000000)/(0.000,256.000,1.000000)/(0.000,256.000,1.000000)
+```
+
+The writer buckets point at Type5 texture uploads, for example:
+
+```text
+pc=800fe614/m=0x00000000/lod=0x00700800/base=0x00000000/l=0/bpp=1/seq=1/t5=0xC0000205@0x000280/...
+```
+
+Gradient summary run:
+
+```text
+/tmp/gauntdl-plus3c8-diskwords-clamp-gradsummary-warm-f300.log
+frameHash=0x5ef40570
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+```
+
+The appended gradient register dump is currently diagnostic only. It produced
+alias-looking/stale values such as:
+
+```text
+gradRaw=0x0005A604/0x0C24100F/0xFF802000/0x0C24100F/0xFF802000/0xC681CC00/0x437F0000
+gradF=(0.000000,0.000000,NaN)/(0.000000,NaN)/(-16614.000000,255.000000)
+```
+
+So the reliable evidence is still the captured setup vertices in `TEXSUMMARY`:
+the big visible quads are textured, writer-backed, and sampling valid texture
+memory addresses, but they are sampling a near-single texture column.
+
+Texture layout A/B matrix from the same warm baseline:
+
+```text
+FIX_VOODOO_TEXTURE_DOWNLOAD_ALIGN32=0
+  /tmp/gauntdl-plus3c8-diskwords-clamp-noalign-warm-f300.log
+  frameHash=0x5ef40570, unchanged
+
+FIX_VOODOO_SEQ8_TEXTURE_DOWNLOAD=0
+  /tmp/gauntdl-plus3c8-diskwords-clamp-noseq8-warm-f300.log
+  frameHash=0xa56712ad, still large horizontal stripe blocks
+
+FIX_VOODOO_LINEAR_TEXTURE_DOWNLOAD_ADDRESSING=1
+  /tmp/gauntdl-plus3c8-diskwords-clamp-linear-warm-f300.log
+  frameHash=0x9a17a88e, more large blocks but still stripe failure
+
+FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0
+  /tmp/gauntdl-plus3c8-diskwords-clamp-nobias-warm-f300.log
+  frameHash=0x41a3aaf0, same texture map and still striped
+
+EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS=1
+  /tmp/gauntdl-plus3c8-diskwords-clamp-tmubanks-warm-f300.log
+  frameHash=0x8e39ab70, same texture map and still striped
+
+EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS=1
+  /tmp/gauntdl-plus3c8-diskwords-clamp-mamesetup-warm-f300.log
+  frameHash=0x4189261f, horizontal stripes disappear but a huge wrong
+  diagonal/solid area remains
+
+EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS=1
+EXPERIMENT_VOODOO_TEXTURE_MAME_FIXED_FETCH=1
+  /tmp/gauntdl-plus3c8-diskwords-clamp-mamesetup-fixedfetch-warm-f300.log
+  frameHash=0x4189261f, no additional change
+```
+
+Local MAME source check:
+
+```text
+/home/nichlas/mame/src/devices/video/voodoo.cpp
+  texture format 0 maps to rgb332.
+
+/home/nichlas/mame/src/devices/video/voodoo.cpp
+  Type5 texture download uses bytes_per_texel=(format < 8 ? 1 : 2),
+  seq_8_downld from TMU0 mode, lod=offset[18:15], tt=offset[14:7],
+  ts=(offset << (seq8 ? 2 : 1)) & 0xff.
+
+/home/nichlas/mame/src/devices/video/voodoo_render.h
+  write_ptr aligns ((scale * offs) & ~3), matching the current align32
+  behavior; the no-align A/B result is therefore expected.
+```
+
+Updated conclusion:
+
+1. Descriptor/source remap, clamp, and disk-backed `wtr@0xc000` payload are all
+   necessary and are active in the current best stripe frame.
+2. Format 0 is RGB332, so this is not a simple NCC/palette decode problem.
+3. Type5 write-layout toggles move hashes but do not produce correct geometry.
+4. The strongest current blocker is Type3/setup texture coordinate decode or
+   latch timing: `ReadCurrentSetupVertex` is feeding constant S into large
+   visible textured triangles.
+
+Next continuation:
+
+1. Inspect command FIFO Type3 decode and the setup vertex capture path around
+   `ReadCurrentSetupVertex`, `SetupFloatOrFallback`, `RegFstartS/T/W`, and the
+   setup packet register aliases.
+2. Add a narrow trace that logs Type3 packet words/register writes immediately
+   before the first writer-backed `TEXSUMMARY` rows with constant S.
+3. Compare captured S/T with hardware gradient registers and MAME setup
+   semantics before making another default-on rendering change.
