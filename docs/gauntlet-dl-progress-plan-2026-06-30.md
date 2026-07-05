@@ -3725,3 +3725,77 @@ Next continuation point:
    instead of repeatedly stopping on them.
 3. Implement this as a separate default-off header-drop variant so it can be
    compared against the stop-gate and payload direct-command suppressor.
+
+#### 2026-07-05 outside-bulk Type1 drop and stale-resync probes
+
+Added a separate default-off header-drop variant:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW_COMMANDS=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_TYPE1_OUTSIDE_BULK_WINDOW_LIMIT=...
+```
+
+It uses the same candidate as the stop-gate, but invalidates only the oversized
+Type1 head and advances one word. This avoids getting stuck on `0xf00b0001`, but
+it still over-corrects the frame:
+
+```text
+frameHash=0x6d791e91
+frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+direct/setup=327/141
+framebuffer=640x480:307200:307200
+t1ob=0/69
+```
+
+The result matches the stop-gate visual family, so one-word header dropping is
+not enough. It prevents the large bad Type1 register blocks, but it also loses
+too much real setup/direct work and falls into a fully covered frame.
+
+Also tested the pre-existing stale bulk resync:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_RESYNC_STALE_PACKET=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_BULK_END=1
+```
+
+This is structurally closer to the real fix: it repeatedly resyncs outside-bulk
+stale reads to the current bulk start, where the packet head is usually
+`0xc0000205` Type5 texture data:
+
+```text
+[GAUNTDL:VOODOO-CMDFIFO-BULK-RESYNC]
+kind=stale-packet reason=oversized oldRd=0x00000000 newRd=0x00004d38
+bulk=0x00004d38-0x00015534 words=16896
+oldWord=0x3eb84c4d start=0xc0000205 scan=outside:rel60594/16896
+```
+
+The f420 result is better than stop/drop but still not real graphics:
+
+```text
+/tmp/gauntdl-resync-stale-f420.ppm
+/tmp/gauntdl-resync-stale-f420.png
+frameHash=0xa5684ec1
+frameSha256=1cf30de84221cf95c96dc7da930a91b45a6022fa2cf69d7a8eedee6a42671385
+direct/setup=321/141
+framebuffer=640x480:307200:166664
+texWrites=6629697
+textureMap=26086768:13174989:12911779:812706
+```
+
+Visual inspection of the PNG shows a large blue triangle and horizontal stripe
+bands. That is not correct scene output, but it is a more informative failure
+than the fully covered fallback: texture upload and selected-buffer activity are
+alive, while geometry packet boundaries are still wrong.
+
+Next continuation point:
+
+1. Keep the Type1 outside-bulk stop/drop probes default-off.
+2. The stale-resync direction is more promising than stop/drop, but it still
+   over-resyncs or decodes the wrong packet boundary.
+3. Next probe should compare current read position to the decoded packet heads
+   inside the active bulk window and resync to the nearest valid packet head,
+   not always the bulk start.
+4. The visual target for the next slice is to remove the giant blue triangle and
+   stripe bands from `/tmp/gauntdl-resync-stale-f420.png` while preserving the
+   increased texture activity from stale-resync.
