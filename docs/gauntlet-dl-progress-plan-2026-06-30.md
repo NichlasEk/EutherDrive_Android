@@ -8042,3 +8042,114 @@ Next slice:
 4. Reduce the candidate's software workload only after the texture mapping is
    understood; otherwise performance changes will blur the graphics evidence.
 ```
+
+### Texture sample writer correlation and interpolation split - 2026-07-06
+
+Added a focused trace for sampled texture words:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_LIMIT=160
+```
+
+The trace records each sampled texture address with the current sampler
+mode/lod/base and the last Type5 writer that populated the sampled word. The
+important implementation detail is that this trace must also activate the
+texture-write context; otherwise every sample appears as `writer=-` even when
+last-writer tracking is enabled.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+result: 0 errors, existing warnings only
+
+/tmp/gauntdl-texsample-writer-context-f300.log
+sha256=2854b4b63ca6d01b98eec2ade1263e0601e42bed85f35ce69e56e5264baf1aee
+/tmp/gauntdl-texsample-writer-context-f300.ppm
+sha256=c313c239fb178a6dd06ce123cd4273b972974232cead58aed737449dac699ebe
+/tmp/gauntdl-texsample-writer-context-f300.png
+frameHash=0x0463f000
+frameSha256=dee5e0e0d866bf6a79044a208bf3deec8099f075e00edd90a081305f63fdd7f9
+```
+
+Sample-writer summary for the first 160 traced samples:
+
+```text
+sample_writer_lines=160
+writer=-: 32
+writer=pc: 128
+pc=800fe5d4: 122
+pc=800fe614: 6
+```
+
+This closes one earlier ambiguity: the noisy upper-band samples are not just
+unowned stale memory. After the write-context gate is fixed, most of the sampled
+words point at real Type5 texture uploads. The dominant writer family is
+`pc=800fe5d4`, with Type5 command `0xC0000205` and target ranges around
+`0x007D00..0x007F80`. A smaller subset points at `pc=800fe614`.
+
+The sampled address mapping itself also matches the MAME texture upload model:
+Type5 target words decode to `lod/tt/ts`, and for the hot `800fe5d4` rows those
+coordinates land on the addresses that the sampler reads. This makes a generic
+"wrong Type5 upload layout" less likely for the current frame-260 fullrect
+noise.
+
+Two render-path variants were compared against the S-from-X fix-candidate stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT=1
+/tmp/gauntdl-writer-layout-default-f300.ppm
+sha256=449383de204796419bd3caef5efb3288d98ff0a029c7a72289751f5feb49065a
+frameHash=0x29de15ce
+visual=changed many pixels, but the upper half is still noisy/static-like
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS=1
+/tmp/gauntdl-sfromx-mamesetup-f300.ppm
+sha256=c9b87390b4f64ec34d5371c93aae812d7a2fb7967644580c141ca6f6d2ae44f0
+frameHash=0xbe791681
+frameSha256=8e0c5e362b1f7d8bf0481ba21fb039afae8cef6bc095c6f1f8b6243a18a35923
+framebuffer=640x480:307200:230870
+visual=upper noise collapses into a coherent but wrong cyan/white large triangle
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE=1
+/tmp/gauntdl-sfromx-perspective-f300.ppm
+sha256=c313c239fb178a6dd06ce123cd4273b972974232cead58aed737449dac699ebe
+frameHash=0x0463f000
+visual=byte-identical to the S-from-X baseline
+```
+
+Interpretation:
+
+```text
+1. Writer-layout remapping alone is not the fix. It can move samples, but it
+   does not make the upper band coherent.
+2. MAME setup-gradient interpolation is the first tested path that removes the
+   random-looking upper-half noise. It is still wrong, but it proves the noise is
+   strongly tied to the current float/barycentric texture-gradient path.
+3. The old perspective-interpolate experiment is a no-op for this checkpoint.
+4. The next productive slice is to make the setup-gradient path traceable for
+   the hot fullrect: compare its S/T, sampled address, raw texel, and writer
+   owner against the current path at frame 260.
+5. Only promote a render fix after it keeps the lower coherent geometry and
+   replaces the upper noise with plausible scene content, not just a solid
+   cyan/white triangle.
+```
+
+Reference checked during this slice:
+
+```text
+MAME src/devices/video/voodoo.cpp
+MAME src/devices/video/voodoo_regs.h
+MAME src/devices/video/voodoo_render.cpp
+```
+
+Relevant MAME parity notes:
+
+```text
+textureMode format bits are bit 8..11.
+format 0 is RGB332; format 1 is NCC; format 2 is alpha8; format 3 is intensity;
+format 4 is alpha-intensity 4:4; formats 8+ are 16-bit families.
+internal_texture_w computes lod/tt/ts from the Type5 target offset, and the
+seq_8_downld flag comes from TMU0.
+```

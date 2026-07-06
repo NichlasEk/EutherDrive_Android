@@ -29314,6 +29314,10 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _traceTextureMinRenderFrame =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_MIN_RENDER_FRAME"), 0);
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
+    private readonly bool _traceTextureSampleWriters =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS"));
+    private readonly int _traceTextureSampleWritersLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_LIMIT"), 160);
     private readonly bool _traceTexturedTriangleSampleSummary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
     private readonly bool _traceTexturedTriangleSampleWriters =
@@ -29830,6 +29834,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _drawTraceCount;
     private int _setupTriangleTraceCount;
     private int _textureSampleTraceCount;
+    private int _textureSampleWriterTraceCount;
     private int _texturedTriangleSampleSummaryTraceCount;
     private int _textureFetchCompareTraceCount;
     private int _renderBufferChoiceTraceCount;
@@ -31757,6 +31762,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool seq8Downld)
     {
         if (!_traceTexturedTriangleSampleWriters &&
+            !_traceTextureSampleWriters &&
             !_traceTexturedTriangleSampleSummaryRequireWriter &&
             !_experimentFullrectSampleWriterLayout)
         {
@@ -31776,6 +31782,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void EndTextureWriteContext()
     {
         if (!_traceTexturedTriangleSampleWriters &&
+            !_traceTextureSampleWriters &&
             !_traceTexturedTriangleSampleSummaryRequireWriter &&
             !_experimentFullrectSampleWriterLayout)
         {
@@ -32000,6 +32007,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void TrackTextureLastWriter(int wordOffset)
     {
         if ((!_traceTexturedTriangleSampleWriters &&
+             !_traceTextureSampleWriters &&
              !_traceTexturedTriangleSampleSummaryRequireWriter &&
              !_experimentFullrectSampleWriterLayout) ||
             !_currentTextureWriteActive)
@@ -38364,6 +38372,7 @@ sampledTexel:
         uint raw,
         ushort result)
     {
+        TraceTextureSampleWriterCorrelation(s, t, width, height, x, y, mode, lod, registerBase, resolvedBase, byteAddress, word, raw, result);
         if (!_traceTextureSamples || _textureSampleTraceCount++ >= 160)
             return;
 
@@ -38374,6 +38383,44 @@ sampledTexel:
             $"[GAUNTDL:VOODOO-TEXSAMPLE] st=({s:F3},{t:F3}) xy=({x},{y}) size={width}x{height} " +
             $"mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} addr=0x{byteAddress:X6} " +
             $"word=0x{word:X8} raw=0x{raw:X4} result=0x{result:X4}{nearbyStatus}{pcStatus}");
+    }
+
+    private void TraceTextureSampleWriterCorrelation(
+        float s,
+        float t,
+        int width,
+        int height,
+        int x,
+        int y,
+        uint mode,
+        uint lod,
+        uint registerBase,
+        uint resolvedBase,
+        uint byteAddress,
+        uint word,
+        uint raw,
+        ushort result)
+    {
+        if (!_traceTextureSampleWriters ||
+            _renderFrame < _traceTextureMinRenderFrame ||
+            _textureSampleWriterTraceCount++ >= _traceTextureSampleWritersLimit)
+        {
+            return;
+        }
+
+        int wordOffset = (int)((byteAddress & (TextureBytes - 1u)) >> 2);
+        string writerStatus = _textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter writer)
+            ? FormatTextureWordWriterStatus(writer)
+            : "-";
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXSAMPLE-WRITER] n={_textureSampleWriterTraceCount} frame={_renderFrame} " +
+            $"st=({s:F3},{t:F3}) xy=({x},{y}) size={width}x{height} " +
+            $"mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} " +
+            $"addr=0x{byteAddress:X6}/w{wordOffset:X5} word=0x{word:X8} raw=0x{raw:X4} result=0x{result:X4} " +
+            $"writer={writerStatus} cmd=0x{_currentCommandFifoCommand:X8}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8} " +
+            $"draws={_fifoDrawPacketCount} texWrites={_textureWriteCount} buf={GetDrawBufferIndex()}{pcStatus}");
     }
 
     private void TraceTextureFetchCompare(
