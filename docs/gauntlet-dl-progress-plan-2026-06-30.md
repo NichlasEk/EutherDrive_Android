@@ -7024,3 +7024,103 @@ Next slice:
    `hdr64=0x3d73eef4`) and repair the runtime source construction instead of
    overriding payload words at upload time.
 ```
+
+### Direct-writer target-gated disk payload checkpoint
+
+Added a safer default-off target gate for the direct-writer disk payload
+experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORD_TARGET_WORDS=8a00[,9800,...]
+```
+
+The gate watches the direct writer's target-word store at `pc=800fe7b0`, then
+applies disk-word replacement only to the following payload stores for that
+target. The disk lookup now caches the matched source span, so focused runs do
+not repeatedly rescan every known BGLoadModel texture payload.
+
+Focused `0x8a00` run with the strongest writer-layout visual baseline:
+
+```text
+/tmp/gauntdl-target8a00-diskwords-writerlayout-fmt1-f300.log
+/tmp/gauntdl-target8a00-diskwords-writerlayout-fmt1-f300.ppm
+/tmp/gauntdl-target8a00-diskwords-writerlayout-fmt1-f300.png
+logSha256=6e2839176cd423db54b89adac6f8392e87fb07c570f765b5b8c6ac593d26fabe
+ppmSha256=9d37e8040f7b7d6f3a4163e78fd0496829ffd7c57c80d1914b0e3e531e5e104c
+frameHash=0xf6c7e7bf
+frameSha256=01b076ed07489d6c3f2b01a2c36c4e3ffe71f766582898a9655c8a8c5a7e1525
+textureMap=5171464:581534:4589930:22910:0x000000:0x01660c
+```
+
+The focused image is visually almost the same as the previous broad
+direct-writer diskword run:
+
+```text
+AE(/tmp/gauntdl-diskwords-writerlayout-f300.png,
+   /tmp/gauntdl-target8a00-diskwords-writerlayout-fmt1-f300.png)=3881
+```
+
+This is important: broad direct-writer disk replacement was not needed to get
+the visible coherent fullrect family. The hot visible path can now be tested
+through a much narrower and less destructive `0x8a00` payload gate.
+
+Two owner/format controls were negative as fixes:
+
+```text
+/tmp/gauntdl-diskwords-writerlayout-nativefmt-f300.log
+logSha256=b2569426508289c4d9bd4f5c032de0d831a750b90cf84ce51b8b8d6aee6ad893
+ppmSha256=d518c1edeb4723944530fd5d66f91b787b357d74400a68c9a2e28cdc9296581f
+frameHash=0x8dff2dcf
+frameSha256=62b626a8abc675cb5aadf3da2df4ffb27165a9c92328fff35783d044a4fe0191
+
+/tmp/gauntdl-diskwords-writerlayout-relookup-nativefmt-f300.log
+logSha256=f8eddb293e3b61b01a16b77ef08f103aebc99e4233a06905dda3c7540470e2de
+ppmSha256=4708d11d4cb6244d3067a8ffde3bdbcc02e74e0665246b3faf412eb32615315e
+frameHash=0x74708810
+frameSha256=ddb462465ac512e021f185ca66b48757f39905464adcfdeec72fb3e6b2d2a9fb
+```
+
+The native-format run uses the writer's `fmt0`; the relookup run moves to the
+sampled owner (`fmt11/bpp2/lod1`, `addr=0x014800`). Neither produces a better
+scene. That keeps `fmt1` as a diagnostic color/layout lever only, not a
+promotable interpretation.
+
+NCC/lane controls on the target-gated payload:
+
+```text
+/tmp/gauntdl-target8a00-diskwords-writerlayout-fmt3-f300.log
+logSha256=74f9c8495ce5242a9e7f398f49ae7119ee07380afa4ff500017bdd0def24198c
+ppmSha256=14b4338d016595e4dede3e7238366aaf7c6a98c5421b28ef5cb012238a5f8790
+frameHash=0xbf30e638
+frameSha256=e13f374e17fbf346c733427a86a3192b9d171de6630bd5ffa7e6340b9811f4c8
+textured zero=42248215
+AE vs fmt1=97196
+
+/tmp/gauntdl-target8a00-diskwords-writerlayout-fmt1-revlane-f300.log
+logSha256=1b2ecc27d0a9fc3cbb9c6000e867a7713e293e28ed7c22f3ae94f2437a9571aa
+ppmSha256=b58e466f94a9426430aeadbd1eeea92356fc6d5fd8ec4bb991bc5a570664f93a
+frameHash=0x3b0fe639
+textured zero=57375273
+AE vs fmt1=53562
+```
+
+`fmt3` grayscale lowers the zero-sample count but makes the image more visibly
+striped/noisy, not more scene-like. Reverse 8-bit sample lanes is worse on the
+zero-sample metric and does not reveal recognizable graphics. This brackets
+the current sampler-side surface: the problem is not a simple NCC/grayscale
+choice or byte-lane reversal.
+
+Next slice:
+
+```text
+1. Keep the new `TARGET_WORDS=8a00` gate as the default visual harness for the
+   direct-writer disk payload experiment.
+2. Stop broadening diskword replacement or cycling sampler formats unless a new
+   trace points to a specific bank.
+3. Move upstream: trace/repair the runtime source construction for
+   `1:gei+0x13e70` and the `800fe7a0..800fe7cc` direct-writer state so the RAM
+   payload is hydrated with the same rich disk bytes before the upload loop.
+4. Preserve the writer-layout `400:e00 fmt1` path as a visual oracle only; it
+   proves the disk-rich `0x8a00` payload is on the hot path, but it is not yet
+   correct hardware behavior.
+```

@@ -941,6 +941,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS"));
     private readonly int _experimentDirectTextureWriterDiskWordsTraceLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS_TRACE_LIMIT", 64);
+    private readonly ulong[] _experimentDirectTextureWriterDiskWordTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORD_TARGET_WORDS"));
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly int _traceVertexFifoFastPathLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH_LIMIT", 128);
@@ -1069,6 +1071,14 @@ internal sealed class MipsR5000Core
     private int _textureUploadDirectWriterDiskWordTraceCount;
     private int _textureUploadDirectWriterFollowRemaining;
     private uint _textureUploadDirectWriterFollowTargetWord;
+    private int _textureUploadDirectWriterDiskWordTargetFollowRemaining;
+    private uint _textureUploadDirectWriterDiskWordTargetActive;
+    private bool _textureUploadDirectWriterDiskWordCacheValid;
+    private ulong _textureUploadDirectWriterDiskWordCacheStart;
+    private ulong _textureUploadDirectWriterDiskWordCacheEnd;
+    private ulong _textureUploadDirectWriterDiskWordCacheDiskByteOffset;
+    private ulong _textureUploadDirectWriterDiskWordCacheIndex;
+    private string _textureUploadDirectWriterDiskWordCacheCode = "";
     private int _textureUploadMetadataSkipTraceCount;
     private int _textureUploadZeroBaseRunClassifierTraceCount;
     private int _vertexFifoFastPathTraceCount;
@@ -5299,6 +5309,21 @@ internal sealed class MipsR5000Core
             return value;
 
         ulong physicalPc = pc & 0x1fffffffUL;
+        bool hasTargetFilter = _experimentDirectTextureWriterDiskWordTargetWords.Length > 0;
+        if (hasTargetFilter && physicalPc == 0x000fe7b0UL && rt == 2 && (value & 3U) == 0)
+        {
+            uint targetWord = value / 4U;
+            if (Array.IndexOf(_experimentDirectTextureWriterDiskWordTargetWords, (ulong)targetWord) >= 0)
+            {
+                ulong payloadWords = _gpr[20];
+                _textureUploadDirectWriterDiskWordTargetFollowRemaining =
+                    payloadWords is > 0UL and <= 0x400UL ? (int)payloadWords : 64;
+                _textureUploadDirectWriterDiskWordTargetActive = targetWord;
+            }
+
+            return value;
+        }
+
         ulong source;
         if (physicalPc == 0x000fe7c4UL && rt == 2)
         {
@@ -5313,7 +5338,15 @@ internal sealed class MipsR5000Core
             return value;
         }
 
-        if (!TryReadKnownRuntimeBgLoadModelUploadDiskWord(source, out uint diskWord, out string diskSource))
+        if (hasTargetFilter)
+        {
+            if (_textureUploadDirectWriterDiskWordTargetFollowRemaining <= 0)
+                return value;
+
+            _textureUploadDirectWriterDiskWordTargetFollowRemaining--;
+        }
+
+        if (!TryReadDirectTextureWriterDiskWord(source, out uint diskWord, out string diskSource))
             return value;
 
         uint transformedDiskWord = TransformZeroBaseUploadDiskWord(diskWord);
@@ -5323,11 +5356,62 @@ internal sealed class MipsR5000Core
             string transform = DescribeZeroBaseUploadDiskWordTransform(diskWord, transformedDiskWord);
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] direct-texture-writer-disk-word " +
-                $"pc=0x{pc:x16} rt=r{rt} source=0x{source:x16} {diskSource} " +
+                $"pc=0x{pc:x16} rt=r{rt} target=0x{_textureUploadDirectWriterDiskWordTargetActive:x8} " +
+                $"source=0x{source:x16} {diskSource} " +
                 $"mem=0x{value:x8}->disk=0x{diskWord:x8}{transform}");
         }
 
         return transformedDiskWord;
+    }
+
+    private bool TryReadDirectTextureWriterDiskWord(
+        ulong address,
+        out uint word,
+        out string sourceDescription)
+    {
+        word = 0;
+        sourceDescription = "";
+
+        if (_textureUploadDirectWriterDiskWordCacheValid &&
+            address >= _textureUploadDirectWriterDiskWordCacheStart &&
+            address < _textureUploadDirectWriterDiskWordCacheEnd)
+        {
+            ulong candidateOffset = address - _textureUploadDirectWriterDiskWordCacheStart;
+            if (_memory.TryReadDiskByteOffsetWord(_textureUploadDirectWriterDiskWordCacheDiskByteOffset + candidateOffset, out word))
+            {
+                sourceDescription =
+                    $"{_textureUploadDirectWriterDiskWordCacheIndex}:{_textureUploadDirectWriterDiskWordCacheCode}@0x{candidateOffset:x}";
+                return true;
+            }
+        }
+
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out ulong byteOffset, out uint textureByteLength))
+                continue;
+
+            ulong candidateBase = destinationBase + index * sourceStride;
+            ulong candidateEnd = candidateBase + GetKnownRuntimeBgLoadModelSourceSpanByteLength(textureByteLength);
+            if (address < candidateBase || address >= candidateEnd)
+                continue;
+
+            ulong candidateOffset = address - candidateBase;
+            if (!_memory.TryReadDiskByteOffsetWord(byteOffset + candidateOffset, out word))
+                return false;
+
+            _textureUploadDirectWriterDiskWordCacheValid = true;
+            _textureUploadDirectWriterDiskWordCacheStart = candidateBase;
+            _textureUploadDirectWriterDiskWordCacheEnd = candidateEnd;
+            _textureUploadDirectWriterDiskWordCacheDiskByteOffset = byteOffset;
+            _textureUploadDirectWriterDiskWordCacheIndex = index;
+            _textureUploadDirectWriterDiskWordCacheCode = code;
+            sourceDescription = $"{index}:{code}@0x{candidateOffset:x}";
+            return true;
+        }
+
+        return false;
     }
 
     private void TraceZeroBaseTextureUploadPointerWord(
