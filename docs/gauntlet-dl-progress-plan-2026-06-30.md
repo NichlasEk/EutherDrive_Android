@@ -7413,3 +7413,86 @@ Current conclusion:
    buffer" heuristic as a correctness fix unless swap/clear evidence supports
    it.
 ```
+
+## Swap/clear collapse root cause checkpoint - 2026-07-06
+
+Added two default-off controls to make the fastfill/swap trace usable around the
+actual f292-f300 transition:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_MIN_RENDER_FRAME=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_SWAPS_ONLY=1
+```
+
+The trace now also includes compact per-buffer stats for fastfills and swaps.
+This made the f300 collapse reproducible without spending the trace limit on
+early boot clears.
+
+Baseline with setup suppression still collapses to the old low-detail f300:
+
+```text
+/tmp/gauntdl-swapfill-transition-min288-suppress-f300.log
+sha256=18bee50bca9c2f4c20a0307dbdda39e9fd258c624ca12ce65ef60604b0670c93
+/tmp/gauntdl-swapfill-transition-suppress-f300.ppm
+sha256=85cc18d453c202f601468f0ccc2c237a2a7e48c03b96657c2b9151c0259ab85b
+frameHash=0x828a27b0
+```
+
+Focused swap-only trace shows the culprit. An implausible bulk-end packet writes
+`swapbuffer` state as if payload data were real Voodoo registers:
+
+```text
+/tmp/gauntdl-swapsonly-min293-suppress-f300.log
+sha256=99179dc816306d3bb84c43a9f1922a5745286f3ffca7a04192a47b4a49d9dfa5
+
+cmd=0x3dbdbdd1 words=15806 trigger=bulk-end pc=0xffffffff800fe5d4
+kind=swap-clear reg=0x04a value=0x0000184c frame=296
+preFront=1 preBack=0 dont=0 clear=1 clearTarget=1
+```
+
+That bogus clear leaves buffer 1 pending a full clear, so render selection falls
+back to the low-detail buffer 2 surface instead of the higher-detail buffer 1
+candidate seen through f292.
+
+Enabling the existing render-state ignore gate prevents the false swap/clear
+without suppressing setup triangles:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1
+
+/tmp/gauntdl-ignore-renderstate-nosuppress-f300.log
+sha256=dafdb7d065ebcd0515dc2b9a946761234dae9a84cd7023b0ed661676fb9565dd
+/tmp/gauntdl-ignore-renderstate-nosuppress-f300.ppm
+sha256=ec67f69517af98f96bfc248f7b0f5c9ada2a139a44a48f30c956cd81b3d5faae
+/tmp/gauntdl-ignore-renderstate-nosuppress-f300.png
+frameHash=0x7df9727a
+```
+
+The same hash is produced with or without
+`SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES`, so setup suppression is no longer part
+of the next f300 stack. With render-state ignore only, f300 stays on buffer 1:
+
+```text
+frame=300 chosen=1
+b1=nz484843:act307061:w139:u98:p=0
+fastFills=793 swaps=924
+framebuffer=640x480 nonBlack=307200 colored=307061
+```
+
+Visual read: this is a real step past the green/magenta full-clear plateau. It
+shows a green field with striped and polygonal structure, but it is still not
+scene-correct Gauntlet graphics.
+
+Current conclusion:
+
+```text
+1. The f300 buffer collapse is caused by implausible command-FIFO register
+   writes, especially swap/clear writes from pc=800fe5d4 payload-like packets.
+2. `IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1` is now the cleanest f300 oracle:
+   it keeps the useful buffer selected and does not need the setup suppressor.
+3. Do not spend more time on render-buffer selection until a new counterexample
+   appears. The next narrow blocker is texture/triangle correctness under
+   render-state-ignore, starting from the buffer-1 f300 screenshot above.
+4. Do not promote this into `BRINGUP_BASELINE` in the same slice; it is still a
+   command-FIFO ownership bracket, not the underlying FIFO/source fix.
+```

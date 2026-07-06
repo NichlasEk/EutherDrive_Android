@@ -29090,6 +29090,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_PCS"));
     private readonly int _traceFastFillSwapOrderLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_LIMIT"), 240);
+    private readonly int _traceFastFillSwapOrderMinRenderFrame =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_MIN_RENDER_FRAME"), 0);
+    private readonly bool _traceFastFillSwapOrderSwapsOnly =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_SWAPS_ONLY"));
     private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
     private readonly string[] _recentVoodooEvents = new string[64];
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
@@ -31399,16 +31403,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         string[] buffers = new string[_colorBuffers.Length];
         for (int i = 0; i < _colorBuffers.Length; i++)
-        {
-            int nonZero = GetBufferNonZeroCount(i);
-            int active = GetVisibleBufferActiveColorCount(i);
-            int white = GetVisibleBufferWhiteCount(i);
-            int unique = GetVisibleBufferUniqueColorCount(i, 128);
-            string pending = IsPendingClearBuffer(i)
-                ? $"p=1:{_pendingClearX0[i]}-{_pendingClearX1[i]}x{_pendingClearY0[i]}-{_pendingClearY1[i]}:0x{_pendingClearColor[i]:X4}"
-                : "p=0";
-            buffers[i] = $"b{i}=nz{nonZero}:act{active}:w{white}:u{unique}:{pending}";
-        }
+            buffers[i] = FormatRenderBufferTraceStats(i);
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
@@ -31417,6 +31412,21 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"front={_frontBufferIndex} back={_backBufferIndex} chosen={renderBufferIndex} " +
             string.Join(" ", buffers) +
             $" lfb={_lfbWriteCount} rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}{pcStatus}");
+    }
+
+    private string FormatRenderBufferTraceStats(int index)
+    {
+        if ((uint)index >= (uint)_colorBuffers.Length)
+            return $"b{index}=missing";
+
+        int nonZero = GetBufferNonZeroCount(index);
+        int active = GetVisibleBufferActiveColorCount(index);
+        int white = GetVisibleBufferWhiteCount(index);
+        int unique = GetVisibleBufferUniqueColorCount(index, 128);
+        string pending = IsPendingClearBuffer(index)
+            ? $"p=1:{_pendingClearX0[index]}-{_pendingClearX1[index]}x{_pendingClearY0[index]}-{_pendingClearY1[index]}:0x{_pendingClearColor[index]:X4}"
+            : "p=0";
+        return $"b{index}=nz{nonZero}:act{active}:w{white}:u{unique}:{pending}";
     }
 
     private int ChooseRenderBufferIndex()
@@ -33486,9 +33496,15 @@ internal class VoodooBringupBackend : IVoodooBackend
                $"/area{stats.LastArea:F1}/fbz{stats.FbzMode:X8}/cp{stats.FbzColorPath:X8}/rd{stats.LastCommandFifoReadIndex:X}";
     }
 
-    private void TraceFastFillSwapOrder(string kind, uint register, uint value)
+    private void TraceFastFillSwapOrder(string kind, uint register, uint value, string extra = "")
     {
         if (!_traceFastFillSwapOrder || _fastFillSwapOrderTraceCount >= _traceFastFillSwapOrderLimit)
+            return;
+
+        if (_renderFrame < _traceFastFillSwapOrderMinRenderFrame)
+            return;
+
+        if (_traceFastFillSwapOrderSwapsOnly && !kind.StartsWith("swap", StringComparison.Ordinal))
             return;
 
         if (kind == "reg" && !IsFastFillSwapOrderRegister(register))
@@ -33498,15 +33514,17 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_traceFastFillSwapOrderPcs.Length != 0 && !_traceFastFillSwapOrderPcs.Contains(pc))
             return;
 
+        string extraStatus = extra.Length == 0 ? "" : $" {extra}";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-FILL-SWAP] n={++_fastFillSwapOrderTraceCount} kind={kind} " +
             $"pc=0x{pc:x16} reg=0x{register:x3} value=0x{value:x8} " +
             $"c0=0x{_registers[RegColor0]:x8} c1=0x{_registers[RegColor1]:x8} za=0x{_registers[RegZaColor]:x8} " +
             $"fbz=0x{_registers[RegFbzMode]:x8} lfb=0x{_registers[RegLfbMode]:x8} " +
-            $"front={_frontBufferIndex} back={_backBufferIndex} rd=0x{_cmdFifoReadIndex:x6} " +
+            $"frame={_renderFrame} front={_frontBufferIndex} back={_backBufferIndex} draw={GetDrawBufferIndex()} rd=0x{_cmdFifoReadIndex:x6} " +
             $"cmd=0x{_currentCommandFifoCommand:x8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:x8} trigger={_commandFifoDecodeTrigger} " +
             $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} fifoPackets={_fifoPacketCount} draws={_fifoDrawPacketCount} " +
-            $"fills={_fastFillCount} swaps={_swapBufferCount}");
+            $"{FormatRenderBufferTraceStats(0)} {FormatRenderBufferTraceStats(1)} {FormatRenderBufferTraceStats(2)} " +
+            $"fills={_fastFillCount} swaps={_swapBufferCount}{extraStatus}");
     }
 
     private static bool IsFastFillSwapOrderRegister(uint register)
@@ -38109,9 +38127,15 @@ sampledTexel:
         _swapBufferCount++;
         _lastSwapCommand = command;
 
+        int previousFront = _frontBufferIndex;
+        int previousBack = _backBufferIndex;
         bool dontSwap = _fixMameCommandFifoModel && ((command >> 9) & 1u) != 0;
         bool clearBackBuffer = ((command >> 6) & 1u) != 0;
-        TraceFastFillSwapOrder(clearBackBuffer ? "swap-clear" : "swap", RegSwapbufferCommand, command);
+        TraceFastFillSwapOrder(
+            clearBackBuffer ? "swap-clear" : "swap",
+            RegSwapbufferCommand,
+            command,
+            $"preFront={previousFront} preBack={previousBack} dont={(dontSwap ? 1 : 0)} clear={(clearBackBuffer ? 1 : 0)}");
         CountSwapPc(command, dontSwap, clearBackBuffer);
         if (dontSwap)
         {
@@ -38139,6 +38163,12 @@ sampledTexel:
             SetPendingClear(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
             CacheFastFill(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
         }
+
+        TraceFastFillSwapOrder(
+            "swap-result",
+            RegSwapbufferCommand,
+            command,
+            $"preFront={previousFront} preBack={previousBack} dont={(dontSwap ? 1 : 0)} clear={(clearBackBuffer ? 1 : 0)} clearTarget={_backBufferIndex}");
     }
 
     private void SetPendingClear(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)
