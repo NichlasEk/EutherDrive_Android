@@ -28875,6 +28875,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_LIMIT"), 64);
     private readonly int _traceType5PayloadWords =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_WORDS"), 0);
+    private readonly ulong[] _traceType5PayloadPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_PCS"));
+    private readonly bool _traceType5PayloadDedup =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_DEDUP"));
+    private readonly HashSet<string> _traceType5PayloadDedupKeys = [];
     private readonly bool _traceOddFifoPackets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_ODD_FIFO") == "1";
     private readonly bool _traceTmuRegisterWrites = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TMU_WRITES") == "1";
     private readonly ulong[] _traceTmuRegisterWriteTargets =
@@ -35287,8 +35292,27 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TraceType5Payload(uint command, uint targetWord, uint space, int count)
     {
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (!MatchesType5PayloadPcFilter(pc))
+            return;
+
         bool focusedTarget = _traceType5PayloadTargetWords.Contains(targetWord);
         if (!_traceType5Payloads && !focusedTarget)
+            return;
+
+        int nonZero = 0;
+        uint first = count > 0 && _fifoBuffer.Count > 2 ? _fifoBuffer[2] : 0;
+        uint second = count > 1 && _fifoBuffer.Count > 3 ? _fifoBuffer[3] : 0;
+        uint last = 0;
+        for (int i = 0; i < count && i + 2 < _fifoBuffer.Count; i++)
+        {
+            uint value = _fifoBuffer[i + 2];
+            if (value != 0)
+                nonZero++;
+            last = value;
+        }
+
+        if (_traceType5PayloadDedup && !RememberType5PayloadTrace(pc, command, targetWord, space, count))
             return;
 
         bool focusedZeroTarget = space == 3 && targetWord == 0 && count == 64;
@@ -35308,22 +35332,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             _type5PayloadTraceCount++;
         }
 
-        int nonZero = 0;
-        uint first = count > 0 && _fifoBuffer.Count > 2 ? _fifoBuffer[2] : 0;
-        uint second = count > 1 && _fifoBuffer.Count > 3 ? _fifoBuffer[3] : 0;
-        uint last = 0;
-        for (int i = 0; i < count && i + 2 < _fifoBuffer.Count; i++)
-        {
-            uint value = _fifoBuffer[i + 2];
-            if (value != 0)
-                nonZero++;
-            last = value;
-        }
-
         uint decodedFirst = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(first) : first;
         uint decodedSecond = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(second) : second;
         uint decodedLast = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(last) : last;
-        ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         uint targetByte = _fifoBuffer.Count > 1 ? _fifoBuffer[1] : targetWord << 2;
         string storageStatus = focusedTarget
@@ -35343,6 +35354,32 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
             $"depth={_cmdFifoDepth} holes={_cmdFifoHoles}{storageStatus}{wordStatus}{pcStatus}");
     }
+
+    private bool MatchesType5PayloadPcFilter(ulong pc)
+    {
+        if (_traceType5PayloadPcs.Length == 0)
+            return true;
+        if (MatchesTracePc(_traceType5PayloadPcs, pc))
+            return true;
+
+        for (int i = 0; i < 3; i++)
+        {
+            int storageIndex = CommandFifoReadStorageIndex(_currentCommandFifoPacketStart + i);
+            if (MatchesTracePc(_traceType5PayloadPcs, _cmdFifoStorageLastWritePc[storageIndex]))
+                return true;
+        }
+
+        return false;
+    }
+
+    private bool RememberType5PayloadTrace(ulong pc, uint command, uint targetWord, uint space, int count)
+    {
+        string key = $"{pc:x16}/{command:x8}/{space:x}/{targetWord:x8}/{count:x}/{FormatType5PayloadWordList(count, 8, decoded: false)}";
+        return _traceType5PayloadDedupKeys.Add(key);
+    }
+
+    private static bool MatchesTracePc(ulong[] pcs, ulong pc)
+        => pcs.Contains(pc) || pcs.Contains(pc & 0xffffffffUL);
 
     private string FormatType5PayloadWordList(int count, int limit, bool decoded)
     {

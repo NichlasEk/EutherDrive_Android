@@ -7691,3 +7691,72 @@ Next continuation:
    mismatch, not a missing BGLoadModel source.
 4. Do not suppress the control group as "bad texture"; it is real source data.
 ```
+
+### Type5 real-target and stripe-writer checkpoint - 2026-07-06
+
+Added focused Type5 payload diagnostics:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_PCS=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_DEDUP=1
+```
+
+The PC filter matches both the current decode PC and the FIFO last-writer PCs
+for `w0/w1/w2`, so a producer filter such as `0x800fe5d4` still catches later
+replayed packets decoded from another PC. The dedup key keeps repeated fullrect
+payloads from exploding the log.
+
+A negative target probe corrected an earlier interpretation: values such as
+`0x45ac`, `0x4479`, and `0x406e` were aligned payload/control words printed by
+`TEXUPLOAD-DIRECT-WRITER`, not Type5 target words. A focused Type5 probe for
+those words produced no target hits.
+
+The real `pc=800fe7cc` Type5 target family around the hydrated static-lr control
+record is `0x8000/0x8080/0x8100/0x8180`. Example payloads contain the same
+control-looking groups seen at `802e1a08`, e.g. `000111c4/00011690/00010198`.
+That confirms the direct-writer control-table data is being uploaded as a Type5
+payload family, not that `0x116b0 / 4` was itself the packet target.
+
+The visible stripe writer family is separate and comes from `pc=800fe5d4`,
+with real Type5 targets `0x4000/0x4080`. The new focused f300 run completed and
+stayed on the same visual oracle:
+
+```text
+/tmp/gauntdl-type5-stripe-pc800fe5d4-dedup-f300.log
+sha256=eaf945eb7f4515e3bd2657851dc4b561c2331f9a365674d76607e197c2cc4e6f
+/tmp/gauntdl-type5-stripe-pc800fe5d4-dedup-f300.ppm
+sha256=ec67f69517af98f96bfc248f7b0f5c9ada2a139a44a48f30c956cd81b3d5faae
+/tmp/gauntdl-type5-stripe-pc800fe5d4-dedup-f300.png
+frameHash=0x7df9727a
+logLines=230
+drawPackets=17965 directTriangles=1284 setupTriangles=630 texWrites=1911159
+```
+
+Key focused hits:
+
+```text
+targetWord=0x00004000 targetByte=0x00010000 pc=0xffffffff800fe5d4
+rawWords=00200010/00005000/0000415f/038b000f/0023d60c/...
+
+targetWord=0x00004080 targetByte=0x00010200 pc=0xffffffff800fe5d4
+rawWords=0023d60c/00000000/03920040/3d342d27/555d414d/...
+```
+
+The same two payloads are replayed later with decode PC `0xffffffff80106a74`,
+but `w0/w1/w2` still show last-writer PC `0xffffffff800fe5d4`. This is why
+future Type5 traces should filter by producer/lastwriter PC, not only by the
+current decode PC.
+
+Current continuation:
+
+```text
+1. Keep the f300 oracle unchanged: warm e27b state plus
+   `IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1`.
+2. Treat `0x8000..0x8180` and `0x4000/0x4080` as separate Type5 families:
+   `800fe7cc` control/model stream versus `800fe5d4` visible stripe stream.
+3. Do not chase `0x45ac` as a Type5 target; it is a payload/control word.
+4. Next source work should trace the hot fullrect source vertices and missing
+   S-coordinate producer around `0x802e1a28/50/78/a0`, then relate those
+   vertices back to the `800fe5d4` stripe/fullrect packets.
+```
+
