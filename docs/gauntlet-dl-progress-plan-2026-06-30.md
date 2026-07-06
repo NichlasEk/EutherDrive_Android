@@ -6898,3 +6898,129 @@ Next slice:
 3. If 0x8A00 contains rich data, compare raw/decoded words against the
    sampled `0x012400` reader path before changing color format handling.
 ```
+
+### Direct-writer disk payload checkpoint
+
+Added a default-off CPU-side trace for the direct `800fe7a0..800fe7cc`
+texture writer:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER=1
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_LIMIT=96
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_FOLLOW_WORDS=24
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PACKET_TARGET_WORDS=8a00
+```
+
+The focused run proved the Type5 `0x8a00` packet is produced by the direct
+writer, not the existing `TEXUPLOAD-LINK` helper path:
+
+```text
+/tmp/gauntdl-direct-writer-target8a00-srcspan-f300.log
+sha256=75385d74a17280c2672e368b9bdadb20f0da21e290972949408a599c4cf97351
+frameHash=0x38bc79b5
+frameSha256=ce9f9f865b02c700d2507e2579b7e8c3d1f09d3194fa41b91b57fea43f2a0154
+```
+
+Important lines:
+
+```text
+target pc=800fe7b0 value=0x00022800 targetWord=0x00008a00
+follow pc=800fe7c4/e7cc payload from s3=0xffffffff80315588...
+s3src=bgsrc=1:gei+0x13e70 ... hdr=bad
+s3disk=1:gei@0x13e70=74558370;mem=00000000 ...
+s3disk=1:gei@0x13e80=74705f4f;mem=01350000 ...
+```
+
+So the runtime RAM copy at `s3` is sparse/counter-like, while the matching
+disk region is rich texture-looking data. This is the first strong evidence
+that real art data is available and the current failure is in the upload source
+contents/path, not just in sampler target remapping.
+
+Added a second default-off experiment to test that theory in the direct writer:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS_TRACE_LIMIT=96
+```
+
+It only applies to the direct payload stores:
+
+```text
+pc=800fe7c4 rt=r2 -> disk word from s3
+pc=800fe7cc rt=r3 -> disk word from s3+4
+```
+
+Disk-word visual run, no word transform:
+
+```text
+/tmp/gauntdl-direct-writer-diskwords-f300.log
+/tmp/gauntdl-direct-writer-diskwords-f300.ppm
+/tmp/gauntdl-direct-writer-diskwords-f300.png
+logSha256=8ed42ffad9f82018eb8647196fcaba9c4030f0b6fa4360816f3b517576ad3044
+ppmSha256=e725dae6a57252f907ba10c45d681a2393a58faeb3dcd8e298cd0cd210c89483
+frameHash=0xa8a4925e
+frameSha256=c47b29b85e80d0d85a355313c097804d3490f84df8c0f69cabf6722b67e5ba9b
+textureMap nz=604969 (was 581292 in the non-disk direct-writer trace)
+```
+
+The exact `0x8a00` Type5 payload changed from sparse metadata to 64 non-zero
+disk words:
+
+```text
+rawWords=0x74558370/0x4f605c61/0x73736161/0x854f617c/...
+decWords=0x70835574/0x615c604f/0x61617373/0x7c614f85/...
+```
+
+The frame changed visibly, but it is still noisy and not a correct Gauntlet
+scene.
+
+Byte-order bracket:
+
+```text
+/tmp/gauntdl-direct-writer-diskwords-byteswap16-f300.log
+/tmp/gauntdl-direct-writer-diskwords-byteswap16-f300.ppm
+/tmp/gauntdl-direct-writer-diskwords-byteswap16-f300.png
+logSha256=842b69ce1bfd1388d7c3ab776682757a414256ce5dbe9bf8a433f2b9bf2d7837
+ppmSha256=7e0701f48ba92a6372b9891ee9055a3df007a3b922922b9b28716be0329874aa
+frameHash=0xa85f1677
+frameSha256=949bbb6d1e8b56555a75bcf0bcf134e9306902d588d303db19b8d4a677dc6c53
+textureMap nz=604969
+```
+
+`byteswap16` changes the hash but not the practical visual result. Do not spend
+the next slice blindly cycling transforms unless a format/NCC clue points there.
+
+Writer-layout diagnostic with disk words:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_COORD_MODE=scale
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_TARGET_REMAP=400:e00
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_FORMAT_OVERRIDE=1
+
+/tmp/gauntdl-diskwords-writerlayout-f300.log
+/tmp/gauntdl-diskwords-writerlayout-f300.ppm
+/tmp/gauntdl-diskwords-writerlayout-f300.png
+logSha256=445437860a5a49015bce92edf24cfa63e79c20e8143653256f0c681742bf8e01
+ppmSha256=3d78bfcbdab515b3e22b2d87ed1712a32e0373914b74a60c09e2a3ac6c7c42b0
+frameHash=0x961df3ad
+frameSha256=2a1a3fad5ef7268a7c4d81410fed19a83d8f578a08e8a2e8dfa1477745a5a309
+```
+
+This is the best visual sign so far: the image has large coherent color/shape
+regions instead of only sparse owner-counter noise. It is still not correct
+game graphics, so this is a diagnostic baseline rather than a fix to promote.
+
+Next slice:
+
+```text
+1. Keep `EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS=1` as the payload baseline
+   for visual probes.
+2. Bracket sampler format/NCC ownership on the disk-rich `0x8a00`/`0x9800`
+   payloads, starting from the writer-layout diagnostic because it now shows
+   coherent structure.
+3. If format/NCC changes do not reveal real scene art, trace who writes the bad
+   header fields for `1:gei+0x13e70` (`body=0x42180000`, `hdr60=0`,
+   `hdr64=0x3d73eef4`) and repair the runtime source construction instead of
+   overriding payload words at upload time.
+```

@@ -931,6 +931,16 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_FIFO_PACKET_LIMIT", 16);
     private readonly bool _traceTextureUploadCallerTransitions =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_CALLER_TRANSITIONS"));
+    private readonly bool _traceTextureUploadDirectWriter =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER"));
+    private readonly int _traceTextureUploadDirectWriterLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_LIMIT", 128);
+    private readonly int _traceTextureUploadDirectWriterFollowWords =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_FOLLOW_WORDS", 16);
+    private readonly bool _experimentDirectTextureWriterDiskWords =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS"));
+    private readonly int _experimentDirectTextureWriterDiskWordsTraceLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS_TRACE_LIMIT", 64);
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly int _traceVertexFifoFastPathLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH_LIMIT", 128);
@@ -1055,6 +1065,10 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadPacketSourceTraceCount;
     private int _textureUploadPayloadPacketTargetTraceCount;
     private int _textureUploadFifoPacketTraceCount;
+    private int _textureUploadDirectWriterTraceCount;
+    private int _textureUploadDirectWriterDiskWordTraceCount;
+    private int _textureUploadDirectWriterFollowRemaining;
+    private uint _textureUploadDirectWriterFollowTargetWord;
     private int _textureUploadMetadataSkipTraceCount;
     private int _textureUploadZeroBaseRunClassifierTraceCount;
     private int _vertexFifoFastPathTraceCount;
@@ -5200,6 +5214,120 @@ internal sealed class MipsR5000Core
             $"sp1c={before.Sp1c:x8}->{after.Sp1c:x8} sp74={before.Sp74:x8}->{after.Sp74:x8} " +
             $"s6w={before.S6Word00:x8}/{before.S6Word04:x8}/{before.S6Word08:x8}/{before.S6Word0c:x8}->" +
             $"{after.S6Word00:x8}/{after.S6Word04:x8}/{after.S6Word08:x8}/{after.S6Word0c:x8}");
+    }
+
+    private void TraceTextureUploadDirectWriterStore(
+        ulong pc,
+        uint op,
+        int rs,
+        int rt,
+        short simm,
+        ulong address,
+        uint value)
+    {
+        if (!_traceTextureUploadDirectWriter ||
+            _textureUploadDirectWriterTraceCount >= _traceTextureUploadDirectWriterLimit)
+        {
+            return;
+        }
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        if (physicalPc is < 0x000fe790UL or > 0x000fe7e0UL)
+            return;
+
+        bool hasTargetFilter = _traceTextureUploadPacketTargetWords.Length > 0;
+        uint targetWord = (value & 3U) == 0 ? value / 4U : uint.MaxValue;
+        bool targetMatch = !hasTargetFilter ||
+            Array.IndexOf(_traceTextureUploadPacketTargetWords, (ulong)targetWord) >= 0;
+        bool followMatch = hasTargetFilter && _textureUploadDirectWriterFollowRemaining > 0;
+        if (!targetMatch && !followMatch)
+            return;
+
+        string reason;
+        if (targetMatch)
+        {
+            reason = hasTargetFilter ? "target" : "all";
+            if (hasTargetFilter)
+            {
+                _textureUploadDirectWriterFollowRemaining = Math.Max(0, _traceTextureUploadDirectWriterFollowWords);
+                _textureUploadDirectWriterFollowTargetWord = targetWord;
+            }
+        }
+        else
+        {
+            reason = $"follow:0x{_textureUploadDirectWriterFollowTargetWord:x8}";
+            _textureUploadDirectWriterFollowRemaining--;
+        }
+
+        _textureUploadDirectWriterTraceCount++;
+        ulong sp = _gpr[29];
+        ulong a2 = _gpr[6];
+        ulong s0 = _gpr[16];
+        ulong s3 = _gpr[19];
+        ulong s6 = _gpr[22];
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-DIRECT-WRITER] n={_textureUploadDirectWriterTraceCount} reason={reason} " +
+            $"pc=0x{pc:x16} op=0x{op:x8} sw=r{rt}->[r{rs}+0x{(ushort)simm:x4}] " +
+            $"addr=0x{address:x16} value=0x{value:x8} targetWord=0x{targetWord:x8} " +
+            $"ra=0x{_gpr[31]:x16} sp=0x{sp:x16} " +
+            $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{a2:x16} a3=0x{_gpr[7]:x16} " +
+            $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} " +
+            $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t8=0x{_gpr[24]:x16} t9=0x{_gpr[25]:x16} " +
+            $"s0=0x{s0:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{s3:x16} " +
+            $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{s6:x16} s7=0x{_gpr[23]:x16} " +
+            $"a2src={DescribeKnownRuntimeBgLoadModelUploadSource(a2)} " +
+            $"s0src={DescribeKnownRuntimeBgLoadModelUploadSource(s0)} " +
+            $"s3src={DescribeKnownRuntimeBgLoadModelUploadSource(s3)} " +
+            $"s6src={DescribeKnownRuntimeBgLoadModelUploadSource(s6)} " +
+            $"state08={ReadTraceWord(s0 + 0x08UL):x8} state374={ReadTraceWord(s0 + 0x374UL):x8} " +
+            $"state37c={ReadTraceWord(s0 + 0x37cUL):x8} " +
+            $"sp1c={ReadTraceWord(sp + 0x1cUL):x8} sp70={ReadTraceWord(sp + 0x70UL):x8} " +
+            $"sp74={ReadTraceWord(sp + 0x74UL):x8} " +
+            $"a2w={FormatTraceWords(a2, 4)} s0w={FormatTraceWords(s0, 4)} " +
+            $"s3w={FormatTraceWords(s3, 4)} " +
+            $"s3disk={FormatKnownRuntimeBgLoadModelUploadDiskCompare(s3, 4)} " +
+            $"s6w={ReadTraceWord(s6 + 0x00UL):x8}/{ReadTraceWord(s6 + 0x04UL):x8}/" +
+            $"{ReadTraceWord(s6 + 0x08UL):x8}/{ReadTraceWord(s6 + 0x0cUL):x8}");
+    }
+
+    private uint ApplyDirectTextureWriterDiskWordExperiment(
+        ulong pc,
+        int rt,
+        uint value)
+    {
+        if (!_experimentDirectTextureWriterDiskWords)
+            return value;
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        ulong source;
+        if (physicalPc == 0x000fe7c4UL && rt == 2)
+        {
+            source = _gpr[19];
+        }
+        else if (physicalPc == 0x000fe7ccUL && rt == 3)
+        {
+            source = _gpr[19] + 4UL;
+        }
+        else
+        {
+            return value;
+        }
+
+        if (!TryReadKnownRuntimeBgLoadModelUploadDiskWord(source, out uint diskWord, out string diskSource))
+            return value;
+
+        uint transformedDiskWord = TransformZeroBaseUploadDiskWord(diskWord);
+        if (_textureUploadDirectWriterDiskWordTraceCount++ < _experimentDirectTextureWriterDiskWordsTraceLimit &&
+            value != transformedDiskWord)
+        {
+            string transform = DescribeZeroBaseUploadDiskWordTransform(diskWord, transformedDiskWord);
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] direct-texture-writer-disk-word " +
+                $"pc=0x{pc:x16} rt=r{rt} source=0x{source:x16} {diskSource} " +
+                $"mem=0x{value:x8}->disk=0x{diskWord:x8}{transform}");
+        }
+
+        return transformedDiskWord;
     }
 
     private void TraceZeroBaseTextureUploadPointerWord(
@@ -21401,7 +21529,13 @@ internal sealed class MipsR5000Core
                 StoreWordLeft(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
                 break;
             case 0x2b:
-                _memory.Write32(_gpr[rs] + (ulong)(long)simm, (uint)_gpr[rt]);
+                {
+                    ulong address = _gpr[rs] + (ulong)(long)simm;
+                    uint value = (uint)_gpr[rt];
+                    value = ApplyDirectTextureWriterDiskWordExperiment(pc, rt, value);
+                    TraceTextureUploadDirectWriterStore(pc, op, rs, rt, simm, address, value);
+                    _memory.Write32(address, value);
+                }
                 break;
             case 0x2e:
                 StoreWordRight(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
