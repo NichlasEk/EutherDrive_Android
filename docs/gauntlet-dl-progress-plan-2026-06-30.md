@@ -7496,3 +7496,69 @@ Current conclusion:
 4. Do not promote this into `BRINGUP_BASELINE` in the same slice; it is still a
    command-FIFO ownership bracket, not the underlying FIFO/source fix.
 ```
+
+### Buffer-1 texture ownership follow-up
+
+Ran the next f300 trace with render-state ignore only, filtering texture sample
+summaries to the selected draw/render buffer:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_MIN_RENDER_FRAME=293
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_BUFFERS=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_REQUIRE_WRITER=1
+
+/tmp/gauntdl-renderstate-buf1-texsummary-f300.log
+sha256=0e4f797f5cf5bbb7432a7344222481cbac27ba78a01dd7f8c22c53cd61f56fba
+/tmp/gauntdl-renderstate-buf1-texsummary-f300.ppm
+sha256=ec67f69517af98f96bfc248f7b0f5c9ada2a139a44a48f30c956cd81b3d5faae
+/tmp/gauntdl-renderstate-buf1-texsummary-f300.png
+frameHash=0x7df9727a
+```
+
+The image and hash match the previous render-state-ignore f300 screenshot. The
+trace shows the visible buffer-1 stripes are still dominated by the same
+large constant-S fullrect family:
+
+```text
+buf=1 front=1 back=0 rbuf=1
+pc=800c4e5c cmd=0x0180A8CB
+bbox=(0,0)-(512,383) pixels=97793..98303
+st=(0,256)/(0,0)/(0,0) or the paired inverse
+mode=0x8C24100F lod=0x00002000 fmt=0 base=0x000510
+writers=pc=800fe5d4 ... t5=0xC0000205 ...
+writers=pc=800fe7cc ... t5=0xC0000405 ...
+```
+
+Negative control with the existing constant-S suppressor on top of the same
+render-state-ignore stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_CONSTANT_S_FULLRECT_TEXTURE_TRIANGLES=1
+
+/tmp/gauntdl-renderstate-suppress-constant-s-f300.log
+sha256=3e99e2b085b1233f5f08d3caa20d52349a2d799562ffce6b18be1d2ee6ae1353
+/tmp/gauntdl-renderstate-suppress-constant-s-f300.ppm
+sha256=3aae4c1b528cbc4e6ad8b1f3e2d37e4a8c934bda4cc66fd0f8483cc5ceda5c2b
+/tmp/gauntdl-renderstate-suppress-constant-s-f300.png
+frameHash=0xa1081f45
+framebuffer=640x480 nonBlack=307200 colored=3068
+```
+
+Visual read: the constant-S suppressor leaves an almost white/empty frame with a
+small striped strip on the left. It does not reveal a hidden correct scene
+behind the stripes.
+
+Current continuation:
+
+```text
+1. Keep `IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1` as the f300 oracle.
+2. Do not use `SUPPRESS_CONSTANT_S_FULLRECT_TEXTURE_TRIANGLES` as a visual fix;
+   it proves the stripes are load-bearing false content, not an overlay hiding
+   a correct frame.
+3. Next code/probe work should move one hop upstream from the buffer-1
+   fullrect: trace the Type5 upload producer/source chain for the sampled
+   `pc=800fe5d4` and `pc=800fe7cc` writers, especially packets around
+   `0x000117B8`, `0x000116B0`, and `0x0003D89C`.
+```
