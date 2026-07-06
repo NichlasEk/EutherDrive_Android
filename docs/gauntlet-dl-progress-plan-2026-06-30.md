@@ -6837,3 +6837,64 @@ Next slice:
 3. If payload bytes are correct but color remains wrong, bracket NCC/TMU table
    ownership on the `fmt1` diagnostic.
 ```
+
+### Owner-bank Type5 trace checkpoint
+
+Ran a trace-only pass over the current strongest diagnostic:
+
+```text
+writer-layout targetRemap=400:e00
+coordMode=scale
+formatOverride=1
+frame=300
+
+/tmp/gauntdl-type5-owner-banks-8a00-9800-f300.log
+frameHash=0xeed378bf
+```
+
+The visual frame did not change, but the owner trace is useful. The
+writer-layout sample still maps the current fullrect texture word through
+`0x012400`:
+
+```text
+current=0x00E810/w03A04 -> addr=0x012400/w04900
+writer=pc0x800fe614/mode0x00000000/lod0x00700800/base0x00001C00/l0/bpp1/fmt1*
+type5=0xC0000205@0x000400:0x000404
+targetRemap=0x000400->0x000E00
+sampledOwner=pc0x800fe7cc/mode0x00000B00/lod0x00300804/base0x00000200/l1/bpp2/type5=1/cmd0xC0000205@0x008A00:0x008A00
+```
+
+The exact `0x9800` bank was captured and looks sparse/structured rather than
+like rich diffuse texture data:
+
+```text
+targetWord=0x00009800 count=64 nz=7
+rawWords=... 0x01fc0000 ... 0x01fd0000 ...
+decWords=... 0x0000fc01 ... 0x0000fd01 ...
+
+target 0x009803 -> addr 0x01400C value 0x0000FC01
+target 0x00980C -> addr 0x014030 value 0x0000FD01
+target 0x009815 -> addr 0x014054 value 0x0000FE01
+target 0x00981E -> addr 0x014078 value 0x0000FF01
+target 0x009827 -> addr 0x01409C value 0x00000002
+target 0x009830 -> addr 0x0140C0 value 0x00000102
+target 0x009839 -> addr 0x0140E4 value 0x00000202
+```
+
+The `0x8a00` target was visible in sampled-owner metadata but the bucket trace
+started at the earlier `0x008800` block and hit the first per-bucket limit
+before the exact `0x008A00` payload. This checkpoint argues against promoting
+the current `fmt1` alias path: the apparent color coherence is coming from a
+cross-bank owner alias, and at least the `0x9800` owner bank is likely metadata
+or another structured upload, not the intended visible texture.
+
+Next slice:
+
+```text
+1. Re-run the Type5 trace focused on bucket 0x012000 with a higher per-bucket
+   limit so the exact targetStart=0x008A00 payload is captured.
+2. If 0x8A00 is also sparse/structured, stop adding sampler transforms and
+   move upstream to descriptor/source selection for the fullrect texture.
+3. If 0x8A00 contains rich data, compare raw/decoded words against the
+   sampled `0x012400` reader path before changing color format handling.
+```
