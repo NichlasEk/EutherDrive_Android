@@ -8229,3 +8229,146 @@ Updated interpretation:
    buffer-1 fullrect buckets, especially why those pages contain stripe/static
    data while the lower geometry is now coherent.
 ```
+
+### Zero-base upload source selection checkpoint - 2026-07-06
+
+This slice tested whether the noisy pc=800fe5d4 Type5 payloads are actually
+control-like disk words being forced into texture upload memory by the
+zero-base disk-word experiment.
+
+New default-off controls:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_CONTROL_LIKE_TYPE5_TEXTURE_PAYLOADS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_CONTROL_LIKE_TYPE5_TEXTURE_PAYLOADS_PCS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_CONTROL_LIKE_TYPE5_TEXTURE_PAYLOADS_TARGETS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_CONTROL_LIKE_TYPE5_TEXTURE_PAYLOADS_LIMIT
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS_EXCLUDE_TARGET_WORDS
+```
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+result: 0 errors, existing warnings only
+```
+
+Control-like Type5 skip diagnostic:
+
+```text
+env added:
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_CONTROL_LIKE_TYPE5_TEXTURE_PAYLOADS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_CONTROL_LIKE_TYPE5_TEXTURE_PAYLOADS_PCS=0x800fe5d4
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SKIP_CONTROL_LIKE_TYPE5_TEXTURE_PAYLOADS_TARGETS=0x7900,0x7e00,0x7f00
+
+/tmp/gauntdl-skip-control-like-type5-f300.log
+result: no frame dump before manual abort after more than 3 minutes
+```
+
+The classifier did hit the exact suspicious payload family:
+
+```text
+targetWord=0x7900 raw=00000002/0000007f/00001784/00000040/... low16=12
+targetWord=0x7e00 raw=00005f8c/0000000d/0000628c/.../3faa3d3b/... low16=11
+targetWord=0x7f00 raw=00007790/00000000/00000002/... low16=12
+```
+
+Interpretation: those payloads really are control-like, but skipping them is
+not safe. It appears to disrupt the FIFO/run path instead of fixing visible
+graphics.
+
+MAME texture-upload write-pointer comparison:
+
+```text
+/tmp/gauntdl-mame-writeptr-trace-f220.log frameHash=0xd1549bb3
+/tmp/gauntdl-mame-writeptr-trace-f260.log frameHash=0xe2470b80
+```
+
+No `VOODOO-TEXUPLOAD-MAMEPTR` deltas were emitted on f220/f260, so current vs
+MAME write-pointer drift is not the active cause for this visible artifact.
+
+Direct writer correlation for the bad Type5 targets:
+
+```text
+/tmp/gauntdl-directwriter-targets-7900-7e00-7f00-f260.log
+frameHash=0xe2470b80
+
+targetWord=0x00007900 source=0xffffffff80321ba4 bgsrc=2:snm+0x48c
+raw=0x3dda20d0/0xbe9f585a/0xbf3b0061/0xbd407a4a ...
+disk=2:snm@0x48c=00000002;mem=3dda20d0/...
+
+targetWord=0x00007e00 source=0xffffffff803225a4 bgsrc=2:snm+0xe8c
+raw=0xbec09952/0xbf17af1c/0x3e88d9b9/0xbed8a2fa ...
+disk=2:snm@0xe8c=00005f8c;mem=bec09952/...
+
+targetWord=0x00007f00 source=0xffffffff803227a4 bgsrc=2:snm+0x108c
+raw=0x3e3ea012/0xbedcb66d/0x3f1b1847/0x070b00b1 ...
+disk=2:snm@0x108c=00007790;mem=3e3ea012/...
+```
+
+This proves the current zero-base disk-word experiment can replace RAM words
+that look like real runtime payload data with tiny disk control words for the
+same targets later seen as noisy/control-like Type5 uploads.
+
+Global no-zero-base-disk-words control:
+
+```text
+/tmp/gauntdl-no-zerobase-diskwords-f260.ppm
+frameHash=0xf0e32931
+frameSha256=70d7c9fc...
+ppm sha256=0215e1d120cb8960c397e5e44ee17b5eb967e1414821fada7670d8e1c7b29477
+log sha256=71178de0011502782fe285b30fa3419cb870080e4b153803c9d7ade7e1b2e39f
+
+/tmp/gauntdl-no-zerobase-diskwords-f300.ppm
+frameHash=0x309d2b79
+frameSha256=cbe3ecc5a9dd7ee452641b5a321f655e9306f6b25579bccf5f458fd00595e1ee
+ppm sha256=5af2970bc4f94ef6d51d05ecc7ebf7210aaeac6808f99b4c3594a2c4e906ed21
+log sha256=8ebeb616a4ed70ff3aa366d81405d858bfe8c8329174708eac0206cb16606300
+```
+
+Visual result: global disabling is not a fix. f260 shows structured large
+blue/green/magenta shapes with a diagonal static band, and f300 regresses to a
+mostly white/green/static triangle. The disk-word experiment is still needed for
+some packets.
+
+Selective zero-base target exclusion:
+
+```text
+env added:
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS_EXCLUDE_TARGET_WORDS=0x7900,0x7e00,0x7f00
+
+/tmp/gauntdl-zerobase-exclude-7900-7e00-7f00-f300.log
+frameHash=0x1172ef82
+frameSha256=4c5898b319a02371609760a6c95d734ded49b23caae9431d908f0151c2dbe13b
+ppm sha256=3635de5de1b3797f9a205452acf6c226b88ae5e18522dcc55dc3460376d1be05
+log sha256=afcfebf11d2238ae7f96264caa221dd0cf9bf7262e8264b533d788b3b745d071
+```
+
+The log confirms the target exclusion preserved RAM words for the hot SNM
+upload:
+
+```text
+zero-base-upload-disk-word-keep-memory targetWord=0x00007900
+addr=0xffffffff80321ba4 2:snm@0x48c mem=0x3dda20d0 disk=0x00000002
+```
+
+Visual result: this is also not a fix. Compared with the current
+plus3c8/diskwords-clamp f300 baseline, the lower coarse geometry is nearly the
+same, but the upper stripes turn into broad static/noise. This rejects a simple
+per-target "keep RAM for 0x7900/0x7e00/0x7f00" promotion.
+
+Updated interpretation:
+
+```text
+1. The bad Type5 payloads are control-like and directly tied to zero-base source
+   selection, but neither skipping them nor globally keeping RAM is correct.
+2. The fix probably needs packet-class/source-class selection, not just target
+   selection. Early GEI-style packets still depend on disk words, while the SNM
+   payload around 0x7900 clearly should not be blindly rewritten.
+3. The next focused sweep should compare f260/f300 target exclusions for only
+   0x7900, then only 0x7e00/0x7f00, and if those are negative trace the packet
+   header/source metadata that separates GEI texture payloads from SNM
+   control-like payloads.
+4. Do not promote the new experiments by default. They are useful probes only.
+```
