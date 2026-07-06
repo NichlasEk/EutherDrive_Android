@@ -668,6 +668,8 @@ internal sealed class MipsR5000Core
     private readonly ulong? _tracePcMax = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX");
     private readonly ulong? _traceRa = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_RA");
     private readonly int _traceInstructionLimit = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT", int.MaxValue);
+    private readonly bool _traceCpuFprs =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU_FPRS"));
     private readonly bool _traceRuntimeLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOG") == "1";
     private readonly int _stepBudget = ParseStepBudget();
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
@@ -5409,7 +5411,8 @@ internal sealed class MipsR5000Core
             $"table=0x{tableBase:x16}:{_traceTextureUploadDirectWriterControlTableWriteBytes:x} " +
             $"group=0x{groupBase:x16}:{FormatDirectTextureWriterControlGroups(groupBase)} " +
             $"table0={FormatDirectTextureWriterControlGroups(tableBase)} " +
-            $"s3ctrl={FormatDirectTextureWriterControlGroups(s3)}");
+            $"s3ctrl={FormatDirectTextureWriterControlGroups(s3)} " +
+            $"fprs={FormatCpuFprSummary()}");
     }
 
     private bool ShouldTraceTextureUploadDirectWriterControlTableWrite(ulong address, uint value)
@@ -22707,6 +22710,18 @@ internal sealed class MipsR5000Core
         Console.WriteLine($"[GAUNTDL:CPU] status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} errorepc={_cp0[30]:x16}");
     }
 
+    private string FormatCpuFprSummary()
+        =>
+            $"f0={FormatRuntimeFullrectFloat(ReadSingle(0))}/0x{(uint)_fpr[0]:x8} " +
+            $"f1={FormatRuntimeFullrectFloat(ReadSingle(1))}/0x{(uint)_fpr[1]:x8} " +
+            $"f2={FormatRuntimeFullrectFloat(ReadSingle(2))}/0x{(uint)_fpr[2]:x8} " +
+            $"f3={FormatRuntimeFullrectFloat(ReadSingle(3))}/0x{(uint)_fpr[3]:x8} " +
+            $"f4={FormatRuntimeFullrectFloat(ReadSingle(4))}/0x{(uint)_fpr[4]:x8} " +
+            $"f20={FormatRuntimeFullrectFloat(ReadSingle(20))}/0x{(uint)_fpr[20]:x8} " +
+            $"f21={FormatRuntimeFullrectFloat(ReadSingle(21))}/0x{(uint)_fpr[21]:x8} " +
+            $"f22={FormatRuntimeFullrectFloat(ReadSingle(22))}/0x{(uint)_fpr[22]:x8} " +
+            $"f23={FormatRuntimeFullrectFloat(ReadSingle(23))}/0x{(uint)_fpr[23]:x8}";
+
     private void TraceInstruction(ulong pc, uint op)
     {
         TraceRuntimeLogCall(pc);
@@ -22714,6 +22729,7 @@ internal sealed class MipsR5000Core
             return;
 
         _traceInstructionCount++;
+        string fprSummary = _traceCpuFprs ? $" {FormatCpuFprSummary()}" : "";
         Console.WriteLine(
             $"[GAUNTDL:CPU] #{_instructionCounter} pc={pc:x16} op={op:x8} {DisassembleBrief(op)} " +
             $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
@@ -22721,7 +22737,7 @@ internal sealed class MipsR5000Core
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} " +
             $"s3={_gpr[19]:x16} s4={_gpr[20]:x16} s5={_gpr[21]:x16} s6={_gpr[22]:x16} s7={_gpr[23]:x16} ra={_gpr[31]:x16} " +
             $"t5={_gpr[13]:x16} t6={_gpr[14]:x16} t7={_gpr[15]:x16} t8={_gpr[24]:x16} gp={_gpr[28]:x16} sp={_gpr[29]:x16} fp={_gpr[30]:x16} " +
-            $"st={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} errorepc={_cp0[30]:x16}");
+            $"st={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} errorepc={_cp0[30]:x16}{fprSummary}");
     }
 
     private bool ShouldTrace(ulong pc)
@@ -23002,7 +23018,7 @@ internal sealed class MipsR5000Core
             0x0e => "xori",
             0x0f => "lui",
             0x10 => "cop0",
-            0x11 => "cop1",
+            0x11 => DisassembleCop1Brief(op),
             0x18 => "daddi",
             0x19 => "daddiu",
             0x20 => "lb",
@@ -23019,11 +23035,11 @@ internal sealed class MipsR5000Core
             0x2b => "sw",
             0x2e => "swr",
             0x2f => "cache",
-            0x31 => "lwc1",
-            0x35 => "ldc1",
+            0x31 => DisassembleCop1MemoryBrief("lwc1", op),
+            0x35 => DisassembleCop1MemoryBrief("ldc1", op),
             0x37 => "ld",
-            0x39 => "swc1",
-            0x3d => "sdc1",
+            0x39 => DisassembleCop1MemoryBrief("swc1", op),
+            0x3d => DisassembleCop1MemoryBrief("sdc1", op),
             0x3f => "sd",
             0x14 => "beql",
             0x15 => "bnel",
@@ -23031,6 +23047,90 @@ internal sealed class MipsR5000Core
             0x17 => "bgtzl",
             _ => $"op.{opcode:x2}"
         };
+    }
+
+    private static string DisassembleCop1MemoryBrief(string mnemonic, uint op)
+    {
+        int baseRegister = (int)((op >> 21) & 0x1f);
+        int ft = (int)((op >> 16) & 0x1f);
+        short offset = unchecked((short)op);
+        string signedOffset = offset < 0
+            ? $"-0x{unchecked((ushort)-offset):x4}"
+            : $"+0x{(ushort)offset:x4}";
+        return $"{mnemonic} f{ft},[r{baseRegister}{signedOffset}]";
+    }
+
+    private static string DisassembleCop1Brief(uint op)
+    {
+        int fmt = (int)((op >> 21) & 0x1f);
+        int ft = (int)((op >> 16) & 0x1f);
+        int fs = (int)((op >> 11) & 0x1f);
+        int fd = (int)((op >> 6) & 0x1f);
+        uint funct = op & 0x3f;
+
+        return fmt switch
+        {
+            0x00 => $"mfc1 r{ft},f{fs}",
+            0x01 => $"dmfc1 r{ft},f{fs}",
+            0x02 => $"cfc1 r{ft},fcr{fs}",
+            0x04 => $"mtc1 r{ft},f{fs}",
+            0x05 => $"dmtc1 r{ft},f{fs}",
+            0x06 => $"ctc1 r{ft},fcr{fs}",
+            0x08 => DisassembleCop1BranchBrief(ft, unchecked((short)op)),
+            0x10 => DisassembleCop1FormatBrief("s", ft, fs, fd, funct),
+            0x11 => DisassembleCop1FormatBrief("d", ft, fs, fd, funct),
+            0x14 => DisassembleCop1FormatBrief("w", ft, fs, fd, funct),
+            _ => $"cop1.{fmt:x2}"
+        };
+    }
+
+    private static string DisassembleCop1BranchBrief(int rt, short offset)
+    {
+        string mnemonic = (rt & 0x03) switch
+        {
+            0x00 => "bc1f",
+            0x01 => "bc1t",
+            0x02 => "bc1fl",
+            0x03 => "bc1tl",
+            _ => "bc1"
+        };
+        int cc = (rt >> 2) & 0x07;
+        return cc == 0 ? $"{mnemonic} {offset}" : $"{mnemonic} cc{cc},{offset}";
+    }
+
+    private static string DisassembleCop1FormatBrief(string suffix, int ft, int fs, int fd, uint funct)
+    {
+        return funct switch
+        {
+            0x00 => $"add.{suffix} f{fd},f{fs},f{ft}",
+            0x01 => $"sub.{suffix} f{fd},f{fs},f{ft}",
+            0x02 => $"mul.{suffix} f{fd},f{fs},f{ft}",
+            0x03 => $"div.{suffix} f{fd},f{fs},f{ft}",
+            0x04 => $"sqrt.{suffix} f{fd},f{fs}",
+            0x05 => $"abs.{suffix} f{fd},f{fs}",
+            0x06 => $"mov.{suffix} f{fd},f{fs}",
+            0x07 => $"neg.{suffix} f{fd},f{fs}",
+            0x0c => $"round.w.{suffix} f{fd},f{fs}",
+            0x0d => $"trunc.w.{suffix} f{fd},f{fs}",
+            0x0e => $"ceil.w.{suffix} f{fd},f{fs}",
+            0x0f => $"floor.w.{suffix} f{fd},f{fs}",
+            0x11 => $"mov{((ft & 1) == 0 ? "f" : "t")}.{suffix} f{fd},f{fs}",
+            0x20 => $"cvt.s.{suffix} f{fd},f{fs}",
+            0x21 => $"cvt.d.{suffix} f{fd},f{fs}",
+            0x24 => $"cvt.w.{suffix} f{fd},f{fs}",
+            0x32 => DisassembleCop1CompareBrief($"c.eq.{suffix}", ft, fs, fd),
+            0x3c => DisassembleCop1CompareBrief($"c.lt.{suffix}", ft, fs, fd),
+            0x3e => DisassembleCop1CompareBrief($"c.le.{suffix}", ft, fs, fd),
+            _ => $"cop1.{suffix}.{funct:x2}"
+        };
+    }
+
+    private static string DisassembleCop1CompareBrief(string mnemonic, int ft, int fs, int fd)
+    {
+        int cc = (fd >> 2) & 0x07;
+        return cc == 0
+            ? $"{mnemonic} f{fs},f{ft}"
+            : $"{mnemonic} cc{cc},f{fs},f{ft}";
     }
 
     private static int ParsePositiveInt(string name, int fallback)

@@ -7760,3 +7760,131 @@ Current continuation:
    vertices back to the `800fe5d4` stripe/fullrect packets.
 ```
 
+### Fullrect FPU and texture-sampling checkpoint - 2026-07-06
+
+Added default-off FPU/COP1 diagnostics for the hot fullrect path:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_FPRS=1
+```
+
+The CPU trace now decodes the COP1 ops around `0xffffffff800b09e0..800b0b20`
+and can append `f0..f4/f20..f23` to the instruction trace. Current build:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+0 errors, 1 known NU1902 SharpCompress warning
+```
+
+FPU probe evidence:
+
+```text
+/tmp/gauntdl-cputrace-fprs-f181.log
+sha256=901de4509da7e82209af360267bdd876984455ac61fde07c244c6a2df1ff5ab7
+/tmp/gauntdl-cputrace-fprs-f181.ppm
+sha256=fa345d224d237d758cd39e43a283c057e1a9e4626c6d23181e58946ced87247c
+logLines=374
+frameHash=0xd1549bb3
+drawPackets=8867 directTriangles=300 setupTriangles=134 texWrites=108005
+```
+
+The hot sequence is now readable and sane: `lwc1/cvt.s.w/mtc1/mul.s/div.s`
+turns the integer dimensions into `256`, `512`, `1`, and `0.001953125` scale
+values before `swc1` stores source vertex fields. `f22=0`, `f20=0`, `f23=256`,
+and `f21=171.530533` are real values from the builder, not a decode mistake.
+
+Descriptor and clipper evidence:
+
+```text
+/tmp/gauntdl-fullrect-desc-f181.log
+sha256=9f8c1267a5a78125627bd692d1f9db31f5914d362b4e8a6bc9a401ffe783c9c3
+/tmp/gauntdl-fullrect-desc-f181.ppm
+sha256=fa345d224d237d758cd39e43a283c057e1a9e4626c6d23181e58946ced87247c
+logLines=298
+frameHash=0xd1549bb3
+```
+
+The fullrect descriptor/clipper path preserves plausible S/T values. The
+source quads have the expected `0/256` S/T pattern, and scaled stores normalize
+by the texture scale to values such as `0.256000012`, `0.171530545`, and
+`0.00100000005`. This closes the current CPU/FPU/clipper suspicion: the
+remaining visible bug is downstream in texture upload/layout/sampling.
+
+Current visual f300 oracle and experiment evidence:
+
+```text
+/tmp/gauntdl-current-baseline-f300.ppm
+sha256=ec67f69517af98f96bfc248f7b0f5c9ada2a139a44a48f30c956cd81b3d5faae
+/tmp/gauntdl-current-baseline-f300.log
+sha256=11adb05575c748ebc1ab21de7ca6fbf98897af31f061f75c401e7f0f61fd7a43
+frameHash=0x7df9727a
+
+/tmp/gauntdl-writerlayout-relookup-f300.ppm
+sha256=f8017b4ec36b2882643be764368ed1a4247b54d452e80a739e3fd9459eb24dce
+/tmp/gauntdl-writerlayout-relookup-f300.log
+sha256=37a76315d4d47d72ae2334528863c1a88fd139d3bd2b17ce078f1c227e48e084
+
+/tmp/gauntdl-constant-sxy-f300.ppm
+sha256=b4b82cc35ae38e8ec2aeba812274d52046d9ddb2a3abff4837f34f68358f423a
+/tmp/gauntdl-constant-sxy-f300.log
+sha256=2ea82f20eb46e0281fcfcb8faa2d629f9e3b310d511a9be12446d7864b90db32
+
+/tmp/gauntdl-sample-tmu1-f300.ppm
+sha256=ec67f69517af98f96bfc248f7b0f5c9ada2a139a44a48f30c956cd81b3d5faae
+/tmp/gauntdl-sample-tmu1-f300.log
+sha256=517d82dbe32de8a53e2620be6f4d2a01fc068da66fb3553fa0ca5a9972f8ecc6
+```
+
+`writerlayout+relookup` changes the sampled pattern but does not produce real
+graphics. The constant-S x/y remap produces noisy static. Explicit TMU1 sampling
+is identical to baseline, so the bug is not simply the active TMU index.
+
+Large texture-triangle sample summary:
+
+```text
+/tmp/gauntdl-sample-summary-allframes-f300.log
+sha256=ae6bd965b155b20e1fd065aa1edd198785fcb338ec78f524f64d09e9e59c8363
+logLines=232
+frameHash=0x7df9727a
+drawPackets=17965 directTriangles=1284 setupTriangles=630 texWrites=1911159
+```
+
+The dominant wrong layer is command `0x0180A8CB:19` from
+`pc=0xffffffff800c4e5c`, with full-screen-ish triangles:
+
+```text
+bbox=(0,41)-(512,383)
+xy=(0,-1)/(512,383)/(0,383)
+stq=(0,256,1)/(0,0,1)/(0,0,1)
+xy=(512,383)/(0,-1)/(512,-1)
+stq=(0,0,1)/(0,256,1)/(0,256,1)
+sample mode=0x8C24100F lod=0x00002000 base=0x000510 fmt=0 size=256x256
+```
+
+That constant-S sampling explains the visible horizontal stripe field. The
+sampled addresses are dominated by row buckets such as `0x001000`, `0x002000`,
+`0x003000`, `0x004000`, then `0x00D000`, `0x00C000`, etc.
+
+The sampled texels overlap writers with different register/layout signatures:
+
+```text
+pc=800fe7cc mode=0x00000C00 lod=0x00700804 base=0x1FFFF800 l=1 bpp=2
+pc=800fe614 mode=0x00000000 lod=0x00700800 base=0x000019A0 l=0 bpp=1
+pc=800fe5d4 mode=0x00000000 lod=0x00700800 base=0x00000000 l=0 bpp=1
+pc=800fe5d4 mode=0x00000000 lod=0x00000800 base=0x00000000 l=0 bpp=1
+```
+
+Current conclusion:
+
+```text
+1. Stop treating the hot fullrect path as missing CPU/FPU S coordinates.
+   The builder and clipper are producing plausible source vertices.
+2. The visible stripe layer is a real large texture blit, but our Voodoo texture
+   memory/register interpretation maps it to row stripes/static.
+3. The next blocker is Type5 texture upload/write pointer/register-layout
+   reconciliation, especially the writer families at 800fe5d4, 800fe614, and
+   800fe7cc versus the later sample register state.
+4. Next probes should sweep existing MAME texture fetch/write-pointer
+   experiments and writer-layout coord/address transforms, then narrow the
+   fix where Type5 upload registers are converted into texture memory addresses.
+```
