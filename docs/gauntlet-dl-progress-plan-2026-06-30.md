@@ -7233,3 +7233,111 @@ Next slice:
    original vertex setup path against the fastpath packing order before adding
    a permanent S reconstruction.
 ```
+
+### Fullrect clipper trace and texture-format parity checkpoint
+
+Added default-off fullrect descriptor/clipper traces:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_FULLRECT_DESCRIPTOR=1
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_FULLRECT_DESCRIPTOR_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_FULLRECT_CLIPPER=1
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_FULLRECT_CLIPPER_LIMIT=...
+```
+
+The fast f181 trace proves the descriptor and scale loop can build useful S
+endpoints. It also shows `800b0770` itself does not erase S:
+
+```text
+/tmp/gauntdl-fullrect-clipper-f181.log
+sha256=dc7d5f209f09bc286cfb1c495ee65579bdcdc78d0e976046801868356e8dd8da
+frameHash=0xd1549bb3
+
+right clip before bracket:
+dst=473fb400/.../43fd5b56/...  ; x=512, S=506.713562
+```
+
+The paired vertex-FIFO trace shows the post-clip fastpath carries those values
+for early f181 fullrects:
+
+```text
+/tmp/gauntdl-vertexfifo-current-f181.log
+sha256=c0341cea15c5544f812cfb36c4804df7287c5394cae2d446c527a05f81880b9a
+src1=...:473fb400/00000000/437f0000/43fd5b56/bc292a85/3f800000
+```
+
+Added a default-off sign bracket for the suspicious right-edge clip parameter:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_FULLRECT_RIGHT_CLIP_POSITIVE_T=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_FULLRECT_RIGHT_CLIP_POSITIVE_T_LIMIT=...
+```
+
+It changes the internal f181 right-edge S from extrapolated `506.7` to a small
+interpolated value while clipping X to `512`, but it is a negative visual
+control at f300:
+
+```text
+/tmp/gauntdl-rightclip-positive-t-vertex-f181.log
+sha256=a93391497688097430c20b60d45aa8ac850bf02f47b9bc7ef200df9324d4f3ce
+first right clipped S=0x40a92a80
+
+/tmp/gauntdl-rightclip-positive-t-f300.log
+sha256=f222ea10d2ce40345dbea4d5ef59c5757c1e90a06d0a96aa61c998bb669b700e
+/tmp/gauntdl-rightclip-positive-t-f300.ppm
+sha256=85cc18d453c202f601468f0ccc2c237a2a7e48c03b96657c2b9151c0259ab85b
+frameHash=0x828a27b0
+```
+
+Also pulled the current MAME `voodoo.cpp` to `/tmp/mame-voodoo.cpp` and fixed
+one real parity issue in the bringup backend: texture formats `>= 8` now use
+16-bit texture addressing everywhere, matching MAME's `bytes_per_texel =
+(format < 8) ? 1 : 2`. The sampler now handles the MAME texel table families
+for `8=rgb332`, `9=NCC/palette`, `10=rgb565`, `11=argb1555`, `12=argb4444`,
+and `13=intensity`.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+0 errors, 345 warnings
+
+/tmp/gauntdl-format-bpp-f181.log
+sha256=8655ac22d5534f4902fb03cd52fd111f9be603feb246cda94b5b91b85505c7a2
+frameHash=0xd1549bb3
+
+/tmp/gauntdl-format-bpp-f300.log
+sha256=790b7a362e0dbd59a50e05cc004d306972d4a75b4320c5d287e8b4706f3d218c
+/tmp/gauntdl-format-bpp-f300.ppm
+sha256=85cc18d453c202f601468f0ccc2c237a2a7e48c03b96657c2b9151c0259ab85b
+/tmp/gauntdl-format-bpp-f300.png
+frameHash=0x828a27b0
+```
+
+Visual read:
+
+```text
+current default screenshot:
+  /tmp/gauntdl-format-bpp-f300.png
+  still large green/magenta fields
+
+best diagnostic screenshot:
+  /tmp/gauntdl-geilen20000-writerlayout-fmt1-f300.png
+  coherent texture-like regions, but still noisy and not scene-correct
+```
+
+Current conclusion:
+
+```text
+1. Do not promote the right-clip sign bracket; it is mathematically interesting
+   but visually neutral at f300.
+2. Keep descriptor/clipper traces; they prove the old "clipper erased S" theory
+   is too broad. Some f181 fullrects carry non-zero S through the FIFO fastpath.
+3. Keep the texture-format bpp parity fix because it matches MAME and removes a
+   real emulator inconsistency, but it does not change the current Gauntlet f300
+   plateau because the hot default frame is still dominated by other state.
+4. Next useful slice should focus on why the selected default frame is still
+   dominated by full-screen fill/texture surfaces: trace texture-format usage,
+   TMU/NCC bank source, and Type3 setup decode for the actual f300 draw packets
+   before adding more sampler-side remaps.
+```

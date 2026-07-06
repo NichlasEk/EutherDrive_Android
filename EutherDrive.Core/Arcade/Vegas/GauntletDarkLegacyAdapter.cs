@@ -709,6 +709,18 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X"));
     private readonly int _experimentRuntimeVertexFifoFullrectSFromXTraceLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X_LIMIT", 24);
+    private readonly bool _traceRuntimeFullrectDescriptor =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_FULLRECT_DESCRIPTOR"));
+    private readonly int _traceRuntimeFullrectDescriptorLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_FULLRECT_DESCRIPTOR_LIMIT", 64);
+    private readonly bool _traceRuntimeFullrectClipper =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_FULLRECT_CLIPPER"));
+    private readonly int _traceRuntimeFullrectClipperLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_FULLRECT_CLIPPER_LIMIT", 96);
+    private readonly bool _experimentRuntimeFullrectRightClipPositiveT =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_FULLRECT_RIGHT_CLIP_POSITIVE_T"));
+    private readonly int _experimentRuntimeFullrectRightClipPositiveTLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_FULLRECT_RIGHT_CLIP_POSITIVE_T_LIMIT", 64);
     private readonly bool _experimentDisableOuterPayloadFastPath =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISABLE_OUTER_PAYLOAD_FASTPATH"));
     private readonly bool _fixVoodooMameCommandFifoModel =
@@ -1085,6 +1097,9 @@ internal sealed class MipsR5000Core
     private int _vertexFifoFastPathOddPayloadTraceCount;
     private int _vertexFifoFastPathRejectTraceCount;
     private int _runtimeVertexFifoFullrectSFromXTraceCount;
+    private int _runtimeFullrectDescriptorTraceCount;
+    private int _runtimeFullrectClipperTraceCount;
+    private int _runtimeFullrectRightClipPositiveTTraceCount;
     private int _lateRenderPumpTraceCount;
     private int _runtimeStatusBitfieldReadTraceCount;
     private int _runtimeDiagnosticOverlaySuppressTraceCount;
@@ -1686,6 +1701,9 @@ internal sealed class MipsR5000Core
         ulong s8BeforeExecute = _gpr[30];
         Execute(pc, op);
         _gpr[0] = 0;
+        ApplyRuntimeFullrectRightClipPositiveTExperiment(pc);
+        TraceRuntimeFullrectDescriptor(pc);
+        TraceRuntimeFullrectClipper(pc);
         TraceTextureUploadSourceSelectorSetup(pc, op, "post");
         TraceTextureUploadSourceProducer(pc, op, "post");
         TraceTextureUploadSourceLimitTable(pc, op, "post");
@@ -22497,6 +22515,156 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private void TraceRuntimeFullrectDescriptor(ulong pc)
+    {
+        if (!_traceRuntimeFullrectDescriptor ||
+            _runtimeFullrectDescriptorTraceCount >= _traceRuntimeFullrectDescriptorLimit)
+        {
+            return;
+        }
+
+        ulong offset = pc & 0x1fffffffUL;
+        string stage = offset switch
+        {
+            0x000b08ecUL => "endpoint-load",
+            0x000b0a38UL => "v0-s-store",
+            0x000b0a60UL => "v1-s-store",
+            0x000b0ab8UL => "v2-s-store",
+            0x000b0adcUL => "v3-s-store",
+            0x000b0ba4UL => "scaled-s-store",
+            0x000b0ba8UL => "scaled-t-store",
+            _ => ""
+        };
+        if (stage.Length == 0)
+            return;
+
+        ulong descriptor = _gpr[16];
+        if (!IsMainRamRange(descriptor, 0x24UL))
+            return;
+
+        uint h04 = _memory.Read16(descriptor + 0x04UL);
+        uint h06 = _memory.Read16(descriptor + 0x06UL);
+        uint w00 = _memory.Read32(descriptor + 0x00UL);
+        uint w08 = _memory.Read32(descriptor + 0x08UL);
+        uint w0c = _memory.Read32(descriptor + 0x0cUL);
+        uint w10 = _memory.Read32(descriptor + 0x10UL);
+        uint w14 = _memory.Read32(descriptor + 0x14UL);
+        uint w18 = _memory.Read32(descriptor + 0x18UL);
+        uint w1c = _memory.Read32(descriptor + 0x1cUL);
+        uint w20 = _memory.Read32(descriptor + 0x20UL);
+        _runtimeFullrectDescriptorTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:FULLRECT-DESC] n={_runtimeFullrectDescriptorTraceCount} pc={pc:x16} stage={stage} " +
+            $"desc=0x{descriptor:x16} vbase=0x{_gpr[3]:x16} ra=0x{_gpr[31]:x16} sp=0x{_gpr[29]:x16} " +
+            $"h04=0x{h04:x4} h06=0x{h06:x4} " +
+            $"w00=0x{w00:x8} w08=0x{w08:x8} w0c=0x{w0c:x8} w10=0x{w10:x8} " +
+            $"w14=0x{w14:x8}({FormatRuntimeFullrectFloat(w14)}) " +
+            $"w18=0x{w18:x8}({FormatRuntimeFullrectFloat(w18)}) " +
+            $"w1c=0x{w1c:x8}({FormatRuntimeFullrectFloat(w1c)}) " +
+            $"w20=0x{w20:x8}({FormatRuntimeFullrectFloat(w20)}) " +
+            $"f20={FormatRuntimeFullrectFloat(ReadSingle(20))}/0x{(uint)_fpr[20]:x8} " +
+            $"f21={FormatRuntimeFullrectFloat(ReadSingle(21))}/0x{(uint)_fpr[21]:x8} " +
+            $"f22={FormatRuntimeFullrectFloat(ReadSingle(22))}/0x{(uint)_fpr[22]:x8} " +
+            $"f23={FormatRuntimeFullrectFloat(ReadSingle(23))}/0x{(uint)_fpr[23]:x8} " +
+            $"f0={FormatRuntimeFullrectFloat(ReadSingle(0))}/0x{(uint)_fpr[0]:x8} " +
+            $"f1={FormatRuntimeFullrectFloat(ReadSingle(1))}/0x{(uint)_fpr[1]:x8} " +
+            $"f2={FormatRuntimeFullrectFloat(ReadSingle(2))}/0x{(uint)_fpr[2]:x8} " +
+            $"f3={FormatRuntimeFullrectFloat(ReadSingle(3))}/0x{(uint)_fpr[3]:x8} " +
+            $"vtx={FormatRuntimeFullrectVertexWords(_gpr[3])}");
+    }
+
+    private void TraceRuntimeFullrectClipper(ulong pc)
+    {
+        if (!_traceRuntimeFullrectClipper ||
+            _runtimeFullrectClipperTraceCount >= _traceRuntimeFullrectClipperLimit)
+        {
+            return;
+        }
+
+        ulong offset = pc & 0x1fffffffUL;
+        string stage = offset switch
+        {
+            0x000b0770UL => "entry",
+            0x000b07acUL => "s-store",
+            0x000b07c4UL => "exit",
+            _ => ""
+        };
+        if (stage.Length == 0)
+            return;
+
+        ulong dst = _gpr[4];
+        ulong src = _gpr[5];
+        ulong tBits = _gpr[6] & 0xffffffffUL;
+        ulong raOffset = _gpr[31] & 0x1fffffffUL;
+        string edge = raOffset switch
+        {
+            0x000b0c0cUL or 0x000b0c20UL => "left",
+            0x000b0c50UL or 0x000b0c64UL => "top",
+            0x000b0ca0UL or 0x000b0cb4UL => "right",
+            0x000b0cf0UL or 0x000b0d04UL => "bottom",
+            _ => "unknown"
+        };
+
+        _runtimeFullrectClipperTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:FULLRECT-CLIP] n={_runtimeFullrectClipperTraceCount} pc={pc:x16} stage={stage} edge={edge} " +
+            $"ra=0x{_gpr[31]:x16} a0=0x{dst:x16} a1=0x{src:x16} " +
+            $"a2=0x{tBits:x8}({FormatRuntimeFullrectFloat((uint)tBits)}) " +
+            $"f0={FormatRuntimeFullrectFloat(ReadSingle(0))}/0x{(uint)_fpr[0]:x8} " +
+            $"f1={FormatRuntimeFullrectFloat(ReadSingle(1))}/0x{(uint)_fpr[1]:x8} " +
+            $"f2={FormatRuntimeFullrectFloat(ReadSingle(2))}/0x{(uint)_fpr[2]:x8} " +
+            $"dst={FormatRuntimeFullrectVertexWords(dst)} " +
+            $"src={FormatRuntimeFullrectVertexWords(src)}");
+    }
+
+    private void ApplyRuntimeFullrectRightClipPositiveTExperiment(ulong pc)
+    {
+        if (!_experimentRuntimeFullrectRightClipPositiveT ||
+            (pc & 0x1fffffffUL) != 0x000b077cUL)
+        {
+            return;
+        }
+
+        ulong raOffset = _gpr[31] & 0x1fffffffUL;
+        if (raOffset is not (0x000b0ca0UL or 0x000b0cb4UL))
+            return;
+
+        uint before = (uint)_fpr[2];
+        uint after = before & 0x7fffffffu;
+        if (after == before)
+            return;
+
+        _fpr[2] = after;
+        if (_runtimeFullrectRightClipPositiveTTraceCount++ < _experimentRuntimeFullrectRightClipPositiveTLimit)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] fullrect-right-clip-positive-t n={_runtimeFullrectRightClipPositiveTTraceCount} " +
+                $"pc={pc:x16} ra=0x{_gpr[31]:x16} " +
+                $"t=0x{before:x8}({FormatRuntimeFullrectFloat(before)})->0x{after:x8}({FormatRuntimeFullrectFloat(after)}) " +
+                $"dst={FormatRuntimeFullrectVertexWords(_gpr[4])} src={FormatRuntimeFullrectVertexWords(_gpr[5])}");
+        }
+    }
+
+    private static string FormatRuntimeFullrectFloat(uint bits)
+        => FormatRuntimeFullrectFloat(BitConverter.UInt32BitsToSingle(bits));
+
+    private static string FormatRuntimeFullrectFloat(float value)
+        => float.IsFinite(value) ? value.ToString("G9", CultureInfo.InvariantCulture) : value.ToString(CultureInfo.InvariantCulture);
+
+    private string FormatRuntimeFullrectVertexWords(ulong source)
+    {
+        if (!IsMainRamRange(source, 0x18UL))
+            return "out-of-range";
+
+        return
+            $"{_memory.Read32(source + 0x00UL):x8}/" +
+            $"{_memory.Read32(source + 0x04UL):x8}/" +
+            $"{_memory.Read32(source + 0x08UL):x8}/" +
+            $"{_memory.Read32(source + 0x0cUL):x8}/" +
+            $"{_memory.Read32(source + 0x10UL):x8}/" +
+            $"{_memory.Read32(source + 0x14UL):x8}";
+    }
+
     private void TraceRuntimeLogCall(ulong pc)
     {
         ulong offset = pc & 0x1fffffffUL;
@@ -30779,7 +30947,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint seqMode = _experimentTextureUploadTmuBanks
             ? ReadTextureRegisterForTmu(0, RegTextureMode)
             : mode;
-        int bytesPerTexel = ((mode >> 8) & 0x0fu) < 8 ? 1 : 2;
+        int bytesPerTexel = GetTextureFormatBytesPerTexel((int)((mode >> 8) & 0x0fu));
         bool seq8Downld = ((seqMode >> 31) & 1u) != 0 || (_fixSequential8BitTextureDownload && bytesPerTexel == 1);
         BeginTextureWriteContext(value, mode, texLod, textureBase, lod, bytesPerTexel, seq8Downld);
         try
@@ -35837,11 +36005,11 @@ sampledTexel:
             uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
             int targetLod = GetTextureTargetLod(lod);
             int format = (int)((mode >> 8) & 0x0fu);
-            bool sixteenBit = format is 10 or 11 or 12;
+            bool sixteenBit = IsTextureFormat16Bit(format);
             uint sampleBase = GetTextureBaseAddress(registerBase);
             if (_textureSampleBaseBias != 0)
                 sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
-            uint resolvedBase = GetTextureLodOffsetFromBase(targetLod, sixteenBit ? 2 : 1, lod, sampleBase);
+            uint resolvedBase = GetTextureLodOffsetFromBase(targetLod, GetTextureFormatBytesPerTexel(format), lod, sampleBase);
             ulong pc = CpuPcProvider?.Invoke() ?? 0;
             string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
             Console.WriteLine(
@@ -36185,7 +36353,7 @@ sampledTexel:
         uint sampleBase = GetTextureBaseAddress(registerBase);
         if (_textureSampleBaseBias != 0)
             sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
-        uint resolvedBase = GetTextureLodOffsetFromBase(targetLod, format is >= 8 ? 2 : 1, lod, sampleBase);
+        uint resolvedBase = GetTextureLodOffsetFromBase(targetLod, GetTextureFormatBytesPerTexel(format), lod, sampleBase);
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         Console.WriteLine(
@@ -36224,7 +36392,7 @@ sampledTexel:
         uint sampleBase = GetTextureBaseAddress(registerBase);
         if (_textureSampleBaseBias != 0)
             sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
-        uint resolvedBase = GetTextureLodOffsetFromBase(targetLod, format is >= 8 ? 2 : 1, lod, sampleBase);
+        uint resolvedBase = GetTextureLodOffsetFromBase(targetLod, GetTextureFormatBytesPerTexel(format), lod, sampleBase);
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         Console.WriteLine(
@@ -36265,7 +36433,7 @@ sampledTexel:
         uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int targetLod = GetTextureTargetLod(lod);
         int format = (int)((mode >> 8) & 0x0fu);
-        bool sixteenBit = format is 10 or 11 or 12;
+        bool sixteenBit = IsTextureFormat16Bit(format);
         int width;
         int height;
         uint resolvedBase;
@@ -36283,7 +36451,7 @@ sampledTexel:
             uint sampleBase = GetTextureBaseAddress(registerBase);
             if (_textureSampleBaseBias != 0)
                 sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
-            resolvedBase = GetTextureLodOffsetFromBase(targetLod, sixteenBit ? 2 : 1, lod, sampleBase);
+            resolvedBase = GetTextureLodOffsetFromBase(targetLod, GetTextureFormatBytesPerTexel(format), lod, sampleBase);
         }
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
@@ -36465,7 +36633,7 @@ sampledTexel:
         uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int targetLod = GetTextureTargetLod(textureLod);
         int format = (int)((mode >> 8) & 0x0fu);
-        bool sixteenBit = format is 10 or 11 or 12;
+        bool sixteenBit = IsTextureFormat16Bit(format);
         int width;
         int height;
         uint baseAddress;
@@ -36483,7 +36651,7 @@ sampledTexel:
             uint sampleBase = GetTextureBaseAddress(textureBase);
             if (_textureSampleBaseBias != 0)
                 sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
-            baseAddress = GetTextureLodOffsetFromBase(targetLod, sixteenBit ? 2 : 1, textureLod, sampleBase);
+            baseAddress = GetTextureLodOffsetFromBase(targetLod, GetTextureFormatBytesPerTexel(format), textureLod, sampleBase);
         }
 
         int s24_8 = MameSetupCastToInt32(iterS * (1.0 / (1 << 24)));
@@ -36564,7 +36732,7 @@ sampledTexel:
         uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int targetLod = GetTextureTargetLod(textureLod);
         int format = (int)((mode >> 8) & 0x0fu);
-        bool sixteenBit = format is 10 or 11 or 12;
+        bool sixteenBit = IsTextureFormat16Bit(format);
         int width;
         int height;
         uint baseAddress;
@@ -36582,7 +36750,7 @@ sampledTexel:
             uint sampleBase = GetTextureBaseAddress(textureBase);
             if (_textureSampleBaseBias != 0)
                 sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
-            baseAddress = GetTextureLodOffsetFromBase(targetLod, sixteenBit ? 2 : 1, textureLod, sampleBase);
+            baseAddress = GetTextureLodOffsetFromBase(targetLod, GetTextureFormatBytesPerTexel(format), textureLod, sampleBase);
         }
         bool filtered = IsTextureFilteringEnabled(mode);
         if (_experimentTextureFilterHalfTexel && filtered)
@@ -36677,13 +36845,7 @@ sampledTexel:
 
             uint word = ReadTexture32(byteAddress & ~3u);
             ushort packed = (ushort)((word >> (int)((byteAddress & 2u) * 8u)) & 0xffffu);
-            ushort result = format switch
-            {
-                10 => ConvertRgb565Lane(packed, 0),
-                11 => ConvertXrgb1555Lane(packed, 0, hasAlphaBit: true),
-                12 => ConvertArgb4444ToRgb565(packed),
-                _ => packed
-            };
+            ushort result = ConvertTextureFormatToRgb565(format, packed, mode);
             TrackZeroTextureSample(byteAddress, result);
             TrackTextureSampleDebug(byteAddress, packed, result);
             TraceTextureSample(s, t, width, height, x, y, mode, textureLod, textureBase, baseAddress, byteAddress, word, packed, result);
@@ -36759,8 +36921,8 @@ sampledTexel:
         bool writerFormatOverridden = _experimentFullrectSampleWriterLayoutFormatOverride is >= 0 and <= 15;
         if (writerFormatOverridden)
             writerFormat = _experimentFullrectSampleWriterLayoutFormatOverride;
-        int writerBytesPerTexel = writerFormat is 10 or 11 or 12 ? 2 : writer.BytesPerTexel;
-        bool writerSixteenBit = writerBytesPerTexel == 2 || writerFormat is 10 or 11 or 12;
+        int writerBytesPerTexel = IsTextureFormat16Bit(writerFormat) ? 2 : writer.BytesPerTexel;
+        bool writerSixteenBit = writerBytesPerTexel == 2;
         int writerWidth = Math.Max(1, (int)GetTextureWidth(writer.TexLod) >> writerLod);
         int writerHeight = Math.Max(1, (int)GetTextureHeight(writer.TexLod) >> writerLod);
         uint writerBase = GetTextureLodOffset(writerLod, writerBytesPerTexel, writer.TexLod, writer.TextureBase);
@@ -36838,8 +37000,8 @@ sampledTexel:
             bool ownerFormatOverridden = _experimentFullrectSampleWriterLayoutFormatOverride is >= 0 and <= 15;
             if (ownerFormatOverridden)
                 ownerFormat = _experimentFullrectSampleWriterLayoutFormatOverride;
-            int ownerBytesPerTexel = ownerFormat is 10 or 11 or 12 ? 2 : sampledWriter.BytesPerTexel;
-            bool ownerSixteenBit = ownerBytesPerTexel == 2 || ownerFormat is 10 or 11 or 12;
+            int ownerBytesPerTexel = IsTextureFormat16Bit(ownerFormat) ? 2 : sampledWriter.BytesPerTexel;
+            bool ownerSixteenBit = ownerBytesPerTexel == 2;
             int ownerWidth = Math.Max(1, (int)GetTextureWidth(sampledWriter.TexLod) >> ownerLod);
             int ownerHeight = Math.Max(1, (int)GetTextureHeight(sampledWriter.TexLod) >> ownerLod);
             uint ownerBase = GetTextureLodOffset(ownerLod, ownerBytesPerTexel, sampledWriter.TexLod, sampledWriter.TextureBase);
@@ -37089,13 +37251,7 @@ sampledTexel:
             word = ReadTexture32(byteAddress & ~3u);
             ushort packed = (ushort)((word >> (int)((byteAddress & 2u) * 8u)) & 0xffffu);
             raw = packed;
-            return format switch
-            {
-                10 => ConvertRgb565Lane(packed, 0),
-                11 => ConvertXrgb1555Lane(packed, 0, hasAlphaBit: true),
-                12 => ConvertArgb4444ToRgb565(packed),
-                _ => packed
-            };
+            return ConvertTextureFormatToRgb565(format, packed, textureMode);
         }
 
         byteAddress = (baseAddress + texelIndex) & (TextureBytes - 1u);
@@ -37149,6 +37305,25 @@ sampledTexel:
 
     private static bool IsTextureFilteringEnabled(uint textureMode)
         => (textureMode & 0x6u) != 0;
+
+    private static bool IsTextureFormat16Bit(int format)
+        => format >= 8;
+
+    private static int GetTextureFormatBytesPerTexel(int format)
+        => IsTextureFormat16Bit(format) ? 2 : 1;
+
+    private ushort ConvertTextureFormatToRgb565(int format, ushort packed, uint textureMode)
+        => format switch
+        {
+            8 => ConvertRgb332ToRgb565((byte)packed),
+            9 => ConvertNccToRgb565((byte)packed, textureMode),
+            10 => ConvertRgb565Lane(packed, 0),
+            11 => ConvertXrgb1555Lane(packed, 0, hasAlphaBit: true),
+            12 => ConvertArgb4444ToRgb565(packed),
+            13 => GrayscaleToRgb565((byte)packed),
+            14 or 15 => PseudoPaletteToRgb565((byte)packed),
+            _ => packed
+        };
 
     private uint GetTextureWidth()
         => GetTextureWidth(ReadTextureRegister(RegTextureLod));
