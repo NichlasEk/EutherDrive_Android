@@ -28588,6 +28588,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_COORD_MODE") ?? "")
         .Trim()
         .ToLowerInvariant();
+    private readonly int _experimentFullrectSampleWriterLayoutBaseBias =
+        ParseOptionalSignedHexInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_BASE_BIAS"),
+            0);
+    private readonly Dictionary<uint, uint> _experimentFullrectSampleWriterLayoutTargetRemap =
+        ParseOptionalHexUintMap(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_TARGET_REMAP"));
+    private readonly int _experimentFullrectSampleWriterLayoutFormatOverride =
+        ParseOptionalInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_FORMAT_OVERRIDE"),
+            -1);
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentType3UseSkippedWordAsS =
@@ -33119,6 +33129,63 @@ internal class VoodooBringupBackend : IVoodooBackend
         return int.TryParse(value, out int parsed) ? parsed : fallback;
     }
 
+    private static int ParseOptionalSignedHexInt(string? raw, int fallback)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+
+        string value = raw.Trim();
+        int sign = 1;
+        if (value.StartsWith("-", StringComparison.Ordinal))
+        {
+            sign = -1;
+            value = value[1..].TrimStart();
+        }
+        else if (value.StartsWith("+", StringComparison.Ordinal))
+        {
+            value = value[1..].TrimStart();
+        }
+
+        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase) &&
+            int.TryParse(value[2..], System.Globalization.NumberStyles.HexNumber, null, out int hex))
+        {
+            return hex * sign;
+        }
+
+        return int.TryParse(raw, out int parsed) ? parsed : fallback;
+    }
+
+    private static Dictionary<uint, uint> ParseOptionalHexUintMap(string? raw)
+    {
+        Dictionary<uint, uint> result = [];
+        if (string.IsNullOrWhiteSpace(raw))
+            return result;
+
+        foreach (string entry in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            string[] parts = entry.Split(new[] { ':', '=' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length != 2 ||
+                !TryParseOptionalHexUint(parts[0], out uint from) ||
+                !TryParseOptionalHexUint(parts[1], out uint to))
+            {
+                continue;
+            }
+
+            result[from] = to;
+        }
+
+        return result;
+    }
+
+    private static bool TryParseOptionalHexUint(string raw, out uint value)
+    {
+        value = 0;
+        string token = raw.Trim();
+        if (token.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            token = token[2..];
+        return uint.TryParse(token, System.Globalization.NumberStyles.HexNumber, null, out value);
+    }
+
     private void CountSwapPc(uint command, bool dontSwap, bool clearBackBuffer)
     {
         if (!_profileFastFillSwapPcs)
@@ -36463,10 +36530,26 @@ sampledTexel:
 
         int writerLod = Math.Clamp((int)writer.Lod, 0, 8);
         int writerFormat = (int)((writer.Mode >> 8) & 0x0fu);
-        bool writerSixteenBit = writer.BytesPerTexel == 2 || writerFormat is 10 or 11 or 12;
+        bool writerFormatOverridden = _experimentFullrectSampleWriterLayoutFormatOverride is >= 0 and <= 15;
+        if (writerFormatOverridden)
+            writerFormat = _experimentFullrectSampleWriterLayoutFormatOverride;
+        int writerBytesPerTexel = writerFormat is 10 or 11 or 12 ? 2 : writer.BytesPerTexel;
+        bool writerSixteenBit = writerBytesPerTexel == 2 || writerFormat is 10 or 11 or 12;
         int writerWidth = Math.Max(1, (int)GetTextureWidth(writer.TexLod) >> writerLod);
         int writerHeight = Math.Max(1, (int)GetTextureHeight(writer.TexLod) >> writerLod);
-        uint writerBase = GetTextureLodOffset(writerLod, writer.BytesPerTexel, writer.TexLod, writer.TextureBase);
+        uint writerBase = GetTextureLodOffset(writerLod, writerBytesPerTexel, writer.TexLod, writer.TextureBase);
+        uint writerTargetStart = writer.Type5TargetStart;
+        bool writerTargetRemapped = false;
+        if (_experimentFullrectSampleWriterLayoutTargetRemap.TryGetValue(writer.Type5TargetStart, out uint remappedTargetStart))
+        {
+            long targetDeltaBytes = ((long)remappedTargetStart - writer.Type5TargetStart) << 2;
+            writerBase = (uint)(((long)writerBase + targetDeltaBytes) & (TextureBytes - 1L));
+            writerTargetStart = remappedTargetStart;
+            writerTargetRemapped = true;
+        }
+        if (_experimentFullrectSampleWriterLayoutBaseBias != 0)
+            writerBase = (uint)(((long)writerBase + _experimentFullrectSampleWriterLayoutBaseBias) & (TextureBytes - 1L));
+
         float writerS = s;
         float writerT = t;
         bool writerClampS = clampS;
@@ -36531,8 +36614,9 @@ sampledTexel:
                 $"mode={(_experimentFullrectSampleWriterLayoutCoordMode.Length == 0 ? "clamp" : _experimentFullrectSampleWriterLayoutCoordMode)} " +
                 $"st=({s:F3},{t:F3})->({writerS:F3},{writerT:F3}) xy={writerX},{writerY} size={writerWidth}x{writerHeight} " +
                 $"sample=mode0x{sampleMode:X8}/lod0x{sampleTextureLod:X8}/base0x{sampleTextureBase:X8} " +
-                $"writer=pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writer.BytesPerTexel} " +
-                $"type5=0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}");
+                $"writer=pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writerBytesPerTexel}/fmt{writerFormat}{(writerFormatOverridden ? "*" : "")} " +
+                $"type5=0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6} " +
+                $"targetRemap={(writerTargetRemapped ? $"0x{writer.Type5TargetStart:X6}->0x{writerTargetStart:X6}" : "-")} baseBias={_experimentFullrectSampleWriterLayoutBaseBias}");
         }
 
         return true;

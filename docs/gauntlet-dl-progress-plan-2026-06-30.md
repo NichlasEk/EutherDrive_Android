@@ -6669,3 +6669,62 @@ interpretation for the writer buckets. Continue by tracing the Type5 target
 sequence around `0x300..0x500` and `0xe00..0xf00` against the corresponding
 fullrect sample address bands, then test page/target remaps before promoting
 any sampler-side behavior.
+
+### Writer target remap and format checkpoint
+
+Added default-off writer-layout probes:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_TARGET_REMAP=from:to[,from:to]
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_BASE_BIAS={signed hex/dec}
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_FORMAT_OVERRIDE={0..15}
+```
+
+The target remap shifts the writer-layout sample base by
+`(remappedTarget - originalTarget) * 4`, matching the Type5 target-word units.
+The format override changes only the diagnostic writer-layout reader, including
+the 16-bit bpp selection for RGB565-like formats.
+
+Focused trace confirmed that the visible writer-layout samples are hot on
+target-start `0x400`:
+
+```text
+current=0x00E810/w03A04 -> writer pc=800fe614 base=0x1c00 target=0x400
+400->300 addr=0x00f800 frameHash=0x049f06a1
+400->e00 addr=0x012400 frameHash=0x212b4f01
+400->f00 addr=0x012800 frameHash=0x403d7c64
+```
+
+Artifacts:
+
+```text
+/tmp/gauntdl-type5-bucket-chain-f300.log
+/tmp/gauntdl-type5-bucket-chain-f300.png              frameHash=0x38bc79b5
+/tmp/gauntdl-writer-target-remap-matrix-f300.png
+/tmp/gauntdl-writer-remap400-300-scale-f300.png       frameHash=0x049f06a1
+/tmp/gauntdl-writer-remap400-e00-scale-f300.png       frameHash=0x212b4f01
+/tmp/gauntdl-writer-remap400-f00-scale-f300.png       frameHash=0x403d7c64
+/tmp/gauntdl-writer-remap400-e00-scale-fmt10-f300.png frameHash=0x8e4b3c04
+/tmp/gauntdl-writer-remap400-e00-scale-fmt1-f300.png  frameHash=0xeed378bf
+```
+
+Visual read: target remap is a real lever but does not by itself produce
+correct scene graphics. Format override is also a real lever; `fmt1` (NCC path)
+currently gives the most coherent large shapes, while `fmt10` produces
+different tile-like bands. This pushes the next blocker away from a simple
+target-page swap and toward WTR tile/swizzle interpretation or the NCC/register
+source used for these disk-backed 8-bit uploads.
+
+Next slice:
+
+```text
+1. Fix the texture-write bucket trace invocation to use bucket indexes
+   (`e,f,12,14,...`) instead of byte addresses (`e000,f000,...`), then trace
+   the exact writer rows sampled by the visible fullrect.
+2. Add a tiny writer-layout tile/swizzle probe before any promoted behavior:
+   test byte lane order, 2x/4x row stride, and 4x4 or 8x8 tile deinterleave on
+   the `400->e00 fmt1` path.
+3. Trace NCC table ownership at the same draw packets; if the NCC tables come
+   from the wrong TMU/register bank, test the existing sample-TMU controls
+   before adding new renderer behavior.
+```
