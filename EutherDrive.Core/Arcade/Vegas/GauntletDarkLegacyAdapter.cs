@@ -28600,6 +28600,10 @@ internal class VoodooBringupBackend : IVoodooBackend
             -1);
     private readonly bool _experimentFullrectSampleWriterLayoutRelookupSampledOwner =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_RELOOKUP_SAMPLED_OWNER"));
+    private readonly string _experimentFullrectSampleWriterLayoutAddressTransform =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM") ?? "")
+        .Trim()
+        .ToLowerInvariant();
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentType3UseSkippedWordAsS =
@@ -36588,10 +36592,11 @@ sampledTexel:
         uint layoutBase = writerBase;
         string relookupStatus = "-";
 
-        result = ReadTextureRgb565At(
+        result = ReadFullrectWriterLayoutTextureRgb565At(
             writerX,
             writerY,
             writerWidth,
+            writerHeight,
             writerFormat,
             writerSixteenBit,
             sampleMode,
@@ -36648,10 +36653,11 @@ sampledTexel:
                 ? TextureCoordinateToIndex((ownerHeight - 1) - ownerT, ownerHeight, ownerClampT)
                 : TextureCoordinateToIndex(ownerT, ownerHeight, ownerClampT);
 
-            result = ReadTextureRgb565At(
+            result = ReadFullrectWriterLayoutTextureRgb565At(
                 ownerX,
                 ownerY,
                 ownerWidth,
+                ownerHeight,
                 ownerFormat,
                 ownerSixteenBit,
                 sampleMode,
@@ -36704,6 +36710,7 @@ sampledTexel:
                 $"mode={(_experimentFullrectSampleWriterLayoutCoordMode.Length == 0 ? "clamp" : _experimentFullrectSampleWriterLayoutCoordMode)} " +
                 $"st=({s:F3},{t:F3})->({layoutS:F3},{layoutT:F3}) xy={layoutX},{layoutY} size={layoutWidth}x{layoutHeight} " +
                 $"sample=mode0x{sampleMode:X8}/lod0x{sampleTextureLod:X8}/base0x{sampleTextureBase:X8} " +
+                $"addrTransform={(_experimentFullrectSampleWriterLayoutAddressTransform.Length == 0 ? "-" : _experimentFullrectSampleWriterLayoutAddressTransform)} " +
                 $"writer=pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writerBytesPerTexel}/fmt{writerFormat}{(writerFormatOverridden ? "*" : "")} " +
                 $"type5=0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6} " +
                 $"targetRemap={(writerTargetRemapped ? $"0x{writer.Type5TargetStart:X6}->0x{writerTargetStart:X6}" : "-")} baseBias={_experimentFullrectSampleWriterLayoutBaseBias} " +
@@ -36715,6 +36722,49 @@ sampledTexel:
 
     private static string FormatTextureWordWriterStatus(TextureWordLastWriter writer) =>
         $"pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writer.BytesPerTexel}/type5={(writer.Type5 ? 1 : 0)}/cmd0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}";
+
+    private ushort ReadFullrectWriterLayoutTextureRgb565At(
+        int x,
+        int y,
+        int width,
+        int height,
+        int format,
+        bool sixteenBit,
+        uint textureMode,
+        uint baseAddress,
+        out uint byteAddress,
+        out uint word,
+        out uint raw)
+    {
+        uint texelIndex = GetFullrectWriterLayoutTexelIndex(x, y, width, height);
+        return ReadTextureRgb565AtIndex(texelIndex, format, sixteenBit, textureMode, baseAddress, out byteAddress, out word, out raw);
+    }
+
+    private uint GetFullrectWriterLayoutTexelIndex(int x, int y, int width, int height)
+    {
+        ulong safeWidth = (uint)Math.Max(1, width);
+        ulong safeX = (uint)Math.Clamp(x, 0, Math.Max(0, width - 1));
+        ulong safeY = (uint)Math.Clamp(y, 0, Math.Max(0, height - 1));
+
+        return _experimentFullrectSampleWriterLayoutAddressTransform switch
+        {
+            "row2x" or "row-stride-2x" => (uint)(safeY * safeWidth * 2ul + safeX),
+            "row4x" or "row-stride-4x" => (uint)(safeY * safeWidth * 4ul + safeX),
+            "tile4" or "tile-4x4" => GetTiledTextureIndex(safeX, safeY, safeWidth, 4),
+            "tile8" or "tile-8x8" => GetTiledTextureIndex(safeX, safeY, safeWidth, 8),
+            _ => (uint)(safeY * safeWidth + safeX)
+        };
+    }
+
+    private static uint GetTiledTextureIndex(ulong x, ulong y, ulong width, ulong tileSize)
+    {
+        ulong tilesPerRow = Math.Max(1ul, (width + tileSize - 1ul) / tileSize);
+        ulong tileX = x / tileSize;
+        ulong tileY = y / tileSize;
+        ulong inTileX = x % tileSize;
+        ulong inTileY = y % tileSize;
+        return (uint)(((tileY * tilesPerRow + tileX) * tileSize * tileSize) + (inTileY * tileSize) + inTileX);
+    }
 
     private ushort SampleTextureRgb565Bilinear(
         float s,
@@ -36800,6 +36850,19 @@ sampledTexel:
         out uint raw)
     {
         uint texelIndex = (uint)(y * width + x);
+        return ReadTextureRgb565AtIndex(texelIndex, format, sixteenBit, textureMode, baseAddress, out byteAddress, out word, out raw);
+    }
+
+    private ushort ReadTextureRgb565AtIndex(
+        uint texelIndex,
+        int format,
+        bool sixteenBit,
+        uint textureMode,
+        uint baseAddress,
+        out uint byteAddress,
+        out uint word,
+        out uint raw)
+    {
         if (sixteenBit)
         {
             byteAddress = (baseAddress + texelIndex * 2u) & (TextureBytes - 1u);

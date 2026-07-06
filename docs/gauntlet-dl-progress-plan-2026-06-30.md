@@ -6788,3 +6788,52 @@ Next slice:
 4. Only after the physical layout is bracketed, revisit NCC/TMU selection for
    the `fmt1` diagnostic.
 ```
+
+### Writer address-transform checkpoint
+
+Added a default-off physical address transform for the diagnostic writer-layout
+reader:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM={row2x,row4x,tile4,tile8}
+```
+
+This affects only the writer-layout experiment. The normal Voodoo texture
+reader still uses the same row-major `y * width + x` texel index; it now routes
+through a shared `ReadTextureRgb565AtIndex(...)` helper.
+
+First two transforms on the current strongest visual diagnostic
+(`400->e00`, `coord=scale`, `fmt1`) were negative as fixes:
+
+```text
+/tmp/gauntdl-writer-remap400-e00-scale-fmt1-tile4-f300.log
+/tmp/gauntdl-writer-remap400-e00-scale-fmt1-tile4-f300.png
+frameHash=0x483ae5e2
+addrTransform=tile4
+addresses: 0x012400, 0x012410, 0x012420, ...
+
+/tmp/gauntdl-writer-remap400-e00-scale-fmt1-row2x-f300.log
+/tmp/gauntdl-writer-remap400-e00-scale-fmt1-row2x-f300.png
+frameHash=0xe2401d4a
+addrTransform=row2x
+addresses: 0x014000, 0x014001, 0x014002, ...
+```
+
+Visual read: both transforms are real levers but neither produces recognizable
+scene graphics. `tile4` stays closest to the earlier coherent `fmt1` family;
+`row2x` shifts into the `0x014000`/target `0x9800` owner family and remains
+wrong. Continue with the same harness only for narrow evidence gathering, not
+promotion.
+
+Next slice:
+
+```text
+1. Use the new transform harness for `tile8` and `row4x` only if needed, but
+   prioritize tracing the exact Type5 payload bytes for the sampled-owner banks:
+   `pc=800fe7cc`, targets `0x8a00` and `0x9800`, memory `0x012400` and
+   `0x014000`.
+2. Compare those payload words against raw disk/WTR bytes before adding more
+   sample-side transforms.
+3. If payload bytes are correct but color remains wrong, bracket NCC/TMU table
+   ownership on the `fmt1` diagnostic.
+```
