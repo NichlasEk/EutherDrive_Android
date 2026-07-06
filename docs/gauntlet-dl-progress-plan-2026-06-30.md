@@ -7124,3 +7124,112 @@ Next slice:
    proves the disk-rich `0x8a00` payload is on the hot path, but it is not yet
    correct hardware behavior.
 ```
+
+### GEI source hydration and fullrect vertex-source checkpoint
+
+Follow-up evidence narrowed the direct-writer path: the focused `0x8a00`
+direct-writer disk replacement is not the main visual lever for the current
+writer-layout image. A no-direct-writer override run with the same writer-layout
+diagnostic was visually identical to the target-gated diskword image:
+
+```text
+/tmp/gauntdl-geilen20000-writerlayout-fmt1-f300.log
+/tmp/gauntdl-geilen20000-writerlayout-fmt1-f300.ppm
+/tmp/gauntdl-geilen20000-writerlayout-fmt1-f300.png
+logSha256=ce7e78634a56f945c6bef635a5ef71ad23bf6d01047219431a50562dc6201fab
+ppmSha256=746613289d4b2238de13f6801ae49f1bcf1f2b8deed47739b8b48f3cfab3f94d
+frameHash=0xeed378bf
+frameSha256=7f2893804481963009e10bf8bcdb240f5e1b6b7f3f716c3cb85965c530863db1
+AE vs /tmp/gauntdl-target8a00-diskwords-writerlayout-fmt1-f300.png = 12
+```
+
+Trying to make `1:gei+0x13e70` a real hydrated source by only extending GEI to
+`0x20000` did not work because the index-1 source window was already non-empty:
+
+```text
+phase=distinct-source-skip index=1 bytes=00020000 seedable=False overwrite=False
+s3w=00000000/... s3disk=1:gei@0x13e70=74558370;mem=00000000/...
+```
+
+Forcing overwrite of index 1 (`OVERWRITE_INDEXED_SOURCE_MASK=0x202`) was a
+negative control. It hydrates index 1, but it changes the runtime source window
+to the static/base range and collapses the image:
+
+```text
+/tmp/gauntdl-geilen20000-overwrite202-writerlayout-fmt1-f300.log
+logSha256=1ce0ff582d37d4a1782f1064405b9d9e1a99e95693c05ebfb6b88fa00030eda7
+ppmSha256=a3d7fd66f21d9ea7dac3c30860276076345f4a08f95aa3522f52a7e8750799ea
+frameHash=0xe54f1c74
+frameSha256=b297a5356ab415c95c84c81dcaf0e3d350adc92917aa410b296818fc08528ef5
+AE vs target-gated fmt1 = 306590
+```
+
+Overlap zero-fill of index 1 from `0x13e70` was also negative. It filled data,
+but regressed the run to the older no-texture-map family:
+
+```text
+/tmp/gauntdl-geilen20000-overlapzero-gei13e70-writerlayout-fmt1-f300.log
+logSha256=ec92cec3b72ca98a92a0dca97fab0a15cb385e2860303b09c29c95a3ac285bba
+ppmSha256=fa345d224d237d758cd39e43a283c057e1a9e4626c6d23181e58946ced87247c
+frameHash=0xd1549bb3
+frameSha256=fffa25c1da2cdbfc1c1c68503ef1524e30fc7a59a28597aea75a1863f95aac24
+textureMap=0:0:0:0:0x000000:0x000000
+filledBytes=00003e94 firstFilledOffset=00013e70
+```
+
+Conclusion: do not promote GEI length/overwrite/zero-fill. The earlier
+`gei@0x13e70` disk comparison is useful for tracing but not the main correct
+graphics path yet.
+
+The stronger current blocker is the fullrect vertex source. The trace now
+prints raw source words directly in `vertex-fifo-fullrect-s-from-x`. The hot
+fullrects really contain constant S and a valid T span:
+
+```text
+/tmp/gauntdl-sfromx-srcwords-writerlayout-fmt1-f300.log
+logSha256=73f53ab7bd7c553f650af5c280ca7576401fab18b20f45052d67267402af0170
+ppmSha256=746613289d4b2238de13f6801ae49f1bcf1f2b8deed47739b8b48f3cfab3f94d
+frameHash=0xeed378bf
+AE vs /tmp/gauntdl-geilen20000-writerlayout-fmt1-f300.png = 0
+```
+
+First hot fullrect:
+
+```text
+bbox=(0,-1)-(512,383)
+s=0/0/0 -> 0/256/0
+t=256/0/0
+src0w=00000000/bf800000/437f0000/00000000/43800000/3f800000
+src1w=44000000/43bf8000/437f0000/00000000/00000000/3f800000
+src2w=00000000/43bf8000/437f0000/00000000/00000000/3f800000
+```
+
+Second hot fullrect:
+
+```text
+bbox=(0,-1)-(512,383)
+s=0/0/0 -> 256/0/256
+t=0/256/256
+src0w=44000000/43bf8000/437f0000/00000000/00000000/3f800000
+src1w=00000000/bf800000/437f0000/00000000/43800000/3f800000
+src2w=44000000/bf800000/437f0000/00000000/43800000/3f800000
+```
+
+This proves the S-from-X path is reconstructing a genuinely missing horizontal
+texture coordinate from the vertex X range. The next useful slice should trace
+who builds these three source vertices at `0x802e1a28/50/78/a0` and why their
+S word at offset `+0x0c` is zero, rather than spending more time on GEI direct
+payload mutation.
+
+Next slice:
+
+```text
+1. Keep `vertex-fifo-fullrect-s-from-x` as a diagnostic/fallback, but do not
+   promote it as final hardware behavior yet.
+2. Trace the producer of the hot source vertices
+   (`0x802e1a28/0x802e1a50/0x802e1a78/0x802e1aa0`) and locate the missing
+   S-coordinate write at source offset `+0x0c`.
+3. If the source S word is intentionally zero in RAM, compare the guest's
+   original vertex setup path against the fastpath packing order before adding
+   a permanent S reconstruction.
+```

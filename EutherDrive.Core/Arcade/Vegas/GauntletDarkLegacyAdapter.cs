@@ -11759,6 +11759,8 @@ internal sealed class MipsR5000Core
                 $"s={s0:F3}/{s1:F3}/{s2:F3}->" +
                 $"{BitConverter.UInt32BitsToSingle(newS0):F3}/{BitConverter.UInt32BitsToSingle(newS1):F3}/{BitConverter.UInt32BitsToSingle(newS2):F3} " +
                 $"t={t0:F3}/{t1:F3}/{t2:F3} " +
+                $"src0w={FormatVertexFifoSourceWords(source0)} src1w={FormatVertexFifoSourceWords(source1)} " +
+                $"src2w={FormatVertexFifoSourceWords(source2)} " +
                 $"src=0x{source0:x16}/0x{source1:x16}/0x{source2:x16} ra=0x{_gpr[31]:x16}");
         }
 
