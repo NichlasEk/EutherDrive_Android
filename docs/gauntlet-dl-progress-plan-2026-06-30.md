@@ -6619,3 +6619,53 @@ Updated next step: do not spend more time on MAME fetch addressing alone. Trace
 or repair the Type5 upload source/layout for the visible writer buckets
 (`0x300`, `0x400`, `0x500`, `0xe00`, `0xf00`) and compare those writes against
 the raw `wtr@0xc000` disk bytes.
+
+### Disk-word transform and writer-layout checkpoint
+
+Added two default-off probes for the current source/FIFO S-from-X visual stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORD_TRANSFORM={reverse32,swap16,reverse16}
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_COORD_MODE={wrap,scale,scale-wrap}
+```
+
+Disk byte/halfword transforms prove the WTR words reach the visible image, but
+do not fix the coarse layout:
+
+```text
+/tmp/gauntdl-diskword-none-f300.log       frameHash=0x38bc79b5
+/tmp/gauntdl-diskword-reverse32-f300.log  frameHash=0xf3c6a610
+/tmp/gauntdl-diskword-swap16-f300.log     frameHash=0xe734a693
+/tmp/gauntdl-diskword-reverse16-f300.log  frameHash=0x5f4b3563
+/tmp/gauntdl-diskword-transform-matrix-f300.png
+```
+
+The writer-layout probe confirms the visible fullrect samples can be redirected
+through the Type5 upload layout recorded by the sampled texture word. This is a
+real visual lever, not a promoted fix:
+
+```text
+/tmp/gauntdl-fullrect-writer-layout2-f300.log       mode=clamp frameHash=0xd6fe9e22
+/tmp/gauntdl-fullrect-writer-layout-wrap-f300.log   mode=wrap  frameHash=0x79fb407a
+/tmp/gauntdl-fullrect-writer-layout-scale-f300.log  mode=scale frameHash=0x51e9bd65
+/tmp/gauntdl-writer-layout-modes-f300.png
+```
+
+The first remap rows are concrete:
+
+```text
+current=0x00E810 -> writer addr=0x00FF00 mode=clamp xy=0,31 size=256x32
+current=0x00E810 -> writer addr=0x00E300 mode=wrap  xy=0,3  size=256x32
+current=0x00E810 -> writer addr=0x00FC00 mode=scale xy=0,28 size=256x32
+writer=pc0x800fe614/mode0/lod0x00700800/base0x1c00/type5=0xC0000205@0x000400
+```
+
+Visual read: writer-layout modes increase structured color and prove the
+upload-layout mismatch is on the hot path, but they still produce stripe/noise
+rather than correct scene graphics. The remaining blocker is likely one level
+earlier than sample addressing: Type5 target/page ownership or WTR tile/page
+interpretation for the writer buckets. Continue by tracing the Type5 target
+sequence around `0x300..0x500` and `0xe00..0xf00` against the corresponding
+fullrect sample address bands, then test page/target remaps before promoting
+any sampler-side behavior.

@@ -783,6 +783,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
     private readonly bool _experimentZeroBaseUploadDiskWords =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS"));
+    private readonly string _experimentZeroBaseUploadDiskWordTransform =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORD_TRANSFORM") ?? "")
+        .Trim()
+        .ToLowerInvariant();
     private readonly ulong _experimentZeroBaseUploadZeroDiskWordIndexedSourceMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_INDEX_MASK") ?? 0UL;
     private readonly ulong _experimentZeroBaseUploadZeroDiskWordMinOffset =
@@ -4352,15 +4356,17 @@ internal sealed class MipsR5000Core
                         sourceBase == 0 &&
                         TryReadKnownRuntimeBgLoadModelUploadDiskWord(source, out uint diskWord, out string diskSource))
                     {
-                        if (_textureUploadPayloadDiskWordTraceCount++ < 64 && payloadWord != diskWord)
+                        uint transformedDiskWord = TransformZeroBaseUploadDiskWord(diskWord);
+                        if (_textureUploadPayloadDiskWordTraceCount++ < 64 && payloadWord != transformedDiskWord)
                         {
+                            string transform = DescribeZeroBaseUploadDiskWordTransform(diskWord, transformedDiskWord);
                             Console.WriteLine(
                                 $"[GAUNTDL:EXPERIMENT] zero-base-upload-disk-word " +
-                                $"addr=0x{source:x16} {diskSource} mem=0x{payloadWord:x8}->disk=0x{diskWord:x8} " +
+                                $"addr=0x{source:x16} {diskSource} mem=0x{payloadWord:x8}->disk=0x{diskWord:x8}{transform} " +
                                 $"packet={packet} index={index}/{limit} word={word}/{payloadWords}");
                         }
 
-                        payloadWord = diskWord;
+                        payloadWord = transformedDiskWord;
                     }
                     else if (_experimentZeroBaseUploadZeroDiskWordIndexedSourceMask != 0 &&
                         sourceBase == 0 &&
@@ -4369,15 +4375,17 @@ internal sealed class MipsR5000Core
                             uploadRunSource == _experimentZeroBaseUploadZeroDiskWordRunSource.Value) &&
                         TryReadKnownRuntimeBgLoadModelUploadZeroDiskWord(source, out diskWord, out diskSource))
                     {
+                        uint transformedDiskWord = TransformZeroBaseUploadDiskWord(diskWord);
                         if (_textureUploadPayloadDiskWordTraceCount++ < 64)
                         {
+                            string transform = DescribeZeroBaseUploadDiskWordTransform(diskWord, transformedDiskWord);
                             Console.WriteLine(
                                 $"[GAUNTDL:EXPERIMENT] zero-base-upload-zero-disk-word " +
-                                $"addr=0x{source:x16} {diskSource} mem=0x{payloadWord:x8}->disk=0x{diskWord:x8} " +
+                                $"addr=0x{source:x16} {diskSource} mem=0x{payloadWord:x8}->disk=0x{diskWord:x8}{transform} " +
                                 $"packet={packet} index={index}/{limit} word={word}/{payloadWords}");
                         }
 
-                        payloadWord = diskWord;
+                        payloadWord = transformedDiskWord;
                     }
 
                     if (_fixVoodooMameCommandFifoModel)
@@ -4420,6 +4428,31 @@ internal sealed class MipsR5000Core
         _instructionCounter += Math.Max(1UL, skippedInstructions);
         Pc = exit;
         return true;
+    }
+
+    private uint TransformZeroBaseUploadDiskWord(uint word)
+    {
+        return _experimentZeroBaseUploadDiskWordTransform switch
+        {
+            "be32" or "reverse32" or "byteswap32" => BinaryPrimitives.ReverseEndianness(word),
+            "swap16" or "halfswap" => (word << 16) | (word >> 16),
+            "reverse16" or "byteswap16" or "swapbytes16" => ((word & 0x00ff00ffU) << 8) | ((word & 0xff00ff00U) >> 8),
+            _ => word,
+        };
+    }
+
+    private string DescribeZeroBaseUploadDiskWordTransform(uint originalWord, uint transformedWord)
+    {
+        if (transformedWord == originalWord ||
+            string.IsNullOrEmpty(_experimentZeroBaseUploadDiskWordTransform) ||
+            _experimentZeroBaseUploadDiskWordTransform == "none" ||
+            _experimentZeroBaseUploadDiskWordTransform == "le" ||
+            _experimentZeroBaseUploadDiskWordTransform == "little")
+        {
+            return "";
+        }
+
+        return $" transform={_experimentZeroBaseUploadDiskWordTransform}:0x{transformedWord:x8}";
     }
 
     private bool TryReadKnownRuntimeBgLoadModelUploadZeroDiskWord(
@@ -28549,6 +28582,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH"));
     private readonly bool _experimentTextureUseLodMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_USE_LOD_MIN"));
+    private readonly bool _experimentFullrectSampleWriterLayout =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT"));
+    private readonly string _experimentFullrectSampleWriterLayoutCoordMode =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_COORD_MODE") ?? "")
+        .Trim()
+        .ToLowerInvariant();
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentType3UseSkippedWordAsS =
@@ -28704,6 +28743,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _lfbDetailTraceCount;
     private int _largeDirectTriangleTraceCount;
     private int _directTriangleReadTraceCount;
+    private int _fullrectSampleWriterLayoutTraceCount;
     private string _lastCommandFifoDecodeStopReason = "";
     private uint _lastCommandFifoDecodeStopCommand;
     private int _lastCommandFifoDecodeStopWordsNeeded;
@@ -30582,8 +30622,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         int bytesPerTexel,
         bool seq8Downld)
     {
-        if (!_traceTexturedTriangleSampleWriters && !_traceTexturedTriangleSampleSummaryRequireWriter)
+        if (!_traceTexturedTriangleSampleWriters &&
+            !_traceTexturedTriangleSampleSummaryRequireWriter &&
+            !_experimentFullrectSampleWriterLayout)
+        {
             return;
+        }
 
         _currentTextureWriteActive = true;
         _currentTextureWriteValue = value;
@@ -30597,8 +30641,12 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void EndTextureWriteContext()
     {
-        if (!_traceTexturedTriangleSampleWriters && !_traceTexturedTriangleSampleSummaryRequireWriter)
+        if (!_traceTexturedTriangleSampleWriters &&
+            !_traceTexturedTriangleSampleSummaryRequireWriter &&
+            !_experimentFullrectSampleWriterLayout)
+        {
             return;
+        }
 
         _currentTextureWriteActive = false;
     }
@@ -30817,9 +30865,13 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TrackTextureLastWriter(int wordOffset)
     {
-        if ((!_traceTexturedTriangleSampleWriters && !_traceTexturedTriangleSampleSummaryRequireWriter) ||
+        if ((!_traceTexturedTriangleSampleWriters &&
+             !_traceTexturedTriangleSampleSummaryRequireWriter &&
+             !_experimentFullrectSampleWriterLayout) ||
             !_currentTextureWriteActive)
+        {
             return;
+        }
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         _textureWordLastWriters[wordOffset] = new TextureWordLastWriter(
@@ -36267,10 +36319,31 @@ sampledTexel:
             clampT,
             x,
             y);
+        if (_experimentFullrectSampleWriterLayout)
+        {
+            uint currentTexelIndex = (uint)(y * width + x);
+            uint currentByteAddress = (baseAddress + currentTexelIndex * (sixteenBit ? 2u : 1u)) & (TextureBytes - 1u);
+            if (TrySampleFullrectTextureFromWriterLayout(
+                    s,
+                    t,
+                    width,
+                    height,
+                    clampS,
+                    clampT,
+                    currentByteAddress,
+                    mode,
+                    textureLod,
+                    textureBase,
+                    out ushort writerLayoutTexel))
+            {
+                return writerLayoutTexel;
+            }
+        }
+
         if (_fixTextureBilinearFilter && filtered)
             return SampleTextureRgb565Bilinear(s, t, width, height, mode, format, sixteenBit, baseAddress);
 
-        return SampleTextureRgb565Nearest(s, t, width, height, x, y, mode, textureLod, textureBase, format, sixteenBit, baseAddress);
+        return SampleTextureRgb565Nearest(s, t, width, height, x, y, clampS, clampT, mode, textureLod, textureBase, format, sixteenBit, baseAddress);
     }
 
     private ushort SampleTextureRgb565Nearest(
@@ -36280,6 +36353,8 @@ sampledTexel:
         int height,
         int x,
         int y,
+        bool clampS,
+        bool clampT,
         uint mode,
         uint textureLod,
         uint textureBase,
@@ -36291,6 +36366,22 @@ sampledTexel:
         if (sixteenBit)
         {
             uint byteAddress = (baseAddress + texelIndex * 2u) & (TextureBytes - 1u);
+            if (TrySampleFullrectTextureFromWriterLayout(
+                    s,
+                    t,
+                    width,
+                    height,
+                    clampS,
+                    clampT,
+                    byteAddress,
+                    mode,
+                    textureLod,
+                    textureBase,
+                    out ushort writerLayoutResult))
+            {
+                return writerLayoutResult;
+            }
+
             uint word = ReadTexture32(byteAddress & ~3u);
             ushort packed = (ushort)((word >> (int)((byteAddress & 2u) * 8u)) & 0xffffu);
             ushort result = format switch
@@ -36307,6 +36398,22 @@ sampledTexel:
         }
 
         uint byteOffset = (baseAddress + texelIndex) & (TextureBytes - 1u);
+        if (TrySampleFullrectTextureFromWriterLayout(
+                s,
+                t,
+                width,
+                height,
+                clampS,
+                clampT,
+                byteOffset,
+                mode,
+                textureLod,
+                textureBase,
+                out ushort writerLayoutTexel))
+        {
+            return writerLayoutTexel;
+        }
+
         uint source = ReadTexture32(byteOffset & ~3u);
         uint lane = byteOffset & 3u;
         if (_experimentReverse8BitTextureSampleLanes)
@@ -36324,6 +36431,111 @@ sampledTexel:
         TrackTextureSampleDebug(byteOffset, value, texel);
         TraceTextureSample(s, t, width, height, x, y, mode, textureLod, textureBase, baseAddress, byteOffset, source, value, texel);
         return texel;
+    }
+
+    private bool TrySampleFullrectTextureFromWriterLayout(
+        float s,
+        float t,
+        int currentWidth,
+        int currentHeight,
+        bool clampS,
+        bool clampT,
+        uint currentByteAddress,
+        uint sampleMode,
+        uint sampleTextureLod,
+        uint sampleTextureBase,
+        out ushort result)
+    {
+        result = 0;
+        if (!_experimentFullrectSampleWriterLayout ||
+            _currentCommandFifoCommand != 0x0180a8cbu)
+        {
+            return false;
+        }
+
+        int currentWordOffset = (int)((currentByteAddress & (TextureBytes - 1u)) >> 2);
+        if (!_textureWordLastWriters.TryGetValue(currentWordOffset, out TextureWordLastWriter writer) ||
+            !writer.Type5 ||
+            writer.BytesPerTexel is not (1 or 2))
+        {
+            return false;
+        }
+
+        int writerLod = Math.Clamp((int)writer.Lod, 0, 8);
+        int writerFormat = (int)((writer.Mode >> 8) & 0x0fu);
+        bool writerSixteenBit = writer.BytesPerTexel == 2 || writerFormat is 10 or 11 or 12;
+        int writerWidth = Math.Max(1, (int)GetTextureWidth(writer.TexLod) >> writerLod);
+        int writerHeight = Math.Max(1, (int)GetTextureHeight(writer.TexLod) >> writerLod);
+        uint writerBase = GetTextureLodOffset(writerLod, writer.BytesPerTexel, writer.TexLod, writer.TextureBase);
+        float writerS = s;
+        float writerT = t;
+        bool writerClampS = clampS;
+        bool writerClampT = clampT;
+        if (_experimentFullrectSampleWriterLayoutCoordMode is "wrap" or "wrapped")
+        {
+            writerClampS = false;
+            writerClampT = false;
+        }
+        else if (_experimentFullrectSampleWriterLayoutCoordMode is "scale" or "scaled")
+        {
+            writerS = currentWidth > 0 ? s * writerWidth / currentWidth : s;
+            writerT = currentHeight > 0 ? t * writerHeight / currentHeight : t;
+        }
+        else if (_experimentFullrectSampleWriterLayoutCoordMode is "scale-wrap" or "scaled-wrap")
+        {
+            writerS = currentWidth > 0 ? s * writerWidth / currentWidth : s;
+            writerT = currentHeight > 0 ? t * writerHeight / currentHeight : t;
+            writerClampS = false;
+            writerClampT = false;
+        }
+
+        int writerX = TextureCoordinateToIndex(writerS, writerWidth, writerClampS);
+        int writerY = _fixTextureTOriginFlip
+            ? TextureCoordinateToIndex((writerHeight - 1) - writerT, writerHeight, writerClampT)
+            : TextureCoordinateToIndex(writerT, writerHeight, writerClampT);
+
+        result = ReadTextureRgb565At(
+            writerX,
+            writerY,
+            writerWidth,
+            writerFormat,
+            writerSixteenBit,
+            sampleMode,
+            writerBase,
+            out uint writerByteAddress,
+            out uint writerWord,
+            out uint writerRaw);
+        TrackZeroTextureSample(writerByteAddress, result);
+        TrackTextureSampleDebug(writerByteAddress, writerRaw, result);
+        TraceTextureSample(
+            s,
+            t,
+            writerWidth,
+            writerHeight,
+            writerX,
+            writerY,
+            sampleMode,
+            sampleTextureLod,
+            sampleTextureBase,
+            writerBase,
+            writerByteAddress,
+            writerWord,
+            writerRaw,
+            result);
+
+        if (_fullrectSampleWriterLayoutTraceCount++ < 32)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] fullrect-sample-writer-layout " +
+                $"current=0x{currentByteAddress:X6}/w{currentWordOffset:X5} -> addr=0x{writerByteAddress:X6} " +
+                $"mode={(_experimentFullrectSampleWriterLayoutCoordMode.Length == 0 ? "clamp" : _experimentFullrectSampleWriterLayoutCoordMode)} " +
+                $"st=({s:F3},{t:F3})->({writerS:F3},{writerT:F3}) xy={writerX},{writerY} size={writerWidth}x{writerHeight} " +
+                $"sample=mode0x{sampleMode:X8}/lod0x{sampleTextureLod:X8}/base0x{sampleTextureBase:X8} " +
+                $"writer=pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writer.BytesPerTexel} " +
+                $"type5=0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}");
+        }
+
+        return true;
     }
 
     private ushort SampleTextureRgb565Bilinear(
