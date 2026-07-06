@@ -5313,9 +5313,47 @@ internal sealed class MipsR5000Core
             $"sp74={ReadTraceWord(sp + 0x74UL):x8} " +
             $"a2w={FormatTraceWords(a2, 4)} s0w={FormatTraceWords(s0, 4)} " +
             $"s3w={FormatTraceWords(s3, 4)} " +
+            $"s3ctrl={FormatDirectTextureWriterControlGroups(s3)} " +
             $"s3disk={FormatKnownRuntimeBgLoadModelUploadDiskCompare(s3, 4)} " +
             $"s6w={ReadTraceWord(s6 + 0x00UL):x8}/{ReadTraceWord(s6 + 0x04UL):x8}/" +
             $"{ReadTraceWord(s6 + 0x08UL):x8}/{ReadTraceWord(s6 + 0x0cUL):x8}");
+    }
+
+    private string FormatDirectTextureWriterControlGroups(ulong source)
+    {
+        if (!IsMainRamRange(source, 0x20UL))
+            return "";
+
+        StringBuilder builder = new();
+        for (int group = 0; group < 2; group++)
+        {
+            ulong groupAddress = source + (ulong)group * 0x10UL;
+            if (group > 0)
+                builder.Append(';');
+
+            builder.Append('+');
+            builder.Append((group * 0x10).ToString("x", CultureInfo.InvariantCulture));
+            builder.Append('=');
+            for (int word = 0; word < 4; word++)
+            {
+                if (word > 0)
+                    builder.Append('/');
+
+                uint value = ReadTraceWord(groupAddress + (ulong)word * 4UL);
+                builder.Append(FormatDirectTextureWriterControlWord(value));
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static string FormatDirectTextureWriterControlWord(uint value)
+    {
+        string hex = value.ToString("x8", CultureInfo.InvariantCulture);
+        if (value == 0 || (value & 3U) != 0)
+            return hex;
+
+        return $"{hex}(w{value / 4U:x})";
     }
 
     private uint ApplyDirectTextureWriterDiskWordExperiment(

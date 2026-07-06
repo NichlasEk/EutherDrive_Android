@@ -7562,3 +7562,67 @@ Current continuation:
    `pc=800fe5d4` and `pc=800fe7cc` writers, especially packets around
    `0x000117B8`, `0x000116B0`, and `0x0003D89C`.
 ```
+
+### Direct-writer control-table checkpoint
+
+Added a default-off expansion to the existing direct texture writer trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER=1
+```
+
+The trace now prints `s3ctrl=...`, two 16-byte control groups around the `s3`
+source pointer, with aligned values annotated as RAM word indexes. This is
+diagnostic only; it does not alter rendering.
+
+The useful f300 oracle for this slice is still the warm baseline stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1
+
+/tmp/gauntdl-baseline-renderstate-directwriter-controlgroups-f300.log
+sha256=50883f2fdfd8f21219fcfeaffdf77e2c4d77edf2aed36a1633f56772a22a8908
+/tmp/gauntdl-baseline-renderstate-directwriter-controlgroups-f300.ppm
+sha256=ec67f69517af98f96bfc248f7b0f5c9ada2a139a44a48f30c956cd81b3d5faae
+/tmp/gauntdl-baseline-renderstate-directwriter-controlgroups-f300.png
+frameHash=0x7df9727a
+frameSha256=606a592f4f4081b1a9271641cbbf899dff6db0ca24d408cdac17f9c6e097d1d6
+drawPackets=17965 directTriangles=1284 setupTriangles=630 texWrites=1911159
+```
+
+Two cold/default-family false starts produced unrelated hashes. Keep the
+baseline and warmup variables explicit when comparing against this checkpoint.
+
+The hot direct-writer hit for packet target word `0x45ac` now resolves as a
+control-table/script record, not raw texture art:
+
+```text
+pc=0xffffffff800fe7cc value=0x000116b0 targetWord=0x000045ac
+s3=0xffffffff802e1a08
+s3w=000111e4/000116b0/000101b8/00000958
+s3ctrl=+0=000111e4(w4479)/000116b0(w45ac)/000101b8(w406e)/00000958(w256);+10=0000000b/00000000/0000000d/000000c6
+```
+
+Nearby groups repeat the same structure with packet/source-ish values
+(`0x11690`, `0x10198`, `0x0958`) and small control words, plus occasional
+float/control-looking words such as `0x40f7310a`. The selected buffer's visible
+stripes are therefore not coming from a decoded BGLoadModel art payload at
+`s3`; they are command/control structures being uploaded or sampled as if they
+were texture data.
+
+Current continuation:
+
+```text
+1. Keep `IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1` as the f300 visual oracle.
+2. Treat `802e1a08` and nearby `802e1a00..802e1a80` as the next source-owner
+   target, not as texture bytes.
+3. Add a narrow default-off trace for writes/initialization of that control
+   table before `pc=800fe7cc`, including write PC/address/value and nearby
+   grouped words.
+4. Use that trace to find the producer/selector that binds the Type5 packet
+   stream to the wrong control table, then follow the actual material/art
+   payload link from there.
+```
