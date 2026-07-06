@@ -6728,3 +6728,63 @@ Next slice:
    from the wrong TMU/register bank, test the existing sample-TMU controls
    before adding new renderer behavior.
 ```
+
+### Writer sampled-owner checkpoint
+
+Added a default-off owner relookup probe for the diagnostic writer-layout path:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_RELOOKUP_SAMPLED_OWNER=1
+```
+
+The normal writer-layout trace now also prints `sampledOwner=...` for the
+actual texture-memory word read by the diagnostic sampler. This proved that the
+most coherent `400->e00 fmt1` image is crossing into a different upload owner,
+not merely sampling the original `pc=800fe614` writer at a better target page:
+
+```text
+/tmp/gauntdl-writer-remap-owner-fmt1-f300.log
+/tmp/gauntdl-writer-remap-owner-fmt1-f300.png
+frameHash=0xeed378bf
+
+current=0x00E810/w03A04 -> addr=0x012400/w04900 initialAddr=0x012400/w04900
+writer=pc0x800fe614/mode0x00000000/lod0x00700800/base0x00001C00/l0/bpp1/fmt1*
+targetRemap=0x000400->0x000E00
+sampledOwner=pc0x800fe7cc/mode0x00000B00/lod0x00300804/base0x00000200/l1/bpp2
+type5=1/cmd0xC0000205@0x008A00:0x008A00
+```
+
+Two follow-up A/B runs were negative as fixes but useful as evidence:
+
+```text
+/tmp/gauntdl-writer-relookup-owner-natural-f300.log
+/tmp/gauntdl-writer-relookup-owner-natural-f300.png
+frameHash=0xd19b81e4
+relookup=sampled-owner fmt11/bpp2/l1 addr=0x014800
+
+/tmp/gauntdl-writer-remap400-e00-scale-fmt11-f300.log
+/tmp/gauntdl-writer-remap400-e00-scale-fmt11-f300.png
+frameHash=0xe897ff94
+addr=0x014000 sampledOwner=pc0x800fe7cc/mode0x00000B00/.../@0x009800
+```
+
+Visual read: using the actual sampled owner's layout (`fmt11/bpp2/lod1`) makes a
+new but still noisy/incorrect image. Forcing `fmt11` on the remapped path also
+does not beat the earlier `fmt1` diagnostic. So the useful signal is not "make
+target remap or fmt1 real"; it is that the visible fullrect is aliasing between
+the `800fe614` 8-bit target stream and the `800fe7cc` 16-bit/LOD1 upload bank.
+
+Next slice:
+
+```text
+1. Keep the owner trace and relookup flag as diagnostics only.
+2. Add a tiny address-layout bracket for the writer-layout reader:
+   preserve the sampled owner but test physical byte transforms before color
+   conversion: 32-bit lane reversal, row-stride scale 2x/4x, and small 4x4 or
+   8x8 tile deinterleave on the `400->e00 fmt1` address family.
+3. Trace the `800fe7cc` Type5 payload words around targets `0x8a00` and
+   `0x9800` against `0x012400` and `0x014000` memory, because those are now the
+   exact sampled-owner banks for the visible frame.
+4. Only after the physical layout is bracketed, revisit NCC/TMU selection for
+   the `fmt1` diagnostic.
+```

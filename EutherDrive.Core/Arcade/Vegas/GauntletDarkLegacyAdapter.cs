@@ -28598,6 +28598,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalInt(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_FORMAT_OVERRIDE"),
             -1);
+    private readonly bool _experimentFullrectSampleWriterLayoutRelookupSampledOwner =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_RELOOKUP_SAMPLED_OWNER"));
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentType3UseSkippedWordAsS =
@@ -36577,6 +36579,15 @@ sampledTexel:
             ? TextureCoordinateToIndex((writerHeight - 1) - writerT, writerHeight, writerClampT)
             : TextureCoordinateToIndex(writerT, writerHeight, writerClampT);
 
+        float layoutS = writerS;
+        float layoutT = writerT;
+        int layoutX = writerX;
+        int layoutY = writerY;
+        int layoutWidth = writerWidth;
+        int layoutHeight = writerHeight;
+        uint layoutBase = writerBase;
+        string relookupStatus = "-";
+
         result = ReadTextureRgb565At(
             writerX,
             writerY,
@@ -36588,19 +36599,92 @@ sampledTexel:
             out uint writerByteAddress,
             out uint writerWord,
             out uint writerRaw);
+        uint initialWriterByteAddress = writerByteAddress;
+        int initialSampledWordOffset = (int)((initialWriterByteAddress & (TextureBytes - 1u)) >> 2);
+        bool hasSampledOwner = _textureWordLastWriters.TryGetValue(initialSampledWordOffset, out TextureWordLastWriter sampledWriter);
+
+        if (_experimentFullrectSampleWriterLayoutRelookupSampledOwner &&
+            hasSampledOwner &&
+            sampledWriter.Type5 &&
+            sampledWriter.BytesPerTexel is 1 or 2)
+        {
+            int ownerLod = Math.Clamp((int)sampledWriter.Lod, 0, 8);
+            int ownerFormat = (int)((sampledWriter.Mode >> 8) & 0x0fu);
+            bool ownerFormatOverridden = _experimentFullrectSampleWriterLayoutFormatOverride is >= 0 and <= 15;
+            if (ownerFormatOverridden)
+                ownerFormat = _experimentFullrectSampleWriterLayoutFormatOverride;
+            int ownerBytesPerTexel = ownerFormat is 10 or 11 or 12 ? 2 : sampledWriter.BytesPerTexel;
+            bool ownerSixteenBit = ownerBytesPerTexel == 2 || ownerFormat is 10 or 11 or 12;
+            int ownerWidth = Math.Max(1, (int)GetTextureWidth(sampledWriter.TexLod) >> ownerLod);
+            int ownerHeight = Math.Max(1, (int)GetTextureHeight(sampledWriter.TexLod) >> ownerLod);
+            uint ownerBase = GetTextureLodOffset(ownerLod, ownerBytesPerTexel, sampledWriter.TexLod, sampledWriter.TextureBase);
+            if (_experimentFullrectSampleWriterLayoutBaseBias != 0)
+                ownerBase = (uint)(((long)ownerBase + _experimentFullrectSampleWriterLayoutBaseBias) & (TextureBytes - 1L));
+
+            float ownerS = s;
+            float ownerT = t;
+            bool ownerClampS = clampS;
+            bool ownerClampT = clampT;
+            if (_experimentFullrectSampleWriterLayoutCoordMode is "wrap" or "wrapped")
+            {
+                ownerClampS = false;
+                ownerClampT = false;
+            }
+            else if (_experimentFullrectSampleWriterLayoutCoordMode is "scale" or "scaled")
+            {
+                ownerS = currentWidth > 0 ? s * ownerWidth / currentWidth : s;
+                ownerT = currentHeight > 0 ? t * ownerHeight / currentHeight : t;
+            }
+            else if (_experimentFullrectSampleWriterLayoutCoordMode is "scale-wrap" or "scaled-wrap")
+            {
+                ownerS = currentWidth > 0 ? s * ownerWidth / currentWidth : s;
+                ownerT = currentHeight > 0 ? t * ownerHeight / currentHeight : t;
+                ownerClampS = false;
+                ownerClampT = false;
+            }
+
+            int ownerX = TextureCoordinateToIndex(ownerS, ownerWidth, ownerClampS);
+            int ownerY = _fixTextureTOriginFlip
+                ? TextureCoordinateToIndex((ownerHeight - 1) - ownerT, ownerHeight, ownerClampT)
+                : TextureCoordinateToIndex(ownerT, ownerHeight, ownerClampT);
+
+            result = ReadTextureRgb565At(
+                ownerX,
+                ownerY,
+                ownerWidth,
+                ownerFormat,
+                ownerSixteenBit,
+                sampleMode,
+                ownerBase,
+                out writerByteAddress,
+                out writerWord,
+                out writerRaw);
+
+            layoutS = ownerS;
+            layoutT = ownerT;
+            layoutX = ownerX;
+            layoutY = ownerY;
+            layoutWidth = ownerWidth;
+            layoutHeight = ownerHeight;
+            layoutBase = ownerBase;
+            relookupStatus =
+                $"sampled-owner fmt{ownerFormat}{(ownerFormatOverridden ? "*" : "")}/bpp{ownerBytesPerTexel}/l{ownerLod} " +
+                $"addr=0x{writerByteAddress:X6}";
+        }
+
         TrackZeroTextureSample(writerByteAddress, result);
         TrackTextureSampleDebug(writerByteAddress, writerRaw, result);
         TraceTextureSample(
             s,
             t,
-            writerWidth,
-            writerHeight,
-            writerX,
-            writerY,
+            layoutWidth,
+            layoutHeight,
+            layoutX,
+            layoutY,
             sampleMode,
             sampleTextureLod,
             sampleTextureBase,
-            writerBase,
+            layoutBase,
             writerByteAddress,
             writerWord,
             writerRaw,
@@ -36608,19 +36692,29 @@ sampledTexel:
 
         if (_fullrectSampleWriterLayoutTraceCount++ < 32)
         {
+            int finalWordOffset = (int)((writerByteAddress & (TextureBytes - 1u)) >> 2);
+            string sampledOwner = hasSampledOwner
+                ? FormatTextureWordWriterStatus(sampledWriter)
+                : "-";
+
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] fullrect-sample-writer-layout " +
-                $"current=0x{currentByteAddress:X6}/w{currentWordOffset:X5} -> addr=0x{writerByteAddress:X6} " +
+                $"current=0x{currentByteAddress:X6}/w{currentWordOffset:X5} -> addr=0x{writerByteAddress:X6}/w{finalWordOffset:X5} " +
+                $"initialAddr=0x{initialWriterByteAddress:X6}/w{initialSampledWordOffset:X5} " +
                 $"mode={(_experimentFullrectSampleWriterLayoutCoordMode.Length == 0 ? "clamp" : _experimentFullrectSampleWriterLayoutCoordMode)} " +
-                $"st=({s:F3},{t:F3})->({writerS:F3},{writerT:F3}) xy={writerX},{writerY} size={writerWidth}x{writerHeight} " +
+                $"st=({s:F3},{t:F3})->({layoutS:F3},{layoutT:F3}) xy={layoutX},{layoutY} size={layoutWidth}x{layoutHeight} " +
                 $"sample=mode0x{sampleMode:X8}/lod0x{sampleTextureLod:X8}/base0x{sampleTextureBase:X8} " +
                 $"writer=pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writerBytesPerTexel}/fmt{writerFormat}{(writerFormatOverridden ? "*" : "")} " +
                 $"type5=0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6} " +
-                $"targetRemap={(writerTargetRemapped ? $"0x{writer.Type5TargetStart:X6}->0x{writerTargetStart:X6}" : "-")} baseBias={_experimentFullrectSampleWriterLayoutBaseBias}");
+                $"targetRemap={(writerTargetRemapped ? $"0x{writer.Type5TargetStart:X6}->0x{writerTargetStart:X6}" : "-")} baseBias={_experimentFullrectSampleWriterLayoutBaseBias} " +
+                $"sampledOwner={sampledOwner} relookup={relookupStatus}");
         }
 
         return true;
     }
+
+    private static string FormatTextureWordWriterStatus(TextureWordLastWriter writer) =>
+        $"pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writer.BytesPerTexel}/type5={(writer.Type5 ? 1 : 0)}/cmd0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}";
 
     private ushort SampleTextureRgb565Bilinear(
         float s,
