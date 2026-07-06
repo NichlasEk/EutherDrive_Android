@@ -711,6 +711,13 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X"));
     private readonly int _experimentRuntimeVertexFifoFullrectSFromXTraceLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X_LIMIT", 24);
+    private readonly bool _traceRuntimeVertexSourceWrites =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_SOURCE_WRITES"));
+    private readonly int _traceRuntimeVertexSourceWritesLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_SOURCE_WRITES_LIMIT", 160);
+    private readonly ulong[] _traceRuntimeVertexSourceWriteBases =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_SOURCE_WRITE_BASES"));
+    private readonly Dictionary<ulong, string> _runtimeVertexSourceLastWrites = [];
     private readonly bool _traceRuntimeFullrectDescriptor =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_FULLRECT_DESCRIPTOR"));
     private readonly int _traceRuntimeFullrectDescriptorLimit =
@@ -909,6 +916,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_ZERO_BASE_RUN_CLASSIFIER"));
     private readonly int _traceTextureUploadZeroBaseRunClassifierLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_ZERO_BASE_RUN_CLASSIFIER_LIMIT", 96);
+    private readonly bool _traceRuntimeBgLoadModelWtrEntries =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_WTR_ENTRIES"));
+    private readonly int _traceRuntimeBgLoadModelWtrEntriesLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_WTR_ENTRIES_LIMIT", 64);
     private readonly ulong? _traceTextureUploadRunSource =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE");
     private readonly bool _traceTextureUploadSourceSelector =
@@ -1115,10 +1126,13 @@ internal sealed class MipsR5000Core
     private string _textureUploadDirectWriterDiskWordCacheCode = "";
     private int _textureUploadMetadataSkipTraceCount;
     private int _textureUploadZeroBaseRunClassifierTraceCount;
+    private int _runtimeBgLoadModelWtrEntriesTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _vertexFifoFastPathOddPayloadTraceCount;
     private int _vertexFifoFastPathRejectTraceCount;
     private int _runtimeVertexFifoFullrectSFromXTraceCount;
+    private int _runtimeVertexSourceWriteTraceCount;
+    private int _runtimeVertexSourceWriteObservedCount;
     private int _runtimeFullrectDescriptorTraceCount;
     private int _runtimeFullrectClipperTraceCount;
     private int _runtimeFullrectRightClipPositiveTTraceCount;
@@ -5294,6 +5308,7 @@ internal sealed class MipsR5000Core
             return;
 
         string reason;
+        uint traceTargetWord = targetWord;
         if (targetMatch)
         {
             reason = hasTargetFilter ? "target" : "all";
@@ -5306,6 +5321,7 @@ internal sealed class MipsR5000Core
         else
         {
             reason = $"follow:0x{_textureUploadDirectWriterFollowTargetWord:x8}";
+            traceTargetWord = _textureUploadDirectWriterFollowTargetWord;
             _textureUploadDirectWriterFollowRemaining--;
         }
 
@@ -5339,6 +5355,11 @@ internal sealed class MipsR5000Core
             $"s3disk={FormatKnownRuntimeBgLoadModelUploadDiskCompare(s3, 4)} " +
             $"s6w={ReadTraceWord(s6 + 0x00UL):x8}/{ReadTraceWord(s6 + 0x04UL):x8}/" +
             $"{ReadTraceWord(s6 + 0x08UL):x8}/{ReadTraceWord(s6 + 0x0cUL):x8}");
+
+        ulong payloadWords = _gpr[20];
+        uint payloadWordCount = payloadWords <= uint.MaxValue ? (uint)payloadWords : 0;
+        ulong sourceBytes = payloadWords is > 0UL and <= 0x100000UL ? payloadWords * 4UL : 0UL;
+        TraceRuntimeBgLoadModelWtrEntryContext(s3, traceTargetWord, sourceBytes, payloadWordCount, 0, 0);
     }
 
     private string FormatDirectTextureWriterControlGroups(ulong source)
@@ -5890,6 +5911,157 @@ internal sealed class MipsR5000Core
             $"sampleWords={sampleWords} unique={uniqueWords.Count} zero={zeroWords} ones={allOnesWords} " +
             $"ptr={pointerWords} float={floatWords} asciiBytes={printableBytes} text=\"{text.Replace('"', '\'')}\" " +
             $"nextKnown={nextKnown} descriptor={FormatTraceWords(originalSource, 8)} first={FormatTraceWords(source, 8)}");
+
+        TraceRuntimeBgLoadModelWtrEntryContext(source, currentPacketAddress, sourceBytes, payloadWords, index, limit);
+    }
+
+    private void TraceRuntimeBgLoadModelWtrEntryContext(
+        ulong source,
+        uint currentPacketAddress,
+        ulong sourceBytes,
+        uint payloadWords,
+        uint index,
+        uint limit)
+    {
+        if (!_traceRuntimeBgLoadModelWtrEntries ||
+            _runtimeBgLoadModelWtrEntriesTraceCount >= _traceRuntimeBgLoadModelWtrEntriesLimit ||
+            !TryGetKnownRuntimeBgLoadModelUploadSourceDetails(
+                source,
+                out ulong qioIndex,
+                out string code,
+                out ulong header,
+                out long sourceOffset,
+                out uint bodyOffset,
+                out uint countWord,
+                out uint strideWord,
+                out uint textureByteLength) ||
+            qioIndex != 9 ||
+            !code.Equals("wtr", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        ulong body = header + bodyOffset;
+        if (!IsMainRamRange(body + 0x23UL, 1))
+            return;
+
+        List<(int Slot, string Name, uint Target, uint Flags)> entries = [];
+        int maxEntries = (int)Math.Min(128U, Math.Max(1U, countWord));
+        const ulong entryStride = 0x24UL;
+        for (int slot = 0; slot < maxEntries; slot++)
+        {
+            ulong entry = body + (ulong)slot * entryStride;
+            if (!IsMainRamRange(entry + 0x23UL, 1))
+                break;
+
+            string name = ReadAsciiTraceString(entry, 16);
+            if (!IsLikelyRuntimeBgLoadModelWtrEntryName(name))
+            {
+                if (entries.Count > 0)
+                    break;
+
+                continue;
+            }
+
+            uint target = _memory.Read32(entry + 0x1cUL);
+            uint flags = _memory.Read32(entry + 0x20UL);
+            entries.Add((slot, name, target, flags));
+        }
+
+        if (entries.Count == 0)
+            return;
+
+        long bodyDelta = sourceOffset - bodyOffset;
+        int sourceSlot = FindNearestRuntimeBgLoadModelWtrEntry(entries, bodyDelta);
+        int packetSlot = FindNearestRuntimeBgLoadModelWtrEntry(entries, currentPacketAddress);
+        var sourceEntry = entries[sourceSlot];
+        var packetEntry = entries[packetSlot];
+
+        _runtimeBgLoadModelWtrEntriesTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:WTR-ENTRY] n={_runtimeBgLoadModelWtrEntriesTraceCount} " +
+            $"source=0x{source:x16} header=0x{header:x16} body=0x{body:x16} " +
+            $"sourceOffset=0x{sourceOffset:x} bodyDelta={FormatSignedHex(bodyDelta)} " +
+            $"span=0x{sourceBytes:x} packet=0x{currentPacketAddress:x8} index={index}/{limit} words={payloadWords} " +
+            $"count={countWord} stride=0x{strideWord:x8} len=0x{textureByteLength:x} " +
+            $"sourceNearest={FormatRuntimeBgLoadModelWtrEntry(sourceEntry, bodyDelta)} " +
+            $"packetNearest={FormatRuntimeBgLoadModelWtrEntry(packetEntry, currentPacketAddress)} " +
+            $"entries={FormatRuntimeBgLoadModelWtrEntryList(entries, 8)}");
+    }
+
+    private static bool IsLikelyRuntimeBgLoadModelWtrEntryName(string name)
+    {
+        if (name.Length is < 2 or > 15)
+            return false;
+
+        foreach (char ch in name)
+        {
+            if (ch is >= 'A' and <= 'Z' ||
+                ch is >= '0' and <= '9' ||
+                ch == '_')
+            {
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private static int FindNearestRuntimeBgLoadModelWtrEntry(
+        List<(int Slot, string Name, uint Target, uint Flags)> entries,
+        long value)
+    {
+        int bestSlot = 0;
+        ulong bestDistance = ulong.MaxValue;
+        for (int i = 0; i < entries.Count; i++)
+        {
+            long delta = value - entries[i].Target;
+            ulong distance = (ulong)(delta < 0 ? -delta : delta);
+            if (distance >= bestDistance)
+                continue;
+
+            bestDistance = distance;
+            bestSlot = i;
+        }
+
+        return bestSlot;
+    }
+
+    private static string FormatRuntimeBgLoadModelWtrEntry(
+        (int Slot, string Name, uint Target, uint Flags) entry,
+        long value)
+    {
+        uint byteLength = entry.Flags & 0x7fffffffU;
+        return $"{entry.Slot}:{entry.Name}@0x{entry.Target:x} flags=0x{entry.Flags:x8} size=0x{byteLength:x} delta={FormatSignedHex(value - entry.Target)}";
+    }
+
+    private static string FormatRuntimeBgLoadModelWtrEntryList(
+        List<(int Slot, string Name, uint Target, uint Flags)> entries,
+        int limit)
+    {
+        StringBuilder builder = new();
+        int count = Math.Min(entries.Count, Math.Max(0, limit));
+        for (int i = 0; i < count; i++)
+        {
+            if (i > 0)
+                builder.Append(',');
+
+            var entry = entries[i];
+            builder.Append(entry.Slot);
+            builder.Append(':');
+            builder.Append(entry.Name);
+            builder.Append("@0x");
+            builder.Append(entry.Target.ToString("x"));
+            builder.Append("/0x");
+            builder.Append(entry.Flags.ToString("x8"));
+        }
+
+        if (entries.Count > count)
+            builder.Append(",...");
+
+        return builder.ToString();
     }
 
     private bool IsLikelyZeroBaseUploadDescriptor(ulong source)
@@ -6410,6 +6582,68 @@ internal sealed class MipsR5000Core
             code = candidateCode;
             header = candidateHeader;
             sourceOffset = unchecked((long)(source - candidateHeader));
+            countWord = candidateCountWord;
+            strideWord = candidateStrideWord;
+            textureByteLength = candidateTextureByteLength;
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool TryGetKnownRuntimeBgLoadModelUploadSourceDetails(
+        ulong source,
+        out ulong index,
+        out string code,
+        out ulong header,
+        out long sourceOffset,
+        out uint bodyOffset,
+        out uint countWord,
+        out uint strideWord,
+        out uint textureByteLength)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+
+        index = 0;
+        code = "";
+        header = 0;
+        sourceOffset = 0;
+        bodyOffset = 0;
+        countWord = 0;
+        strideWord = 0;
+        textureByteLength = 0;
+
+        for (ulong candidateIndex = 1; candidateIndex <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; candidateIndex++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(candidateIndex, out string candidateCode, out _, out uint candidateTextureByteLength))
+                continue;
+
+            ulong candidateHeader = destinationBase + candidateIndex * sourceStride;
+            ulong candidateEnd = candidateHeader + GetKnownRuntimeBgLoadModelSourceSpanByteLength(candidateTextureByteLength);
+            if (source < candidateHeader || source >= candidateEnd)
+                continue;
+
+            if (!IsMainRamRange(candidateHeader + 0x64UL, 4))
+                continue;
+
+            uint candidateBodyOffset = _memory.Read32(candidateHeader + 0x5cUL);
+            uint candidateCountWord = _memory.Read32(candidateHeader + 0x60UL);
+            uint candidateStrideWord = _memory.Read32(candidateHeader + 0x64UL);
+            if (!IsPlausibleKnownRuntimeBgLoadModelUploadHeader(
+                    candidateBodyOffset,
+                    candidateCountWord,
+                    candidateStrideWord,
+                    candidateTextureByteLength))
+            {
+                continue;
+            }
+
+            index = candidateIndex;
+            code = candidateCode;
+            header = candidateHeader;
+            sourceOffset = unchecked((long)(source - candidateHeader));
+            bodyOffset = candidateBodyOffset;
             countWord = candidateCountWord;
             strideWord = candidateStrideWord;
             textureByteLength = candidateTextureByteLength;
@@ -11961,7 +12195,14 @@ internal sealed class MipsR5000Core
                 $"t={t0:F3}/{t1:F3}/{t2:F3} " +
                 $"src0w={FormatVertexFifoSourceWords(source0)} src1w={FormatVertexFifoSourceWords(source1)} " +
                 $"src2w={FormatVertexFifoSourceWords(source2)} " +
-                $"src=0x{source0:x16}/0x{source1:x16}/0x{source2:x16} ra=0x{_gpr[31]:x16}");
+                $"src=0x{source0:x16}/0x{source1:x16}/0x{source2:x16} " +
+                $"sW=0({FormatRuntimeVertexSourceLastWriter(source0, 0x0cUL)})/" +
+                $"1({FormatRuntimeVertexSourceLastWriter(source1, 0x0cUL)})/" +
+                $"2({FormatRuntimeVertexSourceLastWriter(source2, 0x0cUL)}) " +
+                $"tW=0({FormatRuntimeVertexSourceLastWriter(source0, 0x10UL)})/" +
+                $"1({FormatRuntimeVertexSourceLastWriter(source1, 0x10UL)})/" +
+                $"2({FormatRuntimeVertexSourceLastWriter(source2, 0x10UL)}) " +
+                $"ra=0x{_gpr[31]:x16}");
         }
 
         return true;
@@ -12017,6 +12258,124 @@ internal sealed class MipsR5000Core
             $"{_memory.Read32(source + 0x0cUL):x8}/" +
             $"{_memory.Read32(source + 0x10UL):x8}/" +
             $"{_memory.Read32(source + 0x14UL):x8}";
+    }
+
+    private void TraceRuntimeVertexSourceWrite(
+        ulong pc,
+        uint op,
+        string access,
+        string source,
+        ulong address,
+        uint oldValue,
+        uint value)
+    {
+        if (!_traceRuntimeVertexSourceWrites ||
+            !TryMatchRuntimeVertexSourceWriteAddress(address, out ulong vertexBase, out uint vertexOffset))
+        {
+            return;
+        }
+
+        int observed = ++_runtimeVertexSourceWriteObservedCount;
+        ulong traceAddress = vertexBase + vertexOffset;
+        _runtimeVertexSourceLastWrites[traceAddress] =
+            $"#{observed}:pc=0x{pc:x16}/op=0x{op:x8}/{access}:{source}/" +
+            $"old={FormatRuntimeVertexSourceWriteWord(oldValue)}/new={FormatRuntimeVertexSourceWriteWord(value)}/" +
+            $"ra=0x{_gpr[31]:x16}";
+
+        if (_runtimeVertexSourceWriteTraceCount >= _traceRuntimeVertexSourceWritesLimit)
+            return;
+
+        _runtimeVertexSourceWriteTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:VERTEX-SRC-WRITE] n={_runtimeVertexSourceWriteTraceCount} observed={observed} " +
+            $"pc=0x{pc:x16} op=0x{op:x8} {access} {source} addr=0x{address:x16} " +
+            $"base=0x{vertexBase:x16} off=0x{vertexOffset:x2} " +
+            $"old={FormatRuntimeVertexSourceWriteWord(oldValue)} new={FormatRuntimeVertexSourceWriteWord(value)} " +
+            $"ra=0x{_gpr[31]:x16} sp=0x{_gpr[29]:x16} " +
+            $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
+            $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} " +
+            $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
+            $"vertex={FormatVertexFifoSourceWords(vertexBase)}");
+    }
+
+    private string FormatRuntimeVertexSourceLastWriter(ulong source, ulong offset)
+    {
+        if (!_traceRuntimeVertexSourceWrites)
+            return "trace-off";
+
+        ulong address = CanonicalizeTraceAddress(source + offset);
+        return _runtimeVertexSourceLastWrites.TryGetValue(address, out string? writer)
+            ? writer
+            : "none";
+    }
+
+    private void TraceRuntimeVertexSourceWrite64(
+        ulong pc,
+        uint op,
+        string access,
+        string source,
+        ulong address,
+        ulong oldValue,
+        ulong value)
+    {
+        TraceRuntimeVertexSourceWrite(pc, op, access, source, address, (uint)oldValue, (uint)value);
+        TraceRuntimeVertexSourceWrite(pc, op, access, source, address + 4UL, (uint)(oldValue >> 32), (uint)(value >> 32));
+    }
+
+    private bool TryMatchRuntimeVertexSourceWriteAddress(ulong address, out ulong vertexBase, out uint vertexOffset)
+    {
+        address = CanonicalizeTraceAddress(address);
+        if (_traceRuntimeVertexSourceWriteBases.Length == 0)
+        {
+            if (TryMatchRuntimeVertexSourceWriteBase(address, 0xffffffff802e1a28UL, out vertexBase, out vertexOffset) ||
+                TryMatchRuntimeVertexSourceWriteBase(address, 0xffffffff802e1a50UL, out vertexBase, out vertexOffset) ||
+                TryMatchRuntimeVertexSourceWriteBase(address, 0xffffffff802e1a78UL, out vertexBase, out vertexOffset) ||
+                TryMatchRuntimeVertexSourceWriteBase(address, 0xffffffff802e1aa0UL, out vertexBase, out vertexOffset))
+            {
+                return true;
+            }
+
+            vertexBase = 0;
+            vertexOffset = 0;
+            return false;
+        }
+
+        foreach (ulong configuredBase in _traceRuntimeVertexSourceWriteBases)
+        {
+            if (TryMatchRuntimeVertexSourceWriteBase(address, CanonicalizeTraceAddress(configuredBase), out vertexBase, out vertexOffset))
+                return true;
+        }
+
+        vertexBase = 0;
+        vertexOffset = 0;
+        return false;
+    }
+
+    private static bool TryMatchRuntimeVertexSourceWriteBase(
+        ulong address,
+        ulong candidateBase,
+        out ulong vertexBase,
+        out uint vertexOffset)
+    {
+        if (address >= candidateBase && address < candidateBase + 0x18UL)
+        {
+            vertexBase = candidateBase;
+            vertexOffset = (uint)(address - candidateBase);
+            return true;
+        }
+
+        vertexBase = 0;
+        vertexOffset = 0;
+        return false;
+    }
+
+    private static string FormatRuntimeVertexSourceWriteWord(uint word)
+    {
+        float value = BitConverter.UInt32BitsToSingle(word);
+        string floatText = float.IsFinite(value)
+            ? value.ToString("G9", CultureInfo.InvariantCulture)
+            : value.ToString(CultureInfo.InvariantCulture);
+        return $"0x{word:x8}/{floatText}";
     }
 
     private bool TraceVertexFifoFastPathDestinationMatches(ulong destination)
@@ -21855,6 +22214,7 @@ internal sealed class MipsR5000Core
                     value = ApplyDirectTextureWriterDiskWordExperiment(pc, rt, value);
                     TraceTextureUploadDirectWriterStore(pc, op, rs, rt, simm, address, value);
                     _memory.Write32(address, value);
+                    TraceRuntimeVertexSourceWrite(pc, op, "sw", $"r{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
                     TraceTextureUploadDirectWriterControlTableWrite(pc, op, "sw", $"r{rt}", rs, simm, address, oldValue, value);
                 }
                 break;
@@ -21878,14 +22238,27 @@ internal sealed class MipsR5000Core
                     uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
                     uint value = (uint)_fpr[rt];
                     _memory.Write32(address, value);
+                    TraceRuntimeVertexSourceWrite(pc, op, "swc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
                     TraceTextureUploadDirectWriterControlTableWrite(pc, op, "swc1", $"f{rt}", rs, simm, address, oldValue, value);
                 }
                 break;
             case 0x3d:
-                _memory.Write64(_gpr[rs] + (ulong)(long)simm, _fpr[rt]);
+                {
+                    ulong address = _gpr[rs] + (ulong)(long)simm;
+                    ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
+                    ulong value = _fpr[rt];
+                    _memory.Write64(address, value);
+                    TraceRuntimeVertexSourceWrite64(pc, op, "sdc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
+                }
                 break;
             case 0x3f:
-                _memory.Write64(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
+                {
+                    ulong address = _gpr[rs] + (ulong)(long)simm;
+                    ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
+                    ulong value = _gpr[rt];
+                    _memory.Write64(address, value);
+                    TraceRuntimeVertexSourceWrite64(pc, op, "sd", $"r{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
+                }
                 break;
             case 0x14:
                 ExecuteBranchLikely(pc, simm, _gpr[rs] == _gpr[rt]);
@@ -22137,6 +22510,7 @@ internal sealed class MipsR5000Core
         uint mask = uint.MaxValue >> shift;
         uint newValue = (oldMem & ~mask) | ((word >> shift) & mask);
         _memory.Write32(aligned, newValue);
+        TraceRuntimeVertexSourceWrite(pc, op, "swl", $"r{rt}->[r{rs}+0x{simm:x4}]", aligned, oldMem, newValue);
         TraceTextureUploadDirectWriterControlTableWrite(pc, op, "swl", $"r{rt}", rs, simm, aligned, oldMem, newValue);
     }
 
@@ -22149,6 +22523,7 @@ internal sealed class MipsR5000Core
         uint mask = uint.MaxValue << shift;
         uint newValue = (oldMem & ~mask) | ((word << shift) & mask);
         _memory.Write32(aligned, newValue);
+        TraceRuntimeVertexSourceWrite(pc, op, "swr", $"r{rt}->[r{rs}+0x{simm:x4}]", aligned, oldMem, newValue);
         TraceTextureUploadDirectWriterControlTableWrite(pc, op, "swr", $"r{rt}", rs, simm, aligned, oldMem, newValue);
     }
 
@@ -22442,10 +22817,20 @@ internal sealed class MipsR5000Core
                 _fpr[fd] = _memory.Read64(address);
                 break;
             case 0x08: // swxc1
-                _memory.Write32(address, (uint)_fpr[fd]);
+                {
+                    uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
+                    uint value = (uint)_fpr[fd];
+                    _memory.Write32(address, value);
+                    TraceRuntimeVertexSourceWrite(pc, op, "swxc1", $"f{fd}->[r{rs}+r{rt}]", address, oldValue, value);
+                }
                 break;
             case 0x09: // sdxc1
-                _memory.Write64(address, _fpr[fd]);
+                {
+                    ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
+                    ulong value = _fpr[fd];
+                    _memory.Write64(address, value);
+                    TraceRuntimeVertexSourceWrite64(pc, op, "sdxc1", $"f{fd}->[r{rs}+r{rt}]", address, oldValue, value);
+                }
                 break;
             case 0x0f: // prefx
                 break;

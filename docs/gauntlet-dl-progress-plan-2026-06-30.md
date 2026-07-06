@@ -7888,3 +7888,94 @@ Current conclusion:
    experiments and writer-layout coord/address transforms, then narrow the
    fix where Type5 upload registers are converted into texture memory addresses.
 ```
+
+### Vertex source writer correlation checkpoint - 2026-07-06
+
+Added default-off source write correlation for the hot runtime fullrect vertices:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_SOURCE_WRITES=1
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_SOURCE_WRITES_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_SOURCE_WRITE_BASES=...
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_WTR_ENTRIES=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_WTR_ENTRIES_LIMIT=...
+```
+
+The WTR/FIFO target trace moved the texture-upload suspicion out of the
+immediate fullrect owner path:
+
+```text
+/tmp/gauntdl-current-plus3c8-fifo7334-type5280-f300.log
+sha256=23fcb57f0ccfcb85007937baf739461146c0ea8a98e081d3fb21a2c19d726e50
+/tmp/gauntdl-current-plus3c8-fifo7334-type5280-f300.ppm
+sha256=af96b70ca16fd32825360088cff15a76f880031627555661d3b738c265a6af20
+frameHash=0xc571d0e1
+```
+
+`0x7334` is a command FIFO packet position, not the texture target. The Type5
+target word for that path is `0x280` (`targetByte=0x00000a00`). The early
+`pc=800fe614` packet carries coordinate-like words; the later `pc=800fe5d4`
+packet carries GEI-like disk words. WTR entry parsing did not identify this as
+a WTR table selection problem.
+
+The visible diagnostic screenshot for the current S-from-X path is:
+
+```text
+/tmp/gauntdl-vertex-source-writer-correlation-f300.png
+/tmp/gauntdl-vertex-source-writer-correlation-f300.ppm
+sha256=c313c239fb178a6dd06ce123cd4273b972974232cead58aed737449dac699ebe
+/tmp/gauntdl-vertex-source-writer-correlation-f300.log
+sha256=8a15a5141cb7befe4bec1c5cbf292e106274c7189e1459f1fa99b24b4506dea8
+frameHash=0x0463f000
+```
+
+The new correlation cache proves the hot fullrects are emitted after the
+source vertices already contain constant S:
+
+```text
+s=0/0/0 -> 0/256/0
+src=0x802e1a78/0x802e1a50/0x802e1a28
+sW=0(pc=800b0ba4 new=0)/1(pc=800b07ac new=0)/2(pc=800b0ba4 new=0)
+
+s=0/0/0 -> 256/0/256
+src=0x802e1a50/0x802e1a78/0x802e1aa0
+sW=0(pc=800b07ac new=0)/1(pc=800b0ba4 new=0)/2(pc=800b07ac new=0)
+```
+
+This updates the previous conclusion: the FIFO fastpath is not inventing the
+constant-S fullrect. It packs the source words that the guest-side fullrect
+builder/clipper leaves in RAM.
+
+CPU/FPU and descriptor evidence:
+
+```text
+/tmp/gauntdl-ra0ca0-cputrace-f300.log
+sha256=9ec710a85decad2d8572fc02d7d10cb7a8251df11df17d9a95f93c0001977b98
+
+/tmp/gauntdl-fullrect-desc-clip-current-f300.log
+sha256=677da19edb15eba4f29d4d846472f337804dd45f3e29a15167bd251239dde6a4
+frameHash=0xc571d0e1
+```
+
+The COP1X `madd.s` path can produce plausible right-edge S values
+(`506.713562` raw, or `0.506713629` after scale). Later hot fullrect emits still
+have exact `S=0` because their latest source writes are zero. Descriptor words
+for the repeated fullrects are stable (`w14=0`, `w18=1`, `w1c=0`, `w20=1`), and
+the scaled-store phase alternates between raw `0/256` and normalized
+`0/0.256` depending on descriptor/scale state.
+
+Next slice:
+
+```text
+1. Keep EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X
+   as the best visible diagnostic; it reconstructs the missing horizontal span
+   only when the fullrect is large, all S values are effectively equal, and T
+   spans.
+2. Try a gated bringup fix using the same source-X reconstruction, but keep it
+   default-off until compared against non-fullrect geometry and a later frame.
+3. In parallel, trace the descriptor source at 0x802593a0/0x802593f0 and the
+   call path around 800b0800/800b0978 to understand why the hot descriptors use
+   constant S at emit time.
+4. Do not spend the next slice on WTR table promotion or GEI overwrite/zero-fill;
+   those were negative or non-causal for the current visible blocker.
+```
