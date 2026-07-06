@@ -28624,6 +28624,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT"), 240);
     private readonly int _traceTextureWriteBucketsPerBucketLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_PER_BUCKET_LIMIT"), 0);
+    private readonly bool _traceRenderBufferChoice =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_RENDER_BUFFER_CHOICE"));
+    private readonly int _traceRenderBufferChoiceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_RENDER_BUFFER_CHOICE_LIMIT"), 32);
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
     private readonly bool _traceType0JumpsOnly = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_JUMPS_ONLY"));
@@ -29103,6 +29107,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _textureSampleTraceCount;
     private int _texturedTriangleSampleSummaryTraceCount;
     private int _textureFetchCompareTraceCount;
+    private int _renderBufferChoiceTraceCount;
     private int _textureUploadMameWritePtrTraceCount;
     private int _textureWriteBucketTraceCount;
     private readonly int[] _textureWriteBucketTraceCounts = new int[TextureZeroSampleBucketCount];
@@ -31363,6 +31368,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int copyWidth = Math.Min(target.Width, 640);
         int copyHeight = Math.Min(target.Height, 480);
         int renderBufferIndex = ChooseRenderBufferIndex();
+        TraceRenderBufferChoice(renderBufferIndex);
         _lastRenderBufferIndex = renderBufferIndex;
         if (ShouldMaterializePendingClearForRender(renderBufferIndex))
             MaterializePendingClear(renderBufferIndex);
@@ -31384,6 +31390,33 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return _lfbWriteCount > 0;
+    }
+
+    private void TraceRenderBufferChoice(int renderBufferIndex)
+    {
+        if (!_traceRenderBufferChoice || _renderBufferChoiceTraceCount++ >= _traceRenderBufferChoiceLimit)
+            return;
+
+        string[] buffers = new string[_colorBuffers.Length];
+        for (int i = 0; i < _colorBuffers.Length; i++)
+        {
+            int nonZero = GetBufferNonZeroCount(i);
+            int active = GetVisibleBufferActiveColorCount(i);
+            int white = GetVisibleBufferWhiteCount(i);
+            int unique = GetVisibleBufferUniqueColorCount(i, 128);
+            string pending = IsPendingClearBuffer(i)
+                ? $"p=1:{_pendingClearX0[i]}-{_pendingClearX1[i]}x{_pendingClearY0[i]}-{_pendingClearY1[i]}:0x{_pendingClearColor[i]:X4}"
+                : "p=0";
+            buffers[i] = $"b{i}=nz{nonZero}:act{active}:w{white}:u{unique}:{pending}";
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-RENDER-BUFFER] n={_renderBufferChoiceTraceCount} frame={_renderFrame} " +
+            $"front={_frontBufferIndex} back={_backBufferIndex} chosen={renderBufferIndex} " +
+            string.Join(" ", buffers) +
+            $" lfb={_lfbWriteCount} rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}{pcStatus}");
     }
 
     private int ChooseRenderBufferIndex()

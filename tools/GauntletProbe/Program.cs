@@ -151,9 +151,14 @@ ScanRequestedMemoryRefs(GetProperty(machine, "MemoryMap"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS") == "1")
     ScanFifoCommandBuilders(GetProperty(machine, "MemoryMap"));
 
-DumpVoodoo(GetProperty(machine, "Voodoo"));
+object voodoo = GetProperty(machine, "Voodoo");
+DumpVoodoo(voodoo);
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_BEFORE_FRAME") == "1")
+    DumpVoodooColorBuffers(voodoo);
 DumpFrame(adapter);
-DumpVoodooColorBuffers(GetProperty(machine, "Voodoo"));
+Console.WriteLine($"debugAfterFrame={adapter.DebugStatus}");
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_BEFORE_FRAME") != "1")
+    DumpVoodooColorBuffers(voodoo);
 DumpRamSurfaceCandidates(GetProperty(machine, "MemoryMap"));
 
 static object GetField(object instance, string name)

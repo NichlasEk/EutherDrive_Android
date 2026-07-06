@@ -7341,3 +7341,75 @@ Current conclusion:
    TMU/NCC bank source, and Type3 setup decode for the actual f300 draw packets
    before adding more sampler-side remaps.
 ```
+
+## Render-buffer choice and first visible-candidate checkpoint - 2026-07-06
+
+Added two default-off diagnostics to separate real Voodoo buffer content from
+the exported frame:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_RENDER_BUFFER_CHOICE=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_RENDER_BUFFER_CHOICE_LIMIT=...
+
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_BEFORE_FRAME=1
+```
+
+`TRACE_VOODOO_RENDER_BUFFER_CHOICE` logs front/back/chosen buffer, visible
+active pixels, white pixels, unique-color count, pending clear state, LFB write
+count, and raster counts before any pending clear is materialized for render.
+`DUMP_VOODOO_BUFFERS_BEFORE_FRAME` lets `GauntletProbe` dump Voodoo color
+buffers before `GetFrameBuffer()` does its render copy.
+
+Key f300 evidence with implausible Type3 setup triangles suppressed:
+
+```text
+/tmp/gauntdl-bufchoice-tail-suppress-f300.log
+sha256=31458c5c408abf32187c01904770d6bf63f50c05c47e8a14128ff36720e0a219
+/tmp/gauntdl-bufchoice-tail-suppress-f300.ppm
+sha256=85cc18d453c202f601468f0ccc2c237a2a7e48c03b96657c2b9151c0259ab85b
+frameHash=0x828a27b0
+```
+
+The end of f300 still chooses the low-detail green/magenta surface:
+
+```text
+frame=293 chosen=2 b0=act630/u75 b1=act2/u2 b2=act307200/u4
+frame=296 chosen=2 b0=act630/u75 b1=act688/u78 b2=act307200/u4
+```
+
+Earlier in the same run there is a much more useful candidate:
+
+```text
+frame=280..292 chosen=1 b1=act306870/u91..u93
+```
+
+Dumping f292 produces the first better visible candidate in this slice:
+
+```text
+/tmp/gauntdl-visible-candidate-suppress-f292.log
+sha256=b32760c0157a98dbea7ae40e7321072ab78c04dbc3b2c8517d2b788b193fb695
+/tmp/gauntdl-visible-candidate-suppress-f292.ppm
+sha256=88d36557972f4b3217a72cd11ea87ae53b7faaf94910f6134d173eb1f9d9faf7
+/tmp/gauntdl-visible-candidate-suppress-f292.png
+frameHash=0x20fda1fc
+framebuffer=640x480 nonBlack=306870 colored=306870
+```
+
+Visual read: f292 is not scene-correct yet, but it is a real step past the
+flat f300 plateau. It shows broad cyan/striped textured structure rather than
+the two-color green/magenta full-screen surface.
+
+Current conclusion:
+
+```text
+1. The green/magenta f300 image is a low-detail full-screen buffer-selection
+   plateau, not proof that all intermediate rendering is blank.
+2. Suppressing implausible Type3 setup triangles is only a diagnostic bracket;
+   it reduces sampled textured pixels from ~114M to ~24.8M at f300 but does not
+   by itself make f300 correct.
+3. The next useful slice is to trace why frame 293 clears/front-swaps away from
+   the higher-detail frame 280-292 candidate, and in parallel trace the striped
+   f292 texture source/format/owner path. Do not promote a "hold last good
+   buffer" heuristic as a correctness fix unless swap/clear evidence supports
+   it.
+```
