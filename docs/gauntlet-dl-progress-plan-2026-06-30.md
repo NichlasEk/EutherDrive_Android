@@ -7626,3 +7626,68 @@ Current continuation:
    stream to the wrong control table, then follow the actual material/art
    payload link from there.
 ```
+
+### BGLoadModel hydration-range checkpoint
+
+Added two default-off diagnostics:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_CONTROL_TABLE_WRITES=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_HYDRATION_RANGE=1
+```
+
+The CPU-store control-table trace is useful mostly as a negative control: the
+later direct-writer words around `802e1a08` are not produced by normal
+`sw`/`swc1`/`swl`/`swr` after the table is live. The stronger trace hooks the
+known BGLoadModel disk-to-RAM hydration path and logs only when a selected
+address range overlaps the copy.
+
+Current f300 oracle command stack stayed on the same visible-but-wrong frame:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_HYDRATION_RANGE=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_HYDRATION_RANGE_ADDRESS=0xffffffff802e1a08
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_HYDRATION_RANGE_BYTES=0x40
+
+/tmp/gauntdl-hydration-range-802e1a08-f300.log
+sha256=48fafaca25e80b1197ac66994187c153e3427d5172e401bc65ebc239bec850c6
+/tmp/gauntdl-hydration-range-802e1a08-f300.ppm
+sha256=ec67f69517af98f96bfc248f7b0f5c9ada2a139a44a48f30c956cd81b3d5faae
+/tmp/gauntdl-hydration-range-802e1a08-f300.png
+frameHash=0x7df9727a
+drawPackets=17965 directTriangles=1284 setupTriangles=630 texWrites=1911159
+```
+
+The decisive trace line:
+
+```text
+bgloadmodel-hydration-range n=1 phase=qio-mapped dest=0xffffffff802e1718 bytes=0x00002000 disk=0x0fbb0830
+target=0xffffffff802e1a08:0x40 overlapCopy=+0x2f0..+0x330 diskWord=0x0fbb0b20
+ram=000111e4/000116b0/000101b8/00000958/0000000b/00000000/0000000d/000000c6
+diskWords=000111e4/000116b0/000101b8/00000958/0000000b/00000000/0000000d/000000c6
+detail=path=/readOffset=001b0830/static-lr-bgmodel-callback/base=0007d000/mapped/first=00000012
+```
+
+This proves the hot `s3=802e1a08` direct-writer control group is byte-exact
+asset data from the static-lr BGLoadModel hydration at disk byte `0x0fbb0b20`,
+not a later CPU overwrite or random RAM corruption. The frame remains visibly
+wrong, so the next blocker is no longer "who wrote this table". It is how this
+table is consumed by the Type5/direct-writer path.
+
+Next continuation:
+
+```text
+1. Keep the f300 oracle unchanged: warm e27b state plus
+   `IGNORE_IMPLAUSIBLE_RENDER_STATE_WRITES=1`.
+2. Focus the next trace at the Type5 packets whose target words are referenced
+   by the hydrated control group, especially `0x45ac`, `0x4479`, `0x406e`, and
+   nearby repeated groups.
+3. Compare the Type5 payload words and target progression against the hydrated
+   control record offsets. The likely bug is a payload/window/target decode
+   mismatch, not a missing BGLoadModel source.
+4. Do not suppress the control group as "bad texture"; it is real source data.
+```

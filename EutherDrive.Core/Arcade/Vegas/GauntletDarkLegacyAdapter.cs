@@ -864,6 +864,14 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION"));
     private readonly int _traceRuntimeBgLoadModelIndexedSourceHydrationLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_HYDRATION_LIMIT", 120);
+    private readonly bool _traceRuntimeBgLoadModelHydrationRange =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_HYDRATION_RANGE"));
+    private readonly ulong _traceRuntimeBgLoadModelHydrationRangeAddress =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_HYDRATION_RANGE_ADDRESS") ?? 0xffffffff802e1a08UL;
+    private readonly int _traceRuntimeBgLoadModelHydrationRangeBytes =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_HYDRATION_RANGE_BYTES", 0x40);
+    private readonly int _traceRuntimeBgLoadModelHydrationRangeLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_HYDRATION_RANGE_LIMIT", 64);
     private readonly bool _continueAfterUnsupported = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_CONTINUE_AFTER_UNSUPPORTED");
     private readonly bool _enableVolumeNvramSyncRepair =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOLUME_NVRAM_SYNC");
@@ -949,6 +957,16 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_LIMIT", 128);
     private readonly int _traceTextureUploadDirectWriterFollowWords =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_FOLLOW_WORDS", 16);
+    private readonly bool _traceTextureUploadDirectWriterControlTableWrites =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_CONTROL_TABLE_WRITES"));
+    private readonly ulong _traceTextureUploadDirectWriterControlTableWriteBase =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_CONTROL_TABLE_WRITE_BASE") ?? 0xffffffff802e1a00UL;
+    private readonly int _traceTextureUploadDirectWriterControlTableWriteBytes =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_CONTROL_TABLE_WRITE_BYTES", 0x100);
+    private readonly ulong[] _traceTextureUploadDirectWriterControlTableWriteValues =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_CONTROL_TABLE_WRITE_VALUES"));
+    private readonly int _traceTextureUploadDirectWriterControlTableWriteLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_CONTROL_TABLE_WRITE_LIMIT", 160);
     private readonly bool _experimentDirectTextureWriterDiskWords =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS"));
     private readonly int _experimentDirectTextureWriterDiskWordsTraceLimit =
@@ -1012,6 +1030,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
     private int _runtimeBgLoadModelIndexedQioObjectStateTraceCount;
     private int _runtimeBgLoadModelIndexedSourceHydrationTraceCount;
+    private int _runtimeBgLoadModelHydrationRangeTraceCount;
     private int _runtimeLoadingResetHelperTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
@@ -1080,6 +1099,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadPacketTargetTraceCount;
     private int _textureUploadFifoPacketTraceCount;
     private int _textureUploadDirectWriterTraceCount;
+    private int _textureUploadDirectWriterControlTableWriteTraceCount;
     private int _textureUploadDirectWriterDiskWordTraceCount;
     private int _textureUploadDirectWriterFollowRemaining;
     private uint _textureUploadDirectWriterFollowTargetWord;
@@ -5356,6 +5376,62 @@ internal sealed class MipsR5000Core
         return $"{hex}(w{value / 4U:x})";
     }
 
+    private void TraceTextureUploadDirectWriterControlTableWrite(
+        ulong pc,
+        uint op,
+        string mnemonic,
+        string sourceRegister,
+        int rs,
+        short simm,
+        ulong address,
+        uint oldValue,
+        uint value)
+    {
+        if (!ShouldTraceTextureUploadDirectWriterControlTableWrite(address, value))
+            return;
+
+        _textureUploadDirectWriterControlTableWriteTraceCount++;
+        ulong targetWord = (value & 3U) == 0 ? value / 4U : ulong.MaxValue;
+        ulong groupBase = address & ~0x0fUL;
+        ulong tableBase = CanonicalizeTraceAddress(_traceTextureUploadDirectWriterControlTableWriteBase);
+        ulong sp = _gpr[29];
+        ulong s3 = _gpr[19];
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-DIRECT-WRITER-CTRL-WRITE] n={_textureUploadDirectWriterControlTableWriteTraceCount} " +
+            $"pc=0x{pc:x16} op=0x{op:x8} {mnemonic}={sourceRegister}->[r{rs}+0x{(ushort)simm:x4}] " +
+            $"addr=0x{address:x16} old=0x{oldValue:x8} value=0x{value:x8} targetWord=0x{targetWord:x8} " +
+            $"ra=0x{_gpr[31]:x16} sp=0x{sp:x16} " +
+            $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
+            $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} " +
+            $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t8=0x{_gpr[24]:x16} t9=0x{_gpr[25]:x16} " +
+            $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{s3:x16} " +
+            $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
+            $"table=0x{tableBase:x16}:{_traceTextureUploadDirectWriterControlTableWriteBytes:x} " +
+            $"group=0x{groupBase:x16}:{FormatDirectTextureWriterControlGroups(groupBase)} " +
+            $"table0={FormatDirectTextureWriterControlGroups(tableBase)} " +
+            $"s3ctrl={FormatDirectTextureWriterControlGroups(s3)}");
+    }
+
+    private bool ShouldTraceTextureUploadDirectWriterControlTableWrite(ulong address, uint value)
+    {
+        if (!_traceTextureUploadDirectWriterControlTableWrites ||
+            _textureUploadDirectWriterControlTableWriteTraceCount >= _traceTextureUploadDirectWriterControlTableWriteLimit ||
+            !IsMainRamRange(address, 4UL) ||
+            !TryGetMainRamPhysical(address, out uint physical) ||
+            !TryGetMainRamPhysical(_traceTextureUploadDirectWriterControlTableWriteBase, out uint basePhysical))
+        {
+            return false;
+        }
+
+        ulong start = basePhysical;
+        ulong end = start + (ulong)_traceTextureUploadDirectWriterControlTableWriteBytes;
+        if (physical < start || physical >= end)
+            return false;
+
+        return _traceTextureUploadDirectWriterControlTableWriteValues.Length == 0 ||
+            Array.IndexOf(_traceTextureUploadDirectWriterControlTableWriteValues, (ulong)value) >= 0;
+    }
+
     private uint ApplyDirectTextureWriterDiskWordExperiment(
         ulong pc,
         int rt,
@@ -5917,6 +5993,71 @@ internal sealed class MipsR5000Core
         }
 
         return builder.ToString();
+    }
+
+    private string FormatDiskTraceWords(ulong byteOffset, int words)
+    {
+        if (words <= 0)
+            return "";
+
+        StringBuilder builder = new();
+        for (int i = 0; i < words; i++)
+        {
+            if (i > 0)
+                builder.Append('/');
+
+            ulong wordOffset = byteOffset + (ulong)i * 4UL;
+            builder.Append(_memory.TryReadDiskByteOffsetWord(wordOffset, out uint word)
+                ? word.ToString("x8", CultureInfo.InvariantCulture)
+                : "--------");
+        }
+
+        return builder.ToString();
+    }
+
+    private void TraceRuntimeBgLoadModelHydrationRange(
+        string phase,
+        ulong destination,
+        uint byteCount,
+        ulong diskByteOffset,
+        string detail)
+    {
+        if (!_traceRuntimeBgLoadModelHydrationRange ||
+            _runtimeBgLoadModelHydrationRangeTraceCount >= _traceRuntimeBgLoadModelHydrationRangeLimit ||
+            byteCount == 0 ||
+            _traceRuntimeBgLoadModelHydrationRangeBytes <= 0 ||
+            !TryGetMainRamPhysical(destination, out uint destinationPhysical) ||
+            !TryGetMainRamPhysical(_traceRuntimeBgLoadModelHydrationRangeAddress, out uint targetPhysical))
+        {
+            return;
+        }
+
+        ulong copyStart = destinationPhysical;
+        ulong copyEnd = copyStart + byteCount;
+        ulong targetStart = targetPhysical;
+        ulong targetEnd = targetStart + (ulong)_traceRuntimeBgLoadModelHydrationRangeBytes;
+        if (copyEnd <= targetStart || targetEnd <= copyStart)
+            return;
+
+        ulong overlapStart = Math.Max(copyStart, targetStart);
+        ulong overlapEnd = Math.Min(copyEnd, targetEnd);
+        ulong copyOffset = overlapStart - copyStart;
+        ulong targetOffset = overlapStart - targetStart;
+        ulong overlapAddress = destination + copyOffset;
+        ulong wordAddress = overlapAddress & ~3UL;
+        ulong diskWordOffset = diskByteOffset + (wordAddress >= destination ? wordAddress - destination : copyOffset);
+        int wordCount = Math.Min(8, Math.Max(1, (_traceRuntimeBgLoadModelHydrationRangeBytes + 3) / 4));
+
+        _runtimeBgLoadModelHydrationRangeTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-hydration-range n={_runtimeBgLoadModelHydrationRangeTraceCount} " +
+            $"phase={phase} dest=0x{destination:x16} bytes=0x{byteCount:x8} disk=0x{diskByteOffset:x8} " +
+            $"target=0x{_traceRuntimeBgLoadModelHydrationRangeAddress:x16}:0x{_traceRuntimeBgLoadModelHydrationRangeBytes:x} " +
+            $"overlapCopy=+0x{copyOffset:x}..+0x{overlapEnd - copyStart:x} " +
+            $"overlapTarget=+0x{targetOffset:x}..+0x{overlapEnd - targetStart:x} " +
+            $"wordAddress=0x{wordAddress:x16} diskWord=0x{diskWordOffset:x8} " +
+            $"ram={FormatTraceWords(wordAddress, wordCount)} diskWords={FormatDiskTraceWords(diskWordOffset, wordCount)} " +
+            $"detail={detail}");
     }
 
     private void TraceTextureUploadPayloadRun(
@@ -15689,7 +15830,16 @@ internal sealed class MipsR5000Core
 
         uint copyBytes = Math.Min(requestedBytes, availableBytes);
         textureByteOffset = readByteOffset;
-        return _memory.TryReadDiskByteOffsetToMemory(readByteOffset, destination, copyBytes, out firstWord, out _);
+        if (!_memory.TryReadDiskByteOffsetToMemory(readByteOffset, destination, copyBytes, out firstWord, out _))
+            return false;
+
+        TraceRuntimeBgLoadModelHydrationRange(
+            "indexed-source",
+            destination,
+            copyBytes,
+            readByteOffset,
+            $"index={index}/{code}/requested={requestedBytes:x8}/copy={copyBytes:x8}/first={firstWord:x8}");
+        return true;
     }
 
     private bool TryHydrateKnownRuntimeBgLoadModelIndexedTextureSourceZeroFill(
@@ -16992,6 +17142,12 @@ internal sealed class MipsR5000Core
             if (!_memory.TryReadDiskByteOffsetToMemory(directOffset, destination, requestedByteCount, out uint directFirstWord, out reason))
                 return false;
 
+            TraceRuntimeBgLoadModelHydrationRange(
+                "qio-direct",
+                destination,
+                requestedByteCount,
+                directOffset,
+                $"index={qioIndex}/first={directFirstWord:x8}");
             reason = $"direct@{directOffset:x8}/index={qioIndex}/first={directFirstWord:x8}";
             return true;
         }
@@ -17083,6 +17239,12 @@ internal sealed class MipsR5000Core
             if (!_memory.TryReadDiskByteOffsetToMemory(indexedDiskByteOffset, destination, requestedByteCount, out uint indexedFirstWord, out reason))
                 return false;
 
+            TraceRuntimeBgLoadModelHydrationRange(
+                "qio-indexed-texture",
+                destination,
+                requestedByteCount,
+                indexedDiskByteOffset,
+                $"index={qioIndex}/{indexedTextureCode}@{readOffset:x8}/{offsetMode}/first={indexedFirstWord:x8}");
             reason = $"texture-index={qioIndex}/{indexedTextureCode}@{readOffset:x8}/{offsetMode}/byte={indexedDiskByteOffset:x8}/first={indexedFirstWord:x8}";
             return true;
         }
@@ -17091,6 +17253,12 @@ internal sealed class MipsR5000Core
         if (!_memory.TryReadDiskByteOffsetToMemory(diskByteOffset, destination, requestedByteCount, out uint firstWord, out reason))
             return false;
 
+        TraceRuntimeBgLoadModelHydrationRange(
+            "qio-mapped",
+            destination,
+            requestedByteCount,
+            diskByteOffset,
+            $"path={path}/readOffset={readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}");
         reason = $"{path}@{readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}";
         return true;
     }
@@ -21476,10 +21644,14 @@ internal sealed class MipsR5000Core
 
     private static bool IsMainRamRange(ulong address, ulong byteLength)
     {
-        if (byteLength == 0)
+        if (byteLength == 0 || !TryGetMainRamPhysical(address, out uint physical))
             return false;
 
-        uint physical;
+        return byteLength <= 32UL * 1024UL * 1024UL - physical;
+    }
+
+    private static bool TryGetMainRamPhysical(ulong address, out uint physical)
+    {
         if (address >= 0xffffffff80000000UL && address <= 0xffffffffbfffffffUL)
             physical = (uint)(address & 0x1fffffffUL);
         else if (address >= 0x80000000UL && address <= 0xbfffffffUL)
@@ -21487,10 +21659,12 @@ internal sealed class MipsR5000Core
         else if (address <= 0x1fffffffUL)
             physical = (uint)address;
         else
+        {
+            physical = 0;
             return false;
+        }
 
-        return physical < 32UL * 1024UL * 1024UL &&
-            byteLength <= 32UL * 1024UL * 1024UL - physical;
+        return physical < 32UL * 1024UL * 1024UL;
     }
 
     private bool FastPathInlineBiosText()
@@ -21668,19 +21842,21 @@ internal sealed class MipsR5000Core
                 _memory.Write16(_gpr[rs] + (ulong)(long)simm, (ushort)_gpr[rt]);
                 break;
             case 0x2a:
-                StoreWordLeft(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
+                StoreWordLeft(pc, op, rs, rt, simm, _gpr[rs] + (ulong)(long)simm, _gpr[rt]);
                 break;
             case 0x2b:
                 {
                     ulong address = _gpr[rs] + (ulong)(long)simm;
                     uint value = (uint)_gpr[rt];
+                    uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
                     value = ApplyDirectTextureWriterDiskWordExperiment(pc, rt, value);
                     TraceTextureUploadDirectWriterStore(pc, op, rs, rt, simm, address, value);
                     _memory.Write32(address, value);
+                    TraceTextureUploadDirectWriterControlTableWrite(pc, op, "sw", $"r{rt}", rs, simm, address, oldValue, value);
                 }
                 break;
             case 0x2e:
-                StoreWordRight(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
+                StoreWordRight(pc, op, rs, rt, simm, _gpr[rs] + (ulong)(long)simm, _gpr[rt]);
                 break;
             case 0x2f:
                 break;
@@ -21694,7 +21870,13 @@ internal sealed class MipsR5000Core
                 _gpr[rt] = _memory.Read64(_gpr[rs] + (ulong)(long)simm);
                 break;
             case 0x39:
-                _memory.Write32(_gpr[rs] + (ulong)(long)simm, (uint)_fpr[rt]);
+                {
+                    ulong address = _gpr[rs] + (ulong)(long)simm;
+                    uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
+                    uint value = (uint)_fpr[rt];
+                    _memory.Write32(address, value);
+                    TraceTextureUploadDirectWriterControlTableWrite(pc, op, "swc1", $"f{rt}", rs, simm, address, oldValue, value);
+                }
                 break;
             case 0x3d:
                 _memory.Write64(_gpr[rs] + (ulong)(long)simm, _fpr[rt]);
@@ -21943,24 +22125,28 @@ internal sealed class MipsR5000Core
         return SignExtend32((oldWord & ~mask) | (mem >> shift));
     }
 
-    private void StoreWordLeft(ulong address, ulong value)
+    private void StoreWordLeft(ulong pc, uint op, int rs, int rt, short simm, ulong address, ulong value)
     {
         ulong aligned = address & ~3UL;
         uint oldMem = _memory.Read32(aligned);
         uint word = (uint)value;
         int shift = 8 * (int)(~address & 3UL);
         uint mask = uint.MaxValue >> shift;
-        _memory.Write32(aligned, (oldMem & ~mask) | ((word >> shift) & mask));
+        uint newValue = (oldMem & ~mask) | ((word >> shift) & mask);
+        _memory.Write32(aligned, newValue);
+        TraceTextureUploadDirectWriterControlTableWrite(pc, op, "swl", $"r{rt}", rs, simm, aligned, oldMem, newValue);
     }
 
-    private void StoreWordRight(ulong address, ulong value)
+    private void StoreWordRight(ulong pc, uint op, int rs, int rt, short simm, ulong address, ulong value)
     {
         ulong aligned = address & ~3UL;
         uint oldMem = _memory.Read32(aligned);
         uint word = (uint)value;
         int shift = 8 * (int)(address & 3UL);
         uint mask = uint.MaxValue << shift;
-        _memory.Write32(aligned, (oldMem & ~mask) | ((word << shift) & mask));
+        uint newValue = (oldMem & ~mask) | ((word << shift) & mask);
+        _memory.Write32(aligned, newValue);
+        TraceTextureUploadDirectWriterControlTableWrite(pc, op, "swr", $"r{rt}", rs, simm, aligned, oldMem, newValue);
     }
 
     private void Divide64(int rs, int rt, bool signed)
