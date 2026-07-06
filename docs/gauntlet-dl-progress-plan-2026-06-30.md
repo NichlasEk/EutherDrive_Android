@@ -8153,3 +8153,79 @@ format 4 is alpha-intensity 4:4; formats 8+ are 16-bit families.
 internal_texture_w computes lod/tt/ts from the Type5 target offset, and the
 seq_8_downld flag comes from TMU0.
 ```
+
+### Texture sample range and TMU register cross-check - 2026-07-06
+
+`VOODOO-TEXSUMMARY` now includes the actual sampled S/T range and the full
+texture register snapshot:
+
+```text
+sampleST=(minS-maxS,minT-maxT)
+regs=global=mode/lod/base:tmu0=mode/lod/base/ncc0/ncc1:tmu1=...
+```
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+result: 0 errors, existing warnings only
+
+/tmp/gauntdl-baseline-texsummary-samplerange-f300.log
+sha256=82e4bbd7a1320d25e8434dce59c95029b88534d7f346f318eab110d4690d312e
+
+/tmp/gauntdl-late-tmu-state-f300.log
+sha256=1d83c25b738ec2d1c8da1410168e89d3eae1fd7549bd1bbf766c7c37b59ae892
+
+/tmp/gauntdl-texsummary-regs-buf1-f300.log
+sha256=6015326a45f55513d495cc4c2c9828809dbc6cce990ab5905c68785d0e7156be
+frameHash=0x0463f000
+frameSha256=dee5e0e0d866bf6a79044a208bf3deec8099f075e00edd90a081305f63fdd7f9
+
+/tmp/gauntdl-mamesetup-texsummary-regs-buf1-f300.log
+sha256=ab153e1d4916032a9767e090450bd8fe971a68b1817d096caa4726cd33f3c93b
+frameHash=0xbe791681
+frameSha256=8e0c5e362b1f7d8bf0481ba21fb039afae8cef6bc095c6f1f8b6243a18a35923
+```
+
+The relevant normal buffer-1 fullrect is now fully correlated:
+
+```text
+cmd=0x0180A8CB pc=800c4e5c buf=1 bbox=(0,0)-(512,255)
+sampleST=(0.250-170.250,85.667-255.000)
+tsrc=tmu0 mode=0x8C24100F lod=0x00002000 regbase=0x00000000 base=0x000510
+regs=global=000000FF/000001A0/3EC67360:
+     tmu0=8C24100F/00002000/00000000/ncc4/7:
+     tmu1=0C24100F/FF802000/00000000/ncc7/1
+writers=pc=800fe5d4 Type5 0xC0000205 targets around 0x002D00..0x007F00
+```
+
+That means the current noisy upper band is not an out-of-range S/T bug. The
+normal path samples plausible S/T inside the 256x256 texture and reads texture
+words with real Type5 ownership.
+
+The MAME setup-gradient control is now explained too:
+
+```text
+sampleST=(-170.000-0.000,256.667-426.000)
+addrs=0x010410-0x010410 raw=0x0000
+
+sampleST=(256.500-511.000,-255.333--86.000)
+addrs=0x00060F-0x00060F raw=0x001F
+```
+
+It removes random-looking noise by driving S/T outside the texture and repeatedly
+sampling edge/clamped texels. It is a useful diagnostic, but not a fix to
+promote.
+
+Updated interpretation:
+
+```text
+1. Keep the S-from-X fullrect fix as the current visible bridge.
+2. Do not promote MAME setup gradients; the cleaner cyan/white result is caused
+   by out-of-range sampling.
+3. The next real graphics target is still upstream of sampling: the Type5
+   payload/source path that fills the 0x000510..0x01040F sampled pages.
+4. Focus the next trace/fix on the pc=800fe5d4 Type5 writer family for the
+   buffer-1 fullrect buckets, especially why those pages contain stripe/static
+   data while the lower geometry is now coherent.
+```

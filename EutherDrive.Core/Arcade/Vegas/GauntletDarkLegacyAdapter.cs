@@ -36595,8 +36595,13 @@ internal class VoodooBringupBackend : IVoodooBackend
             traceSampleSummary &&
             (_traceTexturedTriangleSampleWriters || _traceTexturedTriangleSampleSummaryRequireWriter) ? [] : null;
         int sampleCount = 0;
+        int sampleCoordCount = 0;
         uint sampleFirstAddress = uint.MaxValue;
         uint sampleLastAddress = 0;
+        float sampleMinS = float.PositiveInfinity;
+        float sampleMaxS = float.NegativeInfinity;
+        float sampleMinT = float.PositiveInfinity;
+        float sampleMaxT = float.NegativeInfinity;
         float invArea = 1.0f / area;
         double dx1 = a.Y - c.Y;
         double dx2 = a.Y - b.Y;
@@ -36694,6 +36699,14 @@ internal class VoodooBringupBackend : IVoodooBackend
                     s = (px - minX) * remapConstantSScale;
                 if (remapConstantSFullrectT)
                     t = (maxY - py) * remapConstantTScale;
+                if (traceSampleSummary && float.IsFinite(s) && float.IsFinite(t))
+                {
+                    sampleCoordCount++;
+                    sampleMinS = MathF.Min(sampleMinS, s);
+                    sampleMaxS = MathF.Max(sampleMaxS, s);
+                    sampleMinT = MathF.Min(sampleMinT, t);
+                    sampleMaxT = MathF.Max(sampleMaxT, t);
+                }
                 texel = SampleTextureRgb565(s, t);
 sampledTexel:
                 if (traceSampleSummary && _lastTextureSampleValid)
@@ -36781,6 +36794,11 @@ sampledTexel:
                     sampleCount,
                     sampleFirstAddress == uint.MaxValue ? 0u : sampleFirstAddress,
                     sampleLastAddress,
+                    sampleCoordCount,
+                    sampleMinS,
+                    sampleMaxS,
+                    sampleMinT,
+                    sampleMaxT,
                     sampleRawBuckets!,
                     sampleColorBuckets!,
                     sampleAddressBuckets!,
@@ -37231,6 +37249,11 @@ sampledTexel:
         int sampleCount,
         uint sampleFirstAddress,
         uint sampleLastAddress,
+        int sampleCoordCount,
+        float sampleMinS,
+        float sampleMaxS,
+        float sampleMinT,
+        float sampleMaxT,
         IReadOnlyDictionary<uint, int> sampleRawBuckets,
         IReadOnlyDictionary<uint, int> sampleColorBuckets,
         IReadOnlyDictionary<uint, int> sampleAddressBuckets,
@@ -37269,15 +37292,20 @@ sampledTexel:
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         string gradientStatus = _traceTexturedTriangleSampleGradients ? FormatTextureGradientTraceStatus() : "";
+        string sampleRangeStatus = sampleCoordCount > 0
+            ? $"sampleST=({sampleMinS:F3}-{sampleMaxS:F3},{sampleMinT:F3}-{sampleMaxT:F3}) "
+            : "sampleST=- ";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TEXSUMMARY] n={_texturedTriangleSampleSummaryTraceCount} color=0x{fallbackColor:X4} area={area:F3} " +
             $"bbox=({minX},{minY})-({maxX},{maxY}) pixels={coveredPixels} zero={zeroPixels} samples={sampleCount} " +
             $"buf={bufferIndex} front={_frontBufferIndex} back={_backBufferIndex} rbuf={_lastRenderBufferIndex} " +
             $"tsrc={GetTextureSampleRegisterSourceLabel()} mode=0x{mode:X8} lod=0x{lod:X8} targetLod={targetLod} fmt={format} b16={(sixteenBit ? 1 : 0)} " +
             $"size={width}x{height} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} addrs=0x{sampleFirstAddress:X6}-0x{sampleLastAddress:X6} " +
+            sampleRangeStatus +
             $"raw={FormatTopTextureSampleBuckets(sampleRawBuckets, 4)} rgb={FormatTopTextureSampleBuckets(sampleColorBuckets, 4)} " +
             $"addr={FormatTopTextureAddressBuckets(sampleAddressBuckets)} " +
             $"writers={FormatTopTextureSampleWriterBuckets(sampleWriterBuckets)} " +
+            $"regs={FormatTextureRegisterWriteStatus()} " +
             $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
             $"{gradientStatus}" +
