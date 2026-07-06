@@ -707,6 +707,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeByteMoveFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE");
     private readonly bool _enableRuntimeBgLoadModelDispatchFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISPATCH");
     private readonly bool _enableRuntimeVertexFifoEmitFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT");
+    private readonly bool _fixRuntimeVertexFifoFullrectSFromX =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X"));
     private readonly bool _experimentRuntimeVertexFifoFullrectSFromX =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X"));
     private readonly int _experimentRuntimeVertexFifoFullrectSFromXTraceLimit =
@@ -12143,7 +12145,9 @@ internal sealed class MipsR5000Core
         out RuntimeVertexFifoSOverride sOverride)
     {
         sOverride = default;
-        if (!_experimentRuntimeVertexFifoFullrectSFromX)
+        bool enableSFromX = _experimentRuntimeVertexFifoFullrectSFromX ||
+            _fixRuntimeVertexFifoFullrectSFromX;
+        if (!enableSFromX)
             return false;
 
         float x0 = ReadRuntimeVertexFifoFloat(source0, 0x00UL);
@@ -12172,10 +12176,12 @@ internal sealed class MipsR5000Core
         float maxT = MathF.Max(t0, MathF.Max(t1, t2));
         float width = maxX - minX;
         float height = maxY - minY;
+        bool allSNearlyZero = MathF.Max(MathF.Abs(s0), MathF.Max(MathF.Abs(s1), MathF.Abs(s2))) <= 0.001f;
         if (width < 480.0f ||
             height < 300.0f ||
             MathF.Abs(maxS - minS) > 0.001f ||
-            MathF.Abs(maxT - minT) < 128.0f)
+            MathF.Abs(maxT - minT) < 128.0f ||
+            (_fixRuntimeVertexFifoFullrectSFromX && !allSNearlyZero))
         {
             return false;
         }
@@ -12187,8 +12193,9 @@ internal sealed class MipsR5000Core
         sOverride = new RuntimeVertexFifoSOverride(source0, newS0, source1, newS1, source2, newS2);
         if (_runtimeVertexFifoFullrectSFromXTraceCount++ < _experimentRuntimeVertexFifoFullrectSFromXTraceLimit)
         {
+            string tag = _fixRuntimeVertexFifoFullrectSFromX ? "FIX" : "EXPERIMENT";
             Console.WriteLine(
-                $"[GAUNTDL:EXPERIMENT] vertex-fifo-fullrect-s-from-x n={_runtimeVertexFifoFullrectSFromXTraceCount} " +
+                $"[GAUNTDL:{tag}] vertex-fifo-fullrect-s-from-x n={_runtimeVertexFifoFullrectSFromXTraceCount} " +
                 $"dst=0x{destination:x16} bbox=({minX:F3},{minY:F3})-({maxX:F3},{maxY:F3}) scale={scale:F6} " +
                 $"s={s0:F3}/{s1:F3}/{s2:F3}->" +
                 $"{BitConverter.UInt32BitsToSingle(newS0):F3}/{BitConverter.UInt32BitsToSingle(newS1):F3}/{BitConverter.UInt32BitsToSingle(newS2):F3} " +

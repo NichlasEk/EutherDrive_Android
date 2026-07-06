@@ -7979,3 +7979,66 @@ Next slice:
 4. Do not spend the next slice on WTR table promotion or GEI overwrite/zero-fill;
    those were negative or non-causal for the current visible blocker.
 ```
+
+### Fullrect S reconstruction fix candidate - 2026-07-06
+
+The S-from-X path has now been promoted from a broad experiment into a separate
+default-off bringup fix flag:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X=1
+```
+
+The fix flag keeps the previous large-fullrect gates and adds one stricter
+condition: all three source S values must already be nearly zero. This keeps the
+candidate scoped to the repeated hot blit/fullrect failure and avoids touching
+normal textured triangles or nonzero-S geometry.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+result: 0 errors, existing warnings only
+
+/tmp/gauntdl-sfromx-fix-candidate-f300.log
+sha256=8c9e4b491ff4a07064a5e87752ccfd2b63299129269c2277264388134da1f6f8
+/tmp/gauntdl-sfromx-fix-candidate-f300.ppm
+sha256=c313c239fb178a6dd06ce123cd4273b972974232cead58aed737449dac699ebe
+/tmp/gauntdl-sfromx-fix-candidate-f300.png
+frameHash=0x0463f000
+frameSha256=dee5e0e0d866bf6a79044a208bf3deec8099f075e00edd90a081305f63fdd7f9
+framebuffer=640x480:307200:273004
+```
+
+The new fix-candidate PPM is byte-identical to the earlier
+`/tmp/gauntdl-vertex-source-writer-correlation-f300.ppm` diagnostic and differs
+from the current no-S-reconstruction baseline:
+
+```text
+/tmp/gauntdl-vertex-source-writer-correlation-f300.ppm
+sha256=c313c239fb178a6dd06ce123cd4273b972974232cead58aed737449dac699ebe
+
+/tmp/gauntdl-current-plus3c8-diskwords-clamp-f300.ppm
+sha256=af96b70ca16fd32825360088cff15a76f880031627555661d3b738c265a6af20
+```
+
+The fix candidate is visibly better as a diagnostic step: the lower half of the
+screen has stable, coherent large blue/teal/magenta geometry. It is not final
+correct graphics: the upper half remains texture/static-like noise, and the
+probe workload is very heavy at this checkpoint (`fps=0.58`, 120 post-warmup
+frames in about 207 seconds).
+
+Next slice:
+
+```text
+1. Keep the S-from-X fix flag default-off until texture/register state is
+   reconciled; it is a visibility bridge, not the final hardware answer.
+2. Attack the remaining upper-half noise by tracing Type3/Type5 texture register
+   state at the sample frame: especially pc=800fe7cc and the Type5 writer
+   families at 800fe614/800fe5d4.
+3. Add a focused texture-sample/write correlation probe for the noisy upper band
+   so the next change is guided by sampled TMU address, LOD/base/mode, and the
+   last writer that populated that texture memory range.
+4. Reduce the candidate's software workload only after the texture mapping is
+   understood; otherwise performance changes will blur the graphics evidence.
+```
