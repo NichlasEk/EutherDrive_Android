@@ -9961,3 +9961,27 @@ it is consuming a source pointer passed into the `800fe1fc` routine by
 `801095c8..80109704` and identify why `80313188` is passed for the texture
 upload source when the wanted indexed WTR header/body path is
 `80401718/8040d718`.
+
+Caller-range trace shows the immediate arithmetic:
+
+```text
+logs/gauntlet/source-caller-801095c0-80313188-f300.log
+
+pc=80109620:
+  op=02028021 addu s0,s0,v0
+  before: t2=80313178 v0=0x10
+  after:  s0=80313188
+
+pc=80109624:
+  lw v0,[s0+0]
+  first word at 80313188 = 00010002
+
+later same caller loop:
+  t2/s0 advance to 80314188 with a1=0x11000
+```
+
+So the bad source is selected by a caller-side table/stride walk rooted at
+`80313178`, with the first texture-writer source at `+0x10`. Next implementation
+slice should identify that table's intended base/source list and compare it
+against the BGLoadModel indexed WTR source slot for index 9; the direct-writer
+function itself is only consuming the pointer it is handed.
