@@ -832,6 +832,10 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_MAX_OFFSET") ?? ulong.MaxValue;
     private readonly ulong? _experimentZeroBaseUploadZeroDiskWordRunSource =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_RUN_SOURCE");
+    private readonly ulong[] _experimentZeroBaseUploadZeroTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_TARGET_WORDS"));
+    private readonly int _experimentZeroBaseUploadZeroTargetWordsTraceLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_TARGET_WORDS_TRACE_LIMIT", 64);
     private readonly bool _enableRuntimeBgLoadModelCloneDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_CLONE_DISTINCT_SOURCES"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment =
@@ -1180,6 +1184,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadLimitClampTraceCount;
     private int _textureUploadPayloadDiskWordTraceCount;
     private int _textureUploadPayloadDiskWordKeepMemoryTraceCount;
+    private int _textureUploadPayloadZeroTargetWordTraceCount;
     private int _textureUploadPayloadPointerTraceCount;
     private int _textureUploadPayloadPointerStartTraceCount;
     private int _textureUploadPayloadSourceLowBitMaskTraceCount;
@@ -4591,6 +4596,23 @@ internal sealed class MipsR5000Core
                         }
 
                         payloadWord = transformedDiskWord;
+                    }
+
+                    if (_experimentZeroBaseUploadZeroTargetWords.Length != 0 &&
+                        sourceBase == 0 &&
+                        Array.IndexOf(_experimentZeroBaseUploadZeroTargetWords, (ulong)packetTargetWord) >= 0)
+                    {
+                        if (_textureUploadPayloadZeroTargetWordTraceCount++ < _experimentZeroBaseUploadZeroTargetWordsTraceLimit &&
+                            payloadWord != 0)
+                        {
+                            Console.WriteLine(
+                                $"[GAUNTDL:EXPERIMENT] zero-base-upload-zero-target-word " +
+                                $"targetWord=0x{packetTargetWord:x8} addr=0x{source:x16} mem=0x{payloadWord:x8}->zero " +
+                                $"packet={packet} index={index}/{limit} word={word}/{payloadWords} " +
+                                $"run=0x{uploadRunSource:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(uploadRunSource)}");
+                        }
+
+                        payloadWord = 0;
                     }
 
                     if (_fixVoodooMameCommandFifoModel)

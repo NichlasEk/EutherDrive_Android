@@ -8952,3 +8952,187 @@ Current continuation:
    whether the fix belongs in packet-class selection, texture register state, or
    writer-to-sampler address interpretation.
 ```
+
+## Broad writer family and layout probes - 2026-07-07
+
+The current f300 WTR visual oracle must include the baseline boot controls.
+Runs that omit `EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1` fall back to the short
+old signature (`pc=800de1b4`, `drawPackets=8743`, `texWrites=108005`,
+`frameHash=0x06963093`) and do not exercise the active writer families.
+
+Common required command stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=300
+EUTHERDRIVE_GAUNTDL_SUMMARY=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK=0x3fe
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERWRITE_INDEXED_SOURCE_MASK=0x200
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_INDEX_MASK=0x200
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET=0x3c8
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT=1
+```
+
+A new default-off outer payload probe was added to zero selected zero-base
+upload target words while preserving FIFO headers and target progression:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_TARGET_WORDS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_TARGET_WORDS_TRACE_LIMIT
+```
+
+Broad high/low direct-writer zero plus outer low zero trace:
+
+```text
+/tmp/gauntdl-zero-broad-baseline-samplewriters-f300.log
+/tmp/gauntdl-zero-broad-baseline-samplewriters-f300.ppm
+/tmp/gauntdl-zero-broad-baseline-samplewriters-f300.png
+logSha256=f5edc5369386c38ff1bf5966ee9fc8d536d9868b0324be9d12d0f2c47b309ed8
+ppmSha256=6d2433267c59a20b15cdd755e18c98bf1cd6d9557366be420760ec3bf1865f67
+frameHash=0xd6f84dab
+frameSha256=3142bc296c63214398b01cd9e75ca15657a22b2f8465486e11ac1bf5481ba8f5
+textureMap=5171464:127768:5043696:22910:0x000000:0x01660c
+drawPackets=17111 directTriangles=647 setupTriangles=304 texWrites=1400871
+sampleWriterLines=320 texSummaryLines=40 zeroBaseTargetLines=96 directZeroLines=82
+```
+
+The sampled writers are still dominated by `pc=800fe7cc` and `pc=800fe614`.
+The hot summary buckets remain fullrect-like targets such as `0x001000`,
+`0x001100`, `0x001300`, `0x007600`, `0x008000`, and `0x008100`. The visual
+result is still RGB/static bands with only lower coarse form hints. This proves
+that broad zeroing is causal but still downstream of the real layout/state bug.
+
+Extending the outer zero list through `0x100..0x1f80` was byte-identical:
+
+```text
+/tmp/gauntdl-zero-broad-plus1x-baseline-f300.log
+/tmp/gauntdl-zero-broad-plus1x-baseline-f300.ppm
+/tmp/gauntdl-zero-broad-plus1x-baseline-f300.png
+logSha256=1809e298cc01001be49249a7e4000ef9e46799f332ec52884e4e7704d46c51ae
+ppmSha256=6d2433267c59a20b15cdd755e18c98bf1cd6d9557366be420760ec3bf1865f67
+frameHash=0xd6f84dab
+textureMap=5171464:127768:5043696:22910:0x000000:0x01660c
+```
+
+So the `0x1000/0x1100/0x1300` sampled targets are not low outer-loop writes;
+they are direct-writer owned.
+
+Extending direct-writer zero downward through `0x1000..0x1f80` plus the high
+direct list changed counters but not enough of the image:
+
+```text
+/tmp/gauntdl-zero-direct-lowhigh-baseline-f300.log
+/tmp/gauntdl-zero-direct-lowhigh-baseline-f300.ppm
+/tmp/gauntdl-zero-direct-lowhigh-baseline-f300.png
+logSha256=08c15178aecb809c964d57e3c6bd11d32012f68314373d05d8e8527dbc8aca63
+ppmSha256=18f7fd477fcb0bb6e511d7fbf63581942628a78069d8b24e24f80a8b72a2d760
+frameHash=0xa3390578
+frameSha256=952b83005fdca7ae8ac585cb6d6c34b591c9b15e9903d90f394c1c712b7cf904
+textureMap=5171464:95242:5076222:22910:0x000000:0x01660c
+```
+
+This reduced nonzero texture writes from `127768` to `95242`, but the frame is
+still noisy. Stop treating payload-zero expansion as the main route to real
+art.
+
+Upstream MAME was checked for texture format semantics. `reg_texture_mode`
+derives format from bits 8..11 and MAME uses one byte per texel for formats
+below 8:
+
+```text
+src/devices/video/voodoo_regs.h: format() const { return BIT(m_value, 8, 4); }
+src/devices/video/voodoo.cpp: texmode.format() < 8 ? 1 : 2
+```
+
+Reference:
+
+```text
+https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_regs.h
+https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo.cpp
+```
+
+So the active `mode=0x8C24100F` yielding `fmt=0` is not a low-nibble format bug.
+
+The strongest current visual direction is the fullrect sampled-writer layout
+experiment, still default-off. Current-best run:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_COORD_MODE=scale
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_TARGET_REMAP=400:e00
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_FORMAT_OVERRIDE=1
+
+/tmp/gauntdl-writerlayout-current-best-f300.log
+/tmp/gauntdl-writerlayout-current-best-f300.ppm
+/tmp/gauntdl-writerlayout-current-best-f300.png
+logSha256=6b06bdc5a0149fb9f94a539c3dc8aae9cb2fac25a2d4251ba8ab9ba7d7825776
+ppmSha256=746613289d4b2238de13f6801ae49f1bcf1f2b8deed47739b8b48f3cfab3f94d
+frameHash=0xeed378bf
+frameSha256=7f2893804481963009e10bf8bcdb240f5e1b6b7f3f716c3cb85965c530863db1
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+texturedZero=47605989
+```
+
+First trace:
+
+```text
+current=0x00E810 -> addr=0x012400
+writer=pc0x800fe614 targetRemap=0x000400->0x000E00
+sampledOwner=pc0x800fe7cc ... @0x008A00 ... relookup=-
+```
+
+Adding sampled-owner relookup changes the frame again but still does not reach
+real game art:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_RELOOKUP_SAMPLED_OWNER=1
+
+/tmp/gauntdl-writerlayout-relookup-f300.log
+/tmp/gauntdl-writerlayout-relookup-f300.ppm
+/tmp/gauntdl-writerlayout-relookup-f300.png
+logSha256=a047759a8655279398ff2f43c68f3d76b944d62f141ab154fe272cbdf6782e90
+ppmSha256=9d2e863fe57f0fc0e268b013eac3e05a11ffff4b752dec6b97bf34f593ead2f4
+frameHash=0x0550f1c6
+frameSha256=5eaa28f593b9f235187b0ddf2e9eb283ea679ecb5ee4523630de9af502a97e4a
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+texturedZero=47520471
+```
+
+Representative relookup trace:
+
+```text
+current=0x00E810/w03A04 -> addr=0x014800/w05200 initialAddr=0x012400/w04900
+mode=scale st=(0.250,227.667)->(0.125,56.917) xy=0,56 size=128x64
+writer=pc0x800fe614 targetRemap=0x000400->0x000E00
+sampledOwner=pc0x800fe7cc/mode0x00000B00/lod0x00300804/base0x00000200/l1/bpp2/type5=1/cmd0xC0000205@0x008A00...
+relookup=sampled-owner fmt1*/bpp2/l1 addr=0x014800
+```
+
+Interpretation:
+
+```text
+1. Payload zeroing is no longer the most promising path. It proves causality but
+   keeps the same wrong fullrect/noise family.
+2. MAME format bits rule out a simple textureMode low-nibble mistake.
+3. The writer-layout path is closer to the real structural bug because it moves
+   large regions coherently instead of just deleting bytes, but it is still
+   mapping writer ownership/page layout incorrectly.
+4. Next probes should focus on page/target ownership and address transforms for
+   sampled fullrects, especially target/page groups around:
+   0x0000/0x0080/0x0180, 0x006B80/0x006C80, 0x008780/0x008A00,
+   and 0x001280/0x001580.
+5. Compare those groups against disk/WTR bytes and against MAME-style Type5
+   write pointer/layout behavior before promoting any visual experiment.
+```
+
+Verification after the zero-base target probe:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+result: 0 errors, existing warnings only
+```
