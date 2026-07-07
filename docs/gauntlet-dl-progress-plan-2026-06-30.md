@@ -10073,3 +10073,98 @@ source-gated trace path, but the command-FIFO storage owners already identify
 the direct writer PCs. Next code slice should add a default-off direct-writer
 source tracer for target word `0x9e00` that records the `s3` source window,
 `payloadWords`, and disk/WTR comparison at `800fe7b0/800fe7c4/800fe7cc`.
+
+## 2026-07-07 - Clean Warm Snapshot Rebaseline
+
+The direct-writer source tracer for target word `0x9e00` showed that the
+visible bad row on the historical e27b warm path comes from a GEI bad-header
+source window, not from the WTR index-9 body:
+
+```text
+logs/gauntlet/direct-writer-9e00-f300.log
+
+targetWord=0x00009e00
+s3=0xffffffff80317d88
+s3src=bgsrc=1:gei+0x16670(... hdr=bad)
+s3w=02510000/00000000/00000000/00000000
+disk gei@0x16670=00000000; mem=02510000
+frameHash=0xc1029c26
+```
+
+Replacing that one target row with disk words did not move the selected frame:
+
+```text
+logs/gauntlet/direct-diskwords-9e00-f300.log
+logs/gauntlet/direct-diskwords-9e00-f300.png
+
+frameHash=0xc1029c26
+textureMap nz=593260
+```
+
+The important follow-up was comparing the source window at `80317d80` from the
+old warm state versus a clean cold run. The old e27b warm snapshot already
+contains the sparse `0251/0252/...` control-like pattern at f180, and it remains
+stable through f300:
+
+```text
+logs/gauntlet/warmload-80317d80-f180-bytes.log
+logs/gauntlet/f300-80317d80-bytes.log
+
++0x000: ... 00 00 51 02 ...
++0x020: ... 00 00 52 02
++0x050: ... 00 00 53 02 ...
+```
+
+A cold f180 run with the same current fixes does not contain that pattern; the
+same range is all zeroes:
+
+```text
+logs/gauntlet/cold-f180-80317d80-bytes.log
+
+score targetFrames=180 frameHash=0x6f1b61e9
+bytes[0xffffffff80317d80]:
++0x000..0x0f0: all 00
+textureMap=writes=639716:nz=47946:zero=591770:touched=98613
+```
+
+That means the noisy e27b f300 oracle is not a clean current-HEAD cold oracle.
+It remains useful as a historical comparison, but it should not be treated as
+the current baseline for correctness.
+
+A clean f180 warm snapshot was regenerated with current code:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-current-clean-f180.warm
+logs/gauntlet/save-current-clean-warm-f180.log
+
+warmupSnapshotSaved=/tmp/eutherdrive-gauntlet-probe/gauntdl-current-clean-f180.warm
+score targetFrames=180 frameHash=0x6f1b61e9
+```
+
+Cold f300 and clean-warm f300 now agree:
+
+```text
+logs/gauntlet/cold-current-f300.log
+logs/gauntlet/cold-current-f300.png
+logs/gauntlet/cleanwarm-current-f300.log
+logs/gauntlet/cleanwarm-current-f300.png
+
+frameHash=0x20ab2ecf
+drawPackets=19544 directTriangles=567 setupTriangles=266
+textureMap clean-warm=writes=8984280:nz=785783:zero=8198497:touched=98615
+visual=flat primitive frame: blue left quad, red diagonal, black right side
+```
+
+Revised plan:
+
+1. Use `/tmp/eutherdrive-gauntlet-probe/gauntdl-current-clean-f180.warm` as the
+   fast current-HEAD baseline. Do not use
+   `gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm` for new
+   "current" conclusions except as a historical visual-delta control.
+2. Re-run the focused texture/fullrect summary probes on the clean f300 baseline
+   before more WTR payload edits. The active visual problem is now "flat
+   primitive frame from clean boot", not just "noisy fullrect bands from e27b".
+3. Compare clean f300 versus e27b f300 at the direct-writer/source-selector
+   level to identify which source/table state the old snapshot carries that
+   current cold boot lacks. If that state is legitimate missing hydration, fix
+   the cold path; if it is stale bad-header state, keep it out of the oracle.
