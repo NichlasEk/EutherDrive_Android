@@ -9631,3 +9631,105 @@ Current interpretation:
    the layout from Type5 target/lod metadata instead of the current diagnostic
    remap knobs.
 ```
+
+## 2026-07-07 - Low-Bit Texture Source and TMU Bank Checkpoint
+
+This continuation compared the current WTR/writer-layout oracle against MAME
+Voodoo source in the local checkout at `/home/nichlas/mame/src/devices/video`.
+The MAME reference confirmed the relevant packet/type5 rules:
+
+```text
+command_fifo::words_needed(type5) = 2 + count
+command_fifo::packet_type_5 texture path = internal_texture_w(target++, read_next())
+internal_texture_w selects TMU from offset bit 19, applies tdata swizzle/swap,
+then writes through the LOD write pointer.
+```
+
+Code added in this slice:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_PC_MIN
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_PC_MAX
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_GLIDE_FIFO_PAYLOAD_PAIR_MASK_SOURCE_LOW_BIT
+```
+
+The existing zero-base low-bit mask was also moved before the outer payload
+fastpath's alignment reject, so it can actually catch sources like
+`0xffffffff802e1719` when `EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_MASK_SOURCE_LOW_BIT=1`.
+
+MAME TMU register-bank/palette parity was implemented as a correctness fix. It
+routes high-bit NCC0 writes to per-TMU palette entries and tracks palette counts
+in debug status, but it is not the visual fix by itself:
+
+```text
+/tmp/gauntdl-wtrbest-direct-tmubanks-palette-f300.png
+frameHash=0x71c288ef
+ppmSha256=b7223378698a4351d13a2a77323608d4d077a3fbd0f4111f40b789a0df1d7bd3
+tmu0=.../pal2/2 tmu1=.../pal1/1
+```
+
+The focused direct-writer trace proved that the low target Type5 packets are
+written by the CPU FIFO writer loop itself, not by a later texture-port pointer
+bug. The important source register is odd:
+
+```text
+/tmp/gauntdl-direct-writer-pcfe5c0-targets-f300.log
+target 0xb00/0xc00/... last writer pc=800fe5f8/800fe60c
+s6=0xffffffff802e2d19, s6w=0b000011/00000000/0d000000/ca000000
+```
+
+Masking the low bit in the known pair-copy fastpath is real and changes the
+frame. The first logged source shows the old byte-shifted words versus the
+aligned words:
+
+```text
+source=0xffffffff802e1719->0xffffffff802e1718
+originalFirst=02000000/00000000/0a000000/2b000000
+maskedFirst=00000012/00000002/00000000/0000000a
+
+/tmp/gauntdl-wtrbest-pair-lowbit-f300.png
+frameHash=0xc734d73f
+ppmSha256=d286d87199429b6028aa83d1553bb1c371f4084df14569f55bfa28663c73ba80
+visual=changed and slightly more structured, still corrupted/no real art
+```
+
+Letting the outer upload fastpath mask the same zero-base low bit also changes
+the frame, but not enough:
+
+```text
+/tmp/gauntdl-wtrbest-outer-lowbit-f300.png
+frameHash=0xc1029c26
+ppmSha256=459c859540370fd6580de1e7e3c80ac6443303cf34ab1792b62dc96cef78a9e7
+cmdstop=invalid-standard-window/0xc0000205/66/18/.../pc=800fe7cc
+visual=similar large-form corruption, still not correct game graphics
+```
+
+Negative controls from this slice:
+
+```text
+MAME command FIFO + Type5 streaming:
+  /tmp/gauntdl-wtrbest-pair-lowbit-mametype5-f300.png
+  frameHash=0xff4ef57d
+  ppmSha256=3a58f8c495b86d496ad9670efaf5e2e7e549bf41bcecca623bf6492caf9dee59
+  visual=worse, more black/noise, stop moved to depth/type1
+
+Filtered MAME texture write_ptr on low-bit targets 0x1110/0x1218/0x1320:
+  /tmp/gauntdl-wtrbest-outer-lowbit-mameptr-f300.png
+  byte-identical to outer-lowbit
+  ppmSha256=459c859540370fd6580de1e7e3c80ac6443303cf34ab1792b62dc96cef78a9e7
+```
+
+Current interpretation:
+
+```text
+1. The low bit on these FIFO payload sources is a real pointer flag; clearing it
+   is necessary for the known Glide copy loops, but it is not sufficient for
+   correct graphics.
+2. MAME texture write pointer math is not the current blocker for the tested
+   low targets.
+3. Full MAME FIFO/type5 streaming remains a negative control in this branch.
+4. Next slice should trace the post-lowbit Type5 packet boundary/target chain:
+   why the standard path stops on `0xc0000205` with only 18 valid words at
+   `0x1320`, and whether the writer-layout oracle is sampling a packet tail
+   instead of the intended texture body.
+```

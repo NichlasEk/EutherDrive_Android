@@ -734,6 +734,8 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_FULLRECT_RIGHT_CLIP_POSITIVE_T_LIMIT", 64);
     private readonly bool _experimentDisableOuterPayloadFastPath =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISABLE_OUTER_PAYLOAD_FASTPATH"));
+    private readonly bool _experimentGlideFifoPayloadPairMaskSourceLowBit =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_GLIDE_FIFO_PAYLOAD_PAIR_MASK_SOURCE_LOW_BIT"));
     private readonly bool _fixVoodooMameCommandFifoModel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
     private readonly bool _enableRuntimeBgLoadModelQioHydration =
@@ -1052,6 +1054,10 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_LIMIT", 128);
     private readonly int _traceTextureUploadDirectWriterFollowWords =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_FOLLOW_WORDS", 16);
+    private readonly ulong _traceTextureUploadDirectWriterPcMin =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_PC_MIN") ?? 0x000fe790UL;
+    private readonly ulong _traceTextureUploadDirectWriterPcMax =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_PC_MAX") ?? 0x000fe7e0UL;
     private readonly bool _traceTextureUploadDirectWriterControlTableWrites =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_CONTROL_TABLE_WRITES"));
     private readonly ulong _traceTextureUploadDirectWriterControlTableWriteBase =
@@ -1198,6 +1204,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadPointerTraceCount;
     private int _textureUploadPayloadPointerStartTraceCount;
     private int _textureUploadPayloadSourceLowBitMaskTraceCount;
+    private int _glideFifoPayloadPairSourceLowBitMaskTraceCount;
     private int _textureUploadPayloadLinkTraceCount;
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixPacketTraceSources = [];
@@ -4076,7 +4083,34 @@ internal sealed class MipsR5000Core
         if (startsAtPrelude)
             destination = SignExtend32((uint)(destination + 4UL));
 
-        if (limit < count || limit > 0x400U || (destination & 3UL) != 0 || (source & 3UL) != 0)
+        if (limit < count || limit > 0x400U || (destination & 3UL) != 0)
+            return false;
+
+        if ((source & 3UL) != 0)
+        {
+            if (!_experimentGlideFifoPayloadPairMaskSourceLowBit ||
+                (source & 3UL) != 1UL)
+            {
+                return false;
+            }
+
+            ulong maskedSource = source & ~1UL;
+            if (_glideFifoPayloadPairSourceLowBitMaskTraceCount++ < 64)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] glide-fifo-payload-pair-mask-source-low-bit " +
+                    $"pc={pc:x16} source=0x{source:x16}->0x{maskedSource:x16} " +
+                    $"dest=0x{destination:x16} count={count:x8} limit={limit:x8} " +
+                    $"originalFirst={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/" +
+                    $"{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8} " +
+                    $"maskedFirst={ReadTraceWord(maskedSource):x8}/{ReadTraceWord(maskedSource + 0x04UL):x8}/" +
+                    $"{ReadTraceWord(maskedSource + 0x08UL):x8}/{ReadTraceWord(maskedSource + 0x0cUL):x8}");
+            }
+
+            source = maskedSource;
+        }
+
+        if ((source & 3UL) != 0)
             return false;
 
         uint destinationPhysical = (uint)destination;
@@ -4198,11 +4232,45 @@ internal sealed class MipsR5000Core
             payloadWords == 0 ||
             payloadWords > 0x400U ||
             (payloadWords & 1U) != 0 ||
-            (source & 3UL) != 0 ||
             !IsMainRamRange(sp + 0x74UL, 4) ||
             !IsMainRamRange(sp + 0x1cUL, 4))
         {
             TraceGlideFifoOuterPayloadReject($"state state={state:x16} words={payloadWords:x8} sp={sp:x16} src={source:x16}");
+            return false;
+        }
+
+        uint sourceBase = _memory.Read32(sp + 0x1cUL);
+        if ((source & 3UL) != 0)
+        {
+            if (!_experimentZeroBaseUploadMaskSourceLowBit ||
+                sourceBase != 0 ||
+                (source & 3UL) != 1UL ||
+                (_experimentZeroBaseUploadMaskSourceLowBitOnlySource.HasValue &&
+                    source != _experimentZeroBaseUploadMaskSourceLowBitOnlySource.Value))
+            {
+                TraceGlideFifoOuterPayloadReject($"source-align source={source:x16} sourceBase={sourceBase:x8}");
+                return false;
+            }
+
+            ulong maskedSource = source & ~1UL;
+            if (_textureUploadPayloadSourceLowBitMaskTraceCount++ < 64)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] zero-base-upload-mask-source-low-bit outer " +
+                    $"source=0x{source:x16}->0x{maskedSource:x16} sourceBase=0x{sourceBase:x8} " +
+                    $"index={index:x8} words={payloadWords:x8} " +
+                    $"originalFirst={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/" +
+                    $"{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8} " +
+                    $"maskedFirst={ReadTraceWord(maskedSource):x8}/{ReadTraceWord(maskedSource + 0x04UL):x8}/" +
+                    $"{ReadTraceWord(maskedSource + 0x08UL):x8}/{ReadTraceWord(maskedSource + 0x0cUL):x8}");
+            }
+
+            source = maskedSource;
+        }
+
+        if ((source & 3UL) != 0)
+        {
+            TraceGlideFifoOuterPayloadReject($"source-align source={source:x16} sourceBase={sourceBase:x8}");
             return false;
         }
 
@@ -4231,7 +4299,6 @@ internal sealed class MipsR5000Core
             return false;
         }
 
-        uint sourceBase = _memory.Read32(sp + 0x1cUL);
         uint originalLimit = limit;
         if (_experimentClampIndexedTextureUploadLimit &&
             sourceBase == 0 &&
@@ -5643,8 +5710,11 @@ internal sealed class MipsR5000Core
         }
 
         ulong physicalPc = pc & 0x1fffffffUL;
-        if (physicalPc is < 0x000fe790UL or > 0x000fe7e0UL)
+        if (physicalPc < _traceTextureUploadDirectWriterPcMin ||
+            physicalPc > _traceTextureUploadDirectWriterPcMax)
+        {
             return;
+        }
 
         bool hasTargetFilter = _traceTextureUploadPacketTargetWords.Length > 0;
         uint targetWord = (value & 3U) == 0 ? value / 4U : uint.MaxValue;
@@ -27574,10 +27644,11 @@ internal sealed class VegasVoodooPciDevice
 
     private uint MapRegisterOffset(uint offset)
     {
-        uint register = (offset >> 2) & 0xffu;
+        uint target = (offset >> 2) & 0xfffu;
+        uint register = target & 0xffu;
         if (offset >= 0x00200000u && ((_registers[RegFbiInit3] & 1u) != 0))
-            register = AliasRegister(register);
-        return register << 2;
+            target = (target & 0xf00u) | AliasRegister(register);
+        return target << 2;
     }
 
     private static uint AliasRegister(uint register)
@@ -30020,6 +30091,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         new ushort[LfbPixels],
         new ushort[LfbPixels]
     ];
+    private static readonly string[] FullrectWriterLayoutCandidateTransforms = ["linear", "row2x", "row4x", "tile4", "tile8"];
     private const int PixelLastWriterSampleColumns = 20;
     private const int PixelLastWriterSampleRows = 15;
     private const int PixelLastWriterSampleCellWidth = 640 / PixelLastWriterSampleColumns;
@@ -30045,6 +30117,16 @@ internal class VoodooBringupBackend : IVoodooBackend
     [
         new bool[0x100],
         new bool[0x100]
+    ];
+    private readonly ushort[][] _tmuPaletteRgb565 =
+    [
+        new ushort[2 * 256],
+        new ushort[2 * 256]
+    ];
+    private readonly bool[][] _tmuPaletteValid =
+    [
+        new bool[2 * 256],
+        new bool[2 * 256]
     ];
     private readonly uint[] _cmdFifoRam = new uint[CmdFifoFramebufferWords];
     private readonly bool[] _cmdFifoValid = new bool[CmdFifoFramebufferWords];
@@ -30603,6 +30685,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM") ?? "")
         .Trim()
         .ToLowerInvariant();
+    private readonly bool _traceFullrectWriterLayoutCandidates =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_LAYOUT_CANDIDATES"));
+    private readonly int _traceFullrectWriterLayoutCandidatesLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_LAYOUT_CANDIDATES_LIMIT"), 32);
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentType3UseSkippedWordAsS =
@@ -30633,10 +30719,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS"));
     private readonly bool _experimentTextureUploadMameWritePtr =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR"));
+    private readonly ulong[] _experimentTextureUploadMameWritePtrPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR_PCS"));
+    private readonly ulong[] _experimentTextureUploadMameWritePtrTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR_TARGET_WORDS"));
     private readonly bool _traceTextureUploadMameWritePtr =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR"));
     private readonly int _traceTextureUploadMameWritePtrLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR_LIMIT"), 80);
+    private readonly ulong[] _traceTextureUploadMameWritePtrPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR_PCS"));
+    private readonly ulong[] _traceTextureUploadMameWritePtrTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR_TARGET_WORDS"));
     private readonly int _experimentTextureSampleTmu =
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_TMU"), -1);
     private readonly bool _experimentSetupMameAuxDepth =
@@ -30766,6 +30860,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _largeDirectTriangleTraceCount;
     private int _directTriangleReadTraceCount;
     private int _fullrectSampleWriterLayoutTraceCount;
+    private int _fullrectSampleWriterLayoutCandidateTraceCount;
     private string _lastCommandFifoDecodeStopReason = "";
     private uint _lastCommandFifoDecodeStopCommand;
     private int _lastCommandFifoDecodeStopWordsNeeded;
@@ -30877,13 +30972,29 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     public virtual void WriteRegister(uint address, uint value)
     {
-        uint register = (address >> 2) & 0xffu;
+        uint target = (address >> 2) & 0xfffu;
+        uint register = target & 0xffu;
         value = ApplyRegisterWriteMask(register, value);
         if (_fixDropLeakedType5RegisterHeaders &&
             IsRasterSetupRegister(register) &&
             IsType5TexturePacketHeader(value))
         {
             RecordVoodooEvent($"drop leaked type5 header direct reg[{register:x2}]=0x{value:x8}");
+            return;
+        }
+
+        bool traceTmuWrite = ShouldTraceTmuRegisterWrite(target, register, value);
+        string tmuBefore = traceTmuWrite ? FormatTextureRegisterWriteStatus() : "";
+        bool wroteTmuBank = _fixTmuRegisterBanks && TryWriteTmuRegister(target, value);
+        if (traceTmuWrite)
+            TraceTmuRegisterWrite(target, register, value, wroteTmuBank, tmuBefore);
+
+        if (wroteTmuBank)
+        {
+            TraceVoodooRegisterWrite(register, value);
+            if (IsInterestingEventRegister(register))
+                RecordVoodooEvent($"reg[{target:x3}]=0x{value:x8}");
+            CountCommandFifoRegisterWritePc(register, value);
             return;
         }
 
@@ -32587,7 +32698,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             uint byteOffset = (GetTextureLodOffset((int)lod, bytesPerTexel, texLod, textureBase) + texel * (uint)bytesPerTexel) & (TextureBytes - 1u);
             if (_fixTextureDownloadAlign32)
                 byteOffset &= ~3u;
-            if (_traceTextureUploadMameWritePtr || _experimentTextureUploadMameWritePtr)
+            bool traceMameWritePtr = ShouldTraceTextureUploadMameWritePtr(wordOffset);
+            bool applyMameWritePtr = ShouldApplyTextureUploadMameWritePtr(wordOffset);
+            if (traceMameWritePtr || applyMameWritePtr)
             {
                 uint mameByteOffset = GetMameTextureWritePtrByteOffset(
                     (int)lod,
@@ -32599,8 +32712,9 @@ internal class VoodooBringupBackend : IVoodooBackend
                     ReadTextureUploadRegister(tmu, RegTextureBaseAddr38),
                     ts,
                     tt);
-                TraceTextureUploadMameWritePtr(wordOffset, byteOffset, mameByteOffset, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
-                if (_experimentTextureUploadMameWritePtr)
+                if (traceMameWritePtr)
+                    TraceTextureUploadMameWritePtr(wordOffset, byteOffset, mameByteOffset, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
+                if (applyMameWritePtr)
                     byteOffset = mameByteOffset;
             }
             TraceTextureWriteBucket(wordOffset, byteOffset, value, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
@@ -32807,6 +32921,40 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         uint texelOffset = t * ((widthMask >> targetLod) + 1u) + s;
         return (lodOffset + ((uint)bytesPerTexel * texelOffset & ~3u)) & (TextureBytes - 1u);
+    }
+
+    private bool ShouldApplyTextureUploadMameWritePtr(uint wordOffset)
+        => _experimentTextureUploadMameWritePtr &&
+           MatchesTextureUploadMameWritePtrFilters(
+               wordOffset,
+               _experimentTextureUploadMameWritePtrPcs,
+               _experimentTextureUploadMameWritePtrTargetWords);
+
+    private bool ShouldTraceTextureUploadMameWritePtr(uint wordOffset)
+        => _traceTextureUploadMameWritePtr &&
+           MatchesTextureUploadMameWritePtrFilters(
+               wordOffset,
+               _traceTextureUploadMameWritePtrPcs,
+               _traceTextureUploadMameWritePtrTargetWords);
+
+    private bool MatchesTextureUploadMameWritePtrFilters(uint wordOffset, ulong[] pcs, ulong[] targetWords)
+    {
+        if (pcs.Length != 0)
+        {
+            ulong pc = CpuPcProvider?.Invoke() ?? 0;
+            if (!MatchesTracePc(pcs, pc))
+                return false;
+        }
+
+        if (targetWords.Length == 0)
+            return true;
+
+        if (targetWords.Contains(wordOffset))
+            return true;
+
+        return _currentType5TextureWriteActive &&
+            (targetWords.Contains(_currentType5TextureWriteTargetWord) ||
+             targetWords.Contains(_currentType5TextureWriteTargetStart));
     }
 
     private void TraceTextureUploadMameWritePtr(
@@ -34750,16 +34898,50 @@ internal class VoodooBringupBackend : IVoodooBackend
         int index = (int)register;
         if ((chipmask & 0x2u) != 0)
         {
-            _tmuRegisters[0][index] = value;
-            _tmuRegisterValid[0][index] = true;
+            WriteTmuRegisterOrPalette(0, index, value);
         }
         if ((chipmask & 0x4u) != 0)
         {
-            _tmuRegisters[1][index] = value;
-            _tmuRegisterValid[1][index] = true;
+            WriteTmuRegisterOrPalette(1, index, value);
         }
         _registerWriteCount++;
         RecordVoodooEvent($"tmu[{chipmask:x1}:{register:x2}]=0x{value:x8}");
+        return true;
+    }
+
+    private void WriteTmuRegisterOrPalette(int tmu, int register, uint value)
+    {
+        if (TryWriteTmuPaletteEntry(tmu, register, value))
+            return;
+
+        _tmuRegisters[tmu][register] = value;
+        _tmuRegisterValid[tmu][register] = true;
+    }
+
+    private bool TryWriteTmuPaletteEntry(int tmu, int register, uint value)
+    {
+        int regIndex = register - RegNccTable;
+        if ((value & 0x80000000u) == 0 ||
+            regIndex < 4 ||
+            regIndex >= 12)
+        {
+            return false;
+        }
+
+        int paletteIndex = (int)(((value >> 24) & 0x7fu) << 1) | (regIndex & 1);
+        int rgbOffset = paletteIndex;
+        int argbOffset = 256 + paletteIndex;
+
+        _tmuPaletteRgb565[tmu][rgbOffset] = Rgb888ToRgb565(
+            (byte)(value >> 16),
+            (byte)(value >> 8),
+            (byte)value);
+        _tmuPaletteRgb565[tmu][argbOffset] = Rgb888ToRgb565(
+            Expand6To8((int)(value >> 12)),
+            Expand6To8((int)(value >> 6)),
+            Expand6To8((int)value));
+        _tmuPaletteValid[tmu][rgbOffset] = true;
+        _tmuPaletteValid[tmu][argbOffset] = true;
         return true;
     }
 
@@ -36053,6 +36235,23 @@ internal class VoodooBringupBackend : IVoodooBackend
         int PacketStart,
         int ReadIndex,
         bool Streaming);
+
+    private readonly record struct FullrectWriterLayoutTraceSource(
+        TextureWordLastWriter Writer,
+        float S,
+        float T,
+        int X,
+        int Y,
+        int Width,
+        int Height,
+        int Format,
+        bool FormatOverridden,
+        int BytesPerTexel,
+        bool SixteenBit,
+        int Lod,
+        uint Base,
+        uint TargetStart,
+        bool TargetRemapped);
 
     private readonly record struct TextureSampleWriterKey(
         ulong Pc,
@@ -38649,8 +38848,10 @@ sampledTexel:
         {
             0 => ConvertRgb332ToRgb565(value),
             1 => ConvertNccToRgb565(value, mode),
+            2 => GrayscaleToRgb565(value),
             3 => GrayscaleToRgb565(value),
             4 => GrayscaleToRgb565((byte)((value & 0x0f) * 17)),
+            5 or 6 or 7 => ConvertPaletteTextureToRgb565(value, format),
             _ => PseudoPaletteToRgb565(value)
         };
         TrackZeroTextureSample(byteOffset, texel);
@@ -38831,6 +39032,36 @@ sampledTexel:
                 $"addr=0x{writerByteAddress:X6}";
         }
 
+        TraceFullrectWriterLayoutCandidates(
+            s,
+            t,
+            currentWidth,
+            currentHeight,
+            clampS,
+            clampT,
+            currentByteAddress,
+            currentWordOffset,
+            sampleMode,
+            sampleTextureLod,
+            sampleTextureBase,
+            writer,
+            writerX,
+            writerY,
+            writerWidth,
+            writerHeight,
+            writerFormat,
+            writerFormatOverridden,
+            writerBytesPerTexel,
+            writerSixteenBit,
+            writerLod,
+            writerBase,
+            writerTargetStart,
+            writerTargetRemapped,
+            hasSampledOwner,
+            sampledWriter,
+            writerByteAddress,
+            result);
+
         TrackZeroTextureSample(writerByteAddress, result);
         TrackTextureSampleDebug(writerByteAddress, writerRaw, result);
         TraceTextureSample(
@@ -38876,6 +39107,257 @@ sampledTexel:
     private static string FormatTextureWordWriterStatus(TextureWordLastWriter writer) =>
         $"pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writer.BytesPerTexel}/type5={(writer.Type5 ? 1 : 0)}/cmd0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}";
 
+    private void TraceFullrectWriterLayoutCandidates(
+        float s,
+        float t,
+        int currentWidth,
+        int currentHeight,
+        bool clampS,
+        bool clampT,
+        uint currentByteAddress,
+        int currentWordOffset,
+        uint sampleMode,
+        uint sampleTextureLod,
+        uint sampleTextureBase,
+        TextureWordLastWriter writer,
+        int writerX,
+        int writerY,
+        int writerWidth,
+        int writerHeight,
+        int writerFormat,
+        bool writerFormatOverridden,
+        int writerBytesPerTexel,
+        bool writerSixteenBit,
+        int writerLod,
+        uint writerBase,
+        uint writerTargetStart,
+        bool writerTargetRemapped,
+        bool hasSampledOwner,
+        TextureWordLastWriter sampledWriter,
+        uint activeByteAddress,
+        ushort activeResult)
+    {
+        if (!_traceFullrectWriterLayoutCandidates ||
+            _fullrectSampleWriterLayoutCandidateTraceCount >= _traceFullrectWriterLayoutCandidatesLimit)
+        {
+            return;
+        }
+
+        _fullrectSampleWriterLayoutCandidateTraceCount++;
+
+        var writerSource = new FullrectWriterLayoutTraceSource(
+            writer,
+            s,
+            t,
+            writerX,
+            writerY,
+            writerWidth,
+            writerHeight,
+            writerFormat,
+            writerFormatOverridden,
+            writerBytesPerTexel,
+            writerSixteenBit,
+            writerLod,
+            writerBase,
+            writerTargetStart,
+            writerTargetRemapped);
+
+        string writerCandidates = FormatFullrectWriterLayoutCandidateSet(
+            "writer",
+            writerSource,
+            sampleMode,
+            writer,
+            hasSampledOwner,
+            sampledWriter);
+
+        string sampledCandidates = "-";
+        if (hasSampledOwner &&
+            TryResolveFullrectWriterLayoutTraceSource(
+                sampledWriter,
+                s,
+                t,
+                currentWidth,
+                currentHeight,
+                clampS,
+                clampT,
+                allowTargetRemap: false,
+                out FullrectWriterLayoutTraceSource sampledSource))
+        {
+            sampledCandidates = FormatFullrectWriterLayoutCandidateSet(
+                "sampled",
+                sampledSource,
+                sampleMode,
+                writer,
+                hasSampledOwner,
+                sampledWriter);
+        }
+
+        int activeWordOffset = (int)((activeByteAddress & (TextureBytes - 1u)) >> 2);
+        string activeTransform = _experimentFullrectSampleWriterLayoutAddressTransform.Length == 0
+            ? "linear"
+            : _experimentFullrectSampleWriterLayoutAddressTransform;
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-FULLRECT-CANDIDATES] n={_fullrectSampleWriterLayoutCandidateTraceCount} frame={_renderFrame} " +
+            $"current=0x{currentByteAddress:X6}/w{currentWordOffset:X5} active={activeTransform}:0x{activeByteAddress:X6}/w{activeWordOffset:X5}/rgb0x{activeResult:X4} " +
+            $"sample=mode0x{sampleMode:X8}/lod0x{sampleTextureLod:X8}/base0x{sampleTextureBase:X8} " +
+            $"writer=pc0x{writer.Pc & 0xffffffffUL:x8}/fmt{writerFormat}{(writerFormatOverridden ? "*" : "")}/l{writerLod}/bpp{writerBytesPerTexel}/base0x{writerBase:X6}/target0x{writerTargetStart:X6}/remap{(writerTargetRemapped ? 1 : 0)} " +
+            $"st=({s:F3},{t:F3}) writerXY={writerX},{writerY}/{writerWidth}x{writerHeight} " +
+            $"candidates={writerCandidates} sampled={sampledCandidates}");
+    }
+
+    private bool TryResolveFullrectWriterLayoutTraceSource(
+        TextureWordLastWriter sourceWriter,
+        float s,
+        float t,
+        int currentWidth,
+        int currentHeight,
+        bool clampS,
+        bool clampT,
+        bool allowTargetRemap,
+        out FullrectWriterLayoutTraceSource source)
+    {
+        source = default;
+        if (!sourceWriter.Type5 || sourceWriter.BytesPerTexel is not (1 or 2))
+            return false;
+
+        int lod = Math.Clamp((int)sourceWriter.Lod, 0, 8);
+        int format = (int)((sourceWriter.Mode >> 8) & 0x0fu);
+        bool formatOverridden = _experimentFullrectSampleWriterLayoutFormatOverride is >= 0 and <= 15;
+        if (formatOverridden)
+            format = _experimentFullrectSampleWriterLayoutFormatOverride;
+
+        int bytesPerTexel = IsTextureFormat16Bit(format) ? 2 : sourceWriter.BytesPerTexel;
+        bool sixteenBit = bytesPerTexel == 2;
+        int width = Math.Max(1, (int)GetTextureWidth(sourceWriter.TexLod) >> lod);
+        int height = Math.Max(1, (int)GetTextureHeight(sourceWriter.TexLod) >> lod);
+        uint sourceBase = GetTextureLodOffset(lod, bytesPerTexel, sourceWriter.TexLod, sourceWriter.TextureBase);
+        uint targetStart = sourceWriter.Type5TargetStart;
+        bool targetRemapped = false;
+        if (allowTargetRemap &&
+            _experimentFullrectSampleWriterLayoutTargetRemap.TryGetValue(sourceWriter.Type5TargetStart, out uint remappedTargetStart))
+        {
+            long targetDeltaBytes = ((long)remappedTargetStart - sourceWriter.Type5TargetStart) << 2;
+            sourceBase = (uint)(((long)sourceBase + targetDeltaBytes) & (TextureBytes - 1L));
+            targetStart = remappedTargetStart;
+            targetRemapped = true;
+        }
+        if (_experimentFullrectSampleWriterLayoutBaseBias != 0)
+            sourceBase = (uint)(((long)sourceBase + _experimentFullrectSampleWriterLayoutBaseBias) & (TextureBytes - 1L));
+
+        float sourceS = s;
+        float sourceT = t;
+        bool sourceClampS = clampS;
+        bool sourceClampT = clampT;
+        if (_experimentFullrectSampleWriterLayoutCoordMode is "wrap" or "wrapped")
+        {
+            sourceClampS = false;
+            sourceClampT = false;
+        }
+        else if (_experimentFullrectSampleWriterLayoutCoordMode is "scale" or "scaled")
+        {
+            sourceS = currentWidth > 0 ? s * width / currentWidth : s;
+            sourceT = currentHeight > 0 ? t * height / currentHeight : t;
+        }
+        else if (_experimentFullrectSampleWriterLayoutCoordMode is "scale-wrap" or "scaled-wrap")
+        {
+            sourceS = currentWidth > 0 ? s * width / currentWidth : s;
+            sourceT = currentHeight > 0 ? t * height / currentHeight : t;
+            sourceClampS = false;
+            sourceClampT = false;
+        }
+
+        int x = TextureCoordinateToIndex(sourceS, width, sourceClampS);
+        int y = _fixTextureTOriginFlip
+            ? TextureCoordinateToIndex((height - 1) - sourceT, height, sourceClampT)
+            : TextureCoordinateToIndex(sourceT, height, sourceClampT);
+
+        source = new FullrectWriterLayoutTraceSource(
+            sourceWriter,
+            sourceS,
+            sourceT,
+            x,
+            y,
+            width,
+            height,
+            format,
+            formatOverridden,
+            bytesPerTexel,
+            sixteenBit,
+            lod,
+            sourceBase,
+            targetStart,
+            targetRemapped);
+        return true;
+    }
+
+    private string FormatFullrectWriterLayoutCandidateSet(
+        string label,
+        FullrectWriterLayoutTraceSource source,
+        uint sampleMode,
+        TextureWordLastWriter writer,
+        bool hasSampledOwner,
+        TextureWordLastWriter sampledWriter)
+    {
+        return $"{label}[xy={source.X},{source.Y}/{source.Width}x{source.Height}/fmt{source.Format}{(source.FormatOverridden ? "*" : "")}/l{source.Lod}/bpp{source.BytesPerTexel}/base0x{source.Base:X6}/target0x{source.TargetStart:X6}/remap{(source.TargetRemapped ? 1 : 0)} " +
+            string.Join(";", FullrectWriterLayoutCandidateTransforms.Select(transform =>
+                FormatFullrectWriterLayoutCandidate(transform, source, sampleMode, writer, hasSampledOwner, sampledWriter))) +
+            "]";
+    }
+
+    private string FormatFullrectWriterLayoutCandidate(
+        string transform,
+        FullrectWriterLayoutTraceSource source,
+        uint sampleMode,
+        TextureWordLastWriter writer,
+        bool hasSampledOwner,
+        TextureWordLastWriter sampledWriter)
+    {
+        ushort texel = ReadFullrectWriterLayoutTextureRgb565At(
+            source.X,
+            source.Y,
+            source.Width,
+            source.Height,
+            source.Format,
+            source.SixteenBit,
+            sampleMode,
+            source.Base,
+            transform,
+            out uint byteAddress,
+            out uint word,
+            out uint raw);
+        int wordOffset = (int)((byteAddress & (TextureBytes - 1u)) >> 2);
+        string owner = FormatFullrectWriterLayoutCandidateOwner(wordOffset, writer, hasSampledOwner, sampledWriter);
+        return $"{transform}:0x{byteAddress:X6}/w{wordOffset:X5}/word0x{word:X8}/raw0x{raw:X4}/rgb0x{texel:X4}/{owner}";
+    }
+
+    private string FormatFullrectWriterLayoutCandidateOwner(
+        int wordOffset,
+        TextureWordLastWriter writer,
+        bool hasSampledOwner,
+        TextureWordLastWriter sampledWriter)
+    {
+        if (!_textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter owner))
+            return "owner=-";
+
+        string relation = "other";
+        if (hasSampledOwner && owner.Type5 && sampledWriter.Type5 && owner.Type5TargetStart == sampledWriter.Type5TargetStart)
+            relation = "sampled-target";
+        else if (owner.Type5 && writer.Type5 && owner.Type5TargetStart == writer.Type5TargetStart)
+            relation = "writer-target";
+        else if (hasSampledOwner && owner.Pc == sampledWriter.Pc && owner.Type5Command == sampledWriter.Type5Command)
+            relation = "sampled-pc";
+        else if (owner.Pc == writer.Pc && owner.Type5Command == writer.Type5Command)
+            relation = "writer-pc";
+
+        return $"owner={relation}:{FormatTextureWordWriterCompactStatus(owner)}";
+    }
+
+    private static string FormatTextureWordWriterCompactStatus(TextureWordLastWriter writer)
+    {
+        int format = (int)((writer.Mode >> 8) & 0x0fu);
+        return $"pc0x{writer.Pc & 0xffffffffUL:x8}/fmt{format}/l{writer.Lod}/bpp{writer.BytesPerTexel}/t5{(writer.Type5 ? 1 : 0)}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}";
+    }
+
     private ushort ReadFullrectWriterLayoutTextureRgb565At(
         int x,
         int y,
@@ -38893,14 +39375,36 @@ sampledTexel:
         return ReadTextureRgb565AtIndex(texelIndex, format, sixteenBit, textureMode, baseAddress, out byteAddress, out word, out raw);
     }
 
+    private ushort ReadFullrectWriterLayoutTextureRgb565At(
+        int x,
+        int y,
+        int width,
+        int height,
+        int format,
+        bool sixteenBit,
+        uint textureMode,
+        uint baseAddress,
+        string addressTransform,
+        out uint byteAddress,
+        out uint word,
+        out uint raw)
+    {
+        uint texelIndex = GetFullrectWriterLayoutTexelIndex(x, y, width, height, addressTransform);
+        return ReadTextureRgb565AtIndex(texelIndex, format, sixteenBit, textureMode, baseAddress, out byteAddress, out word, out raw);
+    }
+
     private uint GetFullrectWriterLayoutTexelIndex(int x, int y, int width, int height)
+        => GetFullrectWriterLayoutTexelIndex(x, y, width, height, _experimentFullrectSampleWriterLayoutAddressTransform);
+
+    private static uint GetFullrectWriterLayoutTexelIndex(int x, int y, int width, int height, string addressTransform)
     {
         ulong safeWidth = (uint)Math.Max(1, width);
         ulong safeX = (uint)Math.Clamp(x, 0, Math.Max(0, width - 1));
         ulong safeY = (uint)Math.Clamp(y, 0, Math.Max(0, height - 1));
 
-        return _experimentFullrectSampleWriterLayoutAddressTransform switch
+        return addressTransform switch
         {
+            "" or "linear" => (uint)(safeY * safeWidth + safeX),
             "row2x" or "row-stride-2x" => (uint)(safeY * safeWidth * 2ul + safeX),
             "row4x" or "row-stride-4x" => (uint)(safeY * safeWidth * 4ul + safeX),
             "tile4" or "tile-4x4" => GetTiledTextureIndex(safeX, safeY, safeWidth, 4),
@@ -39036,8 +39540,10 @@ sampledTexel:
         {
             0 => ConvertRgb332ToRgb565(value),
             1 => ConvertNccToRgb565(value, textureMode),
+            2 => GrayscaleToRgb565(value),
             3 => GrayscaleToRgb565(value),
             4 => GrayscaleToRgb565((byte)((value & 0x0f) * 17)),
+            5 or 6 or 7 => ConvertPaletteTextureToRgb565(value, format),
             _ => PseudoPaletteToRgb565(value)
         };
     }
@@ -39092,9 +39598,48 @@ sampledTexel:
             11 => ConvertXrgb1555Lane(packed, 0, hasAlphaBit: true),
             12 => ConvertArgb4444ToRgb565(packed),
             13 => GrayscaleToRgb565((byte)packed),
-            14 or 15 => PseudoPaletteToRgb565((byte)packed),
+            14 or 15 => ConvertPaletteTextureToRgb565((byte)packed, format),
             _ => packed
         };
+
+    private ushort ConvertPaletteTextureToRgb565(byte value, int format)
+    {
+        int palette = format == 6 ? 1 : 0;
+        int tmu = GetTextureSampleRegisterSourceTmu();
+        return TryReadTmuPaletteRgb565(tmu, palette, value, out ushort rgb565)
+            ? rgb565
+            : PseudoPaletteToRgb565(value);
+    }
+
+    private bool TryReadTmuPaletteRgb565(int tmu, int palette, byte index, out ushort rgb565)
+    {
+        if ((uint)palette > 1u)
+        {
+            rgb565 = 0;
+            return false;
+        }
+
+        if ((uint)tmu <= 1u)
+            return TryReadTmuPaletteRgb565Direct(tmu, palette, index, out rgb565);
+
+        if (TryReadTmuPaletteRgb565Direct(0, palette, index, out rgb565))
+            return true;
+
+        return TryReadTmuPaletteRgb565Direct(1, palette, index, out rgb565);
+    }
+
+    private bool TryReadTmuPaletteRgb565Direct(int tmu, int palette, byte index, out ushort rgb565)
+    {
+        int offset = palette * 256 + index;
+        if (_tmuPaletteValid[tmu][offset])
+        {
+            rgb565 = _tmuPaletteRgb565[tmu][offset];
+            return true;
+        }
+
+        rgb565 = 0;
+        return false;
+    }
 
     private uint GetTextureWidth()
         => GetTextureWidth(ReadTextureRegister(RegTextureLod));
@@ -39761,14 +40306,19 @@ sampledTexel:
            _tmuRegisterValid[tmu][RegTextureLod] ||
            _tmuRegisterValid[tmu][RegTextureBaseAddr] ||
            HasTmuNccTable(tmu, 0) ||
-           HasTmuNccTable(tmu, 1);
+           HasTmuNccTable(tmu, 1) ||
+           HasTmuPalette(tmu, 0) ||
+           HasTmuPalette(tmu, 1);
 
     private string FormatTmuDebugStatus(int tmu)
     {
         string mode = _tmuRegisterValid[tmu][RegTextureMode] ? _tmuRegisters[tmu][RegTextureMode].ToString("X8") : "--------";
         string lod = _tmuRegisterValid[tmu][RegTextureLod] ? _tmuRegisters[tmu][RegTextureLod].ToString("X8") : "--------";
         string baseAddress = _tmuRegisterValid[tmu][RegTextureBaseAddr] ? _tmuRegisters[tmu][RegTextureBaseAddr].ToString("X8") : "--------";
-        return $"{mode}/{lod}/{baseAddress}/ncc{GetTmuNccNonZeroCount(tmu, 0)}/{GetTmuNccNonZeroCount(tmu, 1)}";
+        int palette0 = GetTmuPaletteValidCount(tmu, 0);
+        int palette1 = GetTmuPaletteValidCount(tmu, 1);
+        string paletteStatus = palette0 != 0 || palette1 != 0 ? $"/pal{palette0}/{palette1}" : "";
+        return $"{mode}/{lod}/{baseAddress}/ncc{GetTmuNccNonZeroCount(tmu, 0)}/{GetTmuNccNonZeroCount(tmu, 1)}{paletteStatus}";
     }
 
     private bool HasTmuNccTable(int tmu, int table)
@@ -39783,6 +40333,9 @@ sampledTexel:
         return false;
     }
 
+    private bool HasTmuPalette(int tmu, int palette)
+        => GetTmuPaletteValidCount(tmu, palette) != 0;
+
     private int GetTmuNccNonZeroCount(int tmu, int table)
     {
         int start = RegNccTable + table * 12;
@@ -39790,6 +40343,19 @@ sampledTexel:
         for (int i = 0; i < 12; i++)
         {
             if (_tmuRegisterValid[tmu][start + i] && _tmuRegisters[tmu][start + i] != 0)
+                count++;
+        }
+
+        return count;
+    }
+
+    private int GetTmuPaletteValidCount(int tmu, int palette)
+    {
+        int start = palette * 256;
+        int count = 0;
+        for (int i = 0; i < 256; i++)
+        {
+            if (_tmuPaletteValid[tmu][start + i])
                 count++;
         }
 
@@ -40479,11 +41045,20 @@ sampledTexel:
         int r = ((value >> 5) & 0x07) * 255 / 7;
         int g = ((value >> 2) & 0x07) * 255 / 7;
         int b = (value & 0x03) * 255 / 3;
-        return (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+        return Rgb888ToRgb565((byte)r, (byte)g, (byte)b);
     }
 
     private static ushort GrayscaleToRgb565(byte value)
-        => (ushort)(((value >> 3) << 11) | ((value >> 2) << 5) | (value >> 3));
+        => Rgb888ToRgb565(value, value, value);
+
+    private static ushort Rgb888ToRgb565(byte r, byte g, byte b)
+        => (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+
+    private static byte Expand6To8(int value)
+    {
+        int six = value & 0x3f;
+        return (byte)((six << 2) | (six >> 4));
+    }
 
     private ushort ConvertNccToRgb565(byte value, uint textureMode)
     {

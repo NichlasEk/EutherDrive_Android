@@ -40,6 +40,7 @@ int warmupFrames = ParseWarmupFrames(frames);
 warmupSnapshotPath = ResolveWarmupSnapshotPath(warmupSnapshotPath, adapter, warmupFrames, cpuStepsPerFrameConfig);
 bool forceSaveWarmupSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SAVE_WARMUP") == "1";
 bool allowLoadWarmupSnapshot = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_WARMUP") != "0";
+bool ignoreWarmupCpuStepMismatch = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_WARMUP_IGNORE_CPU_STEPS") == "1";
 bool loadedWarmupSnapshot = false;
 var summaryContext = new ProbeSummaryContext
 {
@@ -53,7 +54,7 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
     !forceSaveWarmupSnapshot &&
     File.Exists(warmupSnapshotPath))
 {
-    LoadWarmupSnapshot(adapter, warmupSnapshotPath, warmupFrames, cpuStepsPerFrameConfig);
+    LoadWarmupSnapshot(adapter, warmupSnapshotPath, warmupFrames, cpuStepsPerFrameConfig, ignoreWarmupCpuStepMismatch);
     loadedWarmupSnapshot = true;
     summaryContext.WarmupState = "loaded";
     Console.Error.WriteLine($"warmupSnapshotLoaded={warmupSnapshotPath}");
@@ -810,7 +811,7 @@ static void SaveRequestedFinalSnapshot(GauntletDarkLegacyAdapter adapter, int fr
     Console.Error.WriteLine($"finalSnapshotSaved={path}");
 }
 
-static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, int frames, int cpuStepsPerFrame)
+static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, int frames, int cpuStepsPerFrame, bool ignoreCpuStepMismatch)
 {
     using var stream = File.OpenRead(path);
     using var reader = new BinaryReader(stream);
@@ -821,10 +822,15 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
 
     int savedFrames = reader.ReadInt32();
     int savedCpuStepsPerFrame = reader.ReadInt32();
-    if (savedFrames != frames || savedCpuStepsPerFrame != cpuStepsPerFrame)
+    if (savedFrames != frames || (!ignoreCpuStepMismatch && savedCpuStepsPerFrame != cpuStepsPerFrame))
         throw new InvalidDataException(
             $"Warmup snapshot mismatch: saved frames={savedFrames} cpuStepsPerFrame={savedCpuStepsPerFrame}, " +
             $"requested frames={frames} cpuStepsPerFrame={cpuStepsPerFrame}");
+    if (savedCpuStepsPerFrame != cpuStepsPerFrame)
+    {
+        Console.Error.WriteLine(
+            $"warmupSnapshotCpuStepsIgnored=saved:{savedCpuStepsPerFrame}:requested:{cpuStepsPerFrame}");
+    }
 
     SetField(adapter, "_frameCounter", reader.ReadInt64());
     ReadByteArrayInto(reader, GetFieldValue<byte[]>(adapter, "_frameBuffer"));
