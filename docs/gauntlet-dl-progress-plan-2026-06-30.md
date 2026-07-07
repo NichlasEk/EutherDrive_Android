@@ -9136,3 +9136,125 @@ Verification after the zero-base target probe:
 dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
 result: 0 errors, existing warnings only
 ```
+
+### Writer-layout address follow-up - 2026-07-07
+
+After commit `05f78f1d`, the current relookup writer-layout diagnostic was
+bracketed against upload write-pointer and address-layout variants. All runs
+used the required f300 WTR stack from the previous section.
+
+MAME texture upload write pointer is not the visible blocker for this oracle:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR=1
+
+/tmp/gauntdl-writerlayout-relookup-mameptr-f300.log
+/tmp/gauntdl-writerlayout-relookup-mameptr-f300.ppm
+/tmp/gauntdl-writerlayout-relookup-mameptr-f300.png
+logSha256=2d19472210c1d8a268ebefdcc1669c6e065b74edfc055dc8a78a955b42eba145
+ppmSha256=9d2e863fe57f0fc0e268b013eac3e05a11ffff4b752dec6b97bf34f593ead2f4
+frameHash=0x0550f1c6
+frameSha256=5eaa28f593b9f235187b0ddf2e9eb283ea679ecb5ee4523630de9af502a97e4a
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+```
+
+This is byte-identical to `/tmp/gauntdl-writerlayout-relookup-f300.ppm`.
+The trace shows current-vs-MAME write-pointer deltas, but those deltas do not
+move the sampled fullrect output.
+
+`row2x` is a real address-layout lever, but it still produces corrupted
+fullrect noise rather than scene art:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM=row2x
+
+/tmp/gauntdl-writerlayout-relookup-row2x-f300.log
+/tmp/gauntdl-writerlayout-relookup-row2x-f300.ppm
+/tmp/gauntdl-writerlayout-relookup-row2x-f300.png
+logSha256=6ce96c6b909c5306588435a518f963fcf65f27c3851be53fc8e8c3406f9005d2
+ppmSha256=7cfeab3c156643262709209003726c361d7537b20de5fa3d0b947e74ef9740f0
+frameHash=0x98f65692
+frameSha256=ed52cd5c195a5fe9422e021d5dc90a71e9653971908d88a329a583e464f2cb60
+texturedZero=46829759
+```
+
+The first hot relookup moved from the earlier `0x008A00` owner family into the
+`0x009800` owner family:
+
+```text
+current=0x00E810/w03A04 -> addr=0x018000/w06000 initialAddr=0x014000/w05000
+addrTransform=row2x
+sampledOwner=pc0x800fe7cc/.../cmd0xC0000205@0x009800:0x009800
+relookup=sampled-owner fmt1*/bpp2/l1 addr=0x018000
+```
+
+`row4x` is also a real lever, but worse for this theory because the first hot
+row no longer has a sampled owner:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM=row4x
+
+/tmp/gauntdl-writerlayout-relookup-row4x-f300.log
+/tmp/gauntdl-writerlayout-relookup-row4x-f300.ppm
+/tmp/gauntdl-writerlayout-relookup-row4x-f300.png
+logSha256=f276071cab7331c2c88924fca85a18b5d60a977c420ce8ee49cc148d713dad83
+ppmSha256=3240c9e635203aaad4c03a806edad3bbb67a5788d86a762477d6aecc06fe5f29
+frameHash=0x5a0ca38e
+frameSha256=8391a9388605314f543d8a033b916942855bd6742721a4901405a0a815b546b3
+texturedZero=47614149
+```
+
+Trace:
+
+```text
+current=0x00E810/w03A04 -> addr=0x017800/w05E00
+addrTransform=row4x
+sampledOwner=- relookup=-
+```
+
+Focused row2x source trace confirms the `0x009800` sampled-owner bank is sparse
+metadata/control-like data, not a rich diffuse texture:
+
+```text
+/tmp/gauntdl-row2x-targetsource-f300.log
+/tmp/gauntdl-row2x-targetsource-f300.ppm
+logSha256=7501d891b86743c4fc2133c31362ca885a3f38fa0dba437cf80747f883b5427b
+ppmSha256=7cfeab3c156643262709209003726c361d7537b20de5fa3d0b947e74ef9740f0
+frameHash=0x98f65692
+```
+
+Exact hot owner banks:
+
+```text
+targetWord=0x00008a00 count=64 nz=7
+rawWords=0x00000000/0x00000000/0x00000000/0x00000000/0x01350000/...
+pc=0xffffffff800fe7cc
+
+targetWord=0x00009800 count=64 nz=7
+rawWords=0x00000000/0x00000000/0x00000000/0x01fc0000/0x00000000/...
+pc=0xffffffff800fe7cc
+```
+
+The row2x trace also confirms the visible `0x000400 -> 0x000e00` path is still
+index-9 WTR-backed, but RAM has already diverged from several disk words:
+
+```text
+targetWord=0x00000e00 source=0xffffffff8040f318 bgsrc=9:wtr+0xdc00
+disk=9:wtr@0xdc00=94009000;mem=00000000/.../9:wtr@0xdc0c=8c84a10a;mem=70400000
+```
+
+Interpretation:
+
+```text
+1. Do not promote MAME texture upload write-pointer mode for this path; it is
+   byte-identical on the visible frame.
+2. `row2x` and `row4x` are useful diagnostics only. `row2x` moves the output
+   into a different sparse owner bank; `row4x` loses sampled-owner relookup.
+3. The current visible writer-layout path is still an alias over sparse
+   direct-writer metadata/control banks (`800fe7cc`), not correct game art.
+4. Stop expanding sampler transforms for now. The next useful code slice is
+   upstream: trace/repair the producer/state path that hydrates the fullrect
+   source vertices and direct-writer banks before the Type5 upload, then return
+   to visual sampling once the source payload is plausibly art data.
+```
