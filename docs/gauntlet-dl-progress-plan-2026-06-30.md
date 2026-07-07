@@ -9985,3 +9985,62 @@ So the bad source is selected by a caller-side table/stride walk rooted at
 slice should identify that table's intended base/source list and compare it
 against the BGLoadModel indexed WTR source slot for index 9; the direct-writer
 function itself is only consuming the pointer it is handed.
+
+## 2026-07-07 - Current Visible Graphics Checkpoint
+
+The current f300 oracle still reaches the same visible-but-corrupt framebuffer:
+
+```text
+logs/gauntlet/current-f300.png
+logs/gauntlet/fullrect-candidates-current-f300.log
+
+frameHash=0xc1029c26
+drawPackets=17133 directTriangles=647 setupTriangles=304
+textureMap=writes=5251336:nz=593220:zero=4658116:touched=21886:first=0x000000:last=0x01660c
+framebuffer=640x480 nonBlack=307200 colored=297054
+```
+
+Index-9 ownership is now bracketed on the active baseline:
+
+```text
+logs/gauntlet/index9-current-owner-f300.log
+
+slot 802529c4: 80312998 -> 80401718
+header=80401718 bodyOffset=0000bc38 body=8040d350
+global texture source: 80312998 -> 8040d718
+```
+
+This keeps the earlier conclusion intact: the remaining blocker is no longer
+the asset/parser ownership for WTR index 9. The WTR header/body path is active,
+but the texture upload/write layout still produces sampled data that reads as
+large noisy bands instead of real art.
+
+Fullrect address-transform and format negative controls:
+
+```text
+logs/gauntlet/transform-row2x-f300.png
+frameHash=0xf69a2c03
+
+logs/gauntlet/transform-tile8-f300.png
+frameHash=0xf91da2b1
+
+logs/gauntlet/format11-f300.png
+frameHash=0xfc164b14
+```
+
+These change the corruption pattern but do not reveal recognizable game
+graphics. `FULLRECT-CANDIDATES` also shows that the sampled fullrect line is
+currently dominated by ownerless words around `0x00fb00`, while nearby
+candidate rows point at Type5 owners from `pc=800fe7cc` with `fmt11/l1/bpp2`.
+
+Next slice:
+
+1. Trace Type5 texture writes from `pc=800fe7cc` for the WTR-backed target
+   family and record `mode`, `texLod`, target word, byte stride, and source
+   word packing for the first visible fullrect row.
+2. Compare those writes against the WTR entry table payload at `8040d718`
+   and the intended entry target `0x30000`. The question is whether upload
+   packet addressing is still off, or whether the byte/word packing into TMU
+   memory is wrong for the WTR format.
+3. Avoid more asset-table remaps for now; the current trace proves the active
+   f300 path already reaches `80401718/8040d350/8040d718`.
