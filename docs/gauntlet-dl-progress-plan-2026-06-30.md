@@ -8372,3 +8372,98 @@ Updated interpretation:
    control-like payloads.
 4. Do not promote the new experiments by default. They are useful probes only.
 ```
+
+## Call-A3 ownership and stride-only zero-base checkpoint - 2026-07-07
+
+New default-off diagnostics/fix controls:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_HEADER_OFFSET
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_TREAT_STRIDE_ONLY_AS_UNKNOWN
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_STRIDE_ONLY_ZERO_BASE_TEXTURE_PAYLOAD_RUNS
+```
+
+The call-A3 remap trace now prints strict source owners. That proved the
+original `a3=80312998` is not inside a real texture payload:
+
+```text
+a3Owners=1:gei+0x11280/stride-only/len=0xa13c/span=0x20000/.../hdr=bad
+replacementOwners=9:wtr+0x80/payload/len=0xbca4/span=0x20000/.../hdr=ok
+```
+
+WTR hydration is real, but the tested WTR offsets are not the graphics fix:
+
+```text
+/tmp/gauntdl-call-a3-hydrate-wtr-header80-f300.ppm
+frameHash=0x3e4a9190
+frameSha256=35f5b24d2f8020c051ae6ab7e7ddffe0cdb43095569fdc8394094d51b37f3fb7
+ppm sha256=b8f9ddd8f1f0ff2a149075c0f1de29499d34718f21b98f576124e316c0fe6121
+
+/tmp/gauntdl-call-a3-hydrate-wtr-header17ec-f260.ppm
+frameHash=0xc81ec095
+frameSha256=3ed27d83a502f74a5036f9380e1d0243704cebb881e4fc8656c750e1e52f1980
+ppm sha256=804820f88b816a12afec2832008965583c11390234a7871fa52a4c391caf101a
+```
+
+The raw WTR table at disk offset `0x158b0600 + 0x80` begins with
+`000017ec/00000001/00001834/0000002b`. The `0x17ec` destination contains
+float-like vertex/model data (`3e5930bf/00000000/39a7c5ad/...`), not Voodoo
+texture upload packets. So the call-A3 WTR-offset path changes the framebuffer,
+but it is feeding model data at the wrong layer and remains a dead end for real
+visible graphics.
+
+The useful find is the zero-base upload classifier. Baseline f260 with
+classifier enabled shows the hot FIFO source starts in a stride-only GEI tail:
+
+```text
+/tmp/gauntdl-upload-classifier-baseline-f260.log
+class=known-bg-stride-only
+source=0xffffffff803129a4
+original=0xffffffff80312998
+owners=1:gei+0x1128c/stride-only/len=0xa13c/span=0x20000/.../hdr=bad
+nextKnown=0xffffffff80321718:2:snm/+0xed74
+frameHash=0xe2470b80
+```
+
+Targeted skip of only stride-only zero-base runs removes the high-frequency
+static and leaves large coarse gradient blocks:
+
+```text
+/tmp/gauntdl-skip-stride-only-zerobase-f260.ppm
+frameHash=0xd1549bb3
+frameSha256=fffa25c1da2cdbfc1c1c68503ef1524e30fc7a59a28597aea75a1863f95aac24
+ppm sha256=fa345d224d237d758cd39e43a283c057e1a9e4626c6d23181e58946ced87247c
+
+/tmp/gauntdl-treat-strideonly-skip-prefix-packets-f260.ppm
+ppm sha256=fa345d224d237d758cd39e43a283c057e1a9e4626c6d23181e58946ced87247c
+```
+
+The prefix-packet jump to SNM produced the same image as pure stride-only skip,
+so simply jumping to the next payload base is not enough.
+
+Comparable f300 result:
+
+```text
+/tmp/gauntdl-skip-stride-only-zerobase-f300.ppm
+/tmp/gauntdl-skip-stride-only-zerobase-f300.png
+frameHash=0x743942e6
+frameSha256=9bcee76581127bb0529860d9ae51fde3b1af5200319ff576c3f395e836f74193
+ppm sha256=65b42d7e25923cdb7879b91e076503119f2c784bfc56715d17adb969ee0b5757
+drawPackets=18288 directTriangles=475 setupTriangles=219 texWrites=241253
+```
+
+Current interpretation:
+
+```text
+1. Real framebuffer improvement now comes from rejecting stride-only zero-base
+   FIFO sources, not from WTR call-A3 remapping.
+2. The bad source is consistently descriptor/model memory around 80312998/803129a4
+   mapped through the artificial 0x20000 stride span.
+3. Skipping that run proves it is a major corruption source, but skipping is not
+   the final fix because it leaves only coarse gradient geometry.
+4. The next slice should find the correct replacement for that descriptor run:
+   trace who writes/selects 80312998/803129a4 as zero-base FIFO source, then map
+   that descriptor to a real payload start instead of promoting stride-only data
+   as `known-bg`.
+5. Keep all new controls default-off until the replacement source is identified.
+```

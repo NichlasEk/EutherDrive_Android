@@ -780,6 +780,8 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUN_PACKETS", 0);
     private readonly bool _experimentZeroBaseUploadSkipUnknownPrefix =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX"));
+    private readonly bool _experimentZeroBaseUploadTreatStrideOnlyAsUnknown =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_TREAT_STRIDE_ONLY_AS_UNKNOWN"));
     private readonly bool _experimentZeroBaseUploadPointerStartUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN"));
     private readonly bool _experimentZeroBaseUploadDescriptorSourceTableDerivedSource =
@@ -804,6 +806,8 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_PACKET_ADDRESS_STRIDE");
     private readonly bool _experimentClampIndexedTextureUploadLimit =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
+    private readonly bool _experimentSkipStrideOnlyZeroBaseTexturePayloadRuns =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_STRIDE_ONLY_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
     private readonly bool _experimentZeroBaseUploadDiskWords =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS"));
     private readonly string _experimentZeroBaseUploadDiskWordTransform =
@@ -837,6 +841,22 @@ internal sealed class MipsR5000Core
         .ToLowerInvariant();
     private readonly ulong _runtimeBgLoadModelTextureSourceGlobalRemapBodyOffset =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET") ?? 0UL;
+    private readonly ulong _runtimeBgLoadModelTextureSourceCallA3RemapIndexMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_INDEX_MASK") ?? 0UL;
+    private readonly string _runtimeBgLoadModelTextureSourceCallA3RemapTarget =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_TARGET") ??
+         Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_TARGET") ??
+         "body")
+        .Trim()
+        .ToLowerInvariant();
+    private readonly ulong _runtimeBgLoadModelTextureSourceCallA3RemapBodyOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_BODY_OFFSET") ??
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET") ??
+        0UL;
+    private readonly ulong _runtimeBgLoadModelTextureSourceCallA3RemapHeaderOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_HEADER_OFFSET") ?? 0UL;
+    private readonly ulong _runtimeBgLoadModelTextureSourceCallA3HydrateIndexMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_HYDRATE_INDEX_MASK") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MASK") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMinOffset =
@@ -1055,6 +1075,9 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
     private int _runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount;
     private int _runtimeBgLoadModelTextureSourceGlobalRemapTraceCount;
+    private int _runtimeBgLoadModelTextureSourceCallA3RemapTraceCount;
+    private int _runtimeBgLoadModelTextureSourceCallA3RemapMissTraceCount;
+    private int _runtimeBgLoadModelTextureSourceCallA3HydrateTraceCount;
     private int _runtimeWorldDataAllocationRepairTraceCount;
     private int _runtimeWorldDataAllocationTraceCount;
     private int _runtimeWorldValidityRepairTraceCount;
@@ -1307,6 +1330,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
         ApplyKnownRuntimeBgLoadModelPreserveAssetSource(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
+        ApplyKnownRuntimeBgLoadModelTextureSourceCallA3Remap(pc);
         ApplyKnownRuntimeBgLoadModelTextureSourceGlobalRemap(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
@@ -4280,7 +4304,7 @@ internal sealed class MipsR5000Core
 
         if (_experimentZeroBaseUploadStopAtKnownBoundary &&
             sourceBase == 0 &&
-            !IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) &&
+            !IsKnownRuntimeBgLoadModelUploadSourceCandidateForZeroBasePrefix(source) &&
             TryFindNextKnownRuntimeBgLoadModelUploadSource(
                 source,
                 source + sourceBytes,
@@ -4318,7 +4342,7 @@ internal sealed class MipsR5000Core
 
         if (_experimentZeroBaseUploadSkipUnknownPrefixPackets &&
             sourceBase == 0 &&
-            !IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) &&
+            !IsKnownRuntimeBgLoadModelUploadSourceCandidateForZeroBasePrefix(source) &&
             TryFindNextKnownRuntimeBgLoadModelUploadSource(
                 source,
                 source + sourceBytes,
@@ -4355,19 +4379,29 @@ internal sealed class MipsR5000Core
             }
         }
 
-        if (_experimentSkipZeroBaseTexturePayloadRuns &&
+        bool skipStrideOnlyZeroBaseRun =
+            _experimentSkipStrideOnlyZeroBaseTexturePayloadRuns &&
+            sourceBase == 0 &&
+            IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) &&
+            !IsKnownRuntimeBgLoadModelUploadSourceInsidePayload(source);
+        bool skipConfiguredZeroBaseRun =
+            _experimentSkipZeroBaseTexturePayloadRuns &&
             sourceBase == 0 &&
             (_experimentSkipZeroBaseTexturePayloadRunPackets <= 0 ||
-                packets == (uint)_experimentSkipZeroBaseTexturePayloadRunPackets))
+                packets == (uint)_experimentSkipZeroBaseTexturePayloadRunPackets);
+        if (skipConfiguredZeroBaseRun || skipStrideOnlyZeroBaseRun)
         {
             if (_textureUploadMetadataSkipTraceCount++ < 64)
             {
-                string packetFilter = _experimentSkipZeroBaseTexturePayloadRunPackets > 0
+                string packetFilter = skipStrideOnlyZeroBaseRun
+                    ? "stride-only"
+                    : _experimentSkipZeroBaseTexturePayloadRunPackets > 0
                     ? _experimentSkipZeroBaseTexturePayloadRunPackets.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     : "all";
                 Console.WriteLine(
                     $"[GAUNTDL:EXPERIMENT] skip-zero-base-texture-payload-run " +
                     $"source=0x{source:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+                    $"owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(source)} " +
                     $"sourceBase=0x{sourceBase:x8} packet=0x{currentPacketAddress:x8} " +
                     $"index={index}/{limit} words={payloadWords} packets={packets} packetFilter={packetFilter}");
             }
@@ -4612,7 +4646,7 @@ internal sealed class MipsR5000Core
         if (sourceBase != 0)
             return source;
 
-        bool knownSource = IsKnownRuntimeBgLoadModelUploadSourceCandidate(source);
+        bool knownSource = IsKnownRuntimeBgLoadModelUploadSourceCandidateForZeroBasePrefix(source);
         if (_experimentZeroBaseUploadDescriptorSourceTableDerivedSource &&
             !knownSource &&
             IsMainRamRange(source + 0x10UL, 4))
@@ -5910,9 +5944,11 @@ internal sealed class MipsR5000Core
         string text = ReadAsciiTraceString(source, Math.Min((int)Math.Min(sourceBytes, 64UL), 64));
         int meaningfulText = CountMeaningfulAscii(text);
         bool knownSource = IsKnownRuntimeBgLoadModelUploadSourceCandidate(source);
+        bool knownPayloadSource = knownSource && IsKnownRuntimeBgLoadModelUploadSourceInsidePayload(source);
         bool descriptorLike = IsLikelyZeroBaseUploadDescriptor(originalSource);
         string classification = ClassifyZeroBaseTextureUploadRun(
             knownSource,
+            knownPayloadSource,
             descriptorLike,
             meaningfulText,
             sampleWords,
@@ -5932,6 +5968,7 @@ internal sealed class MipsR5000Core
         Console.WriteLine(
             $"[GAUNTDL:TEXUPLOAD-ZEROBASE-CLASS] class={classification} " +
             $"source=0x{source:x16} original=0x{originalSource:x16} {DescribeKnownRuntimeBgLoadModelUploadSource(source)} " +
+            $"owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(source)} " +
             $"packet=0x{currentPacketAddress:x8} index={index}/{limit} packets={packets} words={payloadWords} bytes=0x{sourceBytes:x} " +
             $"sampleWords={sampleWords} unique={uniqueWords.Count} zero={zeroWords} ones={allOnesWords} " +
             $"ptr={pointerWords} float={floatWords} asciiBytes={printableBytes} text=\"{text.Replace('"', '\'')}\" " +
@@ -6154,6 +6191,7 @@ internal sealed class MipsR5000Core
 
     private static string ClassifyZeroBaseTextureUploadRun(
         bool knownSource,
+        bool knownPayloadSource,
         bool descriptorLike,
         int meaningfulText,
         int sampleWords,
@@ -6162,7 +6200,7 @@ internal sealed class MipsR5000Core
         int floatWords)
     {
         if (knownSource)
-            return "known-bg";
+            return knownPayloadSource ? "known-bg" : "known-bg-stride-only";
         if (descriptorLike)
             return "descriptor";
         if (meaningfulText >= 8)
@@ -6373,6 +6411,34 @@ internal sealed class MipsR5000Core
         return false;
     }
 
+    private bool IsKnownRuntimeBgLoadModelUploadSourceCandidateForZeroBasePrefix(ulong source)
+    {
+        if (!IsKnownRuntimeBgLoadModelUploadSourceCandidate(source))
+            return false;
+
+        return !_experimentZeroBaseUploadTreatStrideOnlyAsUnknown ||
+               IsKnownRuntimeBgLoadModelUploadSourceInsidePayload(source);
+    }
+
+    private bool IsKnownRuntimeBgLoadModelUploadSourceInsidePayload(ulong source)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+        source = SignExtend32((uint)source);
+
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out _, out _, out uint textureByteLength))
+                continue;
+
+            ulong candidateBase = destinationBase + index * sourceStride;
+            if (source >= candidateBase && source < candidateBase + textureByteLength)
+                return true;
+        }
+
+        return false;
+    }
+
     private void TraceTextureUploadPayloadSpanComposition(
         ulong source,
         uint sourceBase,
@@ -6558,6 +6624,73 @@ internal sealed class MipsR5000Core
         }
 
         return matches == 0 ? "bgsrc=none" : builder.ToString();
+    }
+
+    private string DescribeKnownRuntimeBgLoadModelUploadSourceOwners(ulong source)
+    {
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        source = SignExtend32((uint)source);
+        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
+        StringBuilder builder = new();
+        int matches = 0;
+
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
+        {
+            if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out ulong byteOffset, out uint textureByteLength))
+                continue;
+
+            ulong candidateBase = destinationBase + index * sourceStride;
+            ulong spanLength = GetKnownRuntimeBgLoadModelSourceSpanByteLength(textureByteLength);
+            ulong candidateEnd = candidateBase + spanLength;
+            if (source < candidateBase || source >= candidateEnd)
+                continue;
+
+            ulong sourceOffset = source - candidateBase;
+            bool insidePayload = sourceOffset < textureByteLength;
+            if (matches++ > 0)
+                builder.Append(',');
+
+            builder.Append(index);
+            builder.Append(':');
+            builder.Append(code);
+            builder.Append("+0x");
+            builder.Append(sourceOffset.ToString("x"));
+            builder.Append(insidePayload ? "/payload" : "/stride-only");
+            builder.Append("/len=0x");
+            builder.Append(textureByteLength.ToString("x"));
+            builder.Append("/span=0x");
+            builder.Append(spanLength.ToString("x"));
+
+            if (IsMainRamRange(candidateBase + 0x64UL, 4))
+            {
+                uint bodyOffset = _memory.Read32(candidateBase + 0x5cUL);
+                uint countWord = _memory.Read32(candidateBase + 0x60UL);
+                uint strideWord = _memory.Read32(candidateBase + 0x64UL);
+                bool plausibleHeader = IsPlausibleKnownRuntimeBgLoadModelUploadHeader(
+                    bodyOffset,
+                    countWord,
+                    strideWord,
+                    textureByteLength);
+                long bodyDelta = unchecked((long)sourceOffset - bodyOffset);
+                builder.Append("/body=0x");
+                builder.Append(bodyOffset.ToString("x"));
+                builder.Append('/');
+                builder.Append(FormatSignedHex(bodyDelta));
+                builder.Append("/hdr=");
+                builder.Append(plausibleHeader ? "ok" : "bad");
+            }
+
+            if (insidePayload && _memory.TryReadDiskByteOffsetWord(byteOffset + sourceOffset, out uint diskWord))
+            {
+                builder.Append("/disk=");
+                builder.Append(diskWord.ToString("x8"));
+            }
+
+            if (matches >= 8)
+                break;
+        }
+
+        return matches == 0 ? "none" : builder.ToString();
     }
 
     private bool TryGetPlausibleKnownRuntimeBgLoadModelUploadHeaderForSource(
@@ -13770,6 +13903,193 @@ internal sealed class MipsR5000Core
                 $"cloned={clonedSource} seededIndexedHeader={seededIndexedHeader} " +
                 $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
         }
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelTextureSourceCallA3Remap(ulong pc)
+    {
+        if (_runtimeBgLoadModelTextureSourceCallA3RemapIndexMask == 0 ||
+            pc != 0xffffffff80054784UL)
+        {
+            return;
+        }
+
+        const uint descriptorSource = 0x80312998U;
+        if ((uint)_gpr[7] != descriptorSource)
+            return;
+        ulong originalA3 = _gpr[7];
+
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex && index < 64UL; index++)
+        {
+            if ((_runtimeBgLoadModelTextureSourceCallA3RemapIndexMask & (1UL << (int)index)) == 0)
+                continue;
+
+            ulong slot = sourceTable + index * 4UL;
+            ulong header = destinationBase + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
+            if (!IsMainRamRange(slot, 4UL) || !IsMainRamRange(header + 0x60UL, 4UL))
+                continue;
+
+            bool hydrateAllowed = (_runtimeBgLoadModelTextureSourceCallA3HydrateIndexMask & (1UL << (int)index)) != 0;
+            bool hydrated = false;
+            string hydrateStatus = "";
+            if (hydrateAllowed && _memory.Read32(header + 0x5cUL) == 0)
+            {
+                hydrated = TryHydrateKnownRuntimeBgLoadModelTextureSourceCallA3(pc, index, header, out hydrateStatus);
+            }
+
+            uint slotValue = _memory.Read32(slot);
+            bool slotMatchesHeader = slotValue == (uint)header;
+            if (!slotMatchesHeader && !hydrateAllowed)
+                continue;
+
+            uint bodyOffset = _memory.Read32(header + 0x5cUL);
+            ulong body = header + bodyOffset;
+            if (bodyOffset == 0 || !IsMainRamRange(body, 4UL))
+                continue;
+
+            bool useHeader = _runtimeBgLoadModelTextureSourceCallA3RemapTarget == "header";
+            ulong replacementAddress = useHeader
+                ? header + _runtimeBgLoadModelTextureSourceCallA3RemapHeaderOffset
+                : body + _runtimeBgLoadModelTextureSourceCallA3RemapBodyOffset;
+            if (!IsMainRamRange(replacementAddress, 4UL))
+                continue;
+
+            uint replacement = (uint)replacementAddress;
+            _gpr[7] = SignExtend32(replacement);
+
+            if (_runtimeBgLoadModelTextureSourceCallA3RemapTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] bgloadmodel-texture-source-call-a3-remap pc={pc:x16} " +
+                    $"index={index} target={(useHeader ? "header" : "body")} " +
+                    $"headerOffsetAdd=0x{(useHeader ? _runtimeBgLoadModelTextureSourceCallA3RemapHeaderOffset : 0UL):x} " +
+                    $"bodyOffsetAdd=0x{(useHeader ? 0UL : _runtimeBgLoadModelTextureSourceCallA3RemapBodyOffset):x} " +
+                    $"a3={descriptorSource:x8}->{replacement:x8} slot={slot:x16}:{slotValue:x8} slotMatchesHeader={slotMatchesHeader} " +
+                    $"hydrated={hydrated} hydrate=\"{hydrateStatus}\" " +
+                    $"header={header:x16} bodyOffset={bodyOffset:x8} body={body:x16} " +
+                    $"replacementFirst={ReadTraceWord(replacementAddress + 0x00UL):x8}/{ReadTraceWord(replacementAddress + 0x04UL):x8}/" +
+                    $"{ReadTraceWord(replacementAddress + 0x08UL):x8}/{ReadTraceWord(replacementAddress + 0x0cUL):x8} " +
+                    $"a3Owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(originalA3)} " +
+                    $"replacementOwners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(replacementAddress)} " +
+                    $"headerWords={TraceKnownRuntimeBgLoadModelAssetParserWords(header)}");
+            }
+
+            return;
+        }
+
+        TraceKnownRuntimeBgLoadModelTextureSourceCallA3RemapMiss(pc);
+    }
+
+    private bool TryHydrateKnownRuntimeBgLoadModelTextureSourceCallA3(
+        ulong pc,
+        ulong index,
+        ulong destination,
+        out string status)
+    {
+        status = "";
+        uint requestedBytes = 0x120U;
+        if (_runtimeBgLoadModelIndexedSourcePayloadBytesOverride.HasValue)
+        {
+            requestedBytes = (uint)Math.Min(_runtimeBgLoadModelIndexedSourcePayloadBytesOverride.Value, uint.MaxValue);
+        }
+        else if (_enableRuntimeBgLoadModelFullIndexedSourcePayloadsExperiment &&
+            TryGetKnownRuntimeBgLoadModelTexturePayload(index, out _, out _, out uint textureByteLength))
+        {
+            requestedBytes = textureByteLength;
+        }
+        else if (_enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair ||
+                 _enableRuntimeBgLoadModelMinimumIndexedSourcePayloadExperiment)
+        {
+            requestedBytes = 0x9f60U;
+        }
+
+        uint oldBodyOffset = ReadTraceWord(destination + 0x5cUL);
+        if (!TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(
+            index,
+            destination,
+            requestedBytes,
+            out string code,
+            out ulong textureByteOffset,
+            out uint firstWord))
+        {
+            status = "hydrate-failed";
+            return false;
+        }
+
+        uint newBodyOffset = ReadTraceWord(destination + 0x5cUL);
+        status = $"{code}:bytes={requestedBytes:x8}:disk={textureByteOffset:x8}:first={firstWord:x8}:body={oldBodyOffset:x8}->{newBodyOffset:x8}";
+
+        if (_runtimeBgLoadModelTextureSourceCallA3HydrateTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-texture-source-call-a3-hydrate pc={pc:x16} " +
+                $"index={index} dest={destination:x16} {status} " +
+                $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(destination)}");
+        }
+
+        return true;
+    }
+
+    private void TraceKnownRuntimeBgLoadModelTextureSourceCallA3RemapMiss(ulong pc)
+    {
+        if (_runtimeBgLoadModelTextureSourceCallA3RemapMissTraceCount++ >= 16)
+            return;
+
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        bool useHeader = _runtimeBgLoadModelTextureSourceCallA3RemapTarget == "header";
+        StringBuilder candidates = new();
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex && index < 64UL; index++)
+        {
+            if ((_runtimeBgLoadModelTextureSourceCallA3RemapIndexMask & (1UL << (int)index)) == 0)
+                continue;
+
+            ulong slot = sourceTable + index * 4UL;
+            ulong header = destinationBase + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
+            bool slotOk = IsMainRamRange(slot, 4UL);
+            bool headerOk = IsMainRamRange(header + 0x60UL, 4UL);
+            bool hydrateAllowed = (_runtimeBgLoadModelTextureSourceCallA3HydrateIndexMask & (1UL << (int)index)) != 0;
+            uint slotValue = slotOk ? _memory.Read32(slot) : 0xffffffffU;
+            uint bodyOffset = headerOk ? _memory.Read32(header + 0x5cUL) : 0xffffffffU;
+            ulong body = headerOk ? header + bodyOffset : 0UL;
+            bool bodyOk = bodyOffset != 0 && IsMainRamRange(body, 4UL);
+            ulong replacementAddress = useHeader
+                ? header + _runtimeBgLoadModelTextureSourceCallA3RemapHeaderOffset
+                : body + _runtimeBgLoadModelTextureSourceCallA3RemapBodyOffset;
+            bool replacementOk = IsMainRamRange(replacementAddress, 4UL);
+            string reason = !slotOk ? "slot-range" :
+                !headerOk ? "header-range" :
+                slotValue != (uint)header ? "slot-mismatch" :
+                bodyOffset == 0 ? "body-offset-zero" :
+                !bodyOk ? "body-range" :
+                !replacementOk ? "replacement-range" :
+                "unknown";
+
+            if (candidates.Length > 0)
+                candidates.Append(" ; ");
+
+            candidates.Append(
+                $"idx={index} reason={reason} slot={slot:x16}:{(slotOk ? slotValue.ToString("x8") : "--------")} " +
+                $"expected={(uint)header:x8} hydrateAllowed={hydrateAllowed} header={header:x16} headerOk={headerOk} " +
+                $"bodyOffset={(headerOk ? bodyOffset.ToString("x8") : "--------")} body={body:x16} bodyOk={bodyOk} " +
+                $"target={(useHeader ? "header" : "body")} " +
+                $"headerOffsetAdd=0x{(useHeader ? _runtimeBgLoadModelTextureSourceCallA3RemapHeaderOffset : 0UL):x} " +
+                $"bodyOffsetAdd=0x{(useHeader ? 0UL : _runtimeBgLoadModelTextureSourceCallA3RemapBodyOffset):x} " +
+                $"replacement={replacementAddress:x16} replacementOk={replacementOk} " +
+                $"replacementOwners={(replacementOk ? DescribeKnownRuntimeBgLoadModelUploadSourceOwners(replacementAddress) : "n/a")} " +
+                $"headerWords={TraceKnownRuntimeBgLoadModelAssetParserWords(header)} " +
+                $"bodyFirst={(bodyOk ? FormatTraceWords(body, 4) : "")} " +
+                $"replacementFirst={(replacementOk ? FormatTraceWords(replacementAddress, 4) : "")}");
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:EXPERIMENT] bgloadmodel-texture-source-call-a3-remap-miss pc={pc:x16} " +
+            $"mask=0x{_runtimeBgLoadModelTextureSourceCallA3RemapIndexMask:x} " +
+            $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"a3Owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(_gpr[7])} " +
+            $"v0={_gpr[2]:x16} t2={_gpr[10]:x16} s0={_gpr[16]:x16} " +
+            $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} candidates=[{candidates}]");
     }
 
     private void ApplyKnownRuntimeBgLoadModelTextureSourceGlobalRemap(ulong pc)
