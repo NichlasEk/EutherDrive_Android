@@ -9897,3 +9897,35 @@ earlier: trace BGLoadModel/GEI hydration into `80313100..80313288` during warmup
 or dump/compare that RAM window immediately after snapshot load against the GEI
 disk words at `1:gei+0x11a70`.
 ```
+
+Frame-180 and frame-300 byte dumps confirm that the direct-writer source window
+is already a stable model/control block at warm snapshot load:
+
+```text
+logs/gauntlet/warmload-80313100-f180-bytes.log
+logs/gauntlet/f300-80313100-bytes.log
+
+f180 +0x080: 00 00 00 00 00 00 00 00 02 00 01 00 00 00 09 00
+f300 +0x080: 00 00 00 00 00 00 00 00 02 00 01 00 00 00 09 00
+
+f180 +0x090: 00 00 03 00 02 00 09 00 00 00 35 00 00 00 80 3f
+f300 +0x090: 00 00 03 00 02 00 09 00 00 00 35 00 00 00 80 3f
+
+f180 +0x130: ... 4a 45 53 5f 50 4e 4b 44  JES_PNKD
+f300 +0x130: ... 4a 45 53 5f 50 4e 4b 44  JES_PNKD
+f180 +0x150: 4a 45 53 5f 50 4e 4b 48 45 41 44  JES_PNKHEAD
+f300 +0x150: 4a 45 53 5f 50 4e 4b 48 45 41 44  JES_PNKHEAD
+```
+
+Updated conclusion:
+
+```text
+`80313188+` is not a delayed texture payload that needs later hydration; it is
+stable object/model metadata from the warm snapshot onward. The direct-writer
+path around `800fe7b0/800fe7c4/800fe7cc` is therefore using the wrong source
+base for the low `0x8000..0x8100` texture targets, or the current GEI source
+descriptor mapping is reporting the nearby disk bytes for a different logical
+stream. Next slice: trace how `s3=80313188` is selected for the Type5 writer and
+compare that selection against the BGLoadModel texture source slot/header/body
+addresses (`80401718/8040d718`) rather than trying to rewrite the RAM block.
+```
