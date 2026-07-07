@@ -29874,6 +29874,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS"));
     private readonly int _traceTextureSampleWritersLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_LIMIT"), 160);
+    private readonly bool _traceTextureSampleWritersRequireWriter =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_REQUIRE_WRITER"));
     private readonly bool _traceTexturedTriangleSampleSummary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
     private readonly bool _traceTexturedTriangleSampleWriters =
@@ -39043,14 +39045,22 @@ sampledTexel:
         ushort result)
     {
         if (!_traceTextureSampleWriters ||
-            _renderFrame < _traceTextureMinRenderFrame ||
-            _textureSampleWriterTraceCount++ >= _traceTextureSampleWritersLimit)
+            _renderFrame < _traceTextureMinRenderFrame)
         {
             return;
         }
 
         int wordOffset = (int)((byteAddress & (TextureBytes - 1u)) >> 2);
-        string writerStatus = _textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter writer)
+        bool hasWriter = _textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter writer);
+        if (_traceTextureSampleWritersRequireWriter && !hasWriter)
+            return;
+
+        if (_textureSampleWriterTraceCount >= _traceTextureSampleWritersLimit)
+            return;
+
+        _textureSampleWriterTraceCount++;
+
+        string writerStatus = hasWriter
             ? FormatTextureWordWriterStatus(writer)
             : "-";
         ulong pc = CpuPcProvider?.Invoke() ?? 0;

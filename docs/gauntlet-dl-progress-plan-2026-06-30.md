@@ -8680,3 +8680,86 @@ Next slice:
 4. Keep the new alternate descriptor-source remap envs default-off; they are
    useful to reproduce the 803151a0 branch but not a visual fix.
 ```
+
+## Sample-writer gated Type5 checkpoint - 2026-07-07
+
+Added a default-off sample-writer trace filter:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_REQUIRE_WRITER=1
+```
+
+This changes diagnostics only. The old sample-writer trace exhausted its limit
+on early fullrect samples with `writer=-`, so it could not reach the texture
+words that actually explain the visible noise. With the new gate, the trace
+budget counts only sampled words with known texture-write ownership.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+result: 0 errors, existing warnings only
+```
+
+No-hot-skip index-9 baseline remains unchanged:
+
+```text
+/tmp/gauntdl-index9-nohotskip-samplewriters-requirewriter-f300.log
+frameHash=0x38bc79b5
+frameSha256=ce9f9f865b02c700d2507e2579b7e8c3d1f09d3194fa41b91b57fea43f2a0154
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+```
+
+Early writer-gated samples at frame 244 are dominated by the old low-page
+`pc=800fe614` Type5 family:
+
+```text
+sample base=0x000510 addr=0x00e810...
+writer=pc0x800fe614/mode0/lod0x00700800/base0x00001c00/l0/bpp1
+type5=1/cmd0xc0000205@0x000100..0x000400
+```
+
+Focused Type5 payload trace for those low targets shows structured/control-like
+words, not the WTR disk bytes:
+
+```text
+/tmp/gauntdl-index9-nohotskip-type5-800fe614-targets-f300.log
+targetWord=0x00000100 count=64 nz=55 first=0x05000102
+targetWord=0x00000200 count=64 nz=55 first=0xc6000000
+targetWord=0x00000300 count=64 nz=55 first=0xf3000130
+targetWord=0x00000400 count=64 nz=55 first=0x44000160
+frameHash=0x38bc79b5
+```
+
+Late writer-gated samples at frame 260 move to the high-target family:
+
+```text
+/tmp/gauntdl-index9-nohotskip-samplewriters-requirewriter-min260-f300.log
+frameHash=0x38bc79b5
+
+dominant writers:
+pc0x800fe7cc cmd0xc0000205 targets 0x007700..0x008100
+pc0x800fe614 cmd0xc0000205 targets 0x000700..0x000f00
+
+examples:
+addr=0x010210 writer=pc0x800fe7cc target=0x008100
+addr=0x00fc10 writer=pc0x800fe7cc target=0x007e00
+addr=0x00fa14 writer=pc0x800fe614 target=0x000d00
+```
+
+Interpretation:
+
+```text
+1. The WTR remap fires, but the visible fullrect still samples texture pages
+   owned by older Type5 uploads. The early 0x100..0x400 pages are not enough to
+   explain the final frame.
+2. By frame 260 the hot visible noise is mostly the pc=800fe7cc high-target
+   family around 0x7700..0x8100, with a secondary pc=800fe614 low-target
+   family.
+3. The next useful probe is not more BGLoadModel descriptor remapping. Trace the
+   direct-writer/source metadata for the 800fe7cc 0x7700..0x8100 uploads in this
+   exact no-hot-skip index-9 bracket, then decide whether WTR disk-word
+   replacement should be packet-class/source-class gated instead of target-only.
+4. Keep sample-writer require-writer as a diagnostic lever only; it is safe for
+   future traces and does not change rendering.
+```
