@@ -9847,3 +9847,53 @@ Likely next probes: producer writes for `80313188..80313280`, or the
 BGLoadModel/GEI hydration step that should materialize those disk bytes into RAM
 before `800fe7b0` consumes them.
 ```
+
+### 2026-07-07 Main RAM Write Watch Follow-up
+
+Added a default-off CPU/MainRAM write watch to
+`GauntletDarkLegacyAdapter`:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES=1
+EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_START=0xffffffff80313100
+EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_END=0xffffffff80313288
+EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_LIMIT=320
+```
+
+Important implementation detail: the watch compares physical RAM offsets, not
+raw virtual addresses, so `0x80313188`, `0xffffffff80313188`, and KSEG1 aliases
+land in the same watch window.
+
+Verification run:
+
+```text
+dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c Release --no-build -- \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd/gauntdl24.7z 300
+```
+
+Use the explicit `300` argument. `EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=300`
+prints checkpoint/summary at frame 300, but the probe still continues to its
+default target of 600 frames unless the positional frame argument is also set.
+
+Result:
+
+```text
+logs/gauntlet/mainram-watch-80313100-f300.log
+frameHash=0xc1029c26
+frameSha256=9d55ad611dc10a5107ef952c48c0f4ab683a0e18f6e6ed3f9ddd117e43f9e6ab
+drawPackets=17133 directTriangles=647 setupTriangles=304 texWrites=1420839
+watchWindow=0xffffffff80313100-0xffffffff80313288
+MAINRAM-WRITE-WATCH hits=0
+```
+
+Interpretation:
+
+```text
+The bad direct-writer source words at `80313188+` are not produced by ordinary
+CPU stores during the warm f180->f300 window. They are already present in the
+loaded warm snapshot, are produced before frame 180, or are materialized through
+a path that bypasses the hooked CPU store helpers. The next slice should move
+earlier: trace BGLoadModel/GEI hydration into `80313100..80313288` during warmup
+or dump/compare that RAM window immediately after snapshot load against the GEI
+disk words at `1:gei+0x11a70`.
+```

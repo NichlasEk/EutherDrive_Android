@@ -1026,6 +1026,14 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LOAD_PC_MIN");
     private readonly ulong? _traceTextureUploadSourceProducerLoadPcMax =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LOAD_PC_MAX");
+    private readonly bool _traceMainRamWrites =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES"));
+    private readonly ulong? _traceMainRamWriteStart =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_START");
+    private readonly ulong? _traceMainRamWriteEnd =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_END");
+    private readonly int _traceMainRamWriteLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_LIMIT", 160);
     private readonly bool _traceTextureUploadSourceLimitTable =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE"));
     private readonly int _traceTextureUploadSourceLimitTableLimit =
@@ -1192,6 +1200,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadSourceSelectorSetupTraceCount;
     private int _textureUploadSourceProducerTraceCount;
     private int _textureUploadSourceProducerLoadTraceCount;
+    private int _mainRamWriteTraceCount;
     private int _runtimeBgLoadModelSkipHotDescriptorOverwriteTraceCount;
     private int _textureUploadSourceLimitTableTraceCount;
     private int _textureUploadPayloadSpanTraceCount;
@@ -2034,7 +2043,13 @@ internal sealed class MipsR5000Core
         }
 
         for (ulong cursor = 0; cursor < byteLength; cursor += 4UL)
-            _memory.Write32(destination + cursor, _memory.Read32(source + cursor));
+        {
+            ulong target = destination + cursor;
+            uint oldValue = _memory.Read32(target);
+            uint newValue = _memory.Read32(source + cursor);
+            _memory.Write32(target, newValue);
+            TraceMainRamWriteWatch(pc, _memory.Read32(pc), "fast-copy", $"src=0x{source + cursor:x16}", target, 4, oldValue, newValue);
+        }
 
         _gpr[1] = 0;
         _gpr[2] = destination + byteLength;
@@ -3423,7 +3438,10 @@ internal sealed class MipsR5000Core
             if (!IsMainRamRange(target, 4UL))
                 return false;
 
-            _memory.Write32(target, _memory.Read32(source + offset));
+            uint oldValue = _memory.Read32(target);
+            uint newValue = _memory.Read32(source + offset);
+            _memory.Write32(target, newValue);
+            TraceMainRamWriteWatch(pc, _memory.Read32(pc), "runtime-copy", $"src=0x{source + offset:x16}", target, 4, oldValue, newValue);
         }
 
         _gpr[1] = 0;
@@ -5429,6 +5447,49 @@ internal sealed class MipsR5000Core
             $"s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} " +
             $"owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(loadedValue)} " +
             $"context@0x{contextAddress:x16}={contextWords} targetFirst={targetWords}");
+    }
+
+    private void TraceMainRamWriteWatch(ulong pc, uint op, string kind, string detail, ulong address, int bytes, ulong oldValue, ulong newValue)
+    {
+        if (!_traceMainRamWrites ||
+            !_traceMainRamWriteStart.HasValue ||
+            _mainRamWriteTraceCount >= _traceMainRamWriteLimit ||
+            bytes <= 0 ||
+            !IsMainRamRange(address, (ulong)bytes))
+        {
+            return;
+        }
+
+        ulong start = CanonicalizeTraceAddress(_traceMainRamWriteStart.Value);
+        ulong end = CanonicalizeTraceAddress(_traceMainRamWriteEnd ?? (start + 4UL));
+        if (end <= start)
+            end = start + 4UL;
+
+        if (!TryGetMainRamPhysical(address, out uint writePhysical) ||
+            !TryGetMainRamPhysical(start, out uint startPhysical) ||
+            !TryGetMainRamPhysical(end - 1UL, out uint endLastPhysical))
+        {
+            return;
+        }
+
+        ulong endPhysicalExclusive = (ulong)endLastPhysical + 1UL;
+        ulong writeEndPhysical = (ulong)writePhysical + (ulong)bytes;
+        if (writeEndPhysical <= startPhysical || writePhysical >= endPhysicalExclusive)
+            return;
+
+        _mainRamWriteTraceCount++;
+        ulong context = start >= 0x20UL ? start - 0x20UL : start;
+        Console.WriteLine(
+            $"[GAUNTDL:MAINRAM-WRITE-WATCH] n={_mainRamWriteTraceCount} kind={kind} detail={detail} " +
+            $"pc=0x{pc:x16} op=0x{op:x8} {DisassembleBrief(op)} addr=0x{address:x16} bytes={bytes} " +
+            $"old=0x{oldValue:x16} new=0x{newValue:x16} watch=0x{start:x16}-0x{end:x16} " +
+            $"ra=0x{_gpr[31]:x16} sp=0x{_gpr[29]:x16} a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} " +
+            $"a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} " +
+            $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} " +
+            $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
+            $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
+            $"owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(address)} " +
+            $"context@0x{context:x16}={FormatTraceWords(context, 20)}");
     }
 
     private static bool TryDecodeGprLoad(
@@ -23161,6 +23222,7 @@ internal sealed class MipsR5000Core
                     if (ShouldSkipRuntimeBgLoadModelHotDescriptorOverwrite(pc, address, oldValue, value))
                         break;
                     _memory.Write32(address, value);
+                    TraceMainRamWriteWatch(pc, op, "sw", $"r{rt}->[r{rs}+0x{simm:x4}]", address, 4, oldValue, value);
                     TraceRuntimeVertexSourceWrite(pc, op, "sw", $"r{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
                     TraceTextureUploadDirectWriterControlTableWrite(pc, op, "sw", $"r{rt}", rs, simm, address, oldValue, value);
                 }
@@ -23185,6 +23247,7 @@ internal sealed class MipsR5000Core
                     uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
                     uint value = (uint)_fpr[rt];
                     _memory.Write32(address, value);
+                    TraceMainRamWriteWatch(pc, op, "swc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, 4, oldValue, value);
                     TraceRuntimeVertexSourceWrite(pc, op, "swc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
                     TraceTextureUploadDirectWriterControlTableWrite(pc, op, "swc1", $"f{rt}", rs, simm, address, oldValue, value);
                 }
@@ -23195,6 +23258,7 @@ internal sealed class MipsR5000Core
                     ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
                     ulong value = _fpr[rt];
                     _memory.Write64(address, value);
+                    TraceMainRamWriteWatch(pc, op, "sdc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, 8, oldValue, value);
                     TraceRuntimeVertexSourceWrite64(pc, op, "sdc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
                 }
                 break;
@@ -23204,6 +23268,7 @@ internal sealed class MipsR5000Core
                     ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
                     ulong value = _gpr[rt];
                     _memory.Write64(address, value);
+                    TraceMainRamWriteWatch(pc, op, "sd", $"r{rt}->[r{rs}+0x{simm:x4}]", address, 8, oldValue, value);
                     TraceRuntimeVertexSourceWrite64(pc, op, "sd", $"r{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
                 }
                 break;
@@ -23457,6 +23522,7 @@ internal sealed class MipsR5000Core
         uint mask = uint.MaxValue >> shift;
         uint newValue = (oldMem & ~mask) | ((word >> shift) & mask);
         _memory.Write32(aligned, newValue);
+        TraceMainRamWriteWatch(pc, op, "swl", $"r{rt}->[r{rs}+0x{simm:x4}]", aligned, 4, oldMem, newValue);
         TraceRuntimeVertexSourceWrite(pc, op, "swl", $"r{rt}->[r{rs}+0x{simm:x4}]", aligned, oldMem, newValue);
         TraceTextureUploadDirectWriterControlTableWrite(pc, op, "swl", $"r{rt}", rs, simm, aligned, oldMem, newValue);
     }
@@ -23470,6 +23536,7 @@ internal sealed class MipsR5000Core
         uint mask = uint.MaxValue << shift;
         uint newValue = (oldMem & ~mask) | ((word << shift) & mask);
         _memory.Write32(aligned, newValue);
+        TraceMainRamWriteWatch(pc, op, "swr", $"r{rt}->[r{rs}+0x{simm:x4}]", aligned, 4, oldMem, newValue);
         TraceRuntimeVertexSourceWrite(pc, op, "swr", $"r{rt}->[r{rs}+0x{simm:x4}]", aligned, oldMem, newValue);
         TraceTextureUploadDirectWriterControlTableWrite(pc, op, "swr", $"r{rt}", rs, simm, aligned, oldMem, newValue);
     }
