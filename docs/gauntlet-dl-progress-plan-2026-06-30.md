@@ -9733,3 +9733,74 @@ Current interpretation:
    `0x1320`, and whether the writer-layout oracle is sampling a packet tail
    instead of the intended texture body.
 ```
+
+## 2026-07-07 - Type5 stop-window and writer-payload checkpoint
+
+Added a default-off command FIFO stop-window trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_STOP_WINDOW=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_STOP_WINDOW_COMMANDS=0xc0000205
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_STOP_WINDOW_BEFORE=6
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_STOP_WINDOW_AFTER=96
+```
+
+The trace prints a compact read-index window with each storage word's valid bit,
+stored logical index, current value, last writer source, last writer logical
+index, last writer address, value, and PC. This is independent of
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL`, so it can be used on narrow
+stops without enabling the older broad model trace.
+
+The comparable outer+pair low-bit f300 run stayed byte-identical to the previous
+oracle:
+
+```text
+/tmp/gauntdl-stopwindow-outer-lowbit-f300.ppm
+/tmp/gauntdl-stopwindow-outer-lowbit-f300.png
+frameHash=0xc1029c26
+ppmSha256=459c859540370fd6580de1e7e3c80ac6443303cf34ab1792b62dc96cef78a9e7
+```
+
+Stop-window conclusion: the final `cmdstop=invalid-standard-window/0xc0000205`
+is not a storage generation or stale-window corruption. The packet is a real
+Type5 texture-space packet (`space=3`, `count=64`) being filled gradually by the
+direct writer PCs. At frame 300, the writer is simply mid-packet:
+
+```text
+pc=800fe7a0 writes header 0xc0000205
+pc=800fe7b0 writes target byte
+pc=800fe7c4/800fe7cc write alternating payload words
+validWindow grows from 1 to 32 while read index stays at 0x20fbc
+final summary still stops with validWindow=18 at pc=800fe7cc
+```
+
+The focused Type5 writer-PC trace confirms the same writer family emits complete
+packets without changing the frame:
+
+```text
+/tmp/gauntdl-type5-writerpc-outer-lowbit-f300.log
+/tmp/gauntdl-type5-writerpc-outer-lowbit-f300.ppm
+ppmSha256=459c859540370fd6580de1e7e3c80ac6443303cf34ab1792b62dc96cef78a9e7
+
+cmd=0xc0000205 space=3 targetWord=0x00008000 count=64 nz=50
+first=0x00010002 second=0x00090000 last=0x494b4e50 pc=800fe7cc
+
+cmd=0xc0000205 space=3 targetWord=0x00008080 count=64 nz=63
+first=0x5349564e second=0x00003123 pc=800fe7cc
+
+cmd=0xc0000205 space=3 targetWord=0x00008100 count=64 nz=62
+first=0x5f53454a second=0x4c4b4e50 pc=800fe7cc
+```
+
+Current interpretation:
+
+```text
+1. Do not chase the `0xc0000205` partial stop as the visual bug; it is a normal
+   end-of-frame snapshot of an in-progress direct-writer Type5 packet.
+2. The suspicious part is that the `800fe7cc` direct-writer family uploads
+   control/model-looking or ASCII-like payload into texture space at targets
+   0x8000.., while the frame remains visually corrupted.
+3. Next useful slice should trace one level earlier in the `800fe7a0..800fe7cc`
+   source/control-table path, or compare it against the separate visible
+   stripe/fullrect writer family around `800fe5d4`.
+```

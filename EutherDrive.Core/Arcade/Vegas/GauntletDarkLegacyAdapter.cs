@@ -30365,6 +30365,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_STORAGE"));
     private readonly int _traceCommandFifoModelLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_MODEL_LIMIT"), 240);
+    private readonly bool _traceCommandFifoStopWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_STOP_WINDOW"));
+    private readonly ulong[] _traceCommandFifoStopWindowCommands =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_STOP_WINDOW_COMMANDS"));
+    private readonly int _traceCommandFifoStopWindowBefore =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_STOP_WINDOW_BEFORE"), 4);
+    private readonly int _traceCommandFifoStopWindowAfter =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_STOP_WINDOW_AFTER"), 80);
+    private readonly int _traceCommandFifoStopWindowLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_STOP_WINDOW_LIMIT"), 32);
     private readonly bool _traceCommandFifoAssembly =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_CMD_FIFO_ASSEMBLY"));
     private readonly ulong[] _traceCommandFifoAssemblyPcs =
@@ -30877,6 +30887,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private string _lastCommandFifoDecodeStopWord0Debug = "";
     private string _lastCommandFifoDecodeStopWord1Debug = "";
     private int _commandFifoDecodeStopCount;
+    private int _commandFifoStopWindowTraceCount;
     private uint _lastDecodedCommandFifoCommand;
     private int _lastDecodedCommandFifoWords;
     private int _lastDecodedCommandFifoPacketStart;
@@ -34273,6 +34284,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _lastCommandFifoDecodeStopWord1Debug = "";
         }
         _commandFifoDecodeStopCount++;
+        TraceCommandFifoStopWindow(reason, command, wordsNeeded);
 
         if (!_traceCommandFifoModel)
             return;
@@ -34302,6 +34314,63 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"w0={word0} w1={word1} " +
             $"amin=0x{_cmdFifoAddressMin:x8} amax=0x{_cmdFifoAddressMax:x8} trigger={_commandFifoDecodeTrigger} " +
             $"fifoPackets={_fifoPacketCount} drawPackets={_fifoDrawPacketCount}{pcStatus}");
+    }
+
+    private void TraceCommandFifoStopWindow(string reason, uint command, int wordsNeeded)
+    {
+        if (!_traceCommandFifoStopWindow)
+            return;
+        if (_traceCommandFifoStopWindowCommands.Length != 0 && !_traceCommandFifoStopWindowCommands.Contains(command))
+            return;
+        if (_commandFifoStopWindowTraceCount++ >= _traceCommandFifoStopWindowLimit)
+            return;
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        int before = Math.Clamp(_traceCommandFifoStopWindowBefore, 0, 32);
+        int after = Math.Clamp(_traceCommandFifoStopWindowAfter, 1, 256);
+        int validLimit = Math.Min(Math.Max(wordsNeeded, 1), after + 1);
+        int validWindowWords = CountCommandFifoValidWindowWords(_cmdFifoReadIndex, validLimit);
+        int firstInvalid = validWindowWords < validLimit ? validWindowWords : -1;
+        int readStorage = CommandFifoReadStorageIndex(_cmdFifoReadIndex);
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string bulkPacket =
+            _cmdFifoBulkSawWrite
+                ? FormatCommandFifoBulkPacketPosition(_cmdFifoReadIndex).TrimStart()
+                : "bulk=none";
+        string bulkHeads =
+            _cmdFifoBulkSawWrite
+                ? FormatCommandFifoBulkPacketHeads(8)
+                : "heads=none";
+        string window = FormatCommandFifoStopWindow(_cmdFifoReadIndex, before, after, firstInvalid);
+
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-CMDFIFO-STOP-WINDOW] reason={reason} cmd=0x{command:x8} type={command & 7u} " +
+            $"words={wordsNeeded} rd=0x{_cmdFifoReadIndex * 4:x8} storage=0x{readStorage * 4:x5} " +
+            $"validWindow={validWindowWords}/{validLimit} firstInvalid={firstInvalid} depth={_cmdFifoDepth} " +
+            $"holes={_cmdFifoHoles} valid={_cmdFifoValidCount} trigger={_commandFifoDecodeTrigger} " +
+            $"{bulkPacket} {bulkHeads}{pcStatus} window={window}");
+    }
+
+    private string FormatCommandFifoStopWindow(int readIndex, int before, int after, int firstInvalid)
+    {
+        StringBuilder builder = new StringBuilder();
+        for (int delta = -before; delta <= after; delta++)
+        {
+            if (builder.Length != 0)
+                builder.Append(" | ");
+
+            int logicalIndex = readIndex + delta;
+            char marker = delta == 0 ? '*' : delta == firstInvalid ? '!' : ' ';
+            builder.Append(marker);
+            builder.Append(delta >= 0 ? '+' : "");
+            builder.Append(delta.ToString(CultureInfo.InvariantCulture));
+            builder.Append(":lg0x");
+            builder.Append((logicalIndex * 4).ToString("x8", CultureInfo.InvariantCulture));
+            builder.Append('/');
+            builder.Append(FormatCommandFifoStorageWordDebug(logicalIndex));
+        }
+
+        return builder.ToString();
     }
 
     private int CountCommandFifoValidWindowWords(int start, int count)
