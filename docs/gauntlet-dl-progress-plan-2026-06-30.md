@@ -9804,3 +9804,46 @@ Current interpretation:
    source/control-table path, or compare it against the separate visible
    stripe/fullrect writer family around `800fe5d4`.
 ```
+
+Follow-up direct-writer tracing for Type5 target words `0x8000/0x8080/0x8100`
+confirmed the wrong-data shape. The first `0x8000` packet's target store is at
+`pc=800fe7b0`, then payload alternates through `800fe7c4/800fe7cc` from
+`s3=0xffffffff80313188`:
+
+```text
+/tmp/gauntdl-direct-writer-8000-phys-outer-lowbit-f300.log
+targetWord=0x00008000
+s3src=1:gei+0x11a70 ... hdr=bad
+s3w=00010002/00090000/00030000/00090002
+s3disk=1:gei@0x11a70=ff3eff64;mem=00010002
+       1:gei@0x11a74=ff51ff4c;mem=00090000
+       1:gei@0x11a78=ff48ff76;mem=00030000
+       1:gei@0x11a7c=ff5aff42;mem=00090002
+```
+
+A narrow direct-writer disk-word replacement on those same target words is a
+real visual lever, but still not correct game art:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORD_TARGET_WORDS=0x8000,0x8080,0x8100
+
+/tmp/gauntdl-direct-writer-diskwords-8000-f300.ppm
+/tmp/gauntdl-direct-writer-diskwords-8000-f300.png
+frameHash=0xb92057b6
+ppmSha256=f0a5b999ecf9e917cd317d148faff0e2a31dd3f6f6e57922f6d224064fe9ac0d
+visual=changed large texture fields, still corrupted/no real game art
+```
+
+Interpretation update:
+
+```text
+The `800fe7cc` family is definitely uploading RAM words that differ from the
+GEI/disk source words, and replacing just the low `0x8000..0x8100` targets is
+visible. The next fix should not hard-code the disk-word override as final;
+instead trace/repair why the RAM copy at `80313188+` contains control/model
+words while the source descriptor still maps to plausible GEI texture bytes.
+Likely next probes: producer writes for `80313188..80313280`, or the
+BGLoadModel/GEI hydration step that should materialize those disk bytes into RAM
+before `800fe7b0` consumes them.
+```
