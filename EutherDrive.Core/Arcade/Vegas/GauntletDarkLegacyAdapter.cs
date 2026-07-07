@@ -851,6 +851,24 @@ internal sealed class MipsR5000Core
         .ToLowerInvariant();
     private readonly ulong _runtimeBgLoadModelTextureSourceGlobalRemapBodyOffset =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET") ?? 0UL;
+    private readonly ulong _runtimeBgLoadModelTextureSourceLimitStackRemapIndexMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_INDEX_MASK") ?? 0UL;
+    private readonly uint _runtimeBgLoadModelTextureSourceLimitStackRemapDescriptorSource =
+        unchecked((uint)(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_DESCRIPTOR_SOURCE") ??
+                         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_DESCRIPTOR_SOURCE") ??
+                         0x80312998UL));
+    private readonly string _runtimeBgLoadModelTextureSourceLimitStackRemapTarget =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_TARGET") ??
+         Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_TARGET") ??
+         "body")
+        .Trim()
+        .ToLowerInvariant();
+    private readonly ulong _runtimeBgLoadModelTextureSourceLimitStackRemapBodyOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_BODY_OFFSET") ??
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET") ??
+        0UL;
+    private readonly ulong _runtimeBgLoadModelTextureSourceLimitStackRemapHeaderOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_HEADER_OFFSET") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelTextureSourceCallA3RemapIndexMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_INDEX_MASK") ?? 0UL;
     private readonly uint _runtimeBgLoadModelTextureSourceCallA3RemapDescriptorSource =
@@ -1036,6 +1054,12 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS_TRACE_LIMIT", 64);
     private readonly ulong[] _experimentDirectTextureWriterDiskWordTargetWords =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORD_TARGET_WORDS"));
+    private readonly bool _experimentDirectTextureWriterZeroWords =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_ZERO_WORDS"));
+    private readonly int _experimentDirectTextureWriterZeroWordsTraceLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_ZERO_WORDS_TRACE_LIMIT", 64);
+    private readonly ulong[] _experimentDirectTextureWriterZeroWordTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_ZERO_WORD_TARGET_WORDS"));
     private readonly bool _traceVertexFifoFastPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH") == "1";
     private readonly int _traceVertexFifoFastPathLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_VERTEX_FIFO_FASTPATH_LIMIT", 128);
@@ -1101,6 +1125,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
     private int _runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount;
     private int _runtimeBgLoadModelTextureSourceGlobalRemapTraceCount;
+    private int _runtimeBgLoadModelTextureSourceLimitStackRemapTraceCount;
     private int _runtimeBgLoadModelTextureSourceCallA3RemapTraceCount;
     private int _runtimeBgLoadModelTextureSourceCallA3RemapMissTraceCount;
     private int _runtimeBgLoadModelTextureSourceCallA3HydrateTraceCount;
@@ -1171,10 +1196,13 @@ internal sealed class MipsR5000Core
     private int _textureUploadDirectWriterTraceCount;
     private int _textureUploadDirectWriterControlTableWriteTraceCount;
     private int _textureUploadDirectWriterDiskWordTraceCount;
+    private int _textureUploadDirectWriterZeroWordTraceCount;
     private int _textureUploadDirectWriterFollowRemaining;
     private uint _textureUploadDirectWriterFollowTargetWord;
     private int _textureUploadDirectWriterDiskWordTargetFollowRemaining;
     private uint _textureUploadDirectWriterDiskWordTargetActive;
+    private int _textureUploadDirectWriterZeroWordTargetFollowRemaining;
+    private uint _textureUploadDirectWriterZeroWordTargetActive;
     private bool _textureUploadDirectWriterDiskWordCacheValid;
     private ulong _textureUploadDirectWriterDiskWordCacheStart;
     private ulong _textureUploadDirectWriterDiskWordCacheEnd;
@@ -5775,6 +5803,68 @@ internal sealed class MipsR5000Core
         }
 
         return transformedDiskWord;
+    }
+
+    private uint ApplyDirectTextureWriterZeroWordExperiment(
+        ulong pc,
+        int rt,
+        uint value)
+    {
+        if (!_experimentDirectTextureWriterZeroWords)
+            return value;
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        bool hasTargetFilter = _experimentDirectTextureWriterZeroWordTargetWords.Length > 0;
+        if (hasTargetFilter && physicalPc == 0x000fe7b0UL && rt == 2 && (value & 3U) == 0)
+        {
+            uint targetWord = value / 4U;
+            if (Array.IndexOf(_experimentDirectTextureWriterZeroWordTargetWords, (ulong)targetWord) >= 0)
+            {
+                ulong payloadWords = _gpr[20];
+                _textureUploadDirectWriterZeroWordTargetFollowRemaining =
+                    payloadWords is > 0UL and <= 0x400UL ? (int)payloadWords : 64;
+                _textureUploadDirectWriterZeroWordTargetActive = targetWord;
+            }
+
+            return value;
+        }
+
+        ulong source;
+        if (physicalPc == 0x000fe7c4UL && rt == 2)
+        {
+            source = _gpr[19];
+        }
+        else if (physicalPc == 0x000fe7ccUL && rt == 3)
+        {
+            source = _gpr[19] + 4UL;
+        }
+        else
+        {
+            return value;
+        }
+
+        if (hasTargetFilter)
+        {
+            if (_textureUploadDirectWriterZeroWordTargetFollowRemaining <= 0)
+                return value;
+
+            _textureUploadDirectWriterZeroWordTargetFollowRemaining--;
+        }
+        else
+        {
+            _textureUploadDirectWriterZeroWordTargetActive = 0;
+        }
+
+        if (_textureUploadDirectWriterZeroWordTraceCount++ < _experimentDirectTextureWriterZeroWordsTraceLimit &&
+            value != 0)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] direct-texture-writer-zero-word " +
+                $"pc=0x{pc:x16} rt=r{rt} target=0x{_textureUploadDirectWriterZeroWordTargetActive:x8} " +
+                $"source=0x{source:x16} mem=0x{value:x8}->zero");
+        }
+
+        return 0;
     }
 
     private bool TryReadDirectTextureWriterDiskWord(
@@ -14361,6 +14451,71 @@ internal sealed class MipsR5000Core
         }
     }
 
+    private uint ApplyKnownRuntimeBgLoadModelTextureSourceLimitStackRemap(
+        ulong pc,
+        int rt,
+        ulong address,
+        uint value)
+    {
+        if (_runtimeBgLoadModelTextureSourceLimitStackRemapIndexMask == 0 ||
+            pc != 0xffffffff801095b4UL ||
+            rt != 16 ||
+            address != _gpr[29] + 0x1cUL ||
+            value != _runtimeBgLoadModelTextureSourceLimitStackRemapDescriptorSource)
+        {
+            return value;
+        }
+
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong destinationBase = 0xffffffff802e1718UL;
+        for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex && index < 64UL; index++)
+        {
+            if ((_runtimeBgLoadModelTextureSourceLimitStackRemapIndexMask & (1UL << (int)index)) == 0)
+                continue;
+
+            ulong slot = sourceTable + index * 4UL;
+            ulong header = destinationBase + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
+            if (!IsMainRamRange(slot, 4UL) || !IsMainRamRange(header + 0x60UL, 4UL))
+                continue;
+
+            uint slotValue = _memory.Read32(slot);
+            if (slotValue != (uint)header)
+                continue;
+
+            uint bodyOffset = _memory.Read32(header + 0x5cUL);
+            ulong body = header + bodyOffset;
+            if (bodyOffset == 0 || !IsMainRamRange(body, 4UL))
+                continue;
+
+            bool useHeader = _runtimeBgLoadModelTextureSourceLimitStackRemapTarget == "header";
+            ulong replacementAddress = useHeader
+                ? header + _runtimeBgLoadModelTextureSourceLimitStackRemapHeaderOffset
+                : body + _runtimeBgLoadModelTextureSourceLimitStackRemapBodyOffset;
+            if (!IsMainRamRange(replacementAddress, 4UL))
+                continue;
+
+            uint replacement = (uint)replacementAddress;
+            if (_runtimeBgLoadModelTextureSourceLimitStackRemapTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] bgloadmodel-texture-source-limit-stack-remap pc={pc:x16} " +
+                    $"index={index} target={(useHeader ? "header" : "body")} " +
+                    $"headerOffsetAdd=0x{(useHeader ? _runtimeBgLoadModelTextureSourceLimitStackRemapHeaderOffset : 0UL):x} " +
+                    $"bodyOffsetAdd=0x{(useHeader ? 0UL : _runtimeBgLoadModelTextureSourceLimitStackRemapBodyOffset):x} " +
+                    $"stack={address:x16} {value:x8}->{replacement:x8} " +
+                    $"slot={slot:x16}:{slotValue:x8} header={header:x16} bodyOffset={bodyOffset:x8} body={body:x16} " +
+                    $"s1={_gpr[17]:x16} s2={_gpr[18]:x16} a2={_gpr[6]:x16} " +
+                    $"replacementFirst={ReadTraceWord(replacementAddress + 0x00UL):x8}/{ReadTraceWord(replacementAddress + 0x04UL):x8}/" +
+                    $"{ReadTraceWord(replacementAddress + 0x08UL):x8}/{ReadTraceWord(replacementAddress + 0x0cUL):x8} " +
+                    $"headerWords={TraceKnownRuntimeBgLoadModelAssetParserWords(header)}");
+            }
+
+            return replacement;
+        }
+
+        return value;
+    }
+
     private bool TrySeedKnownRuntimeBgLoadModelDistinctSourceIndexedHeader(ulong index, ulong destination)
     {
         bool indexedHeaderEnabled = _enableRuntimeBgLoadModelDistinctSourceIndexedHeaderExperiment ||
@@ -22772,7 +22927,9 @@ internal sealed class MipsR5000Core
                     ulong address = _gpr[rs] + (ulong)(long)simm;
                     uint value = (uint)_gpr[rt];
                     uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
+                    value = ApplyKnownRuntimeBgLoadModelTextureSourceLimitStackRemap(pc, rt, address, value);
                     value = ApplyDirectTextureWriterDiskWordExperiment(pc, rt, value);
+                    value = ApplyDirectTextureWriterZeroWordExperiment(pc, rt, value);
                     TraceTextureUploadDirectWriterStore(pc, op, rs, rt, simm, address, value);
                     if (ShouldSkipRuntimeBgLoadModelHotDescriptorOverwrite(pc, address, oldValue, value))
                         break;

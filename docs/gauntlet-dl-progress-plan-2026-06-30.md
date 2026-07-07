@@ -8846,3 +8846,109 @@ Current continuation:
    candidate is derived from real asset metadata instead of downstream Voodoo
    target pages.
 ```
+
+## Source-limit stack and direct-writer zero probe - 2026-07-07
+
+Added one producer-side and one direct-writer-side diagnostic, both default-off:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_INDEX_MASK
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_DESCRIPTOR_SOURCE
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_TARGET
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_BODY_OFFSET
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_HEADER_OFFSET
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_ZERO_WORDS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_ZERO_WORDS_TRACE_LIMIT
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_ZERO_WORD_TARGET_WORDS
+```
+
+The source-limit stack remap fires at the `801095b4 sw s0,0x1c(sp)` producer
+boundary and replaces the caller stack source `80312998` with the configured
+indexed source. In the current index-9 WTR bracket it correctly rewrites the
+callee source to `8040d718`, but the frame remains byte-identical to the
+current no-hot baseline:
+
+```text
+/tmp/gauntdl-source-limit-stack-remap-plus3c8-f300.log
+/tmp/gauntdl-source-limit-stack-remap-plus3c8-f300.ppm
+/tmp/gauntdl-source-limit-stack-remap-plus3c8-f300.png
+logSha256=27e855c8777f86f1f6da980f1b6b59d527d1ae5c75e0e406e8ada896691726e7
+ppmSha256=31ef2febed012b53e6bd9b173b72d40a2c935cfb69ddbe07618450f183b5a82b
+frameHash=0x5ef40570
+frameSha256=aea32377b9a8a1b7bd43341f185ca35ad954a098650a00d663734bc5e8f0ed6b
+textureMap=5171464:581252:4590212:22910:0x000000:0x01660c
+```
+
+Interpretation: `801096ac` is already downstream of the active WTR source
+remap. The stack source/limit handoff is not the remaining visible blocker.
+
+The skip-stride control was also tested with the S-from-X bridge and current
+WTR bracket:
+
+```text
+/tmp/gauntdl-sfromx-skipstride-index9-wtr-f300.log
+/tmp/gauntdl-sfromx-skipstride-index9-wtr-f300.ppm
+/tmp/gauntdl-sfromx-skipstride-index9-wtr-f300.png
+logSha256=2bf05479fc6c42d49eb694887f959d9b0fafefef54d1ff4fd825ad11f5529e22
+ppmSha256=3b4b68b5d3db4887f28014907d6724af3d75c390f01e4fd0668803cd418bf6ce
+frameHash=0xc615aef0
+frameSha256=5159c49f9075acce13a3b77e6ccc1b0b3e2721e3c7c8b4c8507175cf975b477e
+textureMap=4523016:82600:4440416:22910:0x000000:0x01660c
+```
+
+It removed too much WTR texture work. The lower coarse geometry survives, but
+the upper/middle image is still noisy and no real art appears. Do not promote
+`SKIP_STRIDE_ONLY_ZERO_BASE_TEXTURE_PAYLOAD_RUNS` for this bracket.
+
+The new direct-writer zero-word probe keeps the Type5 packet headers and target
+progression intact, but writes zero for selected late `pc=800fe7cc` payload
+words. First visual run:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_ZERO_WORDS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_ZERO_WORD_TARGET_WORDS=0x7700,0x7780,0x7800,0x7880,0x7900,0x7980,0x7a00,0x7a80,0x7b00,0x7b80,0x7c00,0x7c80,0x7d00,0x7d80,0x7e00,0x7e80,0x7f00,0x7f80,0x8000,0x8080,0x8100,0x8180
+
+/tmp/gauntdl-sfromx-zero-highdirect-index9-wtr-f300.log
+/tmp/gauntdl-sfromx-zero-highdirect-index9-wtr-f300.ppm
+/tmp/gauntdl-sfromx-zero-highdirect-index9-wtr-f300.png
+logSha256=b6eebd4d71343fb4e7a404d91b53e57addddb686447a544a1d2a8d2d05f201da
+ppmSha256=b6fc5b85bbabe4c2d5b6d4bc79612d3a2a5ee1a9913860a3555dd52f23dcca8d
+pngSha256=113d952de67263cc549cfa776578c851699cf6fa8d0ef28b20cd84ef6b8a00c5
+frameHash=0x7c385302
+frameSha256=a45459dfccb32c7d7089b4474fc19d21b183100d29c8be6e1a114bdbae3ea978
+textureMap=5171464:580378:4591086:22910:0x000000:0x01660c
+zeroWordTraceLines=82
+```
+
+The probe is causal but not a graphics fix. It changes the frame and removes
+some late high-target payload bytes while preserving FIFO structure, but the
+visible result is still RGB/static noise over the upper and middle screen. The
+logged words include metadata/control-looking values such as `5f53454a`,
+`444b4e50`, and `5349564e`, which reinforces the existing conclusion: the hot
+late Type5 family is real source data being consumed through the wrong graphics
+interpretation, not simply missing WTR disk art.
+
+Verification:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release --no-restore
+result: 0 errors, existing warnings only
+```
+
+Current continuation:
+
+```text
+1. Keep the source-limit stack remap and direct-writer zero-word controls as
+   diagnostics only.
+2. Stop spending cycles on downstream target-only disk/zero replacements for
+   `0x7700..0x8180`; they are causal but visually wrong.
+3. The remaining useful target is the Type5/source interpretation for the hot
+   writer families, especially why control/model records become sampled as
+   texture pages after the S-from-X bridge.
+4. Next probe should correlate the zeroed high-target family with the existing
+   `VOODOO-TEXSUMMARY` sampled buckets and Type5 writer metadata, then decide
+   whether the fix belongs in packet-class selection, texture register state, or
+   writer-to-sampler address interpretation.
+```
