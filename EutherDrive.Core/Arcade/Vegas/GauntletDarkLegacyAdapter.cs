@@ -38951,8 +38951,8 @@ sampledTexel:
     private ushort ConvertTextureFormatToRgb565(int format, ushort packed, uint textureMode)
         => format switch
         {
-            8 => ConvertRgb332ToRgb565((byte)packed),
-            9 => ConvertNccToRgb565((byte)packed, textureMode),
+            0 or 8 => ConvertRgb332ToRgb565((byte)packed),
+            1 or 9 => ConvertNccToRgb565((byte)packed, textureMode),
             10 => ConvertRgb565Lane(packed, 0),
             11 => ConvertXrgb1555Lane(packed, 0, hasAlphaBit: true),
             12 => ConvertArgb4444ToRgb565(packed),

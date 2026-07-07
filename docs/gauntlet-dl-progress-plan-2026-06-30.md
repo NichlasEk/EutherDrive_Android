@@ -9314,3 +9314,96 @@ Interpretation:
    `0x00020c00` / sampled target family `0x008300..0x009800`, rather than adding
    more texture fetch/layout transforms.
 ```
+
+### Direct-writer GEI and fetch-format checkpoint - 2026-07-07
+
+The row2x/relookup diagnostic was tested with direct-writer disk-word
+replacement on the visible `800fe7cc` sampled-owner family:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORD_TARGET_WORDS=8300
+
+/tmp/gauntdl-row2x-directdisk8300-f300.log
+/tmp/gauntdl-row2x-directdisk8300-f300.ppm
+/tmp/gauntdl-row2x-directdisk8300-f300.png
+logSha256=b054ff6501a9454a5243c8add34aa2c4cc32069a2c12921dda27f8da485f07ef
+ppmSha256=ea0826ffa70f5edd9066f982bc0dd274a12ba3b6b0fa6578598518a00d023d36
+frameHash=0xe1cc81c1
+frameSha256=92de00de02c47fc811e3ea0df6463f6ab14c98c69be0293dcae1378958e35e92
+textureMap=5171464:581813:4589651:22910:0x000000:0x01660c
+```
+
+Adding `0x9800` with the correct row2x flag changed only six pixels versus the
+`0x8300` run:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM=row2x
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORD_TARGET_WORDS=8300,9800
+
+/tmp/gauntdl-row2x-directdisk8300-9800-v2-f300.log
+/tmp/gauntdl-row2x-directdisk8300-9800-v2-f300.ppm
+/tmp/gauntdl-row2x-directdisk8300-9800-v2-f300.png
+logSha256=9c38799ac73dfad8bf31159172d3580b23491577e8ffa6bde24df033e842cc4d
+ppmSha256=c70a0596b9ca205fb51dfc3c97143b1e2528b2ea5a148eae8768b0a0f659b44e
+frameHash=0xba3a6e5d
+frameSha256=ccbd0bdcc1161fcbdd290a1fbf0d8ca1966f377be65d709242c2ceb63ac55aa4
+AE vs 8300-only=6
+```
+
+Interpretation: GEI disk words at `targetWord=0x8300` are definitely visible,
+but the screenshot remains the same corrupted fullrect family. This is not a
+final art path; it is another proof that target-only direct-writer replacement
+is below the real source/format/layout error.
+
+A current f300 WTR stack run with MAME-style setup/fetch also changed the image
+strongly, but in the wrong direction:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FETCH_ADDRESSING=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH=1
+
+/tmp/gauntdl-mamefetch-current-f300.log
+/tmp/gauntdl-mamefetch-current-f300.ppm
+/tmp/gauntdl-mamefetch-current-f300.png
+logSha256=bed5edb0428905f72c5f2db0e65604247a853de1be79fc2659d6cfecd5d89028
+ppmSha256=1b4f66bb1ea191b09bad63f2ff76b37ea2fb475aaf3993b7e62ae2e44644daea
+frameHash=0xce3ae443
+frameSha256=4a9dcf1aa09d90ce84a14b821e77fdf69045948eec34d824d7d8a435d1f1375d
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+```
+
+This confirms fetch/raster readout is a powerful visual lever, but not the
+missing fix by itself. Texture memory is byte-identical; the output becomes
+more regular noise, not recognizable game art.
+
+MAME's texel table maps format `0` to RGB332 and format `1` to NCC, so the
+shared helper `ConvertTextureFormatToRgb565()` was corrected to match that for
+helper/16-bit-style reads. The normal 8-bit sampler path already had format
+`0 -> RGB332`, so the current f300 visual oracle is byte-identical before and
+after this code change:
+
+```text
+/tmp/gauntdl-rgb332fmt-current-f300.log
+/tmp/gauntdl-rgb332fmt-current-f300.ppm
+/tmp/gauntdl-rgb332fmt-current-f300.png
+logSha256=ce88fa4bd45fd5d98fb2ae9b74accf28d4a6a7d57881562b8ac6eb67c36196ec
+ppmSha256=713eed609a2867f27d272e19587688374493dde1e90c3cb3c75ab77f043a4bc3
+frameHash=0x38bc79b5
+frameSha256=ce9f9f865b02c700d2507e2579b7e8c3d1f09d3194fa41b91b57fea43f2a0154
+```
+
+Current continuation:
+
+```text
+1. Keep the format helper correction; it aligns the helper with MAME but is not
+   the current visual breakthrough.
+2. Stop downstream direct-writer disk replacement for `0x8300/0x9800`; it is
+   causal but visibly wrong.
+3. Treat MAME fixed fetch as a negative control for the active WTR stack.
+4. Next real target remains source/layout before sampling: identify why the
+   visible Type5 pages contain descriptor/control-looking data after the
+   source/FIFO S-from-X bridge, especially the `800fe614` WTR buckets
+   `0x300/0x400/0x500/0xe00/0xf00` and the `800fe7cc` sampled-owner bank.
+```
