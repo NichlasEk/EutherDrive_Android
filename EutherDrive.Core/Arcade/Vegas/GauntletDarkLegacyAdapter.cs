@@ -30055,6 +30055,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_LIMIT"), 160);
     private readonly bool _traceTextureSampleWritersRequireWriter =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_REQUIRE_WRITER"));
+    private readonly bool _traceTextureSampleFifoOwners =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_FIFO_OWNERS"));
     private readonly bool _traceTexturedTriangleSampleSummary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
     private readonly bool _traceTexturedTriangleSampleWriters =
@@ -39242,6 +39244,9 @@ sampledTexel:
         string writerStatus = hasWriter
             ? FormatTextureWordWriterStatus(writer)
             : "-";
+        string fifoOwnerStatus = hasWriter
+            ? FormatTextureSampleFifoOwnerStatus(writer)
+            : "";
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         Console.WriteLine(
@@ -39249,8 +39254,22 @@ sampledTexel:
             $"st=({s:F3},{t:F3}) xy=({x},{y}) size={width}x{height} " +
             $"mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} " +
             $"addr=0x{byteAddress:X6}/w{wordOffset:X5} word=0x{word:X8} raw=0x{raw:X4} result=0x{result:X4} " +
-            $"writer={writerStatus} cmd=0x{_currentCommandFifoCommand:X8}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8} " +
+            $"writer={writerStatus}{fifoOwnerStatus} cmd=0x{_currentCommandFifoCommand:X8}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8} " +
             $"draws={_fifoDrawPacketCount} texWrites={_textureWriteCount} buf={GetDrawBufferIndex()}{pcStatus}");
+    }
+
+    private string FormatTextureSampleFifoOwnerStatus(TextureWordLastWriter writer)
+    {
+        if (!_traceTextureSampleFifoOwners || !writer.Type5)
+            return "";
+
+        int packetStart = writer.PacketStart;
+        int targetIndex = packetStart + 1;
+        int payloadIndex = packetStart + 2 + writer.Type5Index;
+        return
+            $" fifoOwner=hdr[{FormatCommandFifoStorageWordDebug(packetStart)}] " +
+            $"target[{FormatCommandFifoStorageWordDebug(targetIndex)}] " +
+            $"payload[{FormatCommandFifoStorageWordDebug(payloadIndex)}]";
     }
 
     private void TraceTextureFetchCompare(

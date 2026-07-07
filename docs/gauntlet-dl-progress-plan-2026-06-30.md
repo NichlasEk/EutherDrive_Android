@@ -9258,3 +9258,59 @@ Interpretation:
    source vertices and direct-writer banks before the Type5 upload, then return
    to visual sampling once the source payload is plausibly art data.
 ```
+
+### Texture sample FIFO owner checkpoint
+
+Added a default-off sampler correlation trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_FIFO_OWNERS=1
+```
+
+When `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS=1` is enabled,
+`VOODOO-TEXSAMPLE-WRITER` now also prints the command FIFO last-writer records
+for the Type5 header word, target word, and sampled payload word. This is a
+trace-only change; rendering output is unchanged when the flag is off.
+
+Focused row2x/relookup run:
+
+```text
+/tmp/gauntdl-row2x-fifoowners-f300.log
+/tmp/gauntdl-row2x-fifoowners-f300.ppm
+/tmp/gauntdl-row2x-fifoowners-f300.png
+logSha256=619a9eee5c713a235dc40dc61792e6c1064ee85dd68e73eba3bcb3d02dc6f7ac
+ppmSha256=7cfeab3c156643262709209003726c361d7537b20de5fa3d0b947e74ef9740f0
+frameHash=0x98f65692
+frameSha256=ed52cd5c195a5fe9422e021d5dc90a71e9653971908d88a329a583e464f2cb60
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+```
+
+The PPM is byte-identical to the prior row2x diagnostic, so the new trace does
+not alter the visual path. The useful new evidence is ownership:
+
+```text
+writer=pc0x800fe614 ... @0x000300:0x000307
+fifoOwner=hdr ... val0xc0000205 pc0xffffffff800fe5e8
+target ... val0x00000c00 pc0xffffffff800fe5f8
+payload ... val0x04000144 pc0xffffffff800fe614
+
+writer=pc0x800fe7cc ... @0x008300:0x008300
+fifoOwner=hdr ... val0xc0000205 pc0xffffffff800fe7a0
+target ... val0x00020c00 pc0xffffffff800fe7b0
+payload ... val0x00d10000 pc0xffffffff800fe7c4
+```
+
+Interpretation:
+
+```text
+1. The first normal sampled pages are still produced by the outer payload loop
+   (`800fe5e8/800fe5f8/800fe614`), but the row2x relookup path lands in the
+   `800fe7a0..800fe7cc` direct-writer family.
+2. The direct-writer payload words on the visible path are mostly zero or small
+   control-like words such as `0x00d10000` and `0x00d20000`, matching the earlier
+   sparse target-source trace.
+3. The next useful repair slice should trace the CPU source registers and memory
+   feeding `800fe7a0..800fe7cc`, especially the path that sets the target word
+   `0x00020c00` / sampled target family `0x008300..0x009800`, rather than adding
+   more texture fetch/layout transforms.
+```
