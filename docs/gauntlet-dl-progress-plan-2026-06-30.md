@@ -9407,3 +9407,102 @@ Current continuation:
    source/FIFO S-from-X bridge, especially the `800fe614` WTR buckets
    `0x300/0x400/0x500/0xe00/0xf00` and the `800fe7cc` sampled-owner bank.
 ```
+
+### WTR include filter and entry-layout checkpoint - 2026-07-07
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS_INCLUDE_TARGET_WORDS`
+now lets the zero-base disk-word experiment replace only a focused set of
+Type5 target words. Normal disk-word tracing also prints `targetWord=...` for
+replacement rows, which makes focused runs much easier to read.
+
+Focused include-only matrix:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS_INCLUDE_TARGET_WORDS=300,400,500,e00,f00
+
+none:
+  /tmp/gauntdl-wtr-include-none-f300.log
+  /tmp/gauntdl-wtr-include-none-f300.ppm
+  logSha256=454e96fc0d12053c1b05dae4713afd5e85f0bc6c9a41180a6620128fe779c608
+  ppmSha256=8ffb1f1fafba4afc556c10f1eedb7e737205d605d048e3e97c519760aaeca9fa
+  frameHash=0xfa7958f7
+  frameSha256=97b4b15c30d2ac64e80863a5f663b512dd98c25cd8145741d29e27a9d47c06b4
+  textureMap=5171464:171162:5000302:22910:0x000000:0x01660c
+
+be32 ppmSha256=a356b55f2ca51b027b43e69219a5727db9b64ab7c298f38ae502ff8e26ce2790
+swap16 ppmSha256=1a0310c1e7d6a6a5ba1fd7bbaa2904a5e8400efc18d65486eab468b78e6dea7c
+reverse16 ppmSha256=97f3fe8edcb63ff8af7506ccfc661032a0cbf6f3d2361129909861ff8e0c8275
+
+visual=/tmp/gauntdl-wtr-include-transform-matrix-f300.png
+```
+
+Interpretation: include-only replacement changes the frame but does not reveal
+art. The endian/halfword transforms move only a small pixel slice and stay in
+the same corrupted WTR fullrect family, so byte order is not the main blocker.
+The include filter is still useful as a surgical diagnostic, but should not be
+promoted as a visual fix.
+
+WTR entry context with the current broad disk-word stack:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_ZERO_BASE_RUN_CLASSIFIER=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_WTR_ENTRIES=1
+
+/tmp/gauntdl-wtr-entry-classifier-f300.log
+logSha256=2d851accd0792246d808df27ab159b9170a81be104fe06f650aea4df7e2cffdd
+frameHash=0x38bc79b5
+frameSha256=ce9f9f865b02c700d2507e2579b7e8c3d1f09d3194fa41b91b57fea43f2a0154
+```
+
+Key trace:
+
+```text
+[GAUNTDL:TEXUPLOAD-ZEROBASE-CLASS]
+source=0xffffffff8040d718 bgsrc=9:wtr+0xc000(body=0xbc38/+0x3c8 len=0xbca4)
+packet=0x00000000 index=0/31 packets=32 words=64 bytes=0x2000
+
+[GAUNTDL:WTR-ENTRY]
+body=0xffffffff8040d350 sourceOffset=0xc000 bodyDelta=+0x3c8
+packet=0x00000000 count=31 stride=0x00000015
+sourceNearest=0:BK_RED@0x30000 flags=0x00100080 size=0x100080 delta=-0x2fc38
+packetNearest=0:BK_RED@0x30000 flags=0x00100080 size=0x100080 delta=-0x30000
+entries=0:BK_RED@0x30000/0x00100080,1:BTMBK_RED@0x40000/0x00400080,2:KNI_NAME@0xc0000/0x00100080
+```
+
+This is the strongest new clue: the current zero-base run writes packets from
+`0x00000000` with a `0x200` stride while the WTR body table's first named entry
+points at `0x30000`. A naive sample-bias test confirms that this mismatch is
+not fixed by simply moving the sampler:
+
+```text
+bias=0:
+  /tmp/gauntdl-wtr-samplebias0-f300.log
+  /tmp/gauntdl-wtr-samplebias0-f300.ppm
+  logSha256=a1480e729f390aa95209bb572ea09340a318862b578369f75f49502eb1901b3e
+  ppmSha256=2ad9ef3589127d55a498c009cd1d2e26467d87cf75f7f487180b430180918310
+  frameHash=0xa52ad208
+  frameSha256=e96c067a7dc7ac4137f45f77b9e55a0fa3ca95b4f61687f873197f8f02142e91
+
+bias=0x30000 and bias=0x30510:
+  /tmp/gauntdl-wtr-samplebias30000-f300.log
+  /tmp/gauntdl-wtr-samplebias30000-f300.ppm
+  logSha256=f136008413df190aa18f42e22db1cd258152a2c04bb9fd0ccbe176a472c284f3
+  ppmSha256=d91a06ae9a03671be1214e76274684dfe2caaa07a7c17d0b2b6abfbb7cc596e1
+  frameHash=0x6d791e91
+  frameSha256=1bbae73410456e3b595ce97970764a4bf1d2434f8f904ea72112c4031cf1a341
+  visual=3-color collapse
+```
+
+Current continuation:
+
+```text
+1. Keep the include-target filter and targetWord trace; they made the WTR
+   source/target mismatch visible without changing default behavior.
+2. Treat endian transforms and sample-bias 0/0x30000 as negative controls.
+3. Next real target is the texture upload address layout: either derive
+   zero-base packet addresses from the WTR entry table, or prove from a trace
+   why the WTR entry target is metadata-only and not the Voodoo packet target.
+4. Before changing packet addresses globally, add a focused default-off WTR-only
+   packet-address experiment and test it against the f300 fullrect oracle.
+```

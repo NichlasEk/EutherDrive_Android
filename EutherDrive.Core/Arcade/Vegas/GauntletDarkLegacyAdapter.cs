@@ -824,6 +824,8 @@ internal sealed class MipsR5000Core
         .ToLowerInvariant();
     private readonly ulong[] _experimentZeroBaseUploadDiskWordExcludeTargetWords =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS_EXCLUDE_TARGET_WORDS"));
+    private readonly ulong[] _experimentZeroBaseUploadDiskWordIncludeTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS_INCLUDE_TARGET_WORDS"));
     private readonly ulong _experimentZeroBaseUploadZeroDiskWordIndexedSourceMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_ZERO_DISK_WORD_INDEX_MASK") ?? 0UL;
     private readonly ulong _experimentZeroBaseUploadZeroDiskWordMinOffset =
@@ -4571,7 +4573,7 @@ internal sealed class MipsR5000Core
                                 string transform = DescribeZeroBaseUploadDiskWordTransform(diskWord, transformedDiskWord);
                                 Console.WriteLine(
                                     $"[GAUNTDL:EXPERIMENT] zero-base-upload-disk-word " +
-                                    $"addr=0x{source:x16} {diskSource} mem=0x{payloadWord:x8}->disk=0x{diskWord:x8}{transform} " +
+                                    $"targetWord=0x{packetTargetWord:x8} addr=0x{source:x16} {diskSource} mem=0x{payloadWord:x8}->disk=0x{diskWord:x8}{transform} " +
                                     $"packet={packet} index={index}/{limit} word={word}/{payloadWords}");
                             }
 
@@ -4669,8 +4671,16 @@ internal sealed class MipsR5000Core
     }
 
     private bool ShouldKeepZeroBaseUploadMemoryWordForTarget(uint targetWord)
-        => _experimentZeroBaseUploadDiskWordExcludeTargetWords.Length != 0 &&
-           _experimentZeroBaseUploadDiskWordExcludeTargetWords.Contains(targetWord);
+    {
+        if (_experimentZeroBaseUploadDiskWordIncludeTargetWords.Length != 0 &&
+            !_experimentZeroBaseUploadDiskWordIncludeTargetWords.Contains(targetWord))
+        {
+            return true;
+        }
+
+        return _experimentZeroBaseUploadDiskWordExcludeTargetWords.Length != 0 &&
+            _experimentZeroBaseUploadDiskWordExcludeTargetWords.Contains(targetWord);
+    }
 
     private string DescribeZeroBaseUploadDiskWordTransform(uint originalWord, uint transformedWord)
     {
