@@ -8763,3 +8763,86 @@ Interpretation:
 4. Keep sample-writer require-writer as a diagnostic lever only; it is safe for
    future traces and does not change rendering.
 ```
+
+## Direct-writer no-hot-skip source bracket - 2026-07-07
+
+The focused no-hot-skip index-9 bracket was extended from sample ownership into
+direct-writer source ownership. The control stack was:
+
+```text
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/eutherdrive-gauntlet-probe/gauntdl-gauntdl24-fast-raw-f180-s200000-e27b9a6b6d3d.warm
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=180
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK=0x3fe
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERWRITE_INDEXED_SOURCE_MASK=0x200
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_STRIDE=0x20000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_INDEX_MASK=0x200
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET=0x3c8
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT=1
+```
+
+Focused GEI target-gated disk-word visual run:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORD_TARGET_WORDS=0x8000,0x8080,0x8100,0x8180
+
+/tmp/gauntdl-index9-nohotskip-gei8000-directdisk-f300.log
+/tmp/gauntdl-index9-nohotskip-gei8000-directdisk-f300.ppm
+/tmp/gauntdl-index9-nohotskip-gei8000-directdisk-f300.png
+logSha256=176b16f4de72d4929e81512ce491c17b4d667cee0dff9501c70c6271d6084cb6
+ppmSha256=4789f37e3f943d025c3ec85224904e1102b68922244619ee324d8f4caf64c17c
+frameHash=0x14a91268
+frameSha256=657ee4947c938b061942ecb9339ba2b72b26895b2fe5322186ee6eacb97ca63c
+textureMap=5171464:583325:4588139:22910:0x000000:0x01660c
+```
+
+This proves the `1:gei+0x11a70..0x11d70` disk-rich family is visible and
+causal, but it is not a graphics fix. The screenshot regresses from the noisy
+blue/green form hints into broad horizontal stripes. Do not promote a
+target-only GEI direct-writer disk replacement.
+
+Focused hot sampled target trace:
+
+```text
+/tmp/gauntdl-index9-nohotskip-directwriter-7d00-7f00-f300.log
+logSha256=1c0e6db854774f0c71ce1398aa81c4fc20cec9be88c1a112a5125702fdfe8e83
+frameHash=0x5ef40570
+frameSha256=aea32377b9a8a1b7bd43341f185ca35ad954a098650a00d663734bc5e8f0ed6b
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+```
+
+The sampled high page at `0x7d00..0x7f00` is not WTR/GEI disk data:
+
+```text
+targetWord=0x00007f00 pc=800fe7b0 s3=0x000000000000df08
+s3src=bgsrc=none s3disk=none/none/none/none s3w=00000000/00000000/00000000/00000000
+a2w=032a8000/01888000/03468000/01b98000
+```
+
+This matches the earlier stride-only zero-base conclusion: the visible static
+is mostly caused by descriptor/control streams entering Type5 texture memory,
+not by missing disk art at the final sampled page.
+
+Current continuation:
+
+```text
+1. Treat the current no-hot-skip WTR bracket as the reproducible baseline, but
+   stop target-only disk-word patching for 0x8000..0x8180.
+2. Continue one level upstream from the Type5 writer: source/limit selection is
+   still receiving 80312998/803129a4 as a zero-base texture source. The useful
+   repair must replace that stride-only descriptor run with the correct
+   material/texture body span, not skip it and not blindly dereference the
+   descriptor fields already tested as negative.
+3. The best current visual evidence remains:
+   - `/tmp/gauntdl-index9-stride20000-overwrite-plus3c8-diskwords-clamp-nohotskip-f300.png`
+     for noisy but disk-backed form hints.
+   - `/tmp/gauntdl-skip-stride-only-zerobase-f300.png` for the cleaner
+     "corruption removed but art missing" shape baseline.
+   - `/tmp/gauntdl-index9-nohotskip-gei8000-directdisk-f300.png` as the negative
+     proof that GEI direct-disk target replacement is causal but wrong.
+4. Next code slice should add a trace or narrow remap at the producer that
+   writes the upload source/limit pair before `801096ac`, so the replacement
+   candidate is derived from real asset metadata instead of downstream Voodoo
+   target pages.
+```
