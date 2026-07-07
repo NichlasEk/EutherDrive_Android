@@ -9929,3 +9929,35 @@ stream. Next slice: trace how `s3=80313188` is selected for the Type5 writer and
 compare that selection against the BGLoadModel texture source slot/header/body
 addresses (`80401718/8040d718`) rather than trying to rewrite the RAM block.
 ```
+
+Producer trace for target `80313188` narrows the source selection to the caller
+frame:
+
+```text
+logs/gauntlet/source-producer-80313188-f300.log
+
+pc=800fe1fc entry/prologue:
+  ra=80109704
+  t2=80313188 s0=80313188
+  sp1c=80313188 sp4c=80313188
+  first=00010002/00090000/00030000/00090002
+
+after prologue:
+  sp6c=80313188
+
+pc=800fe228:
+  lw r19,[sp+0x6c]
+  s3 becomes 80313188
+
+first direct writer target:
+  pc=800fe7b0 targetWord=0x8000
+  s3=80313188
+  s3w=00010002/00090000/00030000/00090002
+```
+
+This means the direct-writer loop is not independently choosing the wrong base;
+it is consuming a source pointer passed into the `800fe1fc` routine by
+`ra=80109704`. The next productive trace should move to the caller around
+`801095c8..80109704` and identify why `80313188` is passed for the texture
+upload source when the wanted indexed WTR header/body path is
+`80401718/8040d718`.
