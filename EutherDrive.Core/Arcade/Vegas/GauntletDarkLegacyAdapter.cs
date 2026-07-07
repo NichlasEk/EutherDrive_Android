@@ -778,12 +778,20 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
     private readonly int _experimentSkipZeroBaseTexturePayloadRunPackets =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_ZERO_BASE_TEXTURE_PAYLOAD_RUN_PACKETS", 0);
+    private readonly bool _experimentSkipBadHeaderZeroBaseTexturePayloadRuns =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_BAD_HEADER_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
+    private readonly bool _experimentZeroBaseUploadTreatBadHeaderAsUnknown =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_TREAT_BAD_HEADER_AS_UNKNOWN"));
     private readonly bool _experimentZeroBaseUploadSkipUnknownPrefix =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_SKIP_UNKNOWN_PREFIX"));
     private readonly bool _experimentZeroBaseUploadTreatStrideOnlyAsUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_TREAT_STRIDE_ONLY_AS_UNKNOWN"));
     private readonly bool _experimentZeroBaseUploadPointerStartUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_POINTER_START_UNKNOWN"));
+    private readonly bool _experimentZeroBaseUploadMaskSourceLowBit =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_MASK_SOURCE_LOW_BIT"));
+    private readonly ulong? _experimentZeroBaseUploadMaskSourceLowBitOnlySource =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_MASK_SOURCE_LOW_BIT_ONLY_SOURCE");
     private readonly bool _experimentZeroBaseUploadDescriptorSourceTableDerivedSource =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DESCRIPTOR_SOURCE_TABLE_DERIVED_SOURCE"));
     private readonly ulong? _experimentZeroBaseUploadDescriptorSourceAddOffset =
@@ -835,6 +843,8 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERWRITE_INDEXED_SOURCE_MASK") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelTextureSourceGlobalRemapIndexMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_INDEX_MASK") ?? 0UL;
+    private readonly uint _runtimeBgLoadModelTextureSourceGlobalRemapDescriptorSource =
+        unchecked((uint)(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_DESCRIPTOR_SOURCE") ?? 0x80312998UL));
     private readonly string _runtimeBgLoadModelTextureSourceGlobalRemapTarget =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_TARGET") ?? "body")
         .Trim()
@@ -843,6 +853,10 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelTextureSourceCallA3RemapIndexMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_INDEX_MASK") ?? 0UL;
+    private readonly uint _runtimeBgLoadModelTextureSourceCallA3RemapDescriptorSource =
+        unchecked((uint)(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_DESCRIPTOR_SOURCE") ??
+                         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_DESCRIPTOR_SOURCE") ??
+                         0x80312998UL));
     private readonly string _runtimeBgLoadModelTextureSourceCallA3RemapTarget =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_TARGET") ??
          Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_TARGET") ??
@@ -859,6 +873,8 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_HYDRATE_INDEX_MASK") ?? 0UL;
     private readonly bool _experimentRuntimeBgLoadModelSkipHotDescriptorOverwrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SKIP_HOT_DESCRIPTOR_OVERWRITE"));
+    private readonly ulong[] _experimentRuntimeBgLoadModelSkipHotDescriptorOverwriteExtraHeads =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SKIP_HOT_DESCRIPTOR_OVERWRITE_EXTRA_HEADS"));
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MASK") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMinOffset =
@@ -1141,6 +1157,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadDiskWordKeepMemoryTraceCount;
     private int _textureUploadPayloadPointerTraceCount;
     private int _textureUploadPayloadPointerStartTraceCount;
+    private int _textureUploadPayloadSourceLowBitMaskTraceCount;
     private int _textureUploadPayloadLinkTraceCount;
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixPacketTraceSources = [];
@@ -4397,17 +4414,31 @@ internal sealed class MipsR5000Core
             sourceBase == 0 &&
             IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) &&
             !IsKnownRuntimeBgLoadModelUploadSourceInsidePayload(source);
+        bool skipBadHeaderZeroBaseRun =
+            _experimentSkipBadHeaderZeroBaseTexturePayloadRuns &&
+            sourceBase == 0 &&
+            IsKnownRuntimeBgLoadModelUploadSourceCandidate(source) &&
+            !TryGetPlausibleKnownRuntimeBgLoadModelUploadHeaderForSource(
+                source,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _);
         bool skipConfiguredZeroBaseRun =
             _experimentSkipZeroBaseTexturePayloadRuns &&
             sourceBase == 0 &&
             (_experimentSkipZeroBaseTexturePayloadRunPackets <= 0 ||
                 packets == (uint)_experimentSkipZeroBaseTexturePayloadRunPackets);
-        if (skipConfiguredZeroBaseRun || skipStrideOnlyZeroBaseRun)
+        if (skipConfiguredZeroBaseRun || skipStrideOnlyZeroBaseRun || skipBadHeaderZeroBaseRun)
         {
             if (_textureUploadMetadataSkipTraceCount++ < 64)
             {
                 string packetFilter = skipStrideOnlyZeroBaseRun
                     ? "stride-only"
+                    : skipBadHeaderZeroBaseRun
+                    ? "bad-header"
                     : _experimentSkipZeroBaseTexturePayloadRunPackets > 0
                     ? _experimentSkipZeroBaseTexturePayloadRunPackets.ToString(System.Globalization.CultureInfo.InvariantCulture)
                     : "all";
@@ -4658,6 +4689,31 @@ internal sealed class MipsR5000Core
     {
         if (sourceBase != 0)
             return source;
+
+        if (_experimentZeroBaseUploadMaskSourceLowBit &&
+            (source & 1UL) != 0 &&
+            (!_experimentZeroBaseUploadMaskSourceLowBitOnlySource.HasValue ||
+                source == _experimentZeroBaseUploadMaskSourceLowBitOnlySource.Value))
+        {
+            ulong maskedSource = source & ~1UL;
+            if (IsMainRamRange(maskedSource, sourceBytes))
+            {
+                if (_textureUploadPayloadSourceLowBitMaskTraceCount++ < 64)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:EXPERIMENT] zero-base-upload-mask-source-low-bit " +
+                        $"source=0x{source:x16}->0x{maskedSource:x16} " +
+                        $"only=0x{(_experimentZeroBaseUploadMaskSourceLowBitOnlySource ?? 0UL):x16} " +
+                        $"bytes=0x{sourceBytes:x} index={index}/{limit} words={payloadWords} " +
+                        $"originalFirst={ReadTraceWord(source):x8}/{ReadTraceWord(source + 0x04UL):x8}/" +
+                        $"{ReadTraceWord(source + 0x08UL):x8}/{ReadTraceWord(source + 0x0cUL):x8} " +
+                        $"maskedFirst={ReadTraceWord(maskedSource):x8}/{ReadTraceWord(maskedSource + 0x04UL):x8}/" +
+                        $"{ReadTraceWord(maskedSource + 0x08UL):x8}/{ReadTraceWord(maskedSource + 0x0cUL):x8}");
+                }
+
+                source = maskedSource;
+            }
+        }
 
         bool knownSource = IsKnownRuntimeBgLoadModelUploadSourceCandidateForZeroBasePrefix(source);
         if (_experimentZeroBaseUploadDescriptorSourceTableDerivedSource &&
@@ -5260,16 +5316,23 @@ internal sealed class MipsR5000Core
             return false;
 
         ulong canonicalAddress = CanonicalizeTraceAddress(address);
+        ulong canonicalS0 = CanonicalizeTraceAddress(_gpr[16]);
+        bool headAddress =
+            canonicalAddress == 0xffffffff80312998UL ||
+            _experimentRuntimeBgLoadModelSkipHotDescriptorOverwriteExtraHeads.Contains(canonicalAddress);
+        bool payloadAddress =
+            canonicalS0 == 0xffffffff80312998UL ||
+            _experimentRuntimeBgLoadModelSkipHotDescriptorOverwriteExtraHeads.Contains(canonicalS0);
         bool sceneNodeDescriptorHead =
             pc == 0xffffffff8004c850UL &&
-            canonicalAddress == 0xffffffff80312998UL &&
+            headAddress &&
             value >= 0x8012e000U &&
             value <= 0x80130000U;
         bool sceneNodeDescriptorPayload =
             pc == 0xffffffff8004c858UL &&
-            canonicalAddress == 0xffffffff803129a0UL &&
-            value == 0x803129a4U &&
-            CanonicalizeTraceAddress(_gpr[16]) == 0xffffffff80312998UL;
+            payloadAddress &&
+            canonicalAddress == canonicalS0 + 0x08UL &&
+            value == unchecked((uint)(canonicalS0 + 0x0cUL));
 
         if (!sceneNodeDescriptorHead && !sceneNodeDescriptorPayload)
             return false;
@@ -5281,7 +5344,7 @@ internal sealed class MipsR5000Core
                 $"addr=0x{canonicalAddress:x16} old=0x{oldValue:x8} value=0x{value:x8} " +
                 $"kind={(sceneNodeDescriptorHead ? "head" : "payload")} " +
                 $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
-                $"ra=0x{_gpr[31]:x16} first={FormatTraceWords(0xffffffff80312998UL, 8)}");
+                $"ra=0x{_gpr[31]:x16} first={FormatTraceWords(canonicalS0, 8)}");
         }
 
         return true;
@@ -6550,6 +6613,19 @@ internal sealed class MipsR5000Core
     {
         if (!IsKnownRuntimeBgLoadModelUploadSourceCandidate(source))
             return false;
+
+        if (_experimentZeroBaseUploadTreatBadHeaderAsUnknown &&
+            !TryGetPlausibleKnownRuntimeBgLoadModelUploadHeaderForSource(
+                source,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _,
+                out _))
+        {
+            return false;
+        }
 
         return !_experimentZeroBaseUploadTreatStrideOnlyAsUnknown ||
                IsKnownRuntimeBgLoadModelUploadSourceInsidePayload(source);
@@ -14048,7 +14124,7 @@ internal sealed class MipsR5000Core
             return;
         }
 
-        const uint descriptorSource = 0x80312998U;
+        uint descriptorSource = _runtimeBgLoadModelTextureSourceCallA3RemapDescriptorSource;
         if ((uint)_gpr[7] != descriptorSource)
             return;
         ulong originalA3 = _gpr[7];
@@ -14235,7 +14311,7 @@ internal sealed class MipsR5000Core
             return;
         }
 
-        const uint descriptorSource = 0x80312998U;
+        uint descriptorSource = _runtimeBgLoadModelTextureSourceGlobalRemapDescriptorSource;
         const ulong globalBase = 0xffffffff801a0000UL;
         if ((uint)_gpr[2] != descriptorSource || _gpr[3] != globalBase)
             return;

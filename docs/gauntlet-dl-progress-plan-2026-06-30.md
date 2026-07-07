@@ -8543,3 +8543,140 @@ Next slice:
 4. If the next selected sources are sane, move downstream to the new
    `cmdstop=invalid-standard-window` at `800fe87c`.
 ```
+
+## Bad-header and index-9 remap checkpoint - 2026-07-07
+
+This slice tested the next hot source after the `80312998` overwrite bracket.
+The immediate bad source is now `803151a0/803151ac`, but direct handling of that
+run is mostly destructive:
+
+```text
+low-bit source mask:
+  /tmp/gauntdl-masklowbit-hotoverwrite-f260.log
+  /tmp/gauntdl-masklowbit-hotoverwrite-f260.png
+  frameHash=0xa242663d
+  ppm sha256=bd26480662c45439962141901d7464c5bb43bf819f6e9ad19eb290318ffe835b
+  result: no trigger; current stack already selects aligned 802e1718.
+
+bad-header zero-base skip:
+  /tmp/gauntdl-skip-badheader-hotoverwrite-f260.log
+  /tmp/gauntdl-skip-badheader-hotoverwrite-f260.png
+  frameHash=0x6d791e91
+  ppm sha256=d91a06ae9a03671be1214e76274684dfe2caaa07a7c17d0b2b6abfbb7cc596e1
+  result: flat cyan/brown split; removes too much texture work.
+
+bad-header as unknown + prefix packets:
+  /tmp/gauntdl-badheader-prefixpackets-hotoverwrite-f260.log
+  /tmp/gauntdl-badheader-prefixpackets-hotoverwrite-f260.png
+  frameHash=0x5263bfd5
+  ppm sha256=328c0eb9cc033faeaee3880fb5308bc2a095571436be1c2168f700ca56fd838b
+  result: less destructive than skip, but still blocky.
+
+bad-header as unknown + exact prefix:
+  /tmp/gauntdl-badheader-prefixexact-hotoverwrite-f260.log
+  /tmp/gauntdl-badheader-prefixexact-hotoverwrite-f260.png
+  frameHash=0xd1549bb3
+  ppm sha256=fa345d224d237d758cd39e43a283c057e1a9e4626c6d23181e58946ced87247c
+  result: same known dead-end as broad stride-only handling.
+
+extra hot descriptor head 803151a0:
+  /tmp/gauntdl-extrahead-803151a0-hotoverwrite-f260.log
+  /tmp/gauntdl-extrahead-803151a0-hotoverwrite-f260.png
+  frameHash=0xd1549bb3
+  result: also dead-end; do not promote extra-head skipping.
+```
+
+New default-off diagnostic controls added in code:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_MASK_SOURCE_LOW_BIT
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_MASK_SOURCE_LOW_BIT_ONLY_SOURCE
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_BAD_HEADER_ZERO_BASE_TEXTURE_PAYLOAD_RUNS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_TREAT_BAD_HEADER_AS_UNKNOWN
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SKIP_HOT_DESCRIPTOR_OVERWRITE_EXTRA_HEADS
+```
+
+The late-index header mask/overwrite hypothesis was also negative:
+
+```text
+mask 0x7fc03fe:
+  /tmp/gauntdl-lateheader-mask-7fc03fe-hotoverwrite-f260.log
+  frameHash=0xa242663d
+  ppm sha256=bd26480662c45439962141901d7464c5bb43bf819f6e9ad19eb290318ffe835b
+
+mask 0x7fc03fe + overwrite 0x7fc0000 + stream limit 27:
+  /tmp/gauntdl-stream27-lateheader-overwrite-hotoverwrite-f260.log
+  frameHash=0xa242663d
+  ppm sha256=bd26480662c45439962141901d7464c5bb43bf819f6e9ad19eb290318ffe835b
+```
+
+The focused index trace explains part of the confusion:
+
+```text
+/tmp/gauntdl-index25-state-stream27-f260.log
+pc=800b72fc activeS0=00000025 a3=803151a0
+slot=80252a34:00000000
+header=8032b718 bodyOffset=00000000
+```
+
+`TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE_INDEX=25` is parsed as hex `0x25`.
+That runtime index is not the known decimal payload index 25 (`gep`). The hot
+`803151a0` pointer is therefore a scratch/descriptor symptom that happens to
+overlap the known payload span, not a clean late-index source-table seed target.
+
+The better remaining visual bracket is still the index-9 `font_story`/`wtr`
+path. Current HEAD needed one more default-off remap parameter because the hot
+descriptor source can be either the older `80312998` or the newer `803151a0`:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_DESCRIPTOR_SOURCE
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_DESCRIPTOR_SOURCE
+```
+
+With the alternate source set to `803151a0`, the remap fires but collapses to
+the flat bad-header family:
+
+```text
+/tmp/gauntdl-index9-altdesc803151a0-plus3c8-diskwords-clamp-hotskip-f300.log
+/tmp/gauntdl-index9-altdesc803151a0-plus3c8-diskwords-clamp-hotskip-f300.png
+bgloadmodel-texture-source-global-remap 803151a0->8040d718
+frameHash=0x6d791e91
+ppm sha256=d91a06ae9a03671be1214e76274684dfe2caaa07a7c17d0b2b6abfbb7cc596e1
+```
+
+Without the hot-descriptor skip, the older index-9 bracket remains the best
+current texture-data path:
+
+```text
+/tmp/gauntdl-index9-stride20000-overwrite-plus3c8-diskwords-clamp-nohotskip-f300.log
+/tmp/gauntdl-index9-stride20000-overwrite-plus3c8-diskwords-clamp-nohotskip-f300.png
+
+bgloadmodel-distinct-source index=9 slot=802529c4:80312998->80401718
+bgloadmodel-texture-source-global-remap 80312998->8040d718
+clamp-indexed-texture-upload-limit source=8040d718 limit=255->31
+
+frameHash=0x38bc79b5
+frameSha256=ce9f9f865b02c700d2507e2579b7e8c3d1f09d3194fa41b91b57fea43f2a0154
+drawPackets=17111 directTriangles=647 setupTriangles=304 texWrites=1400871
+textureMap=5171464:581292:4590172:22910:0x000000:0x01660c
+ppm sha256=713eed609a2867f27d272e19587688374493dde1e90c3cb3c75ab77f043a4bc3
+```
+
+Visual status: still not real Gauntlet graphics. The no-hot-skip screenshot is
+noisy, but it shows a real disk-backed `wtr@0xc000` texture path entering the
+frame. The hot-skip + alternate descriptor path is too destructive and should
+stay diagnostic only.
+
+Next slice:
+
+```text
+1. Continue from the no-hot-skip index-9 bracket, not from the flat
+   803151a0/hot-skip branch.
+2. Trace Type5 texture download layout for source 8040d718/wtr@0xc000:
+   target base, lod, seq, bpp, row/column order, and first bytes written.
+3. Compare sampled Voodoo addresses against the disk-backed bytes now being
+   uploaded. If bytes are correct but image is noisy, bracket Type5 layout or
+   texture format before touching BGLoadModel ownership again.
+4. Keep the new alternate descriptor-source remap envs default-off; they are
+   useful to reproduce the 803151a0 branch but not a visual fix.
+```
