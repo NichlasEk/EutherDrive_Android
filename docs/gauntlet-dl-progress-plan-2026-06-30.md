@@ -8467,3 +8467,79 @@ Current interpretation:
    as `known-bg`.
 5. Keep all new controls default-off until the replacement source is identified.
 ```
+
+## Hot descriptor overwrite checkpoint - 2026-07-07
+
+New trace-only source producer load instrumentation proves the hot
+`80312998` path has two distinct lives in the same frame:
+
+```text
+/tmp/gauntdl-source-producer-load-80312998-f260.log
+pc=0xffffffff800afa78 lw s0,[s0+0x20]
+addr=0xffffffff80312948
+target=0xffffffff80312998
+targetFirst=00000002/00000000/00000000/00000000/00090000/00000068/802e1788/00000000
+frameHash=0xe2470b80
+```
+
+At producer time it is still scene-node-like. A later memory watch and CPU trace
+show `8004c830` calling allocator/helper `800c8cf8`, receiving
+`v0=80312998`, then `8004c850/8004c858` rewriting that same address into the
+descriptor/list shape later seen by Type5 source selection:
+
+```text
+/tmp/gauntdl-overlap-writer-8004c850-cputrace-f260.log
+pc=ffffffff8004c850 sw s1,0(s0)  s0=ffffffff80312998 s1=ffffffff8012e528
+pc=ffffffff8004c858 sw v0,8(s0)  v0=ffffffff803129a4
+```
+
+A first narrow skip experiment gated on `s2==9` was too late: it skipped only
+after `80312998` already held descriptor data and kept the old visual signature:
+
+```text
+/tmp/gauntdl-skip-hot-descriptor-overwrite-f260.log
+old=0x8012e534 value=0x8012e528
+frameHash=0xe2470b80
+frameSha256=e0b2fd99d2ab065ea60c472f77ecaf49d837312a00dcfbd90c2d930bd4f7b851
+```
+
+The broader default-off experiment
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SKIP_HOT_DESCRIPTOR_OVERWRITE=1`
+skips only the observed `8004c850/8004c858` writes to
+`80312998/803129a0`, regardless of `s2`. This catches the actual first
+scene-node-to-descriptor overwrite:
+
+```text
+/tmp/gauntdl-skip-hot-descriptor-overwrite-wide-f260.log
+skip-hot-descriptor-overwrite pc=0xffffffff8004c850 addr=0xffffffff80312998 old=0x00000002 value=0x8012e588
+skip-hot-descriptor-overwrite pc=0xffffffff8004c858 addr=0xffffffff803129a0 old=0x00000000 value=0x803129a4
+frameHash=0x230fb556
+frameSha256=06f77f0f452440ffff88774bc303b056ac177e5c4f78d3afc0c9be6b8d010fd4
+drawPackets=15532 directTriangles=577 setupTriangles=269 texWrites=472421
+textureMap=1457664:1046245:411419:16384:0x000000:0x00fffc
+```
+
+Screendump:
+
+```text
+/tmp/gauntdl-skip-hot-overwrite-wide-f260.ppm
+/tmp/gauntdl-skip-hot-overwrite-wide-f260.png
+ppm sha256=533a4c580d14aa48c8ecf24cdc3a4c587f968374c8319233465ab349eadf6970
+```
+
+Visual status: not real Gauntlet graphics yet. The dump is still noisy stripes
+and large rasterized shapes, but this is a real pipeline move: the bad
+`80312998` zero-base/descriptor source is no longer selected, draw/setup packet
+counts rise, and texture upload activity changes materially.
+
+Next slice:
+
+```text
+1. Trace all Type5 selected sources with the broad overwrite skip enabled and no
+   `TRACE_TEXTURE_UPLOAD_RUN_SOURCE` filter.
+2. Identify the next noisy/invalid selected source after `80312998` is removed.
+3. Prefer a real allocator/lifetime explanation for why `800c8cf8` reuses
+   `80312998`; keep the skip as a diagnostic control, not a final fix.
+4. If the next selected sources are sane, move downstream to the new
+   `cmdstop=invalid-standard-window` at `800fe87c`.
+```

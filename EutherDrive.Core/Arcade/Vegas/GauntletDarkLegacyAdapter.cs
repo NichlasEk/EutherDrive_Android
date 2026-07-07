@@ -857,6 +857,8 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_REMAP_HEADER_OFFSET") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelTextureSourceCallA3HydrateIndexMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_HYDRATE_INDEX_MASK") ?? 0UL;
+    private readonly bool _experimentRuntimeBgLoadModelSkipHotDescriptorOverwrite =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SKIP_HOT_DESCRIPTOR_OVERWRITE"));
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_OVERLAP_ZERO_FILL_INDEXED_SOURCE_MASK") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMinOffset =
@@ -966,6 +968,14 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_PC_MIN");
     private readonly ulong? _traceTextureUploadSourceProducerPcMax =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_PC_MAX");
+    private readonly bool _traceTextureUploadSourceProducerLoads =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LOADS"));
+    private readonly int _traceTextureUploadSourceProducerLoadLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LOAD_LIMIT", 64);
+    private readonly ulong? _traceTextureUploadSourceProducerLoadPcMin =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LOAD_PC_MIN");
+    private readonly ulong? _traceTextureUploadSourceProducerLoadPcMax =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LOAD_PC_MAX");
     private readonly bool _traceTextureUploadSourceLimitTable =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE"));
     private readonly int _traceTextureUploadSourceLimitTableLimit =
@@ -1120,6 +1130,8 @@ internal sealed class MipsR5000Core
     private int _textureUploadSourceSelectorTraceCount;
     private int _textureUploadSourceSelectorSetupTraceCount;
     private int _textureUploadSourceProducerTraceCount;
+    private int _textureUploadSourceProducerLoadTraceCount;
+    private int _runtimeBgLoadModelSkipHotDescriptorOverwriteTraceCount;
     private int _textureUploadSourceLimitTableTraceCount;
     private int _textureUploadPayloadSpanTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
@@ -1758,6 +1770,7 @@ internal sealed class MipsR5000Core
         TraceTextureUploadSourceSelectorSetup(pc, op, "pre");
         TraceTextureUploadSourceSelector(pc, op);
         TraceTextureUploadSourceProducer(pc, op, "pre");
+        TraceTextureUploadSourceProducerLoad(pc, op);
         TraceTextureUploadSourceLimitTable(pc, op, "pre");
         TraceInstruction(pc, op);
         TextureUploadCallerTransitionSnapshot textureUploadCallerBefore =
@@ -5013,6 +5026,7 @@ internal sealed class MipsR5000Core
             $"t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} " +
             $"s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} " +
             $"s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
+            $"selectedOwners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(selectedSource)} " +
             $"sp60={ReadTraceWord(sp + 0x60UL):x8} sp64={ReadTraceWord(sp + 0x64UL):x8} " +
             $"sp68={ReadTraceWord(sp + 0x68UL):x8} sp6c={ReadTraceWord(sp + 0x6cUL):x8} " +
             $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} sp78={ReadTraceWord(sp + 0x78UL):x8} " +
@@ -5100,6 +5114,7 @@ internal sealed class MipsR5000Core
             $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
             $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
             $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
+            $"selectedOwners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(selectedSource)} " +
             $"sp60={ReadTraceWord(sp + 0x60UL):x8} sp64={ReadTraceWord(sp + 0x64UL):x8} " +
             $"sp68={ReadTraceWord(sp + 0x68UL):x8} sp6c={ReadTraceWord(sp + 0x6cUL):x8} " +
             $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} " +
@@ -5150,6 +5165,126 @@ internal sealed class MipsR5000Core
             $"s3w={ReadTraceWord(_gpr[19] + 0x00UL):x8}/{ReadTraceWord(_gpr[19] + 0x08UL):x8}/{ReadTraceWord(_gpr[19] + 0x0cUL):x8} " +
             $"first={ReadTraceWord(target):x8}/{ReadTraceWord(target + 0x04UL):x8}/" +
             $"{ReadTraceWord(target + 0x08UL):x8}/{ReadTraceWord(target + 0x0cUL):x8}");
+    }
+
+    private void TraceTextureUploadSourceProducerLoad(ulong pc, uint op)
+    {
+        if (!_traceTextureUploadSourceProducerLoads ||
+            !_traceTextureUploadRunSource.HasValue ||
+            _textureUploadSourceProducerLoadTraceCount >= _traceTextureUploadSourceProducerLoadLimit)
+        {
+            return;
+        }
+
+        ulong pcMin = CanonicalizeOptionalTraceAddress(_traceTextureUploadSourceProducerLoadPcMin, 0UL);
+        ulong pcMax = CanonicalizeOptionalTraceAddress(_traceTextureUploadSourceProducerLoadPcMax, ulong.MaxValue);
+        if (pc < pcMin || pc > pcMax)
+            return;
+
+        if (!TryDecodeGprLoad(op, out string mnemonic, out int baseRegister, out int targetRegister, out int offset, out int bytes, out bool signExtend))
+            return;
+
+        ulong target = CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value);
+        ulong baseValue = _gpr[baseRegister];
+        ulong address = unchecked(baseValue + (ulong)(long)offset);
+        if (!IsMainRamRange(address, (ulong)bytes))
+            return;
+
+        ulong raw = bytes == 8
+            ? _memory.Read64(address)
+            : _memory.Read32(address);
+        ulong loadedValue = bytes == 8
+            ? raw
+            : signExtend ? SignExtend32((uint)raw) : (uint)raw;
+
+        if (loadedValue != target)
+            return;
+
+        ulong contextAddress = address >= 0x20UL ? address - 0x20UL : address;
+        string contextWords = FormatTraceWords(contextAddress, 16);
+        string targetWords = FormatTraceWords(target, 8);
+
+        _textureUploadSourceProducerLoadTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-SOURCE-PRODUCER-LOAD] pc=0x{pc:x16} op=0x{op:x8} {DisassembleBrief(op)} " +
+            $"load={mnemonic} r{targetRegister},[r{baseRegister}+0x{offset:x}] " +
+            $"target=0x{target:x16} value=0x{loadedValue:x16} raw=0x{raw:x16} " +
+            $"addr=0x{address:x16} base=0x{baseValue:x16} ra=0x{_gpr[31]:x16} sp=0x{_gpr[29]:x16} " +
+            $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} " +
+            $"a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} " +
+            $"t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} " +
+            $"s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} " +
+            $"owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(loadedValue)} " +
+            $"context@0x{contextAddress:x16}={contextWords} targetFirst={targetWords}");
+    }
+
+    private static bool TryDecodeGprLoad(
+        uint op,
+        out string mnemonic,
+        out int baseRegister,
+        out int targetRegister,
+        out int offset,
+        out int bytes,
+        out bool signExtend)
+    {
+        mnemonic = "";
+        baseRegister = -1;
+        targetRegister = -1;
+        offset = 0;
+        bytes = 0;
+        signExtend = true;
+
+        uint opcode = op >> 26;
+        (string Mnemonic, int Bytes, bool SignExtend)? load = opcode switch
+        {
+            0x23 => ("lw", 4, true),
+            0x27 => ("lwu", 4, false),
+            0x37 => ("ld", 8, false),
+            _ => null
+        };
+        if (load is null)
+            return false;
+
+        mnemonic = load.Value.Mnemonic;
+        bytes = load.Value.Bytes;
+        signExtend = load.Value.SignExtend;
+        baseRegister = (int)((op >> 21) & 0x1fU);
+        targetRegister = (int)((op >> 16) & 0x1fU);
+        offset = unchecked((short)(op & 0xffffU));
+        return true;
+    }
+
+    private bool ShouldSkipRuntimeBgLoadModelHotDescriptorOverwrite(ulong pc, ulong address, uint oldValue, uint value)
+    {
+        if (!_experimentRuntimeBgLoadModelSkipHotDescriptorOverwrite)
+            return false;
+
+        ulong canonicalAddress = CanonicalizeTraceAddress(address);
+        bool sceneNodeDescriptorHead =
+            pc == 0xffffffff8004c850UL &&
+            canonicalAddress == 0xffffffff80312998UL &&
+            value >= 0x8012e000U &&
+            value <= 0x80130000U;
+        bool sceneNodeDescriptorPayload =
+            pc == 0xffffffff8004c858UL &&
+            canonicalAddress == 0xffffffff803129a0UL &&
+            value == 0x803129a4U &&
+            CanonicalizeTraceAddress(_gpr[16]) == 0xffffffff80312998UL;
+
+        if (!sceneNodeDescriptorHead && !sceneNodeDescriptorPayload)
+            return false;
+
+        if (_runtimeBgLoadModelSkipHotDescriptorOverwriteTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] skip-hot-descriptor-overwrite pc=0x{pc:x16} " +
+                $"addr=0x{canonicalAddress:x16} old=0x{oldValue:x8} value=0x{value:x8} " +
+                $"kind={(sceneNodeDescriptorHead ? "head" : "payload")} " +
+                $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
+                $"ra=0x{_gpr[31]:x16} first={FormatTraceWords(0xffffffff80312998UL, 8)}");
+        }
+
+        return true;
     }
 
     private void TraceTextureUploadSourceLimitTable(ulong pc, uint op, string phase)
@@ -22563,6 +22698,8 @@ internal sealed class MipsR5000Core
                     uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
                     value = ApplyDirectTextureWriterDiskWordExperiment(pc, rt, value);
                     TraceTextureUploadDirectWriterStore(pc, op, rs, rt, simm, address, value);
+                    if (ShouldSkipRuntimeBgLoadModelHotDescriptorOverwrite(pc, address, oldValue, value))
+                        break;
                     _memory.Write32(address, value);
                     TraceRuntimeVertexSourceWrite(pc, op, "sw", $"r{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
                     TraceTextureUploadDirectWriterControlTableWrite(pc, op, "sw", $"r{rt}", rs, simm, address, oldValue, value);
