@@ -10044,3 +10044,32 @@ Next slice:
    memory is wrong for the WTR format.
 3. Avoid more asset-table remaps for now; the current trace proves the active
    f300 path already reaches `80401718/8040d350/8040d718`.
+
+Focused Type5 evidence for a sampled visible row:
+
+```text
+logs/gauntlet/type5-visible-targets-f300.log
+
+[GAUNTDL:VOODOO-TYPE5-TARGET]
+targetWord=0x00009e00 targetByte=0x00027800
+packet=0x00025e3c rd=0x00025e3c
+w0 pc=800fe7a0 value=c0000205
+w1 pc=800fe7b0 value=00027800
+w2 pc=800fe7c4 value=02510000
+rawWords=02510000/00000000/.../02520000/...
+decWords=00005102/00000000/.../00005202/...
+```
+
+The matching fullrect candidates sample nearby Type5-owned words with
+`pc=800fe7cc/fmt11/l1/bpp2`, while the active fullrect sampler reads mostly
+ownerless sparse words around `0x00fb00`. The important part is the payload
+shape: `0x02510000`, long zero spans, then `0x02520000` is index/control-like
+data, not plausible dense texture art.
+
+`TRACE_TEXTURE_UPLOAD_PACKET_SOURCE=27800` and
+`TRACE_TEXTURE_UPLOAD_PACKET_TARGET_WORDS=9e00` did not emit a
+`TEXUPLOAD-FIFO-TARGET`/`TEXUPLOAD-LINK` row for this packet on the current
+source-gated trace path, but the command-FIFO storage owners already identify
+the direct writer PCs. Next code slice should add a default-off direct-writer
+source tracer for target word `0x9e00` that records the `s3` source window,
+`payloadWords`, and disk/WTR comparison at `800fe7b0/800fe7c4/800fe7cc`.
