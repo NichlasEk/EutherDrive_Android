@@ -9506,3 +9506,128 @@ Current continuation:
 4. Before changing packet addresses globally, add a focused default-off WTR-only
    packet-address experiment and test it against the f300 fullrect oracle.
 ```
+
+## 2026-07-07 - WTR Entry Packet Address and Visible Writer-Layout Forms
+
+Added a default-off WTR-only packet-address experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_WTR_ENTRY_PACKET_ADDRESS_MODE={target,target-delta}
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_WTR_ENTRY_PACKET_ADDRESS_ADD={hex}
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_WTR_ENTRY_PACKET_ADDRESS_SUB={hex}
+```
+
+The experiment derives zero-base upload packet addresses from the nearest WTR
+entry table row. It is limited to BGLoadModel source `9:wtr` and remains
+default-off.
+
+First address checks:
+
+```text
+target + baseline sample bias:
+  /tmp/gauntdl-wtr-entrypkt-target-basebias-f300.png
+  frameHash=0x8e5064d0
+  ppmSha256=8e6ebbea3524f91078af2325cdc8569a8289e5eda5b79ae7dcd8ad5ce91ca025
+
+target-delta + baseline sample bias:
+  /tmp/gauntdl-wtr-entrypkt-targetdelta-basebias-f300.png
+  frameHash=0x0e02375a
+  ppmSha256=f23dcabe1cd3bae6eb79a16152d51948bcfe979273c7bd92127e92d068ea3f9d
+
+target - 0xee0:
+  /tmp/gauntdl-wtr-entrypkt-targetsubee0-basebias-f300.png
+  packet=0x00000000->0x0002f120
+  frameHash=0xbaa03ce7
+  ppmSha256=5c5830d0927b949c71a92128546993b95e10604f066f8febbcf310e3a9bab701
+```
+
+`target - 0xee0` lines the upload packet base up with the old sampled
+`0x02f120` base, but the image remains the same corrupted fullrect family. A
+better address model is to keep the WTR entry target at `0x30000`, set packet
+stride to `0x100`, and move the sampler base there with
+`TEXTURE_SAMPLE_BASE_BIAS=0x13f0`:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_WTR_ENTRY_PACKET_ADDRESS_MODE=target
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_PACKET_ADDRESS_STRIDE=0x100
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS=0x13f0
+
+/tmp/gauntdl-wtr-entrypkt-target-stride100-bias13f0-f300.png
+packet=0x00000000->0x00030000
+frameHash=0x97ad0370
+ppmSha256=2796e07443655844c218484759883137777c6a8d69e7528bea8eb504ad54028c
+```
+
+Endian/lane transforms on that WTR upload are visible but not corrective:
+
+```text
+be32:
+  /tmp/gauntdl-wtr-target-stride100-bias13f0-be32-f300.png
+  frameHash=0x60650069
+  ppmSha256=f555530233c3d1ef5045138ef72ceb621d81e60e037e53dd6c2adf37bfe093f2
+
+swap16:
+  /tmp/gauntdl-wtr-target-stride100-bias13f0-swap16-f300.png
+  frameHash=0xe7737f41
+  ppmSha256=a0e20e0608655350d92aa35499b781e720f1c38fe7327287c8d102a92b2bc74a
+
+reverse16:
+  /tmp/gauntdl-wtr-target-stride100-bias13f0-reverse16-f300.png
+  frameHash=0x331ee88c
+  ppmSha256=cd8af4c1b69725bc1c882fbfd1080da3e20fc700868f0f9a65ddb3ee46579876
+```
+
+The first real visible improvement came from combining the WTR target/bias model
+with the existing fullrect writer-layout diagnostic:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_COORD_MODE=scale
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_TARGET_REMAP=400:e00
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_FORMAT_OVERRIDE=1
+
+/tmp/gauntdl-wtr-target-stride100-bias13f0-writerlayout-best-f300.png
+frameHash=0x263581b4
+ppmSha256=29d0137b0fc7ca2c3ec1f3739743a0d02d733578401782e09c78e77e637647bb
+visual=large stable shapes, still wrong color/static
+```
+
+Dropping the format override back to writer format 0 is worse:
+
+```text
+/tmp/gauntdl-wtr-target-stride100-bias13f0-writerlayout-fmt0-f300.png
+frameHash=0x66d09e2b
+ppmSha256=feb036a3369f6f981d9629bba2f28401e5584c62f0caa6f892d7240925aa808e
+visual=more noisy than fmt1
+```
+
+`row2x` is also a real layout lever and keeps the large-form improvement while
+moving the sampled owner family:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM=row2x
+
+/tmp/gauntdl-wtr-target-stride100-bias13f0-writerlayout-row2x-f300.png
+frameHash=0xf6f0c7e4
+ppmSha256=3a821e56fe246a2c371636c5de97f5d62d0a742d56def030a142cdeccc3f3b2a
+first hot owner=pc0x800fe7cc/cmd0xC0000205@0x008400
+visual=large stable shapes, still wrong color/static
+```
+
+Current interpretation:
+
+```text
+1. The WTR entry target is not metadata-only; routing the zero-base run to
+   `0x30000` changes the frame and makes the writer-layout oracle much more
+   structured.
+2. The best visible oracle is currently:
+   WTR target + packet stride 0x100 + sample bias 0x13f0 + writer-layout scale
+   + format override 1, with row2x as the next address-layout branch.
+3. Byte/halfword transforms are lower priority. They move pixels but do not
+   reduce the corrupted fullrect family.
+4. Next slice should stop blind env sweeps and instrument/promote a narrower
+   structural fix: explain why the sampled fullrect wants writer `pc=800fe614`
+   around `0x000b00/0x000e00` or row2x owner `pc=800fe7cc@0x008400`, then derive
+   the layout from Type5 target/lod metadata instead of the current diagnostic
+   remap knobs.
+```

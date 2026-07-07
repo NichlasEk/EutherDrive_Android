@@ -812,6 +812,14 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_STOP_AT_KNOWN_BOUNDARY_MAX_BYTES") ?? 0x20000UL;
     private readonly ulong? _experimentZeroBaseUploadPacketAddressStride =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_PACKET_ADDRESS_STRIDE");
+    private readonly string _experimentZeroBaseUploadWtrEntryPacketAddressMode =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_WTR_ENTRY_PACKET_ADDRESS_MODE") ?? "")
+        .Trim()
+        .ToLowerInvariant();
+    private readonly ulong _experimentZeroBaseUploadWtrEntryPacketAddressAdd =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_WTR_ENTRY_PACKET_ADDRESS_ADD") ?? 0UL;
+    private readonly ulong _experimentZeroBaseUploadWtrEntryPacketAddressSub =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_WTR_ENTRY_PACKET_ADDRESS_SUB") ?? 0UL;
     private readonly bool _experimentClampIndexedTextureUploadLimit =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_CLAMP_INDEXED_TEXTURE_UPLOAD_LIMIT"));
     private readonly bool _experimentSkipStrideOnlyZeroBaseTexturePayloadRuns =
@@ -1195,6 +1203,7 @@ internal sealed class MipsR5000Core
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixPacketTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadStopAtKnownBoundaryTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadPacketAddressStrideTraceSources = [];
+    private readonly HashSet<ulong> _zeroBaseUploadWtrEntryPacketAddressTraceSources = [];
     private readonly HashSet<string> _textureUploadZeroBaseRunClassifierKeys = [];
     private int _textureUploadPayloadCallerTransitionTraceCount;
     private int _textureUploadPayloadPacketSourceTraceCount;
@@ -1219,6 +1228,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadMetadataSkipTraceCount;
     private int _textureUploadZeroBaseRunClassifierTraceCount;
     private int _runtimeBgLoadModelWtrEntriesTraceCount;
+    private int _zeroBaseUploadWtrEntryPacketAddressTraceCount;
     private int _vertexFifoFastPathTraceCount;
     private int _vertexFifoFastPathOddPayloadTraceCount;
     private int _vertexFifoFastPathRejectTraceCount;
@@ -4308,7 +4318,8 @@ internal sealed class MipsR5000Core
             }
         }
 
-        uint currentPacketAddress = pc == roomReadyEntry || pc == packetEntry
+        bool packetAddressFromCpu = pc == roomReadyEntry || pc == packetEntry;
+        uint currentPacketAddress = packetAddressFromCpu
             ? (uint)_gpr[17]
             : unchecked(sourceBase + index * packetAddressStride);
         if (_experimentZeroBaseUploadDescriptorPacketAddressOffset.HasValue &&
@@ -4337,6 +4348,25 @@ internal sealed class MipsR5000Core
                     currentPacketAddress = descriptorPacketAddress;
                 }
             }
+        }
+        if (sourceBase == 0 &&
+            TryGetZeroBaseUploadWtrEntryPacketAddress(
+                source,
+                currentPacketAddress,
+                out uint wtrEntryPacketAddress,
+                out string wtrEntryPacketAddressDescription))
+        {
+            if (_zeroBaseUploadWtrEntryPacketAddressTraceCount < 64 &&
+                _zeroBaseUploadWtrEntryPacketAddressTraceSources.Add(source))
+            {
+                _zeroBaseUploadWtrEntryPacketAddressTraceCount++;
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] zero-base-upload-wtr-entry-packet-address " +
+                    $"source=0x{source:x16} packet=0x{currentPacketAddress:x8}->0x{wtrEntryPacketAddress:x8} " +
+                    $"index={index}/{limit} words={payloadWords} {wtrEntryPacketAddressDescription}");
+            }
+
+            currentPacketAddress = wtrEntryPacketAddress;
         }
         uint fifoBase = _memory.Read32(state + 0x08UL);
         uint fifoRingBase = _memory.Read32(state + 0x378UL);
@@ -6323,11 +6353,124 @@ internal sealed class MipsR5000Core
             return;
         }
 
-        ulong body = header + bodyOffset;
-        if (!IsMainRamRange(body + 0x23UL, 1))
+        if (!TryReadRuntimeBgLoadModelWtrEntries(
+                header,
+                bodyOffset,
+                countWord,
+                out ulong body,
+                out List<(int Slot, string Name, uint Target, uint Flags)> entries))
+        {
             return;
+        }
 
-        List<(int Slot, string Name, uint Target, uint Flags)> entries = [];
+        long bodyDelta = sourceOffset - bodyOffset;
+        int sourceSlot = FindNearestRuntimeBgLoadModelWtrEntry(entries, bodyDelta);
+        int packetSlot = FindNearestRuntimeBgLoadModelWtrEntry(entries, currentPacketAddress);
+        var sourceEntry = entries[sourceSlot];
+        var packetEntry = entries[packetSlot];
+
+        _runtimeBgLoadModelWtrEntriesTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:WTR-ENTRY] n={_runtimeBgLoadModelWtrEntriesTraceCount} " +
+            $"source=0x{source:x16} header=0x{header:x16} body=0x{body:x16} " +
+            $"sourceOffset=0x{sourceOffset:x} bodyDelta={FormatSignedHex(bodyDelta)} " +
+            $"span=0x{sourceBytes:x} packet=0x{currentPacketAddress:x8} index={index}/{limit} words={payloadWords} " +
+            $"count={countWord} stride=0x{strideWord:x8} len=0x{textureByteLength:x} " +
+            $"sourceNearest={FormatRuntimeBgLoadModelWtrEntry(sourceEntry, bodyDelta)} " +
+            $"packetNearest={FormatRuntimeBgLoadModelWtrEntry(packetEntry, currentPacketAddress)} " +
+            $"entries={FormatRuntimeBgLoadModelWtrEntryList(entries, 8)}");
+    }
+
+    private bool TryGetZeroBaseUploadWtrEntryPacketAddress(
+        ulong source,
+        uint fallbackPacketAddress,
+        out uint packetAddress,
+        out string description)
+    {
+        packetAddress = 0;
+        description = "";
+        if (string.IsNullOrEmpty(_experimentZeroBaseUploadWtrEntryPacketAddressMode) ||
+            _experimentZeroBaseUploadWtrEntryPacketAddressMode is "0" or "false" or "off" or "none")
+        {
+            return false;
+        }
+
+        if (!TryGetKnownRuntimeBgLoadModelUploadSourceDetails(
+                source,
+                out ulong qioIndex,
+                out string code,
+                out ulong header,
+                out long sourceOffset,
+                out uint bodyOffset,
+                out uint countWord,
+                out _,
+                out _) ||
+            qioIndex != 9 ||
+            !code.Equals("wtr", StringComparison.OrdinalIgnoreCase) ||
+            !TryReadRuntimeBgLoadModelWtrEntries(
+                header,
+                bodyOffset,
+                countWord,
+                out _,
+                out List<(int Slot, string Name, uint Target, uint Flags)> entries))
+        {
+            return false;
+        }
+
+        long bodyDelta = sourceOffset - bodyOffset;
+        int sourceSlot = FindNearestRuntimeBgLoadModelWtrEntry(entries, bodyDelta);
+        var sourceEntry = entries[sourceSlot];
+        long candidate = _experimentZeroBaseUploadWtrEntryPacketAddressMode switch
+        {
+            "target" or "entry" or "entry-target" => sourceEntry.Target,
+            "target-delta" or "target-plus-delta" or "target-body-delta" or "target-plus-body-delta" =>
+                (long)sourceEntry.Target + bodyDelta,
+            _ => -1,
+        };
+
+        if (candidate < 0 ||
+            _experimentZeroBaseUploadWtrEntryPacketAddressAdd > long.MaxValue ||
+            candidate > long.MaxValue - (long)_experimentZeroBaseUploadWtrEntryPacketAddressAdd)
+        {
+            return false;
+        }
+
+        candidate += (long)_experimentZeroBaseUploadWtrEntryPacketAddressAdd;
+        if (_experimentZeroBaseUploadWtrEntryPacketAddressSub > long.MaxValue ||
+            candidate < (long)_experimentZeroBaseUploadWtrEntryPacketAddressSub)
+        {
+            return false;
+        }
+
+        candidate -= (long)_experimentZeroBaseUploadWtrEntryPacketAddressSub;
+        if (candidate < 0 ||
+            candidate > 0x01fffffcL ||
+            (candidate & 3L) != 0)
+        {
+            return false;
+        }
+
+        packetAddress = (uint)candidate;
+        description =
+            $"mode={_experimentZeroBaseUploadWtrEntryPacketAddressMode} " +
+            $"add=0x{_experimentZeroBaseUploadWtrEntryPacketAddressAdd:x} sub=0x{_experimentZeroBaseUploadWtrEntryPacketAddressSub:x} " +
+            $"sourceOffset=0x{sourceOffset:x} bodyOffset=0x{bodyOffset:x} bodyDelta={FormatSignedHex(bodyDelta)} " +
+            $"entry={FormatRuntimeBgLoadModelWtrEntry(sourceEntry, bodyDelta)} fallback=0x{fallbackPacketAddress:x8}";
+        return true;
+    }
+
+    private bool TryReadRuntimeBgLoadModelWtrEntries(
+        ulong header,
+        uint bodyOffset,
+        uint countWord,
+        out ulong body,
+        out List<(int Slot, string Name, uint Target, uint Flags)> entries)
+    {
+        body = header + bodyOffset;
+        entries = [];
+        if (!IsMainRamRange(body + 0x23UL, 1))
+            return false;
+
         int maxEntries = (int)Math.Min(128U, Math.Max(1U, countWord));
         const ulong entryStride = 0x24UL;
         for (int slot = 0; slot < maxEntries; slot++)
@@ -6350,25 +6493,7 @@ internal sealed class MipsR5000Core
             entries.Add((slot, name, target, flags));
         }
 
-        if (entries.Count == 0)
-            return;
-
-        long bodyDelta = sourceOffset - bodyOffset;
-        int sourceSlot = FindNearestRuntimeBgLoadModelWtrEntry(entries, bodyDelta);
-        int packetSlot = FindNearestRuntimeBgLoadModelWtrEntry(entries, currentPacketAddress);
-        var sourceEntry = entries[sourceSlot];
-        var packetEntry = entries[packetSlot];
-
-        _runtimeBgLoadModelWtrEntriesTraceCount++;
-        Console.WriteLine(
-            $"[GAUNTDL:WTR-ENTRY] n={_runtimeBgLoadModelWtrEntriesTraceCount} " +
-            $"source=0x{source:x16} header=0x{header:x16} body=0x{body:x16} " +
-            $"sourceOffset=0x{sourceOffset:x} bodyDelta={FormatSignedHex(bodyDelta)} " +
-            $"span=0x{sourceBytes:x} packet=0x{currentPacketAddress:x8} index={index}/{limit} words={payloadWords} " +
-            $"count={countWord} stride=0x{strideWord:x8} len=0x{textureByteLength:x} " +
-            $"sourceNearest={FormatRuntimeBgLoadModelWtrEntry(sourceEntry, bodyDelta)} " +
-            $"packetNearest={FormatRuntimeBgLoadModelWtrEntry(packetEntry, currentPacketAddress)} " +
-            $"entries={FormatRuntimeBgLoadModelWtrEntryList(entries, 8)}");
+        return entries.Count != 0;
     }
 
     private static bool IsLikelyRuntimeBgLoadModelWtrEntryName(string name)
