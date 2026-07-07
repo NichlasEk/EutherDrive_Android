@@ -10168,3 +10168,93 @@ Revised plan:
    level to identify which source/table state the old snapshot carries that
    current cold boot lacks. If that state is legitimate missing hydration, fix
    the cold path; if it is stale bad-header state, keep it out of the oracle.
+
+### Clean f300 Fullrect Writer Evidence
+
+Focused clean-warm fullrect/texture traces:
+
+```text
+logs/gauntlet/cleanwarm-summary-f300.log
+logs/gauntlet/cleanwarm-summary-f300.png
+
+frameHash=0x20ab2ecf
+TEXSUMMARY=10
+TEXSAMPLE-WRITER=160
+FULLRECT-CANDIDATES=80
+sample writer targets: 0x009f00, 0x009e80, 0x009c00, 0x009f80
+sample writer raws/results: raw=0x0000, result=0x0000 for all traced samples
+```
+
+The clean baseline still emits the large `0x0180A8CB` fullrect pair, but the
+selected texture path samples black:
+
+```text
+VOODOO-TEXSUMMARY:
+bbox=(0,0)-(512,383)
+mode=0x8C24100F lod=0x00002000 fmt=0 b16=0
+rgb=0x0000:98303
+cmd=0x0180A8CB pc=800c4e5c
+```
+
+The sampled words are Type5-owned but zero:
+
+```text
+VOODOO-TEXSAMPLE-WRITER:
+writer=pc0x800fe7cc mode0x00000B00 lod0x00300804
+type5=1 cmd0xC0000205@0x009F80/0x009E80/0x009C00...
+word=0x00000000 raw=0x0000 result=0x0000
+```
+
+Direct-writer trace on those visible targets confirms that the current clean
+path repeatedly writes zero/control source data from `bgsrc=none` windows:
+
+```text
+logs/gauntlet/cleanwarm-direct-writer-visible-targets-f300.log
+
+target 0x9c00/0x9e80/0x9f00/0x9f80
+s3src=bgsrc=none
+s3w=00000000/00000000/00000000/00000000
+frameHash=0x20ab2ecf
+```
+
+The WTR payload can be shifted into the visible target address family with the
+existing packet-address experiment, but that alone does not move the frame:
+
+```text
+logs/gauntlet/cleanwarm-wtr-sub9000-f300.log
+logs/gauntlet/cleanwarm-wtr-sub9000-f300.png
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_WTR_ENTRY_PACKET_ADDRESS_SUB=0x9000
+zero-base-upload-disk-word targetWord=0x00009c00 addr=8040d718 9:wtr@0xc000 ...
+frameHash=0x20ab2ecf
+textureMap unchanged
+```
+
+Adding a fullrect writer-layout remap from the active writer target to that WTR
+target confirms the remap hits, but it still samples black because the new
+address resolves to metadata/control owners from `pc=800fe5d4`:
+
+```text
+logs/gauntlet/cleanwarm-remap8a00-9c00-sub9000-f300.log
+logs/gauntlet/cleanwarm-remap8a00-9c00-candidates-f300.log
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_TARGET_REMAP=400:e00,8a00:9c00
+
+targetRemap=0x008A00->0x009C00
+active=linear:0x016250 rgb0x0000
+sampledOwner=pc0x800fe5d4 ... cmd0xC0000045@0x018580
+frameHash=0x20ab2ecf
+```
+
+Revised next slice:
+
+1. Stop broad target-bias testing for now. `SUB=0x9000` and `8a00:9c00` both
+   move the intended addresses, but the sampled owner remains metadata/control
+   rather than dense WTR art.
+2. Add or use a filter in fullrect writer-layout sampling that can require
+   Type5 texture owners from the art payload family (`cmd=0xC0000205`,
+   non-metadata, dense/nonzero disk-backed words) and reject `pc=800fe5d4`
+   `cmd=0xC0000045` owner windows for the large fullrect.
+3. The next visual test should compare relookup enabled/disabled and an
+   owner-class filter on clean f300, with `TEXSUMMARY` proving whether raw
+   nonzero art bytes reach the `0x0180A8CB` fullrect before promoting any fix.
