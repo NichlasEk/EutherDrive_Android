@@ -30752,6 +30752,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FLOAT_TRIANGLE_COLOR_GRADIENT"));
     private readonly bool _experimentReverse8BitTextureSampleLanes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
+    private readonly bool _experimentReverse16BitTextureSampleLanes =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_16BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
     private readonly bool _experimentTextureFilterHalfTexel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_FILTER_HALF_TEXEL"));
     private readonly bool _fixTextureBilinearFilter =
@@ -39276,7 +39278,8 @@ sampledTexel:
             }
 
             uint word = ReadTexture32(byteAddress & ~3u);
-            ushort packed = (ushort)((word >> (int)((byteAddress & 2u) * 8u)) & 0xffffu);
+            uint laneByteAddress = GetTexture16BitLaneByteAddress(byteAddress);
+            ushort packed = (ushort)((word >> (int)((laneByteAddress & 2u) * 8u)) & 0xffffu);
             ushort result = ConvertTextureFormatToRgb565(format, packed, mode);
             TrackZeroTextureSample(byteAddress, result);
             TrackTextureSampleDebug(byteAddress, packed, result);
@@ -40742,7 +40745,8 @@ sampledTexel:
         if (sixteenBit)
         {
             word = ReadTexture32(byteAddress & ~3u);
-            ushort packed = (ushort)((word >> (int)((byteAddress & 2u) * 8u)) & 0xffffu);
+            uint laneByteAddress = GetTexture16BitLaneByteAddress(byteAddress);
+            ushort packed = (ushort)((word >> (int)((laneByteAddress & 2u) * 8u)) & 0xffffu);
             raw = packed;
             return ConvertTextureFormatToRgb565(format, packed, textureMode);
         }
@@ -40866,7 +40870,8 @@ sampledTexel:
         {
             byteAddress = (baseAddress + texelIndex * 2u) & (TextureBytes - 1u);
             word = ReadTexture32(byteAddress & ~3u);
-            ushort packed = (ushort)((word >> (int)((byteAddress & 2u) * 8u)) & 0xffffu);
+            uint laneByteAddress = GetTexture16BitLaneByteAddress(byteAddress);
+            ushort packed = (ushort)((word >> (int)((laneByteAddress & 2u) * 8u)) & 0xffffu);
             raw = packed;
             return ConvertTextureFormatToRgb565(format, packed, textureMode);
         }
@@ -40924,6 +40929,9 @@ sampledTexel:
 
     private static bool IsTextureFilteringEnabled(uint textureMode)
         => (textureMode & 0x6u) != 0;
+
+    private uint GetTexture16BitLaneByteAddress(uint byteAddress)
+        => _experimentReverse16BitTextureSampleLanes ? (byteAddress ^ 2u) : byteAddress;
 
     private static bool IsTextureFormat16Bit(int format)
         => format >= 8;

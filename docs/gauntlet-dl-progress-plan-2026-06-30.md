@@ -11135,3 +11135,52 @@ Next continuation point:
 3. Add a default-off 16-bit texture sample lane swap for the fullrect
    writer-layout path, or trace the raw WTR source bytes feeding
    `cmd0xC0000205@0x009C00` before they become texture memory.
+
+### 2026-07-08 16-Bit Texture Lane Negative Control
+
+Added a default-off 16-bit texture sample lane experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_16BIT_TEXTURE_SAMPLE_REVERSE_LANES=1
+```
+
+It flips the selected halfword inside each 32-bit texture word for the 16-bit
+sample paths. The existing 8-bit lane experiment stays separate.
+
+Build check:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release -m:1 --no-restore /clp:ErrorsOnly
+0 errors
+```
+
+Target-`0x9c00`/`preferredtile4` lane controls:
+
+```text
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-rev16lane-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-rev16lane-f300.png
+frameHash=0xa568853c
+
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-rev16lane-fmt10-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-rev16lane-fmt10-f300.png
+frameHash=0x0d47d498
+```
+
+Result: the experiment changes raw 16-bit samples as intended, but the visual
+class is still colored bands/noise over the primitive background. `fmt10` plus
+the lane flip is also not recognizable Gauntlet graphics.
+
+Current interpretation: the target-`0x9c00` preferred-tile4 branch is a useful
+oracle, but the failure is not a simple sampler format or halfword-lane issue.
+The next fix is more likely in the payload/source expansion behind
+`pc0x800fe7cc/cmd0xC0000205@0x009C00` and payload hash `0xCD4A255C`, or in the
+coordinate-to-payload relation used by the preferred seed.
+
+Next continuation point:
+
+1. Keep the 16-bit lane experiment default-off as a diagnostic.
+2. Trace accepted preferredtile4 samples for target `0x9c00` with their
+   `(x,y)`, selected byte address, Type5 index/target word, payload hash, and
+   raw storage/source words.
+3. Use that trace to decide whether the tile mapping is wrong or whether the
+   payload hash `0xCD4A255C` itself contains the wrong source bytes.
