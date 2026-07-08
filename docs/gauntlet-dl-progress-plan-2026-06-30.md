@@ -11071,3 +11071,67 @@ Next continuation point:
    the least banding and key selection on payload/layout, not only target.
 3. Keep `PREFERRED_SEED` default-off. Do not promote this until the visual moves
    beyond colored bands into recognizable Gauntlet art.
+
+### 2026-07-08 Target-9C00 Preferred-Seed Controls
+
+Ran forced preferred-seed controls using only the `0x9c00` target family. This
+removes the earlier mixed `0x8400/0x9c00` scoring ambiguity.
+
+Forced target/transform runs:
+
+```text
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-forced-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-forced-f300.png
+frameHash=0x382cac12
+
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile8-forced-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile8-forced-f300.png
+frameHash=0xb158cfc5
+
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-linear-forced-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-linear-forced-f300.png
+frameHash=0xc3e517e8
+
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-row2x-forced-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-row4x-forced-f300.log
+frameHash=0x7b252d7d
+```
+
+Result: `preferredtile4` is the strongest controlled target-`0x9c00` path.
+It consistently accepts `preferred=1` samples from
+`pc0x800fe7cc/cmd0xC0000205@0x009C00` with payload hash `0xCD4A255C`.
+`preferredtile8` accepts early samples but then falls back to
+`reason=no-art-owner`; `row2x`/`row4x` mostly do not reach a preferred owner.
+
+Visual status: still not correct Gauntlet graphics. The image is colored
+fullrect bands/noise over the primitive background, not scene art.
+
+Also fixed the preferred-seed diagnostic so
+`FULLRECT_SAMPLE_WRITER_LAYOUT_FORMAT_OVERRIDE` applies to the selected owner
+decode, not only to the seed address calculation. This makes format probes
+truthful for the preferred-seed branch.
+
+Format override controls after the fix:
+
+```text
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-fmt10-forced-r2-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-fmt10-forced-r2-f300.png
+frameHash=0x7d89bf86
+
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-fmt12-forced-r2-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-fmt12-forced-r2-f300.png
+frameHash=0x9a6b7c72
+```
+
+Format changes now affect output, but neither `fmt10` nor `fmt12` produces
+recognizable graphics. Existing Type5 endian control also did not change the
+target-`0x9c00` tile4 image class.
+
+Next continuation point:
+
+1. Keep `target9c00 + preferredtile4` as the current controlled oracle branch.
+2. Stop broad format guessing. The next likely blocker is 16-bit lane/word
+   order or the source expansion that hydrates payload hash `0xCD4A255C`.
+3. Add a default-off 16-bit texture sample lane swap for the fullrect
+   writer-layout path, or trace the raw WTR source bytes feeding
+   `cmd0xC0000205@0x009C00` before they become texture memory.

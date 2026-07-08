@@ -39901,6 +39901,8 @@ sampledTexel:
             }
 
             int candidateOwnerFormat = (int)((owner.Mode >> 8) & 0x0fu);
+            if (ownerFormatOverridden)
+                candidateOwnerFormat = _experimentFullrectSampleWriterLayoutFormatOverride;
             bool candidateOwnerSixteenBit = owner.BytesPerTexel == 2 || IsTextureFormat16Bit(candidateOwnerFormat);
             ushort ownerDecoded = DecodeTextureRawToRgb565(candidateRaw, candidateOwnerFormat, candidateOwnerSixteenBit, owner.Mode);
             if (ownerDecoded == 0 &&
