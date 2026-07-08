@@ -30395,6 +30395,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TARGET_LIMIT"), 64);
     private readonly int _traceType5PayloadWords =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_WORDS"), 0);
+    private readonly bool _traceType5TextureUploadSequences =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCES"));
+    private readonly ulong[] _traceType5TextureUploadSequenceTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_TARGET_WORDS"));
+    private readonly int _traceType5TextureUploadSequenceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_LIMIT"), 160);
+    private readonly int _traceType5TextureUploadSequenceWords =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_WORDS"), 8);
     private readonly ulong[] _traceType5PayloadPcs =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_PCS"));
     private readonly bool _traceType5PayloadDedup =
@@ -30934,6 +30942,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _type5PayloadTraceCount;
     private int _type5PayloadFocusedZeroTargetTraceCount;
     private int _type5PayloadFocusedTargetTraceCount;
+    private int _type5TextureUploadSequenceTraceCount;
     private int _controlLikeType5TexturePayloadSkipTraceCount;
     private int _oddFifoPacketTraceCount;
     private int _tmuRegisterWriteTraceCount;
@@ -30996,6 +31005,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _currentType5TextureWriteCount;
     private bool _currentType5TextureWriteStreaming;
     private int _currentType5TextureWriteReadIndex;
+    private int _currentType5TextureWritePhysicalMinWord;
+    private int _currentType5TextureWritePhysicalMaxWord;
     private bool _currentTextureWriteActive;
     private uint _currentTextureWriteValue;
     private uint _currentTextureWriteMode;
@@ -33149,6 +33160,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (_currentType5TextureWriteActive)
+        {
+            if (_currentType5TextureWritePhysicalMinWord < 0 || wordOffset < _currentType5TextureWritePhysicalMinWord)
+                _currentType5TextureWritePhysicalMinWord = wordOffset;
+            if (wordOffset > _currentType5TextureWritePhysicalMaxWord)
+                _currentType5TextureWritePhysicalMaxWord = wordOffset;
+        }
+
         _textureWordLastWriters[wordOffset] = new TextureWordLastWriter(
             pc,
             _currentTextureWriteValue,
@@ -37007,6 +37026,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         uint targetStart = target;
+        _currentType5TextureWritePhysicalMinWord = -1;
+        _currentType5TextureWritePhysicalMaxWord = -1;
         try
         {
             for (int i = 0; i < count; i++, target++)
@@ -37043,11 +37064,70 @@ internal class VoodooBringupBackend : IVoodooBackend
                 else if (space is 0 or 2)
                     WriteLfb32(target << 2, value);
             }
+
+            TraceType5TextureUploadSequence(command, targetStart, space, count, streaming);
         }
         finally
         {
             _currentType5TextureWriteActive = false;
         }
+    }
+
+    private void TraceType5TextureUploadSequence(uint command, uint targetStart, uint space, int count, bool streaming)
+    {
+        if (!_traceType5TextureUploadSequences ||
+            space != 3 ||
+            command != 0xc0000205u ||
+            _type5TextureUploadSequenceTraceCount >= _traceType5TextureUploadSequenceLimit)
+        {
+            return;
+        }
+
+        if (_traceType5TextureUploadSequenceTargetWords.Length != 0 &&
+            !_traceType5TextureUploadSequenceTargetWords.Contains(targetStart))
+        {
+            return;
+        }
+
+        _type5TextureUploadSequenceTraceCount++;
+
+        int payloadAvailable = Math.Max(0, _fifoBuffer.Count - 2);
+        int payloadWords = Math.Min(count, payloadAvailable);
+        int nonZero = 0;
+        uint hash = 2166136261u;
+        uint first = 0;
+        uint last = 0;
+        for (int i = 0; i < payloadWords; i++)
+        {
+            uint value = _fifoBuffer[i + 2];
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
+            if (i == 0)
+                first = value;
+            last = value;
+            if (value != 0)
+                nonZero++;
+            hash ^= value;
+            hash *= 16777619u;
+        }
+
+        string physicalSpan = _currentType5TextureWritePhysicalMinWord < 0
+            ? "phys=-"
+            : $"phys=0x{_currentType5TextureWritePhysicalMinWord:X5}-0x{_currentType5TextureWritePhysicalMaxWord:X5}";
+        string rawWords = payloadWords > 0 && _traceType5TextureUploadSequenceWords > 0
+            ? $" rawWords={FormatType5PayloadWordList(count, _traceType5TextureUploadSequenceWords, decoded: false)} decWords={FormatType5PayloadWordList(count, _traceType5TextureUploadSequenceWords, decoded: true)}"
+            : "";
+        string storageWords = payloadWords > 0
+            ? $" storage=hdr[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart)}] target[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 1)}] first[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 2)}]"
+            : "";
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TYPE5-TEXSEQ] n={_type5TextureUploadSequenceTraceCount} " +
+            $"cmd=0x{command:X8} target=0x{targetStart:X6}-0x{targetStart + (uint)Math.Max(0, count - 1):X6} " +
+            $"count={count} payload={payloadWords} nz={nonZero} hash=0x{hash:X8} first=0x{first:X8} last=0x{last:X8} " +
+            $"{physicalSpan} packet=0x{_currentCommandFifoPacketStart * 4:X8} rd=0x{_currentType5TextureWriteReadIndex * 4:X8} " +
+            $"stream={(streaming ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{storageWords}{rawWords}{pcStatus}");
     }
 
     private bool ShouldSkipControlLikeType5TexturePayload(uint command, uint targetWord, uint space, int count, bool streaming)

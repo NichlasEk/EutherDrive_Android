@@ -10480,3 +10480,42 @@ frameHash=0x20ab2ecf
 The forced packet runs do accept some non-zero owner-format texels, but too many samples reject as zero-raw and the frame does not reach the visible `row4x` branch (`0x3a2ec0cc`). This means the simple 8x8 interpretation of the Type5 packet is not the missing swizzle.
 
 Next slice: stop treating the sampled word neighborhood as the final texture layout. Trace the upload source/target relation across complete `cmd0xC0000205` packet sequences and derive how consecutive Type5 target words map to fullrect `s,t` coordinates. The working hypothesis is now that the row/band artifact comes from upload sequencing or source-address expansion before the texture memory write, not from a local 64-word packet swizzle alone.
+
+
+### 2026-07-08 Type5 Sequence Mapping
+
+Added a default-off Type5 texture upload sequence trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCES=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_TARGET_WORDS=0x8400
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_LIMIT=256
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_WORDS=16
+```
+
+This trace records each `cmd0xC0000205` space-3 upload sequence with target word range, physical texture-memory word span, payload hash, non-zero count, command FIFO packet/read positions, and a short raw/decoded payload preview.
+
+Key evidence from the visible `row4x` branch:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-typeseq-target8400-remap8a00-sub9000-f300.log
+
+n=17 target=0x008400-0x00843F phys=0x08288-0x082C7 hash=0x9D2CA0C5 nz=55 packet=0x00009084
+art-owner accept addr=0x020A50/w08294 owner ... cmd0xC0000205@0x008400:0x00840C
+frameHash=0x3a2ec0cc
+```
+
+So the first accepted visible sample is exactly index 12 inside that `target=0x8400` upload sequence: physical packet base `0x08288`, sample word `0x08294`, target word `0x840C`.
+
+The fullrect-current `0x8A00` family is not a better art source in this trace. It is mostly zero payloads and the few non-zero repetitions use the same structured small-value/float-like payload pattern:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-typeseq-target8a00-remap8a00-sub9000-f300.log
+
+count=15
+most rows hash=0xDFDE6AC5 nz=0
+non-zero rows hash=0x66BB70C5 first=0xCA000000
+frameHash=0x3a2ec0cc
+```
+
+Current interpretation: the banded visible data is not caused by choosing the wrong 64-word packet order; it is caused by sampling a repeated Type5 upload family whose payload does not look like finished texture art. The next fix should reject or deprioritize `cmd0xC0000205` owner candidates whose payload sequence hashes match these structured/non-art families (`0x9D2CA0C5`, `0x0B99D805`, zero hash `0xDFDE6AC5`) and then trace which later non-zero owner families remain for the same fullrect samples. If no candidate remains, the missing piece is earlier: BGLoadModel/source expansion is still feeding geometry/control-like words into texture upload slots.
