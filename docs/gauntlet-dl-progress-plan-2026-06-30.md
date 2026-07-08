@@ -10455,3 +10455,28 @@ reported target-word neighborhood are related but not equivalent. The next
 slice should derive a packet-local addressing mode from `Type5Index`,
 `Type5Count`, `Type5TargetStart`, and `Type5TargetWord`, then test it as a new
 fullrect art-owner transform instead of continuing broad base-bias scans.
+
+
+### 2026-07-08 Packet-Local Addressing Test
+
+Added default-off packet-local art-owner transforms and a forced-transform override:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PACKET_LOCAL=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TRANSFORM=packet8x8
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TRANSFORM=packet8x8t
+```
+
+Both tested packet-local hypotheses use `row4x` only to find the current 64-word Type5 packet owner, then remap the sample within that packet. The result is negative: both variants fall back to the clean baseline frame hash instead of preserving the first visible art-owner branch:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-packet8x8-remap8a00-sub9000-f300.log
+frameHash=0x20ab2ecf
+
+logs/gauntlet/cleanwarm-art-owner-packet8x8t-remap8a00-sub9000-f300.log
+frameHash=0x20ab2ecf
+```
+
+The forced packet runs do accept some non-zero owner-format texels, but too many samples reject as zero-raw and the frame does not reach the visible `row4x` branch (`0x3a2ec0cc`). This means the simple 8x8 interpretation of the Type5 packet is not the missing swizzle.
+
+Next slice: stop treating the sampled word neighborhood as the final texture layout. Trace the upload source/target relation across complete `cmd0xC0000205` packet sequences and derive how consecutive Type5 target words map to fullrect `s,t` coordinates. The working hypothesis is now that the row/band artifact comes from upload sequencing or source-address expansion before the texture memory write, not from a local 64-word packet swizzle alone.

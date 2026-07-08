@@ -30159,6 +30159,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         new ushort[LfbPixels]
     ];
     private static readonly string[] FullrectWriterLayoutCandidateTransforms = ["linear", "row2x", "row4x", "tile4", "tile8"];
+    private static readonly string[] FullrectWriterLayoutPacketLocalCandidateTransforms = ["packet8x8", "packet8x8t", "packet64x", "packet64y"];
     private const int PixelLastWriterSampleColumns = 20;
     private const int PixelLastWriterSampleRows = 15;
     private const int PixelLastWriterSampleCellWidth = 640 / PixelLastWriterSampleColumns;
@@ -30770,6 +30771,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_DECODE_HIGH_BYTE_FALLBACK"));
     private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerRebaseToOwner =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REBASE_TO_OWNER"));
+    private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerPacketLocal =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PACKET_LOCAL"));
+    private readonly string _experimentFullrectSampleWriterLayoutArtOwnerTransform =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TRANSFORM") ?? "")
+        .Trim()
+        .ToLowerInvariant();
     private readonly bool _traceFullrectSampleWriterLayoutArtOwnerUploadWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW"));
     private readonly int _traceFullrectSampleWriterLayoutArtOwnerUploadWindowRadius =
@@ -39338,7 +39345,7 @@ sampledTexel:
         bool hasBest = false;
         List<string>? scoreStatuses = _experimentFullrectSampleWriterLayoutArtOwnerScoreTransforms ? new List<string>() : null;
 
-        foreach (string transform in FullrectWriterLayoutCandidateTransforms)
+        foreach (string transform in EnumerateFullrectWriterLayoutArtOwnerCandidateTransforms())
         {
             if (!TryReadFullrectWriterLayoutArtOwnerCandidate(
                     x,
@@ -39435,6 +39442,21 @@ sampledTexel:
         string transform,
         out FullrectArtOwnerCandidate candidate)
     {
+        if (IsFullrectWriterLayoutPacketLocalTransform(transform))
+        {
+            return TryReadFullrectWriterLayoutPacketLocalArtOwnerCandidate(
+                x,
+                y,
+                width,
+                height,
+                format,
+                sixteenBit,
+                textureMode,
+                baseAddress,
+                transform,
+                out candidate);
+        }
+
         ushort sampleDecoded = ReadFullrectWriterLayoutTextureRgb565At(
             x,
             y,
@@ -39507,6 +39529,104 @@ sampledTexel:
         return true;
     }
 
+    private bool TryReadFullrectWriterLayoutPacketLocalArtOwnerCandidate(
+        int x,
+        int y,
+        int width,
+        int height,
+        int format,
+        bool sixteenBit,
+        uint textureMode,
+        uint baseAddress,
+        string transform,
+        out FullrectArtOwnerCandidate candidate)
+    {
+        if (!_experimentFullrectSampleWriterLayoutArtOwnerPacketLocal)
+        {
+            candidate = default;
+            return false;
+        }
+
+        ushort probeDecoded = ReadFullrectWriterLayoutTextureRgb565At(
+            x,
+            y,
+            width,
+            height,
+            format,
+            sixteenBit,
+            textureMode,
+            baseAddress,
+            "row4x",
+            out uint probeByteAddress,
+            out _,
+            out _);
+        int probeWordOffset = (int)((probeByteAddress & (TextureBytes - 1u)) >> 2);
+        if (!TryGetFullrectWriterLayoutArtOwner(probeWordOffset, out TextureWordLastWriter owner) ||
+            owner.Type5Index < 0 ||
+            owner.Type5Count <= 0)
+        {
+            candidate = default;
+            return false;
+        }
+
+        int packetCount = Math.Clamp(owner.Type5Count, 1, 256);
+        int packetBaseWord = (probeWordOffset - owner.Type5Index) & (TextureWords - 1);
+        int packetIndex = GetFullrectWriterLayoutPacketLocalIndex(x, y, transform, packetCount);
+        int candidateWordOffset = (packetBaseWord + packetIndex) & (TextureWords - 1);
+        uint candidateByteAddress = (uint)(((candidateWordOffset << 2) | (int)(probeByteAddress & 2u)) & (TextureBytes - 1));
+        ushort sampleDecoded = ReadTextureRgb565AtByteAddress(
+            candidateByteAddress,
+            format,
+            sixteenBit,
+            textureMode,
+            out uint candidateWord,
+            out uint candidateRaw);
+
+        int ownerFormat = (int)((owner.Mode >> 8) & 0x0fu);
+        bool ownerSixteenBit = owner.BytesPerTexel == 2 || IsTextureFormat16Bit(ownerFormat);
+        ushort ownerDecoded = DecodeTextureRawToRgb565(candidateRaw, ownerFormat, ownerSixteenBit, owner.Mode);
+        if (ownerDecoded == 0 &&
+            _experimentFullrectSampleWriterLayoutArtOwnerDecodeHighByteFallback &&
+            ownerSixteenBit &&
+            ownerFormat is 8 or 9)
+        {
+            ownerDecoded = DecodeTextureRawToRgb565(candidateRaw >> 8, ownerFormat & 1, sixteenBit: false, owner.Mode);
+        }
+
+        candidate = new FullrectArtOwnerCandidate(
+            transform,
+            candidateByteAddress,
+            candidateWord,
+            candidateRaw,
+            ownerDecoded,
+            sampleDecoded == 0 ? probeDecoded : sampleDecoded,
+            owner,
+            ownerFormat,
+            owner.BytesPerTexel,
+            0,
+            0,
+            0,
+            0);
+        return true;
+    }
+
+    private static int GetFullrectWriterLayoutPacketLocalIndex(int x, int y, string transform, int packetCount)
+    {
+        int packetMask = Math.Max(0, packetCount - 1);
+        int localX = x & 7;
+        int localY = y & 7;
+        int index = transform switch
+        {
+            "packet8x8" => (localY * 8) + localX,
+            "packet8x8t" => (localX * 8) + localY,
+            "packet64x" => x & 63,
+            "packet64y" => y & 63,
+            _ => 0
+        };
+
+        return index & packetMask;
+    }
+
     private int ScoreFullrectWriterLayoutArtOwnerCandidate(
         int x,
         int y,
@@ -39563,6 +39683,27 @@ sampledTexel:
 
         return (nonZeroRgb * 100) + (sameOwner * 10) - (colorChanges * 8);
     }
+
+    private IEnumerable<string> EnumerateFullrectWriterLayoutArtOwnerCandidateTransforms()
+    {
+        if (_experimentFullrectSampleWriterLayoutArtOwnerTransform.Length > 0)
+        {
+            yield return _experimentFullrectSampleWriterLayoutArtOwnerTransform;
+            yield break;
+        }
+
+        foreach (string transform in FullrectWriterLayoutCandidateTransforms)
+            yield return transform;
+
+        if (!_experimentFullrectSampleWriterLayoutArtOwnerPacketLocal)
+            yield break;
+
+        foreach (string transform in FullrectWriterLayoutPacketLocalCandidateTransforms)
+            yield return transform;
+    }
+
+    private static bool IsFullrectWriterLayoutPacketLocalTransform(string transform) =>
+        transform is "packet8x8" or "packet8x8t" or "packet64x" or "packet64y";
 
     private string FormatFullrectArtOwnerCandidateStatus(FullrectArtOwnerCandidate candidate) =>
         $"transform={candidate.Transform} ownerFmt{candidate.OwnerFormat}/ownerBpp{candidate.OwnerBytesPerTexel} " +
@@ -39960,6 +40101,41 @@ sampledTexel:
         ulong inTileX = x % tileSize;
         ulong inTileY = y % tileSize;
         return (uint)(((tileY * tilesPerRow + tileX) * tileSize * tileSize) + (inTileY * tileSize) + inTileX);
+    }
+
+    private ushort ReadTextureRgb565AtByteAddress(
+        uint byteAddress,
+        int format,
+        bool sixteenBit,
+        uint textureMode,
+        out uint word,
+        out uint raw)
+    {
+        byteAddress &= TextureBytes - 1u;
+        if (sixteenBit)
+        {
+            word = ReadTexture32(byteAddress & ~3u);
+            ushort packed = (ushort)((word >> (int)((byteAddress & 2u) * 8u)) & 0xffffu);
+            raw = packed;
+            return ConvertTextureFormatToRgb565(format, packed, textureMode);
+        }
+
+        word = ReadTexture32(byteAddress & ~3u);
+        uint lane = byteAddress & 3u;
+        if (_experimentReverse8BitTextureSampleLanes)
+            lane = 3u - lane;
+        byte value = (byte)(word >> (int)(lane * 8u));
+        raw = value;
+        return format switch
+        {
+            0 => ConvertRgb332ToRgb565(value),
+            1 => ConvertNccToRgb565(value, textureMode),
+            2 => GrayscaleToRgb565(value),
+            3 => GrayscaleToRgb565(value),
+            4 => GrayscaleToRgb565((byte)((value & 0x0f) * 17)),
+            5 or 6 or 7 => ConvertPaletteTextureToRgb565(value, format),
+            _ => PseudoPaletteToRgb565(value)
+        };
     }
 
     private ushort SampleTextureRgb565Bilinear(
