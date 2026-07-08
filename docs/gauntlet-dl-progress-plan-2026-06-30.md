@@ -10567,3 +10567,52 @@ where the correct art bytes should enter the Type5 upload. Start at the
 and compare the disk/source bytes against the Type5 payload hash families. The
 goal is to fix the source expansion/upload staging before fullrect sampling,
 instead of adding more owner-layout transforms on already-banded data.
+
+
+### 2026-07-08 Upload Source To Type5 Hash Correlation
+
+Extended `TEXUPLOAD-LINK` with full-payload signatures:
+
+```text
+memHash=0x.../nz.../words...
+diskHash=0x.../dec0x.../nz.../words...
+```
+
+`memHash` hashes the upload source words currently visible in main RAM.
+`diskHash` hashes the transformed disk-recovered words, and `dec0x` hashes the
+same words after the endian decode used by the Type5 texture trace.
+
+Focused run:
+
+```text
+logs/gauntlet/cleanwarm-uploadlink-target9c00-dechash-f250.log
+frameHash=0x3a2ec0cc
+```
+
+Key correlation:
+
+```text
+TEXUPLOAD-LINK targetWord=0x00009c00 source=0xffffffff8040d718
+bgsrc=9:wtr+0xc000(body=0xbc38/+0x3c8 len=0xbca4 hdr60=0x0000001f hdr64=0x00000015 hdr=ok)
+memHash=0xDFDE6AC5/nz0/words64
+diskHash=0xC7859375/dec0x2D3F9751/nz64/words64
+
+VOODOO-TYPE5-TEXSEQ target=0x009C00-0x009C3F
+hash=0x2D3F9751 nz=64 first=0x8191A1A0 last=0x80919180
+```
+
+This proves the non-zero Type5 `0x9C00` payload is the endian-decoded
+disk-recovered `wtr@0xc000` data, while the RAM source at the same address is
+still all zero (`memHash=0xDFDE6AC5`). The art-owner branch is therefore
+sampling real recovered source bytes, but the visible result is still banded
+because the recovered words are being uploaded/interpreted as a flat 64-word
+packet, not as the final texture layout.
+
+Next slice: derive the `wtr@0xc000` packet layout before it enters Type5. Trace
+adjacent `wtr` packet offsets (`0xc000`, `0xc100`, `0xc200`, ...) with
+`TEXUPLOAD-LINK` and compare `dec0x` hashes/first words against the physical
+texture spans (`phys=0x04700-...`). If adjacent offsets are consecutive rows or
+tiles, the fix belongs in zero-base upload packet-address/stride expansion. If
+they repeat the same stripe pattern, inspect the `wtr` asset header fields
+(`hdr60=0x1f`, `hdr64=0x15`, body offset `0xbc38`) for width/height/stride
+semantics before changing Voodoo sampling.

@@ -6339,7 +6339,40 @@ internal sealed class MipsR5000Core
         uint swapped1 = BinaryPrimitives.ReverseEndianness(first1);
         uint swapped2 = BinaryPrimitives.ReverseEndianness(first2);
         uint swapped3 = BinaryPrimitives.ReverseEndianness(first3);
+        uint memHash = 2166136261u;
+        uint diskHash = 2166136261u;
+        uint diskDecodedHash = 2166136261u;
+        int memNonZero = 0;
+        int diskNonZero = 0;
+        int diskWords = 0;
+        int availableWords = IsMainRamRange(source, payloadWords * 4UL) ? (int)payloadWords : 0;
+        for (int i = 0; i < availableWords; i++)
+        {
+            ulong wordAddress = source + (ulong)i * 4UL;
+            uint memWord = _memory.Read32(wordAddress);
+            memHash ^= memWord;
+            memHash *= 16777619u;
+            if (memWord != 0)
+                memNonZero++;
+
+            if (TryReadKnownRuntimeBgLoadModelUploadDiskWord(wordAddress, out uint diskWord, out _))
+            {
+                uint transformedDiskWord = TransformZeroBaseUploadDiskWord(diskWord);
+                diskHash ^= transformedDiskWord;
+                diskHash *= 16777619u;
+                uint decodedDiskWord = BinaryPrimitives.ReverseEndianness(transformedDiskWord);
+                diskDecodedHash ^= decodedDiskWord;
+                diskDecodedHash *= 16777619u;
+                if (transformedDiskWord != 0)
+                    diskNonZero++;
+                diskWords++;
+            }
+        }
+
         string diskCompare = FormatKnownRuntimeBgLoadModelUploadDiskCompare(source, 4);
+        string diskHashStatus = diskWords > 0
+            ? $" diskHash=0x{diskHash:X8}/dec0x{diskDecodedHash:X8}/nz{diskNonZero}/words{diskWords}"
+            : " diskHash=-";
 
         Console.WriteLine(
             $"[GAUNTDL:TEXUPLOAD-LINK] packet={packet} index={index}/{limit} " +
@@ -6350,6 +6383,7 @@ internal sealed class MipsR5000Core
             $"fifoRingBase=0x{fifoRingBase:x8} fifoRingBytes=0x{fifoRingBytes:x8} fifoRingDelta=0x{fifoRingDelta:x6} " +
             $"raw=0x{first0:x8}/0x{first1:x8}/0x{first2:x8}/0x{first3:x8} " +
             $"swap=0x{swapped0:x8}/0x{swapped1:x8}/0x{swapped2:x8}/0x{swapped3:x8} " +
+            $"memHash=0x{memHash:X8}/nz{memNonZero}/words{availableWords}{diskHashStatus} " +
             $"disk={diskCompare}");
     }
 
