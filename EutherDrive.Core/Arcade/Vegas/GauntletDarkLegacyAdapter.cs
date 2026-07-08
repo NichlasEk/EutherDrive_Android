@@ -30785,6 +30785,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TRANSFORM") ?? "")
         .Trim()
         .ToLowerInvariant();
+    private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_PAYLOAD_HASHES"));
     private readonly bool _traceFullrectSampleWriterLayoutArtOwnerUploadWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW"));
     private readonly int _traceFullrectSampleWriterLayoutArtOwnerUploadWindowRadius =
@@ -31001,6 +31003,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint _currentType5TextureWriteSpace;
     private uint _currentType5TextureWriteTargetStart;
     private uint _currentType5TextureWriteTargetWord;
+    private uint _currentType5TextureWritePayloadHash;
+    private int _currentType5TextureWritePayloadNonZeroWords;
     private int _currentType5TextureWriteIndex;
     private int _currentType5TextureWriteCount;
     private bool _currentType5TextureWriteStreaming;
@@ -33182,6 +33186,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             _currentType5TextureWriteSpace,
             _currentType5TextureWriteTargetStart,
             _currentType5TextureWriteTargetWord,
+            _currentType5TextureWritePayloadHash,
+            _currentType5TextureWritePayloadNonZeroWords,
             _currentType5TextureWriteIndex,
             _currentType5TextureWriteCount,
             _currentCommandFifoPacketStart,
@@ -36409,6 +36415,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint Type5Space,
         uint Type5TargetStart,
         uint Type5TargetWord,
+        uint Type5PayloadHash,
+        int Type5PayloadNonZeroWords,
         int Type5Index,
         int Type5Count,
         int PacketStart,
@@ -37040,6 +37048,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                     _currentType5TextureWriteSpace = space;
                     _currentType5TextureWriteTargetStart = targetStart;
                     _currentType5TextureWriteTargetWord = target;
+                    _currentType5TextureWritePayloadHash = ComputeType5PayloadHash(count);
+                    _currentType5TextureWritePayloadNonZeroWords = CountType5PayloadNonZeroWords(count);
                     _currentType5TextureWriteIndex = i;
                     _currentType5TextureWriteCount = count;
                     _currentType5TextureWriteStreaming = streaming;
@@ -37073,6 +37083,38 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
     }
 
+    private uint ComputeType5PayloadHash(int count)
+    {
+        int payloadWords = Math.Min(count, Math.Max(0, _fifoBuffer.Count - 2));
+        uint hash = 2166136261u;
+        for (int i = 0; i < payloadWords; i++)
+        {
+            uint value = _fifoBuffer[i + 2];
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
+            hash ^= value;
+            hash *= 16777619u;
+        }
+
+        return hash;
+    }
+
+    private int CountType5PayloadNonZeroWords(int count)
+    {
+        int payloadWords = Math.Min(count, Math.Max(0, _fifoBuffer.Count - 2));
+        int nonZero = 0;
+        for (int i = 0; i < payloadWords; i++)
+        {
+            uint value = _fifoBuffer[i + 2];
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
+            if (value != 0)
+                nonZero++;
+        }
+
+        return nonZero;
+    }
+
     private void TraceType5TextureUploadSequence(uint command, uint targetStart, uint space, int count, bool streaming)
     {
         if (!_traceType5TextureUploadSequences ||
@@ -37093,8 +37135,8 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         int payloadAvailable = Math.Max(0, _fifoBuffer.Count - 2);
         int payloadWords = Math.Min(count, payloadAvailable);
-        int nonZero = 0;
-        uint hash = 2166136261u;
+        int nonZero = CountType5PayloadNonZeroWords(count);
+        uint hash = ComputeType5PayloadHash(count);
         uint first = 0;
         uint last = 0;
         for (int i = 0; i < payloadWords; i++)
@@ -37105,10 +37147,6 @@ internal class VoodooBringupBackend : IVoodooBackend
             if (i == 0)
                 first = value;
             last = value;
-            if (value != 0)
-                nonZero++;
-            hash ^= value;
-            hash *= 16777619u;
         }
 
         string physicalSpan = _currentType5TextureWritePhysicalMinWord < 0
@@ -39551,7 +39589,8 @@ sampledTexel:
             out uint candidateWord,
             out uint candidateRaw);
         int candidateWordOffset = (int)((candidateByteAddress & (TextureBytes - 1u)) >> 2);
-        if (!TryGetFullrectWriterLayoutArtOwner(candidateWordOffset, out TextureWordLastWriter owner))
+        if (!TryGetFullrectWriterLayoutArtOwner(candidateWordOffset, out TextureWordLastWriter owner) ||
+            IsRejectedFullrectWriterLayoutArtOwnerPayload(owner))
         {
             candidate = default;
             return false;
@@ -39642,6 +39681,7 @@ sampledTexel:
             out _);
         int probeWordOffset = (int)((probeByteAddress & (TextureBytes - 1u)) >> 2);
         if (!TryGetFullrectWriterLayoutArtOwner(probeWordOffset, out TextureWordLastWriter owner) ||
+            IsRejectedFullrectWriterLayoutArtOwnerPayload(owner) ||
             owner.Type5Index < 0 ||
             owner.Type5Count <= 0)
         {
@@ -39785,6 +39825,10 @@ sampledTexel:
     private static bool IsFullrectWriterLayoutPacketLocalTransform(string transform) =>
         transform is "packet8x8" or "packet8x8t" or "packet64x" or "packet64y";
 
+    private bool IsRejectedFullrectWriterLayoutArtOwnerPayload(TextureWordLastWriter owner) =>
+        _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Length != 0 &&
+        _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Contains(owner.Type5PayloadHash);
+
     private string FormatFullrectArtOwnerCandidateStatus(FullrectArtOwnerCandidate candidate) =>
         $"transform={candidate.Transform} ownerFmt{candidate.OwnerFormat}/ownerBpp{candidate.OwnerBytesPerTexel} " +
         $"sampleRgb=0x{candidate.SampleResult:X4} score={candidate.Score}/nz{candidate.NonZeroRgb}/same{candidate.SameOwner}/chg{candidate.ColorChanges} " +
@@ -39865,7 +39909,7 @@ sampledTexel:
     }
 
     private static string FormatTextureWordWriterStatus(TextureWordLastWriter writer) =>
-        $"pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writer.BytesPerTexel}/type5={(writer.Type5 ? 1 : 0)}/cmd0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}";
+        $"pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writer.BytesPerTexel}/type5={(writer.Type5 ? 1 : 0)}/cmd0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}/ph0x{writer.Type5PayloadHash:X8}/pnz{writer.Type5PayloadNonZeroWords}";
 
     private void TraceFullrectWriterLayoutCandidates(
         float s,

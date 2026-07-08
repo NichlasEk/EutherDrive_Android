@@ -10519,3 +10519,51 @@ frameHash=0x3a2ec0cc
 ```
 
 Current interpretation: the banded visible data is not caused by choosing the wrong 64-word packet order; it is caused by sampling a repeated Type5 upload family whose payload does not look like finished texture art. The next fix should reject or deprioritize `cmd0xC0000205` owner candidates whose payload sequence hashes match these structured/non-art families (`0x9D2CA0C5`, `0x0B99D805`, zero hash `0xDFDE6AC5`) and then trace which later non-zero owner families remain for the same fullrect samples. If no candidate remains, the missing piece is earlier: BGLoadModel/source expansion is still feeding geometry/control-like words into texture upload slots.
+
+
+### 2026-07-08 Art-Owner Payload Hash Reject Test
+
+Added a default-off art-owner reject list for fullrect writer-layout experiments:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_PAYLOAD_HASHES=0x9D2CA0C5,0x0B99D805,0xDFDE6AC5
+```
+
+The texture last-writer status now carries Type5 payload hash and non-zero word
+count (`ph0x.../pnz...`) so rejected or accepted owner families can be compared
+without re-running the heavier Type5 sequence trace.
+
+Initial reject-list run:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-rejecthashes-remap8a00-sub9000-f300.ppm
+logs/gauntlet/cleanwarm-art-owner-rejecthashes-remap8a00-sub9000-f300.png
+frameHash=0x48661418
+```
+
+This changed the frame from the previous visible branch (`0x3a2ec0cc`) but the
+image is still horizontal/banded upload data, not recognizable scene art. The
+remaining sampled owner family included `cmd0xC0000205@0x008600/ph0xD002D945/pnz55`.
+
+Follow-up with the newly observed row-like reject added:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_PAYLOAD_HASHES=0x9D2CA0C5,0x0B99D805,0xDFDE6AC5,0x28F9A285
+
+logs/gauntlet/cleanwarm-art-owner-rejecthashes-plus28-remap8a00-sub9000-f300.ppm
+logs/gauntlet/cleanwarm-art-owner-rejecthashes-plus28-remap8a00-sub9000-f300.png
+frameHash=0xb5f970ee
+```
+
+The plus-`0x28F9A285` frame is visually almost identical to the first
+reject-hash image. Early samples now reject with `reason=no-art-owner`, but the
+visible output does not improve. This confirms the reject list is steering
+owner selection, while the surviving upload families are still not finished
+texture art.
+
+Next slice: pivot from choosing among current texture-memory owners to tracing
+where the correct art bytes should enter the Type5 upload. Start at the
+`zero-base-upload-disk-word targetWord=0x00009c00` evidence for `wtr@0xc000`
+and compare the disk/source bytes against the Type5 payload hash families. The
+goal is to fix the source expansion/upload staging before fullrect sampling,
+instead of adding more owner-layout transforms on already-banded data.
