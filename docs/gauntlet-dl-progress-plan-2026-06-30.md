@@ -10616,3 +10616,70 @@ tiles, the fix belongs in zero-base upload packet-address/stride expansion. If
 they repeat the same stripe pattern, inspect the `wtr` asset header fields
 (`hdr60=0x1f`, `hdr64=0x15`, body offset `0xbc38`) for width/height/stride
 semantics before changing Voodoo sampling.
+
+
+### 2026-07-08 Adjacent WTR Packet And MAME Pointer Test
+
+Focused adjacent packet trace:
+
+```text
+logs/gauntlet/cleanwarm-uploadlink-wtr-c000-c300-f250.log
+frameHash=0x3a2ec0cc
+
+target=0x00009c00 wtr=0xc000 disk=0xC7859375 dec=0x2D3F9751
+target=0x00009c40 wtr=0xc100 disk=0xC100ED21 dec=0x13BF9567
+target=0x00009c80 wtr=0xc200 disk=0x75A24C45 dec=0xEC13094C
+target=0x00009cc0 wtr=0xc300 disk=0xD67EFFFC dec=0x4063BAD9
+```
+
+The matching Type5 trace shows the same decoded hashes, but the physical spans
+collapse in pairs:
+
+```text
+target=0x009C00-0x009C3F hash=0x2D3F9751 phys=0x04700-0x0471F
+target=0x009C40-0x009C7F hash=0x13BF9567 phys=0x04700-0x0471F
+target=0x009C80-0x009CBF hash=0xEC13094C phys=0x04720-0x0473F
+target=0x009CC0-0x009CFF hash=0x4063BAD9 phys=0x04720-0x0473F
+```
+
+So the zero-base packet-address stride is now coherent enough to pull adjacent
+`wtr` disk packets, but the Voodoo texture download mapping folds two 64-word
+target packets into the same 32-word texture-memory span.
+
+MAME texture write-pointer trace:
+
+```text
+logs/gauntlet/cleanwarm-mameptr-wtr-9c00-9cc0-f250.log
+
+word=0x009C20 current=0x011C00 mame=0x011C80
+word=0x009C60 current=0x011C00 mame=0x011C80
+word=0x009CA0 current=0x011C80 mame=0x011D00
+```
+
+That proves the current mapper differs from the MAME pointer path mostly in the
+second half of each 64-word packet. Two apply tests were negative:
+
+```text
+logs/gauntlet/cleanwarm-mameptr-apply-wtr-9c00-9cc0-f300.png
+frameHash=0xa71f7b0a
+
+logs/gauntlet/cleanwarm-mameptr-apply-all-f300.png
+frameHash=0x1ff3cdaf
+```
+
+Both apply modes change the band layout, but neither produces recognizable
+scene art. Broad apply slightly reduces zero samples (`n=1 zero=59632`,
+`n=2 zero=40869`) but remains a stripe/interleave artifact.
+
+Current interpretation: the missing graphics are not fixed by blindly switching
+to the MAME write pointer. The useful fact is narrower: `wtr` adjacent packets
+are distinct and correctly recovered, while the download mapper is still
+folding or interleaving them incorrectly for Gauntlet's 8-bit sequential
+download path.
+
+Next slice: add a default-off Gauntlet-specific texture download layout probe
+that records or experiments with `targetStart`, `targetWord`, `Type5Index`, and
+byte-lane placement for the `seq8=1 lod=1 size=256x256` uploads. The first
+candidate should preserve the adjacent packet sequence (`0x9c00`, `0x9c40`,
+`0x9c80`, `0x9cc0`) as four separate 64-byte rows/blocks instead of letting
+two packets share the same 32-word physical span.
