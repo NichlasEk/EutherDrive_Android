@@ -30194,6 +30194,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     ];
     private static readonly string[] FullrectWriterLayoutCandidateTransforms = ["linear", "row2x", "row4x", "tile4", "tile8"];
     private static readonly string[] FullrectWriterLayoutPacketLocalCandidateTransforms = ["packet8x8", "packet8x8t", "packet64x", "packet64y"];
+    private static readonly string[] FullrectWriterLayoutTargetLocalCandidateTransforms = ["targetword", "targetlinear", "targetrow2x", "targetrow4x", "targettile4", "targettile8"];
     private const int PixelLastWriterSampleColumns = 20;
     private const int PixelLastWriterSampleRows = 15;
     private const int PixelLastWriterSampleCellWidth = 640 / PixelLastWriterSampleColumns;
@@ -30815,6 +30816,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REBASE_TO_OWNER"));
     private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerPacketLocal =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PACKET_LOCAL"));
+    private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerTargetLocal =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TARGET_LOCAL"));
     private readonly string _experimentFullrectSampleWriterLayoutArtOwnerTransform =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TRANSFORM") ?? "")
         .Trim()
@@ -39712,6 +39715,20 @@ sampledTexel:
                 transform,
                 out candidate);
         }
+        if (IsFullrectWriterLayoutTargetLocalTransform(transform))
+        {
+            return TryReadFullrectWriterLayoutTargetLocalArtOwnerCandidate(
+                x,
+                y,
+                width,
+                height,
+                format,
+                sixteenBit,
+                textureMode,
+                baseAddress,
+                transform,
+                out candidate);
+        }
 
         ushort sampleDecoded = ReadFullrectWriterLayoutTextureRgb565At(
             x,
@@ -39776,6 +39793,97 @@ sampledTexel:
             candidateRaw,
             ownerDecoded,
             sampleDecoded,
+            owner,
+            ownerFormat,
+            owner.BytesPerTexel,
+            0,
+            0,
+            0,
+            0);
+        return true;
+    }
+
+    private bool TryReadFullrectWriterLayoutTargetLocalArtOwnerCandidate(
+        int x,
+        int y,
+        int width,
+        int height,
+        int format,
+        bool sixteenBit,
+        uint textureMode,
+        uint baseAddress,
+        string transform,
+        out FullrectArtOwnerCandidate candidate)
+    {
+        if (!_experimentFullrectSampleWriterLayoutArtOwnerTargetLocal)
+        {
+            candidate = default;
+            return false;
+        }
+
+        ushort probeDecoded = ReadFullrectWriterLayoutTextureRgb565At(
+            x,
+            y,
+            width,
+            height,
+            format,
+            sixteenBit,
+            textureMode,
+            baseAddress,
+            "row4x",
+            out uint probeByteAddress,
+            out _,
+            out _);
+        int probeWordOffset = (int)((probeByteAddress & (TextureBytes - 1u)) >> 2);
+        if (!TryGetFullrectWriterLayoutArtOwner(probeWordOffset, out TextureWordLastWriter seedOwner) ||
+            IsRejectedFullrectWriterLayoutArtOwnerPayload(seedOwner) ||
+            seedOwner.Type5Count <= 0)
+        {
+            candidate = default;
+            return false;
+        }
+
+        int packetCount = Math.Clamp(seedOwner.Type5Count, 1, 256);
+        int packetIndex = GetFullrectWriterLayoutTargetLocalIndex(x, y, width, height, transform, packetCount);
+        uint targetWord = transform == "targetword"
+            ? seedOwner.Type5TargetWord
+            : (seedOwner.Type5TargetStart + (uint)packetIndex);
+        uint lane = sixteenBit ? (probeByteAddress & 2u) : (probeByteAddress & 3u);
+        uint candidateByteAddress = ((targetWord << 2) | lane) & (TextureBytes - 1u);
+        ushort sampleDecoded = ReadTextureRgb565AtByteAddress(
+            candidateByteAddress,
+            format,
+            sixteenBit,
+            textureMode,
+            out uint candidateWord,
+            out uint candidateRaw);
+
+        TextureWordLastWriter owner = seedOwner;
+        int candidateWordOffset = (int)((candidateByteAddress & (TextureBytes - 1u)) >> 2);
+        if (TryGetFullrectWriterLayoutArtOwner(candidateWordOffset, out TextureWordLastWriter targetOwner) &&
+            !IsRejectedFullrectWriterLayoutArtOwnerPayload(targetOwner))
+        {
+            owner = targetOwner;
+        }
+
+        int ownerFormat = (int)((owner.Mode >> 8) & 0x0fu);
+        bool ownerSixteenBit = owner.BytesPerTexel == 2 || IsTextureFormat16Bit(ownerFormat);
+        ushort ownerDecoded = DecodeTextureRawToRgb565(candidateRaw, ownerFormat, ownerSixteenBit, owner.Mode);
+        if (ownerDecoded == 0 &&
+            _experimentFullrectSampleWriterLayoutArtOwnerDecodeHighByteFallback &&
+            ownerSixteenBit &&
+            ownerFormat is 8 or 9)
+        {
+            ownerDecoded = DecodeTextureRawToRgb565(candidateRaw >> 8, ownerFormat & 1, sixteenBit: false, owner.Mode);
+        }
+
+        candidate = new FullrectArtOwnerCandidate(
+            transform,
+            candidateByteAddress,
+            candidateWord,
+            candidateRaw,
+            ownerDecoded,
+            sampleDecoded == 0 ? probeDecoded : sampleDecoded,
             owner,
             ownerFormat,
             owner.BytesPerTexel,
@@ -39885,6 +39993,22 @@ sampledTexel:
         return index & packetMask;
     }
 
+    private static int GetFullrectWriterLayoutTargetLocalIndex(int x, int y, int width, int height, string transform, int packetCount)
+    {
+        uint texelIndex = transform switch
+        {
+            "targetword" => 0u,
+            "targetlinear" => GetFullrectWriterLayoutTexelIndex(x, y, width, height, "linear"),
+            "targetrow2x" => GetFullrectWriterLayoutTexelIndex(x, y, width, height, "row2x"),
+            "targetrow4x" => GetFullrectWriterLayoutTexelIndex(x, y, width, height, "row4x"),
+            "targettile4" => GetFullrectWriterLayoutTexelIndex(x, y, width, height, "tile4"),
+            "targettile8" => GetFullrectWriterLayoutTexelIndex(x, y, width, height, "tile8"),
+            _ => 0u
+        };
+
+        return (int)(texelIndex % (uint)Math.Max(1, packetCount));
+    }
+
     private int ScoreFullrectWriterLayoutArtOwnerCandidate(
         int x,
         int y,
@@ -39954,14 +40078,29 @@ sampledTexel:
             yield return transform;
 
         if (!_experimentFullrectSampleWriterLayoutArtOwnerPacketLocal)
-            yield break;
+        {
+            if (!_experimentFullrectSampleWriterLayoutArtOwnerTargetLocal)
+                yield break;
+        }
 
-        foreach (string transform in FullrectWriterLayoutPacketLocalCandidateTransforms)
-            yield return transform;
+        if (_experimentFullrectSampleWriterLayoutArtOwnerPacketLocal)
+        {
+            foreach (string transform in FullrectWriterLayoutPacketLocalCandidateTransforms)
+                yield return transform;
+        }
+
+        if (_experimentFullrectSampleWriterLayoutArtOwnerTargetLocal)
+        {
+            foreach (string transform in FullrectWriterLayoutTargetLocalCandidateTransforms)
+                yield return transform;
+        }
     }
 
     private static bool IsFullrectWriterLayoutPacketLocalTransform(string transform) =>
         transform is "packet8x8" or "packet8x8t" or "packet64x" or "packet64y";
+
+    private static bool IsFullrectWriterLayoutTargetLocalTransform(string transform) =>
+        transform is "targetword" or "targetlinear" or "targetrow2x" or "targetrow4x" or "targettile4" or "targettile8";
 
     private bool IsRejectedFullrectWriterLayoutArtOwnerPayload(TextureWordLastWriter owner) =>
         _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Length != 0 &&

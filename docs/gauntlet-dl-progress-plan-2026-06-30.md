@@ -10821,3 +10821,107 @@ Next slice:
    evidence, but do not promote it as a fix.
 4. Use `logs/gauntlet/cleanwarm-seq8-packet-block-layout-fullenv-span1000-f300.png`
    as the current screendump reference for the visible-but-wrong state.
+
+
+### 2026-07-08 Fullrect Art-Owner Target-Local Probe
+
+Added a default-off fullrect/art-owner target-local candidate family:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TARGET_LOCAL=1
+
+targetword
+targetlinear
+targetrow2x
+targetrow4x
+targettile4
+targettile8
+```
+
+The probe uses the current `row4x` path only to find a valid art owner, then
+tries to sample through the owner's Type5 `TargetStart`, `TargetWord`,
+`Type5Index`, and `Type5Count`. This was intended to test whether the visible
+banding was caused by sampling the memory word neighborhood instead of the
+reported Type5 target neighborhood.
+
+Also fixed `tools/GauntletProbe/run-gauntdl-baseline.sh` so explicit env values
+are preserved during sweeps:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK=0x3fe
+EUTHERDRIVE_GAUNTDL_EXTRA_SERIES=
+```
+
+The helper previously overwrote the indexed-header mask back to `0x1fe` and
+treated an intentionally empty `EXTRA_SERIES` as the long default extra-step
+series. This made fullenv comparisons slower and partly misconfigured.
+
+Build check:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release -m:1 --no-restore /clp:ErrorsOnly
+0 errors
+```
+
+Scored target-local run:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-targetlocal-score-r1-remap8a00-sub9000-f300.log
+logs/gauntlet/cleanwarm-art-owner-targetlocal-score-r1-remap8a00-sub9000-f300.png
+
+frameHash=0xba64f765
+framebuffer=640x480:307200:307155
+```
+
+Result: visible but wrong. The screendump has less left-side noise than the
+previous fullenv packet-block image, but it is still bands/noise over the
+primitive background, not recognizable Gauntlet scene art. The score trace is
+more important than the picture: `target*` candidates mostly report `raw0` or
+low scores, while `tile4` and `tile8` usually beat them.
+
+Forced target-local control:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-targettile8-forced-remap8a00-sub9000-f300.log
+logs/gauntlet/cleanwarm-art-owner-targettile8-forced-remap8a00-sub9000-f300.png
+
+frameHash=0xc0ef420e
+```
+
+Forced `targettile8` accepts a few samples from a different owner family, but
+most early samples reject as `zero-raw`, and the visual result is still wrong.
+Do not promote target-local target-word sampling as the next fix.
+
+Current interpretation: the Type5 target-word neighborhood is not the missing
+layout by itself. The useful signal is that the deterministic scorer prefers
+`tile4`/`tile8` over the old first-hit `row4x` path for many samples. The next
+slice should focus there:
+
+1. Keep `ART_OWNER_TARGET_LOCAL` default-off as a negative diagnostic.
+2. Add a stricter owner/asset-family filter or score term so `tile4`/`tile8`
+   does not drift into unrelated `pc0x800fe614` owner families when the desired
+   WTR/art owner is `pc0x800fe7cc`/`0x8a00->0x9c00`.
+3. Compare forced `tile4` and forced `tile8` under the corrected helper/env
+   before changing the default scoring policy.
+
+Forced tile controls under the corrected helper/env:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-tile4-forced-remap8a00-sub9000-f300.log
+logs/gauntlet/cleanwarm-art-owner-tile4-forced-remap8a00-sub9000-f300.png
+frameHash=0x0554269e
+framebuffer=640x480:307200:307178
+
+logs/gauntlet/cleanwarm-art-owner-tile8-forced-remap8a00-sub9000-f300.log
+logs/gauntlet/cleanwarm-art-owner-tile8-forced-remap8a00-sub9000-f300.png
+frameHash=0xd2a5a650
+framebuffer=640x480:307200:307165
+```
+
+Both forced tile modes remain visibly wrong. `tile4` is cleaner than the noisy
+left-block reference, but it mostly follows the `pc0x800fe614` owner family
+(`cmd0xC0000205@0x000E00...`) rather than the desired WTR/art-owner branch
+around `pc0x800fe7cc` and `0x8a00->0x9c00`. This makes the next step sharper:
+add a filter or score term that prefers the WTR remap family and rejects the
+font/static-looking `0x000c00/0x000e00` owner family before trying more address
+transforms.
