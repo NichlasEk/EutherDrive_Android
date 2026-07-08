@@ -30770,6 +30770,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_DECODE_HIGH_BYTE_FALLBACK"));
     private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerRebaseToOwner =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REBASE_TO_OWNER"));
+    private readonly bool _traceFullrectSampleWriterLayoutArtOwnerUploadWindow =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW"));
+    private readonly int _traceFullrectSampleWriterLayoutArtOwnerUploadWindowRadius =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW_RADIUS"), 8);
     private readonly string _experimentFullrectSampleWriterLayoutAddressTransform =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM") ?? "")
         .Trim()
@@ -39560,10 +39564,55 @@ sampledTexel:
         return (nonZeroRgb * 100) + (sameOwner * 10) - (colorChanges * 8);
     }
 
-    private static string FormatFullrectArtOwnerCandidateStatus(FullrectArtOwnerCandidate candidate) =>
+    private string FormatFullrectArtOwnerCandidateStatus(FullrectArtOwnerCandidate candidate) =>
         $"transform={candidate.Transform} ownerFmt{candidate.OwnerFormat}/ownerBpp{candidate.OwnerBytesPerTexel} " +
         $"sampleRgb=0x{candidate.SampleResult:X4} score={candidate.Score}/nz{candidate.NonZeroRgb}/same{candidate.SameOwner}/chg{candidate.ColorChanges} " +
-        $"owner={FormatTextureWordWriterStatus(candidate.Owner)}";
+        $"owner={FormatTextureWordWriterStatus(candidate.Owner)}{FormatFullrectArtOwnerUploadWindow(candidate)}";
+
+    private string FormatFullrectArtOwnerUploadWindow(FullrectArtOwnerCandidate candidate)
+    {
+        if (!_traceFullrectSampleWriterLayoutArtOwnerUploadWindow)
+            return "";
+
+        TextureWordLastWriter center = candidate.Owner;
+        int radius = Math.Clamp(_traceFullrectSampleWriterLayoutArtOwnerUploadWindowRadius, 1, 64);
+        int centerWordOffset = (int)((candidate.ByteAddress & (TextureBytes - 1u)) >> 2);
+        int nonZero = 0;
+        int sameCommand = 0;
+        int sameTargetStart = 0;
+        int samePacket = 0;
+        int minIndex = int.MaxValue;
+        int maxIndex = int.MinValue;
+        List<string> words = [];
+
+        for (int delta = -radius; delta <= radius; delta++)
+        {
+            int wordOffset = (centerWordOffset + delta) & (TextureWords - 1);
+            uint value = _textureMemory[wordOffset];
+            if (value != 0)
+                nonZero++;
+
+            string ownerStatus = "-";
+            if (_textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter owner))
+            {
+                if (owner.Type5Command == center.Type5Command)
+                    sameCommand++;
+                if (owner.Type5TargetStart == center.Type5TargetStart)
+                    sameTargetStart++;
+                if (owner.PacketStart == center.PacketStart)
+                    samePacket++;
+                minIndex = Math.Min(minIndex, owner.Type5Index);
+                maxIndex = Math.Max(maxIndex, owner.Type5Index);
+                ownerStatus = $"{owner.Type5Index}/{owner.Type5Count}:0x{owner.Type5TargetWord:X5}:fmt{(int)((owner.Mode >> 8) & 0x0fu)}";
+            }
+
+            if (words.Count < 9 && (delta == 0 || value != 0))
+                words.Add($"{delta:+#;-#;0}=0x{value:X8}/{ownerStatus}");
+        }
+
+        string indexSpan = minIndex == int.MaxValue ? "-" : $"{minIndex}-{maxIndex}";
+        return $" uploadWindow=w0x{centerWordOffset:X5}/target0x{center.Type5TargetWord:X5}/r{radius}/nz{nonZero}/sameCmd{sameCommand}/sameStart{sameTargetStart}/samePkt{samePacket}/idx{indexSpan}/words[{string.Join(";", words)}]";
+    }
 
     private ushort DecodeTextureRawToRgb565(uint raw, int format, bool sixteenBit, uint textureMode)
     {

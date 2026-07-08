@@ -10407,3 +10407,51 @@ layout itself: why the accepted `row4x` samples sit in sparse horizontal bands,
 and whether the payload should be interpreted as a swizzled/tiled 16-bit
 surface or as multiple adjacent rows/tiles packed under the same
 `cmd0xC0000205` upload family.
+
+### 2026-07-08 Type5 Upload Window Evidence
+
+Added a default-off upload-window trace for the accepted fullrect art-owner
+samples:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW_RADIUS=16
+```
+
+The corrected trace windows around the actual sampled texture word show the
+visible `row4x` samples sitting inside dense 64-word `cmd0xC0000205` upload
+packets, but offset from the Type5 target word:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-upload-window-fixed-remap8a00-sub9000-f300.log
+
+addr=0x020A50/w08294 raw=0x0100 rgb=0x1000
+owner ... cmd0xC0000205@0x008400:0x00840C
+uploadWindow=w0x08294/target0x0840C/r16/nz28/sameCmd33/sameStart29/samePkt29/idx0-63
+words[-12=0x94600100/0/64:0x08400:fmt12; ... -6=0x01000000/6/64:0x08406:fmt12]
+
+frameHash=0x3a2ec0cc
+```
+
+This confirms that the sampler's current word address (`0x08294`) and the
+upload target word (`0x0840C`) differ by `0x178` words (`0x5e0` bytes) in the
+first accepted sample. Testing that offset as an explicit base bias moved the
+sampling into the target-word family and changed the frame, but it remained
+visibly banded:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-bias5e0-remap8a00-sub9000-f300.log
+logs/gauntlet/cleanwarm-art-owner-bias5e0-remap8a00-sub9000-f300.png
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_BASE_BIAS=0x5e0
+addr=0x021032/w0840C raw=0x0B00 rgb=0xB800
+owner ... cmd0xC0000205@0x008700:0x008704
+frameHash=0xd81c1709
+```
+
+Current interpretation: global base-bias is not the missing fix. The data is
+organized as small Type5 packets (`idx0-63`) whose memory word neighborhood and
+reported target-word neighborhood are related but not equivalent. The next
+slice should derive a packet-local addressing mode from `Type5Index`,
+`Type5Count`, `Type5TargetStart`, and `Type5TargetWord`, then test it as a new
+fullrect art-owner transform instead of continuing broad base-bias scans.
