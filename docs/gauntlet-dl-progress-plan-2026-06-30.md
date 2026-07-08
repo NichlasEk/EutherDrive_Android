@@ -11258,3 +11258,104 @@ Next continuation point:
    decide whether `0x009C00` is a descriptor/control block masquerading as
    texture data or whether the packet body is being sourced from the wrong
    BGLoadModel/WTR payload offset.
+
+### 2026-07-08 Direct-Writer Source And MAME Base-Shift Check
+
+Added source metadata for command-FIFO bulk writes and a selected-owner payload
+classifier:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_FLOATLIKE_PAYLOADS=1
+```
+
+Build check:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release -m:1 --no-restore /clp:ErrorsOnly
+0 errors
+```
+
+The useful direct-writer trace:
+
+```text
+logs/gauntlet/cleanwarm-target9c00-directwriter-r1-f300.log
+```
+
+Result: payload hash `0xCD4A255C` for target `0x009C00` is not random FIFO
+damage and is not produced by the C# bulk fastpath. It is emitted by the
+emulated CPU direct writer around `pc=0xffffffff800fe7b0` and resolves to
+disk-backed `gei+0x2800` words:
+
+```text
+s3src=bgsrc=1:gei+0x2800(...)
+s3w=3d85a503/be23cea8/bf74a5d5/3d85a503
+```
+
+That confirms the current visible fullrect branch is selecting a real game
+payload, but the payload class looks like geometry/float/control data rather
+than final texture pixels.
+
+Rejected-owner controls:
+
+```text
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-reject-cd4a-r1-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-reject-cd4a-r1-f300.png
+frameHash=0x7b252d7d
+
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-reject-floatlike-r1-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-reject-floatlike-r1-f300.png
+frameHash=0x7b252d7d
+```
+
+Result: when the `0xCD4A255C`/float-like owner is rejected inside the forced
+`target9c00 + preferredtile4` oracle, the branch falls back to the primitive
+background/noise image. There is no better nearby owner in that narrow forced
+path.
+
+Broad transform control:
+
+```text
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-alltrans-reject-floatlike-r1-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-alltrans-reject-floatlike-r1-f300.png
+frameHash=0x6a5866a7
+```
+
+Result: broader scoring finds alternate 8-bit owners such as
+`pc0x800fe614/cmd0xC0000205@0x000800`, `0x000C00`, and `0x000E00`, but the
+visual class is still colored noise/bands. This proves owner rejection alone is
+not enough; the selection must identify an actually image-like payload, not just
+a nonzero one.
+
+MAME reference check: `/home/nichlas/mame/src/devices/video/voodoo_render.cpp`
+uses `texBaseAddr << 3` through `m_baseshift=3` and the same write-pointer shape
+as our MAME write pointer:
+
+```text
+lodoffset[lod] + ((scale * offs) & ~3)
+```
+
+Promoted `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT` to a
+bringup fix so `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1` follows MAME's base-address
+shift by default. The specific env var can still disable it.
+
+MAME-like upload/fetch control:
+
+```text
+logs/gauntlet/cleanwarm-mameptr-baseshift-r1-f300.log
+logs/gauntlet/cleanwarm-mameptr-baseshift-r1-f300.png
+frameHash=0x110f8892
+```
+
+Result: base-shift plus MAME write/fetch changes the frame and expands the noisy
+top fullrect, but it still does not produce recognizable Gauntlet art.
+
+Next continuation point:
+
+1. Keep base-shift enabled under `BRINGUP_FAST`; it matches MAME and changes the
+   frame in the expected texture path.
+2. Stop trying only fullrect owner filters. The current blocker is finding the
+   real image-bearing Type5 payload/source, not decoding `0xCD4A255C` harder.
+3. Add a payload-scanning probe that ranks Type5 texture uploads by image-like
+   byte statistics over their source words and dumps candidate payloads as small
+   tile sheets. Use that to choose a real art owner before wiring it into
+   fullrect selection.

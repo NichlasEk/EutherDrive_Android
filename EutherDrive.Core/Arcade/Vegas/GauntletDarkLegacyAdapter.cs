@@ -4648,7 +4648,9 @@ internal sealed class MipsR5000Core
                 TraceGlideFifoOuterPayloadOddWords(packet, packetSourceAddress, source, payloadWords, header);
                 if (_fixVoodooMameCommandFifoModel)
                 {
+                    _memory.SetVoodooCommandFifoBulkWriteSource(source, sourceBase, packetSourceAddress, packet, index, limit, uint.MaxValue, payloadWords);
                     WriteGlideFifoWord(ref fifo, header, fifoRingBase, fifoRingBytes);
+                    _memory.SetVoodooCommandFifoBulkWriteSource(source, sourceBase, packetSourceAddress, packet, index, limit, uint.MaxValue - 1U, payloadWords);
                     WriteGlideFifoWord(ref fifo, unchecked(packetSourceAddress - fifoBase) & mask, fifoRingBase, fifoRingBytes);
                 }
                 else
@@ -4733,7 +4735,10 @@ internal sealed class MipsR5000Core
                     }
 
                     if (_fixVoodooMameCommandFifoModel)
+                    {
+                        _memory.SetVoodooCommandFifoBulkWriteSource(source, sourceBase, packetSourceAddress, packet, index, limit, word, payloadWords);
                         WriteGlideFifoWord(ref fifo, payloadWord, fifoRingBase, fifoRingBytes);
+                    }
                     else
                     {
                         _memory.Write32(fifo, payloadWord);
@@ -4748,6 +4753,7 @@ internal sealed class MipsR5000Core
         }
         finally
         {
+            _memory.ClearVoodooCommandFifoBulkWriteSource();
             _memory.EndVoodooCommandFifoBulkWrite();
         }
 
@@ -24799,6 +24805,27 @@ internal sealed class VegasMemoryMap
 
     public void EndVoodooCommandFifoBulkWrite() => _voodoo?.EndCommandFifoBulkWrite();
 
+    public void SetVoodooCommandFifoBulkWriteSource(
+        ulong source,
+        uint sourceBase,
+        uint packetSourceAddress,
+        uint packet,
+        uint index,
+        uint limit,
+        uint word,
+        uint payloadWords)
+        => _voodoo?.SetCommandFifoBulkWriteSource(
+            source,
+            sourceBase,
+            packetSourceAddress,
+            packet,
+            index,
+            limit,
+            word,
+            payloadWords);
+
+    public void ClearVoodooCommandFifoBulkWriteSource() => _voodoo?.ClearCommandFifoBulkWriteSource();
+
     public bool IoasicPicNvramDirty => _ioasicPicNvramDirty;
     public bool TimekeeperRamDirty => _timekeeperRamDirty;
 
@@ -30046,6 +30073,16 @@ public interface IVoodooBackend
     void WriteLfb32(uint offset, uint value);
     uint ReadTexture32(uint offset);
     void WriteTexture32(uint offset, uint value);
+    void SetCommandFifoBulkWriteSource(
+        ulong source,
+        uint sourceBase,
+        uint packetSourceAddress,
+        uint packet,
+        uint index,
+        uint limit,
+        uint word,
+        uint payloadWords);
+    void ClearCommandFifoBulkWriteSource();
     string DebugStatus { get; }
     string RecentEventStatus { get; }
     void RenderFrame(EutherFrameTarget target);
@@ -30063,6 +30100,15 @@ internal sealed class VoodooFacade : IVoodooBackend
     public string DebugStatus => _backend.DebugStatus;
     public string RecentEventStatus => _backend.RecentEventStatus;
     private Func<ulong>? _cpuPcProvider;
+    private bool _commandFifoBulkWriteSourceActive;
+    private ulong _commandFifoBulkWriteSource;
+    private uint _commandFifoBulkWriteSourceBase;
+    private uint _commandFifoBulkWritePacketSourceAddress;
+    private uint _commandFifoBulkWritePacket;
+    private uint _commandFifoBulkWriteIndex;
+    private uint _commandFifoBulkWriteLimit;
+    private uint _commandFifoBulkWriteWord;
+    private uint _commandFifoBulkWritePayloadWords;
 
     public void SetCpuPcProvider(Func<ulong> provider)
     {
@@ -30080,12 +30126,75 @@ internal sealed class VoodooFacade : IVoodooBackend
 
     public void WriteRegister(uint address, uint value) => _backend.WriteRegister(address, value);
     public uint ReadRegister(uint address) => _backend.ReadRegister(address);
-    public void WriteFifo(uint wordOffset, uint value) => _backend.WriteFifo(wordOffset, value);
+    public void WriteFifo(uint wordOffset, uint value)
+    {
+        if (_commandFifoBulkWriteSourceActive)
+        {
+            _backend.SetCommandFifoBulkWriteSource(
+                _commandFifoBulkWriteSource,
+                _commandFifoBulkWriteSourceBase,
+                _commandFifoBulkWritePacketSourceAddress,
+                _commandFifoBulkWritePacket,
+                _commandFifoBulkWriteIndex,
+                _commandFifoBulkWriteLimit,
+                _commandFifoBulkWriteWord,
+                _commandFifoBulkWritePayloadWords);
+        }
+        else
+        {
+            _backend.ClearCommandFifoBulkWriteSource();
+        }
+
+        _backend.WriteFifo(wordOffset, value);
+    }
     public uint ReadStatus(bool vblank) => _backend.ReadStatus(vblank);
     public uint ReadLfb32(uint offset) => _backend.ReadLfb32(offset);
     public void WriteLfb32(uint offset, uint value) => _backend.WriteLfb32(offset, value);
     public uint ReadTexture32(uint offset) => _backend.ReadTexture32(offset);
     public void WriteTexture32(uint offset, uint value) => _backend.WriteTexture32(offset, value);
+    public void SetCommandFifoBulkWriteSource(
+        ulong source,
+        uint sourceBase,
+        uint packetSourceAddress,
+        uint packet,
+        uint index,
+        uint limit,
+        uint word,
+        uint payloadWords)
+    {
+        _commandFifoBulkWriteSourceActive = true;
+        _commandFifoBulkWriteSource = source;
+        _commandFifoBulkWriteSourceBase = sourceBase;
+        _commandFifoBulkWritePacketSourceAddress = packetSourceAddress;
+        _commandFifoBulkWritePacket = packet;
+        _commandFifoBulkWriteIndex = index;
+        _commandFifoBulkWriteLimit = limit;
+        _commandFifoBulkWriteWord = word;
+        _commandFifoBulkWritePayloadWords = payloadWords;
+        _backend.SetCommandFifoBulkWriteSource(
+            source,
+            sourceBase,
+            packetSourceAddress,
+            packet,
+            index,
+            limit,
+            word,
+            payloadWords);
+    }
+
+    public void ClearCommandFifoBulkWriteSource()
+    {
+        _commandFifoBulkWriteSourceActive = false;
+        _commandFifoBulkWriteSource = 0;
+        _commandFifoBulkWriteSourceBase = 0;
+        _commandFifoBulkWritePacketSourceAddress = 0;
+        _commandFifoBulkWritePacket = 0;
+        _commandFifoBulkWriteIndex = 0;
+        _commandFifoBulkWriteLimit = 0;
+        _commandFifoBulkWriteWord = 0;
+        _commandFifoBulkWritePayloadWords = 0;
+        _backend.ClearCommandFifoBulkWriteSource();
+    }
     public void RenderFrame(EutherFrameTarget target) => _backend.RenderFrame(target);
     public void BeginCommandFifoBulkWrite()
     {
@@ -30244,6 +30353,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int[] _cmdFifoStorageLastWriteAddress = new int[CmdFifoFramebufferWords];
     private readonly long[] _cmdFifoStorageLastWriteSequence = new long[CmdFifoFramebufferWords];
     private readonly byte[] _cmdFifoStorageLastWriteSource = new byte[CmdFifoFramebufferWords];
+    private readonly Dictionary<int, CommandFifoStorageBulkWriteSource> _cmdFifoStorageBulkWriteSources = [];
     private readonly SetupVertex[] _setupVertices = new SetupVertex[3];
     private readonly int[] _fifoPacketTypeCounts = new int[8];
     private readonly int[] _fifoType5SpaceCounts = new int[4];
@@ -30319,6 +30429,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _cmdFifoWriteGenerationBase;
     private int _cmdFifoWriteQueueIndex;
     private int _cmdFifoLastWriteStorageIndex = -1;
+    private bool _cmdFifoBulkWriteSourceActive;
+    private CommandFifoStorageBulkWriteSource _cmdFifoBulkWriteSource;
     private long _cmdFifoStorageWriteSequence;
     private int _cmdFifoBulkWriteDepth;
     private bool _cmdFifoBulkFirstWritePending;
@@ -30762,7 +30874,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _experimentFbzColorPathRgbCombine =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FBZ_COLORPATH_RGB_COMBINE"));
     private readonly bool _fixTextureBaseAddressShift =
-        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT")) ||
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT") ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_BASE_SHIFT"));
     private readonly bool _fixDisplayBufferSelection =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER");
@@ -30832,6 +30944,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_PAYLOAD_HASHES"));
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerRejectTargetStarts =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_TARGET_STARTS"));
+    private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerRejectFloatLikePayloads =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_FLOATLIKE_PAYLOADS"));
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerPreferPcs =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFER_PCS"));
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerPreferTargetStarts =
@@ -31075,6 +31189,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint _currentType5TextureWriteTargetWord;
     private uint _currentType5TextureWritePayloadHash;
     private int _currentType5TextureWritePayloadNonZeroWords;
+    private int _currentType5TextureWritePayloadFloatLikeWords;
     private int _currentType5TextureWriteIndex;
     private int _currentType5TextureWriteCount;
     private bool _currentType5TextureWriteStreaming;
@@ -31551,6 +31666,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         Array.Clear(_cmdFifoStorageLastWriteAddress);
         Array.Clear(_cmdFifoStorageLastWriteSequence);
         Array.Clear(_cmdFifoStorageLastWriteSource);
+        _cmdFifoStorageBulkWriteSources.Clear();
         _cmdFifoStorageWriteSequence = 0;
     }
 
@@ -31569,6 +31685,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         _cmdFifoStorageLastWriteAddress[normalizedStorageIndex] = address;
         _cmdFifoStorageLastWriteValue[normalizedStorageIndex] = value;
         _cmdFifoStorageLastWriteSource[normalizedStorageIndex] = source;
+        if (_cmdFifoBulkWriteSourceActive && source == CmdFifoStorageWriteSourceFifo)
+            _cmdFifoStorageBulkWriteSources[normalizedStorageIndex] = _cmdFifoBulkWriteSource;
+        else
+            _cmdFifoStorageBulkWriteSources.Remove(normalizedStorageIndex);
     }
 
     private void SetCommandFifoReadIndex(int readIndex, string reason, uint command = 0, int wordsNeeded = 0)
@@ -31982,6 +32102,34 @@ internal class VoodooBringupBackend : IVoodooBackend
             DecodeCommandFifoPacketsIfNotPending("bulk-end");
         if (_cmdFifoBulkWriteDepth == 0)
             _cmdFifoBulkDecodeRemainingWords = 0;
+    }
+
+    public virtual void SetCommandFifoBulkWriteSource(
+        ulong source,
+        uint sourceBase,
+        uint packetSourceAddress,
+        uint packet,
+        uint index,
+        uint limit,
+        uint word,
+        uint payloadWords)
+    {
+        _cmdFifoBulkWriteSourceActive = true;
+        _cmdFifoBulkWriteSource = new CommandFifoStorageBulkWriteSource(
+            source,
+            sourceBase,
+            packetSourceAddress,
+            packet,
+            index,
+            limit,
+            word,
+            payloadWords);
+    }
+
+    public virtual void ClearCommandFifoBulkWriteSource()
+    {
+        _cmdFifoBulkWriteSourceActive = false;
+        _cmdFifoBulkWriteSource = default;
     }
 
     private bool ShouldResyncCommandFifoReadToBulkStart()
@@ -33338,6 +33486,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _currentType5TextureWriteTargetWord,
             _currentType5TextureWritePayloadHash,
             _currentType5TextureWritePayloadNonZeroWords,
+            _currentType5TextureWritePayloadFloatLikeWords,
             _currentType5TextureWriteIndex,
             _currentType5TextureWriteCount,
             _currentCommandFifoPacketStart,
@@ -34507,11 +34656,26 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         ulong pc = _cmdFifoStorageLastWritePc[storageIndex];
         string pcStatus = pc != 0 ? $"/pc0x{pc:x16}" : "/pc0";
+        string bulkWriteSource = _cmdFifoStorageBulkWriteSources.TryGetValue(storageIndex, out CommandFifoStorageBulkWriteSource source)
+            ? $"/{FormatCommandFifoStorageBulkWriteSource(source)}"
+            : "";
         return
             $"last={FormatCommandFifoStorageWriteSource(_cmdFifoStorageLastWriteSource[storageIndex])}/" +
             $"seq{sequence}/lg0x{_cmdFifoStorageLastWriteLogicalIndex[storageIndex] * 4:x8}/" +
             $"addr0x{_cmdFifoStorageLastWriteAddress[storageIndex]:x8}/" +
-            $"val0x{_cmdFifoStorageLastWriteValue[storageIndex]:x8}{pcStatus}";
+            $"val0x{_cmdFifoStorageLastWriteValue[storageIndex]:x8}{pcStatus}{bulkWriteSource}";
+    }
+
+    private static string FormatCommandFifoStorageBulkWriteSource(CommandFifoStorageBulkWriteSource source)
+    {
+        string word = source.Word == uint.MaxValue
+            ? "hdr"
+            : source.Word == uint.MaxValue - 1U
+            ? "target"
+            : $"w{source.Word}";
+        return
+            $"bulkSrc0x{source.Source:x16}/base0x{source.SourceBase:x8}/pktSrc0x{source.PacketSourceAddress:x8}/" +
+            $"p{source.Packet}/idx{source.Index}-{source.Limit}/{word}-{source.PayloadWords}";
     }
 
     private static string FormatCommandFifoStorageWriteSource(byte source)
@@ -36566,6 +36730,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         int CommandFifoReadIndex,
         string Trigger);
 
+    private readonly record struct CommandFifoStorageBulkWriteSource(
+        ulong Source,
+        uint SourceBase,
+        uint PacketSourceAddress,
+        uint Packet,
+        uint Index,
+        uint Limit,
+        uint Word,
+        uint PayloadWords);
+
     private readonly record struct TextureWordLastWriter(
         ulong Pc,
         uint Value,
@@ -36582,6 +36756,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint Type5TargetWord,
         uint Type5PayloadHash,
         int Type5PayloadNonZeroWords,
+        int Type5PayloadFloatLikeWords,
         int Type5Index,
         int Type5Count,
         int PacketStart,
@@ -37210,6 +37385,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         uint targetStart = target;
+        uint payloadHash = ComputeType5PayloadHash(count);
+        int payloadNonZeroWords = CountType5PayloadNonZeroWords(count);
+        int payloadFloatLikeWords = CountType5PayloadFloatLikeWords(count);
         _currentType5TextureWritePhysicalMinWord = -1;
         _currentType5TextureWritePhysicalMaxWord = -1;
         try
@@ -37224,8 +37402,9 @@ internal class VoodooBringupBackend : IVoodooBackend
                     _currentType5TextureWriteSpace = space;
                     _currentType5TextureWriteTargetStart = targetStart;
                     _currentType5TextureWriteTargetWord = target;
-                    _currentType5TextureWritePayloadHash = ComputeType5PayloadHash(count);
-                    _currentType5TextureWritePayloadNonZeroWords = CountType5PayloadNonZeroWords(count);
+                    _currentType5TextureWritePayloadHash = payloadHash;
+                    _currentType5TextureWritePayloadNonZeroWords = payloadNonZeroWords;
+                    _currentType5TextureWritePayloadFloatLikeWords = payloadFloatLikeWords;
                     _currentType5TextureWriteIndex = i;
                     _currentType5TextureWriteCount = count;
                     _currentType5TextureWriteStreaming = streaming;
@@ -37256,6 +37435,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         finally
         {
             _currentType5TextureWriteActive = false;
+            _currentType5TextureWritePayloadFloatLikeWords = 0;
         }
     }
 
@@ -37289,6 +37469,31 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         return nonZero;
+    }
+
+    private int CountType5PayloadFloatLikeWords(int count)
+    {
+        int payloadWords = Math.Min(count, Math.Max(0, _fifoBuffer.Count - 2));
+        int floatLike = 0;
+        for (int i = 0; i < payloadWords; i++)
+        {
+            uint value = _fifoBuffer[i + 2];
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
+            if (IsLikelyPackedFloatWord(value) ||
+                IsLikelyPackedFloatWord(BinaryPrimitives.ReverseEndianness(value)))
+            {
+                floatLike++;
+            }
+        }
+
+        return floatLike;
+    }
+
+    private static bool IsLikelyPackedFloatWord(uint value)
+    {
+        byte top = (byte)(value >> 24);
+        return top is >= 0x3c and <= 0x3f or >= 0xbc and <= 0xbf;
     }
 
     private void TraceType5TextureUploadSequence(uint command, uint targetStart, uint space, int count, bool streaming)
@@ -40331,7 +40536,18 @@ sampledTexel:
         (_experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Length != 0 &&
          _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Contains(owner.Type5PayloadHash)) ||
         (_experimentFullrectSampleWriterLayoutArtOwnerRejectTargetStarts.Length != 0 &&
-         _experimentFullrectSampleWriterLayoutArtOwnerRejectTargetStarts.Contains(owner.Type5TargetStart));
+         _experimentFullrectSampleWriterLayoutArtOwnerRejectTargetStarts.Contains(owner.Type5TargetStart)) ||
+        (_experimentFullrectSampleWriterLayoutArtOwnerRejectFloatLikePayloads &&
+         IsFloatLikeFullrectWriterLayoutArtOwnerPayload(owner));
+
+    private static bool IsFloatLikeFullrectWriterLayoutArtOwnerPayload(TextureWordLastWriter owner)
+    {
+        if (owner.Type5Count < 16 || owner.Type5PayloadNonZeroWords < 8)
+            return false;
+
+        int threshold = Math.Max(8, owner.Type5Count / 3);
+        return owner.Type5PayloadFloatLikeWords >= threshold;
+    }
 
     private static bool IsValidFullrectWriterLayoutArtOwner(TextureWordLastWriter owner) =>
         owner.Type5 &&
@@ -40434,7 +40650,7 @@ sampledTexel:
             $"word=0x{candidate.Word:X8} raw=0x{candidate.Raw:X4} rgb=0x{candidate.Result:X4} sampleRgb=0x{candidate.SampleResult:X4} " +
             $"fmt{candidate.OwnerFormat}/bpp{candidate.OwnerBytesPerTexel} score={candidate.Score}/nz{candidate.NonZeroRgb}/same{candidate.SameOwner}/chg{candidate.ColorChanges} " +
             $"type5=cmd0x{owner.Type5Command:X8}/space{owner.Type5Space}/targetStart=0x{owner.Type5TargetStart:X6}/target=0x{owner.Type5TargetWord:X6} " +
-            $"idx={owner.Type5Index}/{owner.Type5Count}/packetBaseW0x{packetBaseWord:X5}/payloadHash=0x{owner.Type5PayloadHash:X8}/pnz{owner.Type5PayloadNonZeroWords} " +
+            $"idx={owner.Type5Index}/{owner.Type5Count}/packetBaseW0x{packetBaseWord:X5}/payloadHash=0x{owner.Type5PayloadHash:X8}/pnz{owner.Type5PayloadNonZeroWords}/pflt{owner.Type5PayloadFloatLikeWords} " +
             $"pc=0x{owner.Pc:x16}/packet=0x{packetStart * 4:X8}/rd=0x{owner.ReadIndex * 4:X8}/stream={(owner.Streaming ? 1 : 0)}{fifoStorage} texWords={textureWindow}");
     }
 
@@ -40485,7 +40701,7 @@ sampledTexel:
     }
 
     private static string FormatTextureWordWriterStatus(TextureWordLastWriter writer) =>
-        $"pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writer.BytesPerTexel}/type5={(writer.Type5 ? 1 : 0)}/cmd0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}/ph0x{writer.Type5PayloadHash:X8}/pnz{writer.Type5PayloadNonZeroWords}";
+        $"pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writer.BytesPerTexel}/type5={(writer.Type5 ? 1 : 0)}/cmd0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6}/ph0x{writer.Type5PayloadHash:X8}/pnz{writer.Type5PayloadNonZeroWords}/pflt{writer.Type5PayloadFloatLikeWords}";
 
     private void TraceFullrectWriterLayoutCandidates(
         float s,
