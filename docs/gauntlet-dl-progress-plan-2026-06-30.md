@@ -11184,3 +11184,77 @@ Next continuation point:
    raw storage/source words.
 3. Use that trace to decide whether the tile mapping is wrong or whether the
    payload hash `0xCD4A255C` itself contains the wrong source bytes.
+
+### 2026-07-08 Preferred-Seed Layout Detail Trace
+
+Added detail to the existing `fullrect-sample-writer-layout` trace so each
+successful sample now includes the selected texture word, raw value, decoded
+RGB565, final owner, and a small final texture-word window. Also added a
+default-off selected-candidate trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SELECTED=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SELECTED_LIMIT=64
+```
+
+Build check:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release -m:1 --no-restore --no-incremental /clp:ErrorsOnly
+0 errors
+```
+
+Target-`0x9c00`/`preferredtile4` detail run:
+
+```text
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-layoutdetail-r3-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-layoutdetail-r3-f300.png
+frameHash=0x640e0dc4
+```
+
+The useful trace lines show that the preferred branch is real and stable:
+
+```text
+finalOwner=pc0x800fe7cc/.../cmd0xC0000205@0x009C00:0x009C00/ph0xCD4A255C/pnz64
+finalOwner=pc0x800fe7cc/.../cmd0xC0000205@0x009C00:0x009C10/ph0xCD4A255C/pnz64
+finalOwner=pc0x800fe7cc/.../cmd0xC0000205@0x009C00:0x009C20/ph0xCD4A255C/pnz64
+finalOwner=pc0x800fe7cc/.../cmd0xC0000205@0x009C00:0x009C30/ph0xCD4A255C/pnz64
+```
+
+But the raw words behind `0xCD4A255C` still look like float/gradient/control
+data, not obvious 16-bit texture pixels:
+
+```text
+0x03A5853D, 0x6598993E, 0xC953E43E, 0x8F79B13D,
+0x60B56C3F, 0x258FAB3D, 0xE6EB333E, 0x109D4B3F
+```
+
+Coordinate-control run:
+
+```text
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-wrap-r1-f300.log
+logs/gauntlet/cleanwarm-preferred-seed-target9c00-tile4-wrap-r1-f300.png
+frameHash=0x49279c26
+```
+
+`COORD_MODE=wrap` changes the sampled coordinate path from tiny clamped rows
+such as `xy=0..3,7 size=16x8` to a broader row such as
+`xy=0..31,29 size=256x32`, and it changes the frame hash. The visual is still
+colored bands/noise over the primitive background, not scene art.
+
+Current interpretation: the visible failure is not a sampler lane or simple
+format issue. The preferred-seed path can consistently route visible samples to
+the desired `pc0x800fe7cc/cmd0xC0000205@0x009C00` owner, but that owner payload
+still appears to contain float-like/control-like words. Coordinate wrap affects
+which words are sampled, but not enough to produce recognizable graphics.
+
+Next continuation point:
+
+1. Keep the layout-detail trace; it is now the best oracle for visible samples.
+2. Trace the producer/source path for payload hash `0xCD4A255C` and target
+   `0x009C00`, especially the memory/source words before the Type5 texture
+   packet is assembled.
+3. Compare `0xCD4A255C` against nearby payload hashes such as `0x34BC0F9E` and
+   decide whether `0x009C00` is a descriptor/control block masquerading as
+   texture data or whether the packet body is being sourced from the wrong
+   BGLoadModel/WTR payload offset.

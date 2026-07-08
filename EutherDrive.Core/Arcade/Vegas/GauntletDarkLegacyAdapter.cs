@@ -30846,6 +30846,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW"));
     private readonly int _traceFullrectSampleWriterLayoutArtOwnerUploadWindowRadius =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW_RADIUS"), 8);
+    private readonly bool _traceFullrectSampleWriterLayoutArtOwnerSelected =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SELECTED"));
+    private readonly int _traceFullrectSampleWriterLayoutArtOwnerSelectedLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SELECTED_LIMIT"), 64);
     private readonly string _experimentFullrectSampleWriterLayoutAddressTransform =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM") ?? "")
         .Trim()
@@ -31038,6 +31042,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _fullrectSampleWriterLayoutTraceCount;
     private int _fullrectSampleWriterLayoutCandidateTraceCount;
     private int _fullrectSampleWriterLayoutArtOwnerTraceCount;
+    private int _fullrectSampleWriterLayoutArtOwnerSelectedTraceCount;
     private string _lastCommandFifoDecodeStopReason = "";
     private uint _lastCommandFifoDecodeStopCommand;
     private int _lastCommandFifoDecodeStopWordsNeeded;
@@ -39593,6 +39598,10 @@ sampledTexel:
             string sampledOwner = hasSampledOwner
                 ? FormatTextureWordWriterStatus(sampledWriter)
                 : "-";
+            string finalOwner = _textureWordLastWriters.TryGetValue(finalWordOffset, out TextureWordLastWriter finalWriter)
+                ? FormatTextureWordWriterStatus(finalWriter)
+                : "-";
+            string finalWindow = FormatTextureWordWindow(finalWordOffset, 2);
 
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] fullrect-sample-writer-layout " +
@@ -39602,10 +39611,11 @@ sampledTexel:
                 $"st=({s:F3},{t:F3})->({layoutS:F3},{layoutT:F3}) xy={layoutX},{layoutY} size={layoutWidth}x{layoutHeight} " +
                 $"sample=mode0x{sampleMode:X8}/lod0x{sampleTextureLod:X8}/base0x{sampleTextureBase:X8} " +
                 $"addrTransform={(_experimentFullrectSampleWriterLayoutAddressTransform.Length == 0 ? "-" : _experimentFullrectSampleWriterLayoutAddressTransform)} " +
+                $"word=0x{writerWord:X8} raw=0x{writerRaw:X4} rgb=0x{result:X4} " +
                 $"writer=pc0x{writer.Pc & 0xffffffffUL:x8}/mode0x{writer.Mode:X8}/lod0x{writer.TexLod:X8}/base0x{writer.TextureBase:X8}/l{writer.Lod}/bpp{writerBytesPerTexel}/fmt{writerFormat}{(writerFormatOverridden ? "*" : "")} " +
                 $"type5=0x{writer.Type5Command:X8}@0x{writer.Type5TargetStart:X6}:0x{writer.Type5TargetWord:X6} " +
                 $"targetRemap={(writerTargetRemapped ? $"0x{writer.Type5TargetStart:X6}->0x{writerTargetStart:X6}" : "-")} baseBias={_experimentFullrectSampleWriterLayoutBaseBias} " +
-                $"sampledOwner={sampledOwner} relookup={relookupStatus}");
+                $"sampledOwner={sampledOwner} finalOwner={finalOwner} finalWords={finalWindow} relookup={relookupStatus}");
         }
 
         return true;
@@ -39719,6 +39729,7 @@ sampledTexel:
         status = FormatFullrectArtOwnerCandidateStatus(best);
         if (scoreStatuses is { Count: > 0 })
             status += $" scores=[{string.Join(",", scoreStatuses)}]";
+        TraceFullrectArtOwnerSelectedCandidate(x, y, width, height, best);
         return true;
     }
 
@@ -40386,6 +40397,65 @@ sampledTexel:
 
         string indexSpan = minIndex == int.MaxValue ? "-" : $"{minIndex}-{maxIndex}";
         return $" uploadWindow=w0x{centerWordOffset:X5}/target0x{center.Type5TargetWord:X5}/r{radius}/nz{nonZero}/sameCmd{sameCommand}/sameStart{sameTargetStart}/samePkt{samePacket}/idx{indexSpan}/words[{string.Join(";", words)}]";
+    }
+
+    private void TraceFullrectArtOwnerSelectedCandidate(
+        int x,
+        int y,
+        int width,
+        int height,
+        FullrectArtOwnerCandidate candidate)
+    {
+        if (!_traceFullrectSampleWriterLayoutArtOwnerSelected ||
+            _fullrectSampleWriterLayoutArtOwnerSelectedTraceCount >= _traceFullrectSampleWriterLayoutArtOwnerSelectedLimit)
+        {
+            return;
+        }
+
+        _fullrectSampleWriterLayoutArtOwnerSelectedTraceCount++;
+
+        TextureWordLastWriter owner = candidate.Owner;
+        int wordOffset = (int)((candidate.ByteAddress & (TextureBytes - 1u)) >> 2);
+        int lane = (int)(candidate.ByteAddress & 3u);
+        int packetStart = owner.PacketStart;
+        int targetIndex = packetStart + 1;
+        int payloadIndex = packetStart + 2 + owner.Type5Index;
+        int packetBaseWord = owner.Type5Index >= 0
+            ? (wordOffset - owner.Type5Index) & (TextureWords - 1)
+            : -1;
+
+        string fifoStorage = owner.Type5
+            ? $" fifo=hdr[{FormatCommandFifoStorageWordDebug(packetStart)}] target[{FormatCommandFifoStorageWordDebug(targetIndex)}] payload[{FormatCommandFifoStorageWordDebug(payloadIndex)}]"
+            : "";
+        string textureWindow = FormatTextureWordWindow(wordOffset, 2);
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-FULLRECT-ART-SELECTED] n={_fullrectSampleWriterLayoutArtOwnerSelectedTraceCount} frame={_renderFrame} " +
+            $"xy={x},{y}/{width}x{height} transform={candidate.Transform} addr=0x{candidate.ByteAddress:X6}/w0x{wordOffset:X5}/lane{lane} " +
+            $"word=0x{candidate.Word:X8} raw=0x{candidate.Raw:X4} rgb=0x{candidate.Result:X4} sampleRgb=0x{candidate.SampleResult:X4} " +
+            $"fmt{candidate.OwnerFormat}/bpp{candidate.OwnerBytesPerTexel} score={candidate.Score}/nz{candidate.NonZeroRgb}/same{candidate.SameOwner}/chg{candidate.ColorChanges} " +
+            $"type5=cmd0x{owner.Type5Command:X8}/space{owner.Type5Space}/targetStart=0x{owner.Type5TargetStart:X6}/target=0x{owner.Type5TargetWord:X6} " +
+            $"idx={owner.Type5Index}/{owner.Type5Count}/packetBaseW0x{packetBaseWord:X5}/payloadHash=0x{owner.Type5PayloadHash:X8}/pnz{owner.Type5PayloadNonZeroWords} " +
+            $"pc=0x{owner.Pc:x16}/packet=0x{packetStart * 4:X8}/rd=0x{owner.ReadIndex * 4:X8}/stream={(owner.Streaming ? 1 : 0)}{fifoStorage} texWords={textureWindow}");
+    }
+
+    private string FormatTextureWordWindow(int centerWordOffset, int radius)
+    {
+        if (centerWordOffset < 0)
+            return "-";
+
+        radius = Math.Clamp(radius, 0, 8);
+        List<string> words = [];
+        for (int delta = -radius; delta <= radius; delta++)
+        {
+            int wordOffset = (centerWordOffset + delta) & (TextureWords - 1);
+            uint value = _textureMemory[wordOffset];
+            string ownerStatus = "-";
+            if (_textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter owner))
+                ownerStatus = $"{owner.Type5Index}/{owner.Type5Count}:0x{owner.Type5TargetWord:X5}:ph0x{owner.Type5PayloadHash:X8}";
+            words.Add($"{delta:+#;-#;0}=0x{value:X8}/{ownerStatus}");
+        }
+
+        return $"[{string.Join(";", words)}]";
     }
 
     private ushort DecodeTextureRawToRgb565(uint raw, int format, bool sixteenBit, uint textureMode)
