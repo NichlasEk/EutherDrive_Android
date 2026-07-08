@@ -10755,3 +10755,69 @@ blockBytes: 0x100, 0x200
 If none of those crosses into recognizable art, derive the layout directly from
 the `seq8=1 lod=1 size=256x256` asset metadata and the adjacent `wtr` headers
 instead of adding more free-form remaps.
+
+
+### 2026-07-08 Fullenv Seq8 Layout Sweep Pause Point
+
+After the first Type5 seq8 packet-layout probe, reran the parameter sweep in
+the full visible-graphics environment. This is the environment that reproduces
+the art-owner branch instead of the plain clean primitive frame:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK=0x3fe
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET=0x3c8
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_WTR_ENTRY_PACKET_ADDRESS_SUB=0x9000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_COORD_MODE=scale
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_TARGET_REMAP=400:e00,8a00:9c00
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_REQUIRE_ART_OWNER=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT=1
+```
+
+Frame-300 matrix:
+
+```text
+logs/gauntlet/cleanwarm-seq8-packet-block-layout-fullenv-span1000-f300.png
+baseTarget=0x9c00 targetSpan=0x1000 blockBytes=0x100
+frameHash=0x697d5bbc
+framebuffer=640x480:307200:307179
+
+logs/gauntlet/cleanwarm-seq8-packet-block-layout-fullenv-span2000-f300.png
+baseTarget=0x9c00 targetSpan=0x2000 blockBytes=0x100
+frameHash=0x697d5bbc
+framebuffer=640x480:307200:307179
+
+logs/gauntlet/cleanwarm-seq8-packet-block-layout-fullenv-span1000-block200-f300.png
+baseTarget=0x9c00 targetSpan=0x1000 blockBytes=0x200
+frameHash=0x697d5bbc
+framebuffer=640x480:307200:307179
+```
+
+Visual status: this is real visible graphics data, but it is still not correct
+Gauntlet scene art. The current screendump has noisy colored blocks on the left
+and horizontal texture bands over the red/green primitive background. That is
+progress compared with the black/flat texture path, but it proves the latest
+Type5 seq8 packet-block experiment is not the controlling fix once the
+fullrect/art-owner branch is active.
+
+Important correction to the previous narrow conclusion: the Voodoo texture
+download byte-offset probe can change standalone `VOODOO-TEXSUMMARY` zero
+counts, but the full visible branch samples through
+`FULLRECT_SAMPLE_WRITER_LAYOUT` and art-owner selection. The same fullenv image
+for `targetSpan=0x1000`, `targetSpan=0x2000`, and `blockBytes=0x200` means the
+next real fix belongs in the fullrect/art-owner address derivation, not in
+another broad Type5 write-offset scan.
+
+Next slice:
+
+1. Add a default-off fullrect/art-owner layout probe that uses the accepted
+   owner's `Type5TargetStart`, `Type5TargetWord`, `Type5Index`,
+   `Type5Count`, `TexLod`, `Lod`, `TextureBase`, and format to compute the
+   sampled address directly.
+2. Compare that against current `row4x`, `row2x`, `tile4`, and `tile8` using
+   a deterministic score: non-zero RGB density plus neighbor continuity, not
+   just first nonzero owner sample.
+3. Keep the Voodoo Type5 seq8 packet-block experiment default-off for trace
+   evidence, but do not promote it as a fix.
+4. Use `logs/gauntlet/cleanwarm-seq8-packet-block-layout-fullenv-span1000-f300.png`
+   as the current screendump reference for the visible-but-wrong state.
