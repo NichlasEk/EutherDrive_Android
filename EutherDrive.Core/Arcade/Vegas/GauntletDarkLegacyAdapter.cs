@@ -30824,6 +30824,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         .ToLowerInvariant();
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_PAYLOAD_HASHES"));
+    private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerRejectTargetStarts =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_TARGET_STARTS"));
+    private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerPreferPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFER_PCS"));
+    private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerPreferTargetStarts =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFER_TARGET_STARTS"));
+    private readonly int _experimentFullrectSampleWriterLayoutArtOwnerPreferBonus =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFER_BONUS"), 250);
     private readonly bool _traceFullrectSampleWriterLayoutArtOwnerUploadWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW"));
     private readonly int _traceFullrectSampleWriterLayoutArtOwnerUploadWindowRadius =
@@ -39660,6 +39668,8 @@ sampledTexel:
                 out int nonZeroRgb,
                 out int sameOwner,
                 out int colorChanges);
+            if (IsPreferredFullrectWriterLayoutArtOwner(candidate.Owner))
+                score += _experimentFullrectSampleWriterLayoutArtOwnerPreferBonus;
             candidate = candidate with
             {
                 Score = score,
@@ -40103,12 +40113,24 @@ sampledTexel:
         transform is "targetword" or "targetlinear" or "targetrow2x" or "targetrow4x" or "targettile4" or "targettile8";
 
     private bool IsRejectedFullrectWriterLayoutArtOwnerPayload(TextureWordLastWriter owner) =>
-        _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Length != 0 &&
-        _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Contains(owner.Type5PayloadHash);
+        (_experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Length != 0 &&
+         _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Contains(owner.Type5PayloadHash)) ||
+        (_experimentFullrectSampleWriterLayoutArtOwnerRejectTargetStarts.Length != 0 &&
+         _experimentFullrectSampleWriterLayoutArtOwnerRejectTargetStarts.Contains(owner.Type5TargetStart));
+
+    private bool IsPreferredFullrectWriterLayoutArtOwner(uint ownerTargetStart)
+        => _experimentFullrectSampleWriterLayoutArtOwnerPreferTargetStarts.Length != 0 &&
+           _experimentFullrectSampleWriterLayoutArtOwnerPreferTargetStarts.Contains(ownerTargetStart);
+
+    private bool IsPreferredFullrectWriterLayoutArtOwner(TextureWordLastWriter owner)
+        => (_experimentFullrectSampleWriterLayoutArtOwnerPreferPcs.Length != 0 &&
+            _experimentFullrectSampleWriterLayoutArtOwnerPreferPcs.Contains(owner.Pc & 0xffffffffUL)) ||
+           IsPreferredFullrectWriterLayoutArtOwner(owner.Type5TargetStart);
 
     private string FormatFullrectArtOwnerCandidateStatus(FullrectArtOwnerCandidate candidate) =>
         $"transform={candidate.Transform} ownerFmt{candidate.OwnerFormat}/ownerBpp{candidate.OwnerBytesPerTexel} " +
         $"sampleRgb=0x{candidate.SampleResult:X4} score={candidate.Score}/nz{candidate.NonZeroRgb}/same{candidate.SameOwner}/chg{candidate.ColorChanges} " +
+        $"preferred={(IsPreferredFullrectWriterLayoutArtOwner(candidate.Owner) ? 1 : 0)} " +
         $"owner={FormatTextureWordWriterStatus(candidate.Owner)}{FormatFullrectArtOwnerUploadWindow(candidate)}";
 
     private string FormatFullrectArtOwnerUploadWindow(FullrectArtOwnerCandidate candidate)

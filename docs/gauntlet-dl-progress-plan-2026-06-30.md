@@ -10925,3 +10925,73 @@ around `pc0x800fe7cc` and `0x8a00->0x9c00`. This makes the next step sharper:
 add a filter or score term that prefers the WTR remap family and rejects the
 font/static-looking `0x000c00/0x000e00` owner family before trying more address
 transforms.
+
+### 2026-07-08 Art-Owner Family Filter Checkpoint
+
+Added default-off owner-family controls for the fullrect art-owner experiment:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_TARGET_STARTS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFER_PCS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFER_TARGET_STARTS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFER_BONUS
+```
+
+The candidate status trace now also reports `preferred=0/1`. These flags are
+diagnostic only; defaults keep the current renderer unchanged.
+
+Build check:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release -m:1 --no-restore /clp:ErrorsOnly
+0 errors
+```
+
+Scored run rejecting only the known static target starts:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-prefer-fe7cc-reject-static-score-r1-f300.log
+logs/gauntlet/cleanwarm-art-owner-prefer-fe7cc-reject-static-score-r1-f300.png
+
+reject target starts: 0x0c00,0x0e00
+prefer pc: 0x800fe7cc
+prefer target starts: 0x8400,0x8700,0x8800,0x8a00,0x9c00
+prefer bonus: 400
+frameHash=0x7cc7297c
+framebuffer=640x480:307200:307164
+```
+
+Result: still visibly wrong. Rejecting `0x0c00/0x0e00` did not expose the
+desired `pc0x800fe7cc` branch; it shifted selection to nearby low-target
+`pc0x800fe614` families such as `0x0800/0x0c80`. The preferred bonus could not
+help because the preferred owner was not present in the candidate set for the
+early visible samples.
+
+Stricter low-target reject control:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-prefer-fe7cc-reject-lowtargets-score-r1-f300.log
+logs/gauntlet/cleanwarm-art-owner-prefer-fe7cc-reject-lowtargets-score-r1-f300.png
+
+reject target starts: 0x0800,0x0c00,0x0c80,0x0e00
+frameHash=0xb6599393
+framebuffer=640x480:307200:307164
+```
+
+Result: most early fullrect samples now reject with `reason=no-art-owner`.
+That is the useful finding. The current candidate enumeration starts from the
+active low-target fullrect writer, so `8a00:9c00` remapping only fires when the
+sample is already in that family. Once the low-target/static-looking owners are
+removed, the current `linear,row2x,row4x,tile4,tile8,target*` transforms do not
+reach the WTR/`pc0x800fe7cc` art branch.
+
+Next continuation point:
+
+1. Stop tuning score weights until enumeration can produce the desired owner.
+2. Add a default-off preferred-owner seed family that can sample from known
+   WTR/art owners in the texture word writer table, keyed by preferred PC and
+   target starts such as `0x8a00/0x9c00`, instead of deriving every candidate
+   from the current low-target fullrect writer.
+3. Keep the reject/prefer controls as the guardrail: the next positive result
+   should show `preferred=1` candidates reaching visible fullrect samples before
+   any scoring policy is promoted.
