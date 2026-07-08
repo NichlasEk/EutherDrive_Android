@@ -30867,6 +30867,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR_PCS"));
     private readonly ulong[] _experimentTextureUploadMameWritePtrTargetWords =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR_TARGET_WORDS"));
+    private readonly bool _experimentType5Seq8PacketBlockLayout =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT"));
+    private readonly ulong _experimentType5Seq8PacketBlockLayoutBaseTarget =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT_BASE_TARGET")) ?? 0x9c00UL;
+    private readonly ulong _experimentType5Seq8PacketBlockLayoutTargetSpan =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT_TARGET_SPAN")) ?? 0x100UL;
+    private readonly ulong _experimentType5Seq8PacketBlockLayoutBlockBytes =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT_BLOCK_BYTES")) ?? 0x100UL;
+    private readonly int _experimentType5Seq8PacketBlockLayoutTraceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT_TRACE_LIMIT"), 64);
     private readonly bool _traceTextureUploadMameWritePtr =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR"));
     private readonly int _traceTextureUploadMameWritePtrLimit =
@@ -31057,6 +31067,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoValidityTraceCount;
     private int _commandFifoBulkResyncTraceCount;
     private int _recentVoodooEventSequence;
+    private int _type5Seq8PacketBlockLayoutTraceCount;
 
     public Func<ulong>? CpuPcProvider { get; set; }
     public int DrawPacketCount => _fifoDrawPacketCount;
@@ -32868,6 +32879,18 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (applyMameWritePtr)
                     byteOffset = mameByteOffset;
             }
+            if (TryGetType5Seq8PacketBlockLayoutByteOffset(
+                byteOffset,
+                mode,
+                texLod,
+                textureBase,
+                lod,
+                bytesPerTexel,
+                seq8Downld,
+                out uint packetBlockByteOffset))
+            {
+                byteOffset = packetBlockByteOffset;
+            }
             TraceTextureWriteBucket(wordOffset, byteOffset, value, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
 
             if (bytesPerTexel == 1)
@@ -33087,6 +33110,73 @@ internal class VoodooBringupBackend : IVoodooBackend
                wordOffset,
                _traceTextureUploadMameWritePtrPcs,
                _traceTextureUploadMameWritePtrTargetWords);
+
+    private bool TryGetType5Seq8PacketBlockLayoutByteOffset(
+        uint currentByteOffset,
+        uint mode,
+        uint texLod,
+        uint textureBase,
+        uint lod,
+        int bytesPerTexel,
+        bool seq8Downld,
+        out uint byteOffset)
+    {
+        byteOffset = 0;
+        if (!_experimentType5Seq8PacketBlockLayout ||
+            !_currentType5TextureWriteActive ||
+            _currentType5TextureWriteSpace != 3 ||
+            _currentType5TextureWriteCount != 64 ||
+            bytesPerTexel != 1 ||
+            !seq8Downld)
+        {
+            return false;
+        }
+
+        ulong targetStart = _currentType5TextureWriteTargetStart;
+        ulong baseTarget = _experimentType5Seq8PacketBlockLayoutBaseTarget;
+        ulong targetSpan = _experimentType5Seq8PacketBlockLayoutTargetSpan;
+        if (targetStart < baseTarget || targetStart >= baseTarget + targetSpan)
+            return false;
+
+        ulong targetDelta = targetStart - baseTarget;
+        if ((targetDelta & 0x3fUL) != 0)
+            return false;
+
+        ulong packetIndex = targetDelta >> 6;
+        uint packetBaseWord = (uint)baseTarget;
+        uint packetBaseTt = (packetBaseWord >> 7) & 0xffu;
+        uint packetBaseTs = (packetBaseWord << 2) & 0xffu;
+        uint width = GetTextureWidth(texLod);
+        uint height = GetTextureHeight(texLod);
+        uint xMask = Math.Max(1u, width >> (int)lod) - 1u;
+        uint yMask = Math.Max(1u, height >> (int)lod) - 1u;
+        uint packetBaseTexel = (packetBaseTt & yMask) * (xMask + 1u) + (packetBaseTs & xMask);
+        uint packetBaseByteOffset = (GetTextureLodOffset((int)lod, bytesPerTexel, texLod, textureBase) + packetBaseTexel) & (TextureBytes - 1u);
+        if (_fixTextureDownloadAlign32)
+            packetBaseByteOffset &= ~3u;
+
+        ulong layoutByteOffset =
+            (ulong)packetBaseByteOffset +
+            packetIndex * _experimentType5Seq8PacketBlockLayoutBlockBytes +
+            (ulong)Math.Max(0, _currentType5TextureWriteIndex) * 4UL;
+        byteOffset = (uint)(layoutByteOffset & (TextureBytes - 1u));
+
+        if (_type5Seq8PacketBlockLayoutTraceCount++ < _experimentType5Seq8PacketBlockLayoutTraceLimit &&
+            currentByteOffset != byteOffset)
+        {
+            ulong pc = CpuPcProvider?.Invoke() ?? 0;
+            string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] type5-seq8-packet-block-layout " +
+                $"targetStart=0x{_currentType5TextureWriteTargetStart:X6} target=0x{_currentType5TextureWriteTargetWord:X6} " +
+                $"i={_currentType5TextureWriteIndex}/{_currentType5TextureWriteCount} packetIndex={packetIndex} " +
+                $"current=0x{currentByteOffset:X6}->block=0x{byteOffset:X6} base=0x{packetBaseByteOffset:X6} " +
+                $"blockBytes=0x{_experimentType5Seq8PacketBlockLayoutBlockBytes:X} mode=0x{mode:X8} tlod=0x{texLod:X8} " +
+                $"tbase=0x{textureBase:X8}{pcStatus}");
+        }
+
+        return true;
+    }
 
     private bool MatchesTextureUploadMameWritePtrFilters(uint wordOffset, ulong[] pcs, ulong[] targetWords)
     {
@@ -35543,6 +35633,20 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static bool IsFastFillSwapOrderRegister(uint register)
         => register is RegFbzColorPath or RegFbzMode or RegLfbMode or RegFastfillCommand or RegSwapbufferCommand or
             RegZaColor or RegColor0 or RegColor1 or RegClipLeftRight or RegClipLowYHighY;
+
+    private static ulong? ParseOptionalHexUlong(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        string value = raw.Trim();
+        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            value = value[2..];
+
+        return ulong.TryParse(value, System.Globalization.NumberStyles.HexNumber, null, out ulong parsed)
+            ? parsed
+            : null;
+    }
 
     private static ulong[] ParseOptionalHexUlongList(string? raw)
     {

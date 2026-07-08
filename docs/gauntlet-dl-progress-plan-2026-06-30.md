@@ -10683,3 +10683,75 @@ byte-lane placement for the `seq8=1 lod=1 size=256x256` uploads. The first
 candidate should preserve the adjacent packet sequence (`0x9c00`, `0x9c40`,
 `0x9c80`, `0x9cc0`) as four separate 64-byte rows/blocks instead of letting
 two packets share the same 32-word physical span.
+
+
+### 2026-07-08 Type5 Seq8 Packet Block Layout Probe
+
+Added a default-off Gauntlet Voodoo experiment for the narrow failing path:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT_BASE_TARGET=0x9c00
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT_TARGET_SPAN=0x100
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT_BLOCK_BYTES=0x100
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT_TRACE_LIMIT=64
+```
+
+The probe only applies while a Type5 texture write is active, on texture-memory
+space 3, for 8-bit sequential downloads with `count=64`. It keeps the current
+lod/level base calculation, then places each aligned 64-target-word packet into
+a separate byte block:
+
+```text
+blockOffset = lodBase + packetIndex * blockBytes + Type5Index * 4
+```
+
+Build check:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release -m:1 --no-restore /clp:ErrorsOnly
+0 errors
+```
+
+Test matrix:
+
+```text
+logs/gauntlet/cleanwarm-seq8-packet-block-layout-f300.png
+targetSpan=0x100 blockBytes=0x100
+frameHash=0x2e6723bb
+n=1 zero=59701
+n=2 zero=40305
+
+logs/gauntlet/cleanwarm-seq8-packet-block-layout-span1000-f300.png
+targetSpan=0x1000 blockBytes=0x100
+frameHash=0x44b10b68
+n=1 zero=55630
+n=2 zero=37929
+
+logs/gauntlet/cleanwarm-seq8-packet-block-layout-span1000-block80-f300.png
+targetSpan=0x1000 blockBytes=0x80
+frameHash=0x8b57bfcf
+n=1 zero=57771
+n=2 zero=39250
+```
+
+The narrow `0x100` span proves the hook is active and changes the failing
+packets, but it remains visibly striped. `targetSpan=0x1000` with
+`blockBytes=0x100` is the best recent visual direction: still not real scene
+art, but it has less black, better non-zero sample counts, and more horizontal
+detail than the MAME-pointer apply tests or the `blockBytes=0x80` variant.
+
+Current interpretation: preserving 64-word packets as separate blocks is closer
+than the previous folded physical span, but the final row/tile layout is still
+wrong. Do not promote this experiment yet. Next slice should keep it default-off
+and scan the remaining layout variables around the promising case:
+
+```text
+baseTarget: 0x9800, 0x9c00, 0xa000
+targetSpan: 0x1000, 0x2000
+blockBytes: 0x100, 0x200
+```
+
+If none of those crosses into recognizable art, derive the layout directly from
+the `seq8=1 lod=1 size=256x256` asset metadata and the adjacent `wtr` headers
+instead of adding more free-form remaps.
