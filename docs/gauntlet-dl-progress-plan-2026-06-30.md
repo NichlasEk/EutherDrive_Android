@@ -10258,3 +10258,79 @@ Revised next slice:
 3. The next visual test should compare relookup enabled/disabled and an
    owner-class filter on clean f300, with `TEXSUMMARY` proving whether raw
    nonzero art bytes reach the `0x0180A8CB` fullrect before promoting any fix.
+
+### 2026-07-08 Clean f300 Visible Owner-Format Checkpoint
+
+Implemented a default-off fullrect writer-layout owner filter:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_REQUIRE_ART_OWNER=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TRACE_LIMIT=...
+```
+
+The first isolated art-owner run without the `8a00:9c00` remap still sampled
+zero raw words and stayed on the clean primitive hash:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-filter-f300.log
+logs/gauntlet/cleanwarm-art-owner-filter-f300.png
+
+reason=zero-raw transform=tile8 owner=pc0x800fe7cc ... cmd0xC0000205
+frameHash=0x20ab2ecf
+```
+
+Combining the owner filter with the existing WTR/sub and target-remap evidence
+found real nonzero art payload, but the previous format path decoded it as
+black:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-remap8a00-sub9000-f300.log
+logs/gauntlet/cleanwarm-art-owner-remap8a00-sub9000-f300.png
+
+targetRemap=0x008A00->0x009C00
+raw=0x1852 raw=0x4C96 raw=0x787F
+rgb=0x0000
+frameHash=0x20ab2ecf
+```
+
+Changing the art-owner candidate path to decode raw samples with the selected
+owner's stored texture format made the first genuinely visible texture-data
+frame:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-ownerfmt-remap8a00-sub9000-f300.log
+logs/gauntlet/cleanwarm-art-owner-ownerfmt-remap8a00-sub9000-f300.png
+
+raw=0x1852 rgb=0x8AA4 transform=row4x ownerFmt12/ownerBpp2
+raw=0xD60B rgb=0x6017 transform=row4x ownerFmt12/ownerBpp2
+TEXSUMMARY rgb=0x0000:40867,0xFC95:4311,0xDA55:2611,0x025F:2499
+frameHash=0x3a2ec0cc
+```
+
+Running the same test without `FULLRECT_SAMPLE_WRITER_LAYOUT_FORMAT_OVERRIDE=1`
+produced the same hash and image:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-ownerfmt-no-format-override-remap8a00-sub9000-f300.log
+logs/gauntlet/cleanwarm-art-owner-ownerfmt-no-format-override-remap8a00-sub9000-f300.png
+
+frameHash=0x3a2ec0cc
+```
+
+Visual status: this is real, visible graphics data, but not correct Gauntlet
+graphics yet. The output is bright horizontal/striped texture bands over black,
+so the blocker has moved from "wrong/black owner" to the address/layout side of
+the `row4x`/`row2x` art-owner candidates.
+
+Next slice:
+
+1. Keep the owner filter and owner-format decode as the current useful branch.
+2. Stop spending time on format override; it no longer changes the f300 result.
+3. Focus on deriving the correct art payload layout from the accepted
+   `ownerFmt12/ownerBpp2` candidates: compare `row4x`, `row2x`, and tile
+   transforms against the owner `TexLod`, `Lod`, `TextureBase`, and
+   `Type5TargetStart` rather than sampling from the remapped writer target base
+   alone.
+4. The next pass should add a trace or candidate scorer that reports visible
+   RGB density plus spatial continuity per transform, then choose the transform
+   with coherent neighboring RGB rather than the first nonzero owner sample.
