@@ -10334,3 +10334,76 @@ Next slice:
 4. The next pass should add a trace or candidate scorer that reports visible
    RGB density plus spatial continuity per transform, then choose the transform
    with coherent neighboring RGB rather than the first nonzero owner sample.
+
+### 2026-07-08 Fullrect Transform Scoring Follow-up
+
+Added default-off diagnostics for the visible-but-banded fullrect path:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SCORE_TRANSFORMS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SCORE_RADIUS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_DECODE_HIGH_BYTE_FALLBACK=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REBASE_TO_OWNER=1
+```
+
+Transform scoring confirms that the early visible samples are not choosing
+`row4x` by accident; most alternate transforms either have no art owner or have
+raw/decoded zero at the center:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-scorestatus-r1-remap8a00-sub9000-f300.log
+
+scores=[linear:owner-,row2x:raw0,row4x:498/nz5/same3/chg4/rgb0x1000,tile4:owner-,tile8:owner-]
+scores=[linear:owner-,row2x:rgb0/raw0x0D00,row4x:282/nz3/same3/chg6/rgb0x6017,tile4:owner-,tile8:owner-]
+frameHash=0x7b9e2d68
+```
+
+The initial scorer accidentally rewarded color changes and produced:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-scored-r1-remap8a00-sub9000-f300.png
+frameHash=0x563efe08
+```
+
+After changing color changes into a continuity penalty, the frame stayed
+visibly banded but changed deterministically:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-scored-continuity-r1-remap8a00-sub9000-f300.png
+frameHash=0x7b9e2d68
+```
+
+The high-byte fallback did not rescue `row2x`; it produced the same hash and
+scorestatus as the continuity scorer:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-highbyte-score-r1-remap8a00-sub9000-f300.log
+frameHash=0x7b9e2d68
+```
+
+Rebasing accepted art-owner candidates to the owner's own texture base changed
+the visible banding and hash, but the traced center samples became zero raw, so
+this is diagnostic rather than a promoted fix:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-rebase-score-r1-remap8a00-sub9000-f300.png
+frameHash=0x0b4828ad
+reason=zero-raw transform=row4x owner=pc0x800fe7cc ... base0x00003844
+```
+
+Current conclusion: the first visible branch is still the best base for the next
+slice:
+
+```text
+REQUIRE_ART_OWNER=1
+TARGET_REMAP=400:e00,8a00:9c00
+WTR_ENTRY_PACKET_ADDRESS_SUB=0x9000
+owner-format decode enabled by code
+ART_OWNER_REBASE_TO_OWNER unset
+```
+
+Next slice should look below the transform names and inspect the Type5 upload
+layout itself: why the accepted `row4x` samples sit in sparse horizontal bands,
+and whether the payload should be interpreted as a swizzled/tiled 16-bit
+surface or as multiple adjacent rows/tiles packed under the same
+`cmd0xC0000205` upload family.

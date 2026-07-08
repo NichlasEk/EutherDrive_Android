@@ -30762,6 +30762,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_REQUIRE_ART_OWNER"));
     private readonly int _experimentFullrectSampleWriterLayoutArtOwnerTraceLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TRACE_LIMIT"), 32);
+    private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerScoreTransforms =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SCORE_TRANSFORMS"));
+    private readonly int _experimentFullrectSampleWriterLayoutArtOwnerScoreRadius =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SCORE_RADIUS"), 1);
+    private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerDecodeHighByteFallback =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_DECODE_HIGH_BYTE_FALLBACK"));
+    private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerRebaseToOwner =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REBASE_TO_OWNER"));
     private readonly string _experimentFullrectSampleWriterLayoutAddressTransform =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM") ?? "")
         .Trim()
@@ -36394,6 +36402,21 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint TargetStart,
         bool TargetRemapped);
 
+    private readonly record struct FullrectArtOwnerCandidate(
+        string Transform,
+        uint ByteAddress,
+        uint Word,
+        uint Raw,
+        ushort Result,
+        ushort SampleResult,
+        TextureWordLastWriter Owner,
+        int OwnerFormat,
+        int OwnerBytesPerTexel,
+        int Score,
+        int NonZeroRgb,
+        int SameOwner,
+        int ColorChanges);
+
     private readonly record struct TextureSampleWriterKey(
         ulong Pc,
         uint Mode,
@@ -39307,10 +39330,53 @@ sampledTexel:
         raw = 0;
         result = 0;
         status = "no-art-owner";
+        FullrectArtOwnerCandidate best = default;
+        bool hasBest = false;
+        List<string>? scoreStatuses = _experimentFullrectSampleWriterLayoutArtOwnerScoreTransforms ? new List<string>() : null;
 
         foreach (string transform in FullrectWriterLayoutCandidateTransforms)
         {
-            ushort candidate = ReadFullrectWriterLayoutTextureRgb565At(
+            if (!TryReadFullrectWriterLayoutArtOwnerCandidate(
+                    x,
+                    y,
+                    width,
+                    height,
+                    format,
+                    sixteenBit,
+                    textureMode,
+                    baseAddress,
+                    transform,
+                    out FullrectArtOwnerCandidate candidate))
+            {
+                scoreStatuses?.Add($"{transform}:owner-");
+                continue;
+            }
+
+            if (candidate.Raw == 0)
+            {
+                scoreStatuses?.Add($"{transform}:raw0");
+                status = $"zero-raw transform={transform} owner={FormatTextureWordWriterStatus(candidate.Owner)}";
+                continue;
+            }
+
+            if (candidate.Result == 0)
+            {
+                scoreStatuses?.Add($"{transform}:rgb0/raw0x{candidate.Raw:X4}");
+                status = $"zero-rgb transform={transform} raw=0x{candidate.Raw:X4} owner={FormatTextureWordWriterStatus(candidate.Owner)}";
+                continue;
+            }
+
+            if (!_experimentFullrectSampleWriterLayoutArtOwnerScoreTransforms)
+            {
+                byteAddress = candidate.ByteAddress;
+                word = candidate.Word;
+                raw = candidate.Raw;
+                result = candidate.Result;
+                status = FormatFullrectArtOwnerCandidateStatus(candidate);
+                return true;
+            }
+
+            int score = ScoreFullrectWriterLayoutArtOwnerCandidate(
                 x,
                 y,
                 width,
@@ -39320,40 +39386,184 @@ sampledTexel:
                 textureMode,
                 baseAddress,
                 transform,
-                out uint candidateByteAddress,
-                out uint candidateWord,
-                out uint candidateRaw);
-            int candidateWordOffset = (int)((candidateByteAddress & (TextureBytes - 1u)) >> 2);
-            if (!TryGetFullrectWriterLayoutArtOwner(candidateWordOffset, out TextureWordLastWriter owner))
+                candidate.Owner.Type5TargetStart,
+                out int nonZeroRgb,
+                out int sameOwner,
+                out int colorChanges);
+            candidate = candidate with
             {
-                continue;
-            }
+                Score = score,
+                NonZeroRgb = nonZeroRgb,
+                SameOwner = sameOwner,
+                ColorChanges = colorChanges
+            };
+            scoreStatuses?.Add($"{transform}:{candidate.Score}/nz{candidate.NonZeroRgb}/same{candidate.SameOwner}/chg{candidate.ColorChanges}/rgb0x{candidate.Result:X4}");
 
-            if (candidateRaw == 0)
+            if (!hasBest || candidate.Score > best.Score)
             {
-                status = $"zero-raw transform={transform} owner={FormatTextureWordWriterStatus(owner)}";
-                continue;
+                best = candidate;
+                hasBest = true;
             }
-
-            int ownerFormat = (int)((owner.Mode >> 8) & 0x0fu);
-            bool ownerSixteenBit = owner.BytesPerTexel == 2 || IsTextureFormat16Bit(ownerFormat);
-            ushort ownerDecoded = DecodeTextureRawToRgb565(candidateRaw, ownerFormat, ownerSixteenBit, owner.Mode);
-            if (ownerDecoded == 0)
-            {
-                status = $"zero-rgb transform={transform} raw=0x{candidateRaw:X4} owner={FormatTextureWordWriterStatus(owner)}";
-                continue;
-            }
-
-            byteAddress = candidateByteAddress;
-            word = candidateWord;
-            raw = candidateRaw;
-            result = ownerDecoded;
-            status = $"transform={transform} ownerFmt{ownerFormat}/ownerBpp{owner.BytesPerTexel} sampleRgb=0x{candidate:X4} owner={FormatTextureWordWriterStatus(owner)}";
-            return true;
         }
 
-        return false;
+        if (!hasBest)
+            return false;
+
+        byteAddress = best.ByteAddress;
+        word = best.Word;
+        raw = best.Raw;
+        result = best.Result;
+        status = FormatFullrectArtOwnerCandidateStatus(best);
+        if (scoreStatuses is { Count: > 0 })
+            status += $" scores=[{string.Join(",", scoreStatuses)}]";
+        return true;
     }
+
+    private bool TryReadFullrectWriterLayoutArtOwnerCandidate(
+        int x,
+        int y,
+        int width,
+        int height,
+        int format,
+        bool sixteenBit,
+        uint textureMode,
+        uint baseAddress,
+        string transform,
+        out FullrectArtOwnerCandidate candidate)
+    {
+        ushort sampleDecoded = ReadFullrectWriterLayoutTextureRgb565At(
+            x,
+            y,
+            width,
+            height,
+            format,
+            sixteenBit,
+            textureMode,
+            baseAddress,
+            transform,
+            out uint candidateByteAddress,
+            out uint candidateWord,
+            out uint candidateRaw);
+        int candidateWordOffset = (int)((candidateByteAddress & (TextureBytes - 1u)) >> 2);
+        if (!TryGetFullrectWriterLayoutArtOwner(candidateWordOffset, out TextureWordLastWriter owner))
+        {
+            candidate = default;
+            return false;
+        }
+
+        int ownerFormat = (int)((owner.Mode >> 8) & 0x0fu);
+        bool ownerSixteenBit = owner.BytesPerTexel == 2 || IsTextureFormat16Bit(ownerFormat);
+        if (_experimentFullrectSampleWriterLayoutArtOwnerRebaseToOwner)
+        {
+            int ownerLod = Math.Clamp((int)owner.Lod, 0, 8);
+            int ownerBytesPerTexel = ownerSixteenBit ? 2 : owner.BytesPerTexel;
+            int ownerWidth = Math.Max(1, (int)GetTextureWidth(owner.TexLod) >> ownerLod);
+            int ownerHeight = Math.Max(1, (int)GetTextureHeight(owner.TexLod) >> ownerLod);
+            uint ownerBase = GetTextureLodOffset(ownerLod, ownerBytesPerTexel, owner.TexLod, owner.TextureBase);
+            if (_experimentFullrectSampleWriterLayoutBaseBias != 0)
+                ownerBase = (uint)(((long)ownerBase + _experimentFullrectSampleWriterLayoutBaseBias) & (TextureBytes - 1L));
+
+            sampleDecoded = ReadFullrectWriterLayoutTextureRgb565At(
+                Math.Clamp(x, 0, Math.Max(0, ownerWidth - 1)),
+                Math.Clamp(y, 0, Math.Max(0, ownerHeight - 1)),
+                ownerWidth,
+                ownerHeight,
+                ownerFormat,
+                ownerSixteenBit,
+                owner.Mode,
+                ownerBase,
+                transform,
+                out candidateByteAddress,
+                out candidateWord,
+                out candidateRaw);
+        }
+
+        ushort ownerDecoded = DecodeTextureRawToRgb565(candidateRaw, ownerFormat, ownerSixteenBit, owner.Mode);
+        if (ownerDecoded == 0 &&
+            _experimentFullrectSampleWriterLayoutArtOwnerDecodeHighByteFallback &&
+            ownerSixteenBit &&
+            ownerFormat is 8 or 9)
+        {
+            ownerDecoded = DecodeTextureRawToRgb565(candidateRaw >> 8, ownerFormat & 1, sixteenBit: false, owner.Mode);
+        }
+        candidate = new FullrectArtOwnerCandidate(
+            transform,
+            candidateByteAddress,
+            candidateWord,
+            candidateRaw,
+            ownerDecoded,
+            sampleDecoded,
+            owner,
+            ownerFormat,
+            owner.BytesPerTexel,
+            0,
+            0,
+            0,
+            0);
+        return true;
+    }
+
+    private int ScoreFullrectWriterLayoutArtOwnerCandidate(
+        int x,
+        int y,
+        int width,
+        int height,
+        int format,
+        bool sixteenBit,
+        uint textureMode,
+        uint baseAddress,
+        string transform,
+        uint ownerTargetStart,
+        out int nonZeroRgb,
+        out int sameOwner,
+        out int colorChanges)
+    {
+        nonZeroRgb = 0;
+        sameOwner = 0;
+        colorChanges = 0;
+        ushort previous = 0;
+        bool hasPrevious = false;
+        int radius = Math.Clamp(_experimentFullrectSampleWriterLayoutArtOwnerScoreRadius, 1, 4);
+
+        for (int dy = -radius; dy <= radius; dy++)
+        {
+            int sampleY = Math.Clamp(y + dy, 0, Math.Max(0, height - 1));
+            for (int dx = -radius; dx <= radius; dx++)
+            {
+                int sampleX = Math.Clamp(x + dx, 0, Math.Max(0, width - 1));
+                if (!TryReadFullrectWriterLayoutArtOwnerCandidate(
+                        sampleX,
+                        sampleY,
+                        width,
+                        height,
+                        format,
+                        sixteenBit,
+                        textureMode,
+                        baseAddress,
+                        transform,
+                        out FullrectArtOwnerCandidate neighbor))
+                {
+                    continue;
+                }
+
+                if (neighbor.Result != 0)
+                    nonZeroRgb++;
+                if (neighbor.Owner.Type5TargetStart == ownerTargetStart)
+                    sameOwner++;
+                if (hasPrevious && neighbor.Result != previous)
+                    colorChanges++;
+                previous = neighbor.Result;
+                hasPrevious = true;
+            }
+        }
+
+        return (nonZeroRgb * 100) + (sameOwner * 10) - (colorChanges * 8);
+    }
+
+    private static string FormatFullrectArtOwnerCandidateStatus(FullrectArtOwnerCandidate candidate) =>
+        $"transform={candidate.Transform} ownerFmt{candidate.OwnerFormat}/ownerBpp{candidate.OwnerBytesPerTexel} " +
+        $"sampleRgb=0x{candidate.SampleResult:X4} score={candidate.Score}/nz{candidate.NonZeroRgb}/same{candidate.SameOwner}/chg{candidate.ColorChanges} " +
+        $"owner={FormatTextureWordWriterStatus(candidate.Owner)}";
 
     private ushort DecodeTextureRawToRgb565(uint raw, int format, bool sixteenBit, uint textureMode)
     {
