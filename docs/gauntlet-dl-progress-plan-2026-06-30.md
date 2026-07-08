@@ -10995,3 +10995,79 @@ Next continuation point:
 3. Keep the reject/prefer controls as the guardrail: the next positive result
    should show `preferred=1` candidates reaching visible fullrect samples before
    any scoring policy is promoted.
+
+### 2026-07-08 Preferred-Seed Art-Owner Probe
+
+Added a default-off preferred-owner seed family for fullrect art-owner
+selection:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_SEED=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_SEED_LIMIT=8
+
+preferredlinear
+preferredrow2x
+preferredrow4x
+preferredtile4
+preferredtile8
+```
+
+The new path builds a deduplicated preferred-owner cache from
+`_textureWordLastWriters`, ranked by preferred PC/target and payload density,
+then requires the actual sampled word to still be owned by a preferred Type5
+writer. This keeps the experiment from merely guessing a target address.
+
+Build check:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release -m:1 --no-restore /clp:ErrorsOnly
+0 errors
+```
+
+Important implementation note: the first attempt (`r2`/`r3`) proved the naive
+per-sample writer-table scan was too slow. The cache plus
+`PREFERRED_SEED_LIMIT` made the full f300 probe practical again.
+
+Preferred-seed run:
+
+```text
+logs/gauntlet/cleanwarm-art-owner-preferred-seed-limit8-lowreject-score-r4-f300.log
+logs/gauntlet/cleanwarm-art-owner-preferred-seed-limit8-lowreject-score-r4-f300.png
+
+reject target starts: 0x0800,0x0c00,0x0c80,0x0e00
+prefer pc: 0x800fe7cc
+prefer target starts: 0x8400,0x8600,0x8700,0x8800,0x8a00,0x9c00
+preferred seed limit: 8
+frameHash=0x2b958646
+framebuffer=640x480:307200:307111
+```
+
+Trace result: positive. Early fullrect samples now accept `preferred=1`
+candidates, usually `preferredtile8` or `preferredtile4`, with owners such as:
+
+```text
+pc0x800fe7cc ... cmd0xC0000205@0x008400:...
+pc0x800fe7cc ... cmd0xC0000205@0x009C00:...
+pc0x800fe7cc ... cmd0xC0000205@0x009C80:...
+```
+
+Visual result: still not correct Gauntlet graphics. The screenshot has stronger
+colored texture noise in the upper-left fullrect region and the same large
+primitive background. It is not a scene/model image yet.
+
+Current interpretation: the preferred-seed path finally proves that the visible
+fullrect can be fed from the intended `pc0x800fe7cc` WTR/art-owner family. The
+remaining problem is not "can we reach that family"; it is which specific
+target/layout within that family should feed the fullrect. The mixed `0x8400`
+and `0x9c00` owners are probably still too broad.
+
+Next continuation point:
+
+1. Run forced, target-specific preferred-seed controls without broad scoring:
+   start with `PREFER_TARGET_STARTS=0x9c00`, no preferred PC, and force
+   `ART_OWNER_TRANSFORM=preferredtile4` then `preferredtile8`.
+2. If `0x9c00` is better, add a target-priority score term or a target-only
+   mode. If it is not better, trace which preferred seed payload hashes produce
+   the least banding and key selection on payload/layout, not only target.
+3. Keep `PREFERRED_SEED` default-off. Do not promote this until the visual moves
+   beyond colored bands into recognizable Gauntlet art.
