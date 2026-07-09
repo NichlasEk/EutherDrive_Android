@@ -30553,6 +30553,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly uint[] _textureMemory = new uint[TextureWords];
     private readonly bool[] _textureTouchedWords = new bool[TextureWords];
     private readonly Dictionary<int, TextureWordLastWriter> _textureWordLastWriters = [];
+    private readonly HashSet<int> _textureOverwriteSeededWords = [];
     private readonly List<TextureWordLastWriter> _fullrectPreferredSeedOwners = [];
     private int _textureWordLastWriterVersion;
     private int _fullrectPreferredSeedOwnersVersion = -1;
@@ -30757,6 +30758,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT"), 240);
     private readonly int _traceTextureWriteBucketsPerBucketLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_PER_BUCKET_LIMIT"), 0);
+    private readonly ulong? _traceTextureOverwriteRangeMin =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_RANGE_MIN");
+    private readonly ulong? _traceTextureOverwriteRangeMax =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_RANGE_MAX");
+    private readonly ulong? _traceTextureOverwriteSeedTargetMin =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_SEED_TARGET_MIN");
+    private readonly ulong? _traceTextureOverwriteSeedTargetMax =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_SEED_TARGET_MAX");
+    private readonly int _traceTextureOverwriteLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_LIMIT"), 64);
     private readonly bool _traceRenderBufferChoice =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_RENDER_BUFFER_CHOICE"));
     private readonly int _traceRenderBufferChoiceLimit =
@@ -31361,6 +31372,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _renderBufferChoiceTraceCount;
     private int _textureUploadMameWritePtrTraceCount;
     private int _textureWriteBucketTraceCount;
+    private int _textureOverwriteSeedCount;
+    private int _textureOverwriteTraceCount;
     private readonly int[] _textureWriteBucketTraceCounts = new int[TextureZeroSampleBucketCount];
     private int _textureZeroSampleBucketTotal;
     private uint _textureZeroSampleFirstAddress = uint.MaxValue;
@@ -33364,7 +33377,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_traceTexturedTriangleSampleWriters &&
             !_traceTextureSampleWriters &&
             !_traceTexturedTriangleSampleSummaryRequireWriter &&
-            !_experimentFullrectSampleWriterLayout)
+            !_experimentFullrectSampleWriterLayout &&
+            !_traceTextureOverwriteRangeMin.HasValue)
         {
             return;
         }
@@ -33384,7 +33398,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_traceTexturedTriangleSampleWriters &&
             !_traceTextureSampleWriters &&
             !_traceTexturedTriangleSampleSummaryRequireWriter &&
-            !_experimentFullrectSampleWriterLayout)
+            !_experimentFullrectSampleWriterLayout &&
+            !_traceTextureOverwriteRangeMin.HasValue)
         {
             return;
         }
@@ -33700,7 +33715,10 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
         }
 
-        _textureMemory[wordOffset] = (_textureMemory[wordOffset] & ~mask) | ((uint)value << shift);
+        uint oldValue = _textureMemory[wordOffset];
+        uint newValue = (oldValue & ~mask) | ((uint)value << shift);
+        TraceTextureOverwrite((int)wordOffset, byteOffset, oldValue, newValue, mask);
+        _textureMemory[wordOffset] = newValue;
         TrackTextureLastWriter((int)wordOffset);
         TrackTextureMappedWrite((int)wordOffset, value);
     }
@@ -33710,7 +33728,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         if ((!_traceTexturedTriangleSampleWriters &&
              !_traceTextureSampleWriters &&
              !_traceTexturedTriangleSampleSummaryRequireWriter &&
-             !_experimentFullrectSampleWriterLayout) ||
+             !_experimentFullrectSampleWriterLayout &&
+             !_traceTextureOverwriteRangeMin.HasValue) ||
             !_currentTextureWriteActive)
         {
             return;
@@ -33748,6 +33767,57 @@ internal class VoodooBringupBackend : IVoodooBackend
             _currentType5TextureWriteReadIndex,
             _currentType5TextureWriteStreaming);
         _textureWordLastWriterVersion++;
+    }
+
+    private void TraceTextureOverwrite(int wordOffset, uint byteOffset, uint oldValue, uint newValue, uint mask)
+    {
+        if (!_traceTextureOverwriteRangeMin.HasValue ||
+            !_traceTextureOverwriteRangeMax.HasValue ||
+            !_traceTextureOverwriteSeedTargetMin.HasValue ||
+            !_traceTextureOverwriteSeedTargetMax.HasValue ||
+            !_currentTextureWriteActive ||
+            !_currentType5TextureWriteActive)
+        {
+            return;
+        }
+
+        uint address = byteOffset & (TextureBytes - 1u);
+        if (address < _traceTextureOverwriteRangeMin.Value ||
+            address >= _traceTextureOverwriteRangeMax.Value)
+        {
+            return;
+        }
+
+        bool seedWrite =
+            _currentType5TextureWriteTargetStart >= _traceTextureOverwriteSeedTargetMin.Value &&
+            _currentType5TextureWriteTargetStart < _traceTextureOverwriteSeedTargetMax.Value;
+        if (seedWrite)
+        {
+            if (_textureOverwriteSeededWords.Add(wordOffset))
+                _textureOverwriteSeedCount++;
+            return;
+        }
+
+        if (!_textureOverwriteSeededWords.Contains(wordOffset) ||
+            oldValue == newValue ||
+            _textureOverwriteTraceCount >= _traceTextureOverwriteLimit)
+        {
+            return;
+        }
+
+        _textureOverwriteSeededWords.Remove(wordOffset);
+        _textureOverwriteTraceCount++;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string previous = _textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter writer)
+            ? FormatTextureWordWriterStatus(writer)
+            : "none";
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXOVERWRITE] n={_textureOverwriteTraceCount} seeded={_textureOverwriteSeedCount} " +
+            $"addr=0x{address:X6} word=0x{wordOffset:X6} mask=0x{mask:X8} old=0x{oldValue:X8} new=0x{newValue:X8} " +
+            $"current=pc0x{pc & 0xffffffffUL:x8}/mode0x{_currentTextureWriteMode:X8}/lod0x{_currentTextureWriteTexLod:X8}/" +
+            $"base0x{_currentTextureWriteBase:X8}/l{_currentTextureWriteLod}/bpp{_currentTextureWriteBytesPerTexel}/" +
+            $"cmd0x{_currentType5TextureWriteCommand:X8}@0x{_currentType5TextureWriteTargetStart:X6}:0x{_currentType5TextureWriteTargetWord:X6}/" +
+            $"ph0x{_currentType5TextureWritePayloadHash:X8}/i{_currentType5TextureWriteIndex}-{_currentType5TextureWriteCount} previous={previous}");
     }
 
     private void TrackTextureMappedWrite(int wordOffset, uint value)

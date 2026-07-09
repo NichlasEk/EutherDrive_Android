@@ -11698,3 +11698,67 @@ Next continuation point:
 3. Fix the owner/target lifetime that performs that overwrite. Do not add more
    RGB565/4bpp transforms: disk format and active Type5 replacement are now
    proven.
+
+### 2026-07-09 RGB565 Art Retained In Voodoo Texture RAM
+
+Added two default-off diagnostics around the texture-memory lifetime boundary:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_RANGE_MIN=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_RANGE_MAX=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_SEED_TARGET_MIN=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_SEED_TARGET_MAX=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_LIMIT=...
+
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_PREFIX=...
+  -> now also writes <prefix>_raw.bin
+```
+
+The raw dump made the physical result unambiguous. A corrected cold f0->f180
+run remapped source `0xffffffff802e1718`, targets `0x8000..0x9f80` in `0x80`
+steps, to sequential rows from `24:ged@0x2000`, with payload index `18` and
+transform `be32`. The checkpoint is:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gedrgb565-fullrows-f180.warm
+logs/gauntlet/gauntdl-gedrgb565-fullrows-f180.ppm
+frameHash=0xe0d35bbf
+```
+
+Searching the raw Voodoo dump finds the injected payload sequentially:
+
+```text
+ged+0x2000 -> texture RAM +0x0000
+ged+0x2100 -> texture RAM +0x0100
+...
+ged+0x7f00 -> texture RAM +0x5f00
+```
+
+Decoded as 128-wide little-endian RGB565, those approximately 96 retained rows
+contain unmistakable Gauntlet art: an ornate red/gold frame, central emblem,
+and character silhouettes. Proof images:
+
+```text
+logs/gauntlet/ged-rgb565-fullrows-in-voodoo.png
+logs/gauntlet/ged-rgb565-fullrows-in-voodoo-6x.png
+```
+
+This is the first proof that coherent image-bearing data survives the complete
+CHD -> direct Type5 writer -> mapped Voodoo texture-RAM path. The earlier
+predicted physical range `0x001000..0x008fff` was incomplete; the actual
+sequential surface begins at physical byte offset zero under this upload set.
+
+A follow-up f180->f300 fullrect sampler run selected some of the new RGB565
+owners and produced `frameHash=0xc7fb7a07`, but it also selected unrelated
+float-like owners. The rendered frame remains corrupt bands and polygons:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-sampled-f300.png
+```
+
+Current boundary: real graphics are now present and retained in emulated
+texture RAM, but visible primitives do not yet resolve exclusively to that
+surface. The next fix should make fullrect owner selection reject the remaining
+float/control class and then determine the correct coordinate/layout mapping
+for the retained `0x0000..0x5fff` RGB565 surface. Do not revisit CHD format or
+byte order unless new evidence contradicts this exact raw-memory match.

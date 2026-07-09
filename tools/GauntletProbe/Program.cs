@@ -2097,6 +2097,9 @@ static void DumpVoodooTextureSurfaces(object voodoo)
     byte[] textureBytes = new byte[textureWords.Length * 4];
     for (int i = 0; i < textureWords.Length; i++)
         BinaryPrimitives.WriteUInt32LittleEndian(textureBytes.AsSpan(i * 4, 4), textureWords[i]);
+    string rawPath = $"{prefix}_raw.bin";
+    File.WriteAllBytes(rawPath, textureBytes);
+    Console.WriteLine($"voodooTextureRawDump={rawPath}");
 
     int maxCandidates = ParsePositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_COUNT"), 10);
     var formats = new[]
