@@ -161,6 +161,7 @@ Console.WriteLine($"debugAfterFrame={adapter.DebugStatus}");
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_BEFORE_FRAME") != "1")
     DumpVoodooColorBuffers(voodoo);
 DumpVoodooTextureSurfaces(voodoo);
+DumpKnownTexturePayloadSurfaces(GetProperty(machine, "MemoryMap"));
 DumpRamSurfaceCandidates(GetProperty(machine, "MemoryMap"));
 
 static object GetField(object instance, string name)
@@ -2146,6 +2147,132 @@ static void DumpVoodooTextureSurfaces(object voodoo)
     }
 }
 
+static void DumpKnownTexturePayloadSurfaces(object memory)
+{
+    string? prefix = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_PREFIX");
+    if (string.IsNullOrWhiteSpace(prefix))
+        return;
+
+    EnsureOutputDirectory(prefix);
+    int maxPayloads = ParsePositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_COUNT"), 12);
+    int maxSurfacesPerPayload = ParsePositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_SURFACES"), 2);
+    ulong[] filterIndexes = ParseHexList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_INDEXES"));
+    List<KnownTexturePayload> payloads = GetKnownTexturePayloads()
+        .Where(payload => filterIndexes.Length == 0 || filterIndexes.Contains(payload.Index))
+        .Take(maxPayloads)
+        .ToList();
+
+    foreach (KnownTexturePayload payload in payloads)
+    {
+        byte[] bytes = ReadDiskBytes(memory, payload.ByteOffset, payload.ByteLength);
+        if (bytes.Length == 0)
+        {
+            Console.WriteLine($"knownTexturePayload={payload.Index}:{payload.Code} read=failed byte=0x{payload.ByteOffset:x8}");
+            continue;
+        }
+
+        var formats = new[]
+        {
+            new ByteSurfaceFormat(64, 64, 64),
+            new ByteSurfaceFormat(128, 64, 128),
+            new ByteSurfaceFormat(128, 128, 128),
+            new ByteSurfaceFormat(256, 128, 256)
+        };
+        List<ByteSurfaceCandidate> candidates = [];
+        foreach (ByteSurfaceFormat format in formats)
+        {
+            int surfaceBytes = format.Stride * format.Height;
+            if (surfaceBytes <= 0 || surfaceBytes > bytes.Length)
+                continue;
+
+            for (int offset = 0; offset + surfaceBytes <= bytes.Length; offset += 0x400)
+            {
+                ByteSurfaceScore score = ScoreByteSurface(bytes, offset, format);
+                if (score.NonZero < 256 || score.UniqueBytes < 12)
+                    continue;
+                candidates.Add(new ByteSurfaceCandidate(offset, format, score));
+            }
+        }
+
+        candidates = candidates
+            .OrderByDescending(candidate => candidate.Score.Score)
+            .ThenBy(candidate => candidate.Offset)
+            .Take(maxSurfacesPerPayload)
+            .ToList();
+
+        Console.WriteLine("knownTexturePayload=" +
+            $"{payload.Index}:{payload.Code}:byte=0x{payload.ByteOffset:x8}:len=0x{payload.ByteLength:x}:candidates=" +
+            (candidates.Count == 0
+                ? "none"
+                : string.Join(",", candidates.Select(candidate =>
+                    $"0x{candidate.Offset:x}:{candidate.Format.Width}x{candidate.Format.Height}/u{candidate.Score.UniqueBytes}/t{candidate.Score.Transitions}"))));
+
+        for (int i = 0; i < candidates.Count; i++)
+        {
+            ByteSurfaceCandidate candidate = candidates[i];
+            string stem = $"{prefix}_{payload.Index:D2}_{payload.Code}_{i}_0x{candidate.Offset:x}_{candidate.Format.Width}x{candidate.Format.Height}";
+            DumpByteSurface(bytes, candidate.Offset, candidate.Format, $"{stem}_rgb332.ppm", rgb332: true);
+            DumpByteSurface(bytes, candidate.Offset, candidate.Format, $"{stem}_gray.ppm", rgb332: false);
+            Console.WriteLine($"knownTexturePayloadDump={stem}_rgb332.ppm");
+            Console.WriteLine($"knownTexturePayloadDump={stem}_gray.ppm");
+        }
+    }
+}
+
+static byte[] ReadDiskBytes(object memory, ulong byteOffset, uint byteLength)
+{
+    byte[] bytes = new byte[byteLength];
+    for (uint offset = 0; offset < byteLength; offset += 4)
+    {
+        if (!TryReadDiskByteOffsetWord(memory, byteOffset + offset, out uint word))
+            return [];
+
+        int remaining = (int)Math.Min(4U, byteLength - offset);
+        for (int lane = 0; lane < remaining; lane++)
+            bytes[offset + lane] = (byte)(word >> (lane * 8));
+    }
+
+    return bytes;
+}
+
+static bool TryReadDiskByteOffsetWord(object memory, ulong byteOffset, out uint word)
+{
+    MethodInfo? method = memory.GetType().GetMethod("TryReadDiskByteOffsetWord", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+    if (method is null)
+        throw new MissingMethodException(memory.GetType().FullName, "TryReadDiskByteOffsetWord");
+
+    object?[] args = [byteOffset, 0u];
+    bool ok = (bool)(method.Invoke(memory, args) ?? false);
+    word = ok ? (uint)(args[1] ?? 0u) : 0u;
+    return ok;
+}
+
+static List<KnownTexturePayload> GetKnownTexturePayloads() =>
+[
+    new(1, "gei", 0x14a6f600UL, 0x0000a13cU),
+    new(2, "snm", 0x14a54800UL, 0x000091b0U),
+    new(3, "stk", 0x15117a00UL, 0x0000a434U),
+    new(4, "kjh", 0x15130e00UL, 0x00009ae8U),
+    new(5, "pnk", 0x1514da00UL, 0x00009e80U),
+    new(6, "geb", 0x15781600UL, 0x0000b130U),
+    new(7, "nin", 0x15896000UL, 0x0000b130U),
+    new(8, "stg", 0x1585d800UL, 0x0000acccU),
+    new(9, "wtr", 0x158b0600UL, 0x0000bca4U),
+    new(10, "css", 0x158cc800UL, 0x00009194U),
+    new(11, "riz", 0x158ea800UL, 0x00009a00U),
+    new(16, "get", 0x13380000UL, 0x00008e9cU),
+    new(17, "sch", 0x13458e00UL, 0x0000b528U),
+    new(18, "cel", 0x1339d800UL, 0x00014b98U),
+    new(19, "gec", 0x12cbb200UL, 0x0000a3b8U),
+    new(20, "gem", 0x12cdb000UL, 0x0000a460U),
+    new(21, "rat", 0x12cfa600UL, 0x0000a5fcU),
+    new(22, "ga2", 0x13bb9400UL, 0x00008ad8U),
+    new(23, "gam", 0x13b9ce00UL, 0x0000b2c4U),
+    new(24, "ged", 0x13b6ac00UL, 0x000142dcU),
+    new(25, "gep", 0x13b82600UL, 0x00009550U),
+    new(26, "sum", 0x13b4b600UL, 0x0000a37cU)
+];
+
 static ByteSurfaceScore ScoreByteSurface(byte[] bytes, int offset, ByteSurfaceFormat format)
 {
     int nonZero = 0;
@@ -2381,12 +2508,25 @@ static int ParsePositiveInt(string? value, int fallback)
     return int.TryParse(value, out int parsed) && parsed > 0 ? parsed : fallback;
 }
 
+static ulong[] ParseHexList(string? value)
+{
+    if (string.IsNullOrWhiteSpace(value))
+        return [];
+
+    return value
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        .Select(item => TryParseHexUlong(item, out ulong parsed) ? parsed : ulong.MaxValue)
+        .Where(parsed => parsed != ulong.MaxValue)
+        .ToArray();
+}
+
 readonly record struct RamSurfaceFormat(int Width, int Height, int Stride);
 readonly record struct RamSurfaceScore(int NonZero, int Colored, int UniqueColors, long Score);
 readonly record struct RamSurfaceCandidate(int Offset, RamSurfaceFormat Format, RamSurfaceScore Score);
 readonly record struct ByteSurfaceFormat(int Width, int Height, int Stride);
 readonly record struct ByteSurfaceScore(int NonZero, int UniqueBytes, int Transitions, long Score);
 readonly record struct ByteSurfaceCandidate(int Offset, ByteSurfaceFormat Format, ByteSurfaceScore Score);
+readonly record struct KnownTexturePayload(ulong Index, string Code, ulong ByteOffset, uint ByteLength);
 
 sealed class ProbeSummaryContext
 {

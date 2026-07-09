@@ -1082,6 +1082,16 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORDS_TRACE_LIMIT", 64);
     private readonly ulong[] _experimentDirectTextureWriterDiskWordTargetWords =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_WORD_TARGET_WORDS"));
+    private readonly ulong? _experimentDirectTextureWriterDiskPayloadRemapSource =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_SOURCE");
+    private readonly ulong? _experimentDirectTextureWriterDiskPayloadRemapIndex =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_INDEX");
+    private readonly ulong _experimentDirectTextureWriterDiskPayloadRemapOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_OFFSET") ?? 0UL;
+    private readonly int _experimentDirectTextureWriterDiskPayloadRemapTraceLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_TRACE_LIMIT", 64);
+    private readonly ulong[] _experimentDirectTextureWriterDiskPayloadRemapTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_TARGET_WORDS"));
     private readonly bool _experimentDirectTextureWriterZeroWords =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_ZERO_WORDS"));
     private readonly int _experimentDirectTextureWriterZeroWordsTraceLimit =
@@ -1228,6 +1238,9 @@ internal sealed class MipsR5000Core
     private int _textureUploadDirectWriterTraceCount;
     private int _textureUploadDirectWriterControlTableWriteTraceCount;
     private int _textureUploadDirectWriterDiskWordTraceCount;
+    private int _textureUploadDirectWriterDiskPayloadRemapTraceCount;
+    private int _textureUploadDirectWriterDiskPayloadRemapFollowRemaining;
+    private uint _textureUploadDirectWriterDiskPayloadRemapTargetActive;
     private int _textureUploadDirectWriterZeroWordTraceCount;
     private int _textureUploadDirectWriterFollowRemaining;
     private uint _textureUploadDirectWriterFollowTargetWord;
@@ -5999,6 +6012,105 @@ internal sealed class MipsR5000Core
                 $"pc=0x{pc:x16} rt=r{rt} target=0x{_textureUploadDirectWriterDiskWordTargetActive:x8} " +
                 $"source=0x{source:x16} {diskSource} " +
                 $"mem=0x{value:x8}->disk=0x{diskWord:x8}{transform}");
+        }
+
+        return transformedDiskWord;
+    }
+
+    private uint ApplyDirectTextureWriterDiskPayloadRemapExperiment(
+        ulong pc,
+        int rt,
+        uint value)
+    {
+        if (!_experimentDirectTextureWriterDiskPayloadRemapSource.HasValue ||
+            !_experimentDirectTextureWriterDiskPayloadRemapIndex.HasValue)
+        {
+            return value;
+        }
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        bool hasTargetFilter = _experimentDirectTextureWriterDiskPayloadRemapTargetWords.Length > 0;
+        if (hasTargetFilter && physicalPc == 0x000fe7b0UL && rt == 2 && (value & 3U) == 0)
+        {
+            uint targetWord = value / 4U;
+            if (Array.IndexOf(_experimentDirectTextureWriterDiskPayloadRemapTargetWords, (ulong)targetWord) >= 0)
+            {
+                ulong payloadWords = _gpr[20];
+                _textureUploadDirectWriterDiskPayloadRemapFollowRemaining =
+                    payloadWords is > 0UL and <= 0x400UL ? (int)payloadWords : 64;
+                _textureUploadDirectWriterDiskPayloadRemapTargetActive = targetWord;
+                if (_textureUploadDirectWriterDiskPayloadRemapTraceCount++ < _experimentDirectTextureWriterDiskPayloadRemapTraceLimit)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:EXPERIMENT] direct-texture-writer-disk-payload-remap-arm " +
+                        $"pc=0x{pc:x16} target=0x{targetWord:x8} follow={_textureUploadDirectWriterDiskPayloadRemapFollowRemaining} " +
+                        $"source=0x{_gpr[19]:x16} index=0x{_experimentDirectTextureWriterDiskPayloadRemapIndex.Value:x} " +
+                        $"offset=0x{_experimentDirectTextureWriterDiskPayloadRemapOffset:x}");
+                }
+            }
+
+            return value;
+        }
+
+        ulong source;
+        if (physicalPc == 0x000fe7c4UL && rt == 2)
+        {
+            source = _gpr[19];
+        }
+        else if (physicalPc == 0x000fe7ccUL && rt == 3)
+        {
+            source = _gpr[19] + 4UL;
+        }
+        else
+        {
+            return value;
+        }
+
+        if (hasTargetFilter)
+        {
+            if (_textureUploadDirectWriterDiskPayloadRemapFollowRemaining <= 0)
+                return value;
+
+            _textureUploadDirectWriterDiskPayloadRemapFollowRemaining--;
+        }
+        else
+        {
+            _textureUploadDirectWriterDiskPayloadRemapTargetActive = 0;
+        }
+
+        ulong sourceKey = source & 0xffffffffUL;
+        ulong remapSourceKey = _experimentDirectTextureWriterDiskPayloadRemapSource.Value & 0xffffffffUL;
+        if (sourceKey < remapSourceKey)
+            return value;
+
+        ulong sourceOffset = sourceKey - remapSourceKey;
+        if (!TryGetKnownRuntimeBgLoadModelTexturePayload(
+                _experimentDirectTextureWriterDiskPayloadRemapIndex.Value,
+                out string code,
+                out ulong byteOffset,
+                out uint byteLength))
+        {
+            return value;
+        }
+
+        ulong diskOffset = _experimentDirectTextureWriterDiskPayloadRemapOffset + sourceOffset;
+        if (diskOffset + 4UL > byteLength ||
+            !_memory.TryReadDiskByteOffsetWord(byteOffset + diskOffset, out uint diskWord))
+        {
+            return value;
+        }
+
+        uint transformedDiskWord = TransformZeroBaseUploadDiskWord(diskWord);
+        if (_textureUploadDirectWriterDiskPayloadRemapTraceCount++ < _experimentDirectTextureWriterDiskPayloadRemapTraceLimit)
+        {
+            string transform = DescribeZeroBaseUploadDiskWordTransform(diskWord, transformedDiskWord);
+            string change = value == transformedDiskWord ? "same" : "changed";
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] direct-texture-writer-disk-payload-remap " +
+                $"pc=0x{pc:x16} rt=r{rt} target=0x{_textureUploadDirectWriterDiskPayloadRemapTargetActive:x8} " +
+                $"source=0x{source:x16} remapSource=0x{remapSourceKey:x8}+0x{sourceOffset:x} " +
+                $"disk={_experimentDirectTextureWriterDiskPayloadRemapIndex.Value}:{code}@0x{diskOffset:x} " +
+                $"{change} mem=0x{value:x8}->disk=0x{diskWord:x8}{transform}");
         }
 
         return transformedDiskWord;
@@ -23256,6 +23368,7 @@ internal sealed class MipsR5000Core
                     uint value = (uint)_gpr[rt];
                     uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
                     value = ApplyKnownRuntimeBgLoadModelTextureSourceLimitStackRemap(pc, rt, address, value);
+                    value = ApplyDirectTextureWriterDiskPayloadRemapExperiment(pc, rt, value);
                     value = ApplyDirectTextureWriterDiskWordExperiment(pc, rt, value);
                     value = ApplyDirectTextureWriterZeroWordExperiment(pc, rt, value);
                     TraceTextureUploadDirectWriterStore(pc, op, rs, rt, simm, address, value);

@@ -11483,3 +11483,70 @@ FIFO payload sheets and texture-RAM dump look like structured noise even when
 the upload path is internally consistent. The next fix attempt should move
 upstream: identify why the texture upload writer is pointed at descriptor/WTR
 control records instead of the image-bearing asset payload.
+
+### 2026-07-09 CHD Payload Visibility And Direct-Writer Remap Probe
+
+Added two default-off probes:
+
+```text
+EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_PREFIX=...
+EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_INDEXES=...
+EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_COUNT=...
+EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_SURFACES=...
+
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_SOURCE=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_INDEX=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_OFFSET=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_TARGET_WORDS=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_TRACE_LIMIT=...
+```
+
+The disk-payload scanner found the first clearly image-like bytes in known CHD
+payload `24:ged`, especially around `0x9000`, `0x9400`, and `0x9800`:
+
+```text
+logs/gauntlet/disktex-relevant-f300.log
+logs/gauntlet/disktex-relevant-rgb332-montage.png
+logs/gauntlet/disktex-relevant-gray-montage.png
+```
+
+The direct-writer remap probe can now visibly inject those bytes into the
+`0x8000` texture upload when run while the f180 state is being built under the
+standard bringup preset:
+
+```text
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9400idx18-t8000-f300.log
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9400idx18-t8000-f300.png
+frameHash=0x100abef2
+
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-f300.log
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-f300.png
+frameHash=0xcf00ccbb
+```
+
+Representative remap proof:
+
+```text
+direct-texture-writer-disk-payload-remap-arm pc=0xffffffff800fe7b0 target=0x00008000 source=0xffffffff802e1718 index=0x18 offset=0x9000
+direct-texture-writer-disk-payload-remap pc=0xffffffff800fe7c4 rt=r2 target=0x00008000 source=0xffffffff802e1718 disk=24:ged@0x9000 changed mem=0x00000012->disk=0xad4bad8d
+```
+
+Visual result: this is real controllable visibility, but not correct Gauntlet
+art yet. The frame changes from the baseline into large gradient/block surfaces,
+and the texture-RAM montages remain high-frequency/noisy rather than
+recognizable sprites or environment textures. That falsifies a naive
+`descriptor source -> raw ged bytes` replacement and points at the next blocker:
+the writer needs the correct decoded texture format/layout and/or the correct
+asset-local source pointer, not just a CHD byte offset pasted over descriptor
+words.
+
+Next continuation point:
+
+1. Keep the disk-payload scanner and direct-writer remap probe as the current
+   proof harness.
+2. Sweep the `ged` candidates with format/layout transforms, not just raw word
+   remaps. Start with byte-lane/word-lane ordering and 4/8-bit indexed tile
+   unpacking before changing Voodoo sampling.
+3. Trace how `ged` image-like bytes should be referenced by the model/texture
+   descriptors, because the current source `802e1718` is still a descriptor
+   list rather than an asset-local texel buffer.
