@@ -6097,18 +6097,21 @@ internal sealed class MipsR5000Core
             return value;
         }
 
-        ulong diskOffset = _experimentDirectTextureWriterDiskPayloadRemapOffset + sourceOffset;
-        if (diskOffset + 4UL > byteLength ||
-            !_memory.TryReadDiskByteOffsetWord(byteOffset + diskOffset, out uint diskWord))
+        if (!TryReadDirectTextureWriterDiskPayloadRemapWord(
+                byteOffset,
+                byteLength,
+                sourceOffset,
+                out uint diskWord,
+                out uint transformedDiskWord,
+                out string transform))
         {
             return value;
         }
 
-        uint transformedDiskWord = TransformDirectTextureWriterDiskPayloadRemapWord(diskWord);
         if (_textureUploadDirectWriterDiskPayloadRemapTraceCount++ < _experimentDirectTextureWriterDiskPayloadRemapTraceLimit)
         {
-            string transform = DescribeDirectTextureWriterDiskPayloadRemapTransform(diskWord, transformedDiskWord);
             string change = value == transformedDiskWord ? "same" : "changed";
+            ulong diskOffset = _experimentDirectTextureWriterDiskPayloadRemapOffset + sourceOffset;
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] direct-texture-writer-disk-payload-remap " +
                 $"pc=0x{pc:x16} rt=r{rt} target=0x{_textureUploadDirectWriterDiskPayloadRemapTargetActive:x8} " +
@@ -6118,6 +6121,99 @@ internal sealed class MipsR5000Core
         }
 
         return transformedDiskWord;
+    }
+
+    private bool TryReadDirectTextureWriterDiskPayloadRemapWord(
+        ulong payloadByteOffset,
+        uint payloadByteLength,
+        ulong sourceOffset,
+        out uint diskWord,
+        out uint transformedWord,
+        out string transform)
+    {
+        diskWord = 0;
+        transformedWord = 0;
+        transform = "";
+
+        if (IsDirectTextureWriterDiskPayloadRemap4BppTransform(out bool highFirst, out bool scaleNibble))
+        {
+            ulong packedRelativeOffset = _experimentDirectTextureWriterDiskPayloadRemapOffset + (sourceOffset >> 1);
+            if (packedRelativeOffset + 4UL > payloadByteLength ||
+                !_memory.TryReadDiskByteOffsetWord(payloadByteOffset + packedRelativeOffset, out diskWord))
+            {
+                return false;
+            }
+
+            uint word = 0;
+            for (int lane = 0; lane < 4; lane++)
+            {
+                ulong outputByteOffset = sourceOffset + (ulong)lane;
+                ulong packedByteOffset = _experimentDirectTextureWriterDiskPayloadRemapOffset + (outputByteOffset >> 1);
+                if (packedByteOffset >= payloadByteLength ||
+                    !_memory.TryReadDiskByteOffsetWord(payloadByteOffset + packedByteOffset, out uint packedWord))
+                {
+                    return false;
+                }
+
+                byte packedByte = (byte)packedWord;
+                bool highNibble = ((outputByteOffset & 1UL) != 0) == highFirst;
+                byte nibble = highNibble ? (byte)(packedByte >> 4) : (byte)(packedByte & 0x0f);
+                byte outputByte = scaleNibble ? (byte)(nibble * 0x11) : nibble;
+                word |= (uint)outputByte << (lane * 8);
+            }
+
+            transformedWord = word;
+            transform = $" transform={_experimentDirectTextureWriterDiskPayloadRemapTransform}:0x{transformedWord:x8}/packed=0x{packedRelativeOffset:x}";
+            return true;
+        }
+
+        ulong diskOffset = _experimentDirectTextureWriterDiskPayloadRemapOffset + sourceOffset;
+        if (diskOffset + 4UL > payloadByteLength ||
+            !_memory.TryReadDiskByteOffsetWord(payloadByteOffset + diskOffset, out diskWord))
+        {
+            return false;
+        }
+
+        transformedWord = TransformDirectTextureWriterDiskPayloadRemapWord(diskWord);
+        transform = DescribeDirectTextureWriterDiskPayloadRemapTransform(diskWord, transformedWord);
+        return true;
+    }
+
+    private bool IsDirectTextureWriterDiskPayloadRemap4BppTransform(out bool highFirst, out bool scaleNibble)
+    {
+        highFirst = false;
+        scaleNibble = false;
+        switch (_experimentDirectTextureWriterDiskPayloadRemapTransform)
+        {
+            case "4bpp":
+            case "4bpp-low":
+            case "4bpp-low-first":
+            case "nibble-low":
+            case "nibble-low-first":
+                return true;
+            case "4bpp-high":
+            case "4bpp-high-first":
+            case "nibble-high":
+            case "nibble-high-first":
+                highFirst = true;
+                return true;
+            case "4bpp-scale":
+            case "4bpp-low-scale":
+            case "4bpp-low-first-scale":
+            case "nibble-low-scale":
+            case "nibble-low-first-scale":
+                scaleNibble = true;
+                return true;
+            case "4bpp-high-scale":
+            case "4bpp-high-first-scale":
+            case "nibble-high-scale":
+            case "nibble-high-first-scale":
+                highFirst = true;
+                scaleNibble = true;
+                return true;
+            default:
+                return false;
+        }
     }
 
     private uint TransformDirectTextureWriterDiskPayloadRemapWord(uint word)

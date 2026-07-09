@@ -11579,3 +11579,42 @@ top texture-RAM candidate class stayed effectively identical to the raw
 The next useful branch is a real source-format transform before injection:
 expand/scramble `ged` as tile/indexed texture data instead of writing its raw
 CHD words into the Type5 payload.
+
+### 2026-07-09 4bpp Remap Unpack Controls
+
+Extended the direct-writer remap transform with offset-aware packed-nibble
+unpack modes:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_TRANSFORM=4bpp-low|4bpp-high|4bpp-low-scale|4bpp-high-scale
+```
+
+The `*-scale` variants expand each nibble to `0x00,0x11,...0xff` before writing
+four 8-bit output bytes per remapped word. This confirms the harness can test
+source-format transforms, not just word-order swaps.
+
+Cold standard-preset f0->f300 controls on `24:ged@0x9000 -> target 0x8000`:
+
+```text
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-4bpp-low-scale-f300.log
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-4bpp-low-scale-f300.png
+frameHash=0xcf00ccbb
+
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-4bpp-high-scale-f300.log
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-4bpp-high-scale-f300.png
+frameHash=0xcf00ccbb
+```
+
+Both nibble orders materially changed the remapped words, for example:
+
+```text
+disk=24:ged@0x9000 changed mem=0x00000012->disk=0xad4bad8d transform=4bpp-low-scale:0xddaadd88/packed=0x9000
+disk=24:ged@0x9000 changed mem=0x00000012->disk=0xad4bad8d transform=4bpp-high-scale:0xaadd88dd/packed=0x9000
+```
+
+The final frame and top texture-RAM candidate class still stayed in the same
+large-gradient/noisy-texture failure mode as raw `ged@0x9000`. That makes
+`target 0x8000 + source 802e1718` a weak place to continue transform-only
+experiments. Next useful move: use the same remap harness on other direct-writer
+targets/sources that are closer to actual sampled owners, instead of spending
+more cycles on this descriptor-list target.
