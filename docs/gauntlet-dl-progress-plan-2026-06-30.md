@@ -11882,3 +11882,59 @@ sampler's 256-wide page stride while the verified injected RGB565 surface is
 128 pixels wide. The next slice should keep the sampled target relation but
 recompute the destination address from native owner/descriptor width, height,
 and packet-local index rather than adding the delta to the final byte address.
+
+### 2026-07-09 Physical Target/Index Lookup
+
+The Voodoo upload path does not store a Type5 target at `target * 4`; it maps
+the target through LOD, `ts`, `tt`, base, and format state. Added a live index
+from `(Type5TargetStart, Type5Index)` to the physical texture-RAM word written
+by that packet, plus default-off controls:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_LOOKUP=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_LOOKUP_STRICT=1
+```
+
+With `SAMPLED_TARGET_DELTA=0x9000`, lookup mode preserves the source packet
+index and converts the four-wide 8-bit source lane to the matching two-wide
+RGB565 halfword lane. Trace proof:
+
+```text
+transform=sampledtargetdelta delta=0x9000 lookup=1
+source=pc0x800fe614 ... @0x000B00:0x000B04
+owner=pc0x800fe7cc ... @0x009B00:0x009B04
+```
+
+The physical result differs from the earlier byte-delta approximation and
+produces:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-sampled-targetlookup0x9000-f300.png
+frameHash=0xb38d7e0a
+```
+
+Strict mode rejects lookup misses instead of falling back to global linear
+owner selection:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-sampled-targetlookup-strict0x9000-f300.png
+frameHash=0x36c32c0d
+```
+
+That control removes fallback noise but initially also removed samples whose
+source word already belonged to the allowed `0x8000+` art family. The final
+rule now keeps an already-valid owner unchanged and applies `+0x9000` only to
+the low-target family:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-sampled-targetlookup-strict-identity-f300.png
+```
+
+The resulting framebuffer retains the red/gold borders, panels, and character
+silhouettes without global owner fallback. This closes the owner-address and
+packet-index part of the diagnostic path.
+
+Current boundary: the dominant remaining problem is geometry/coverage. At f300
+only 393 of 3173 textured triangles cover pixels; 2780 are rejected, including
+2447 by clipping and 331 as empty. The next slice should trace/fix the clipped
+Type3/fullrect vertex and viewport path before further texture-layout tuning.

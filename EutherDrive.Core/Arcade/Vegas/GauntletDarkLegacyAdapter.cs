@@ -30553,6 +30553,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly uint[] _textureMemory = new uint[TextureWords];
     private readonly bool[] _textureTouchedWords = new bool[TextureWords];
     private readonly Dictionary<int, TextureWordLastWriter> _textureWordLastWriters = [];
+    private readonly Dictionary<FullrectTargetIndexKey, int> _textureTargetIndexWords = [];
     private readonly HashSet<int> _textureOverwriteSeededWords = [];
     private readonly List<TextureWordLastWriter> _fullrectPreferredSeedOwners = [];
     private int _textureWordLastWriterVersion;
@@ -31217,6 +31218,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalSignedHexInt(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_DELTA"),
             0);
+    private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookup =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_LOOKUP"));
+    private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookupStrict =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_LOOKUP_STRICT"));
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerPreferPcs =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFER_PCS"));
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerPreferTargetStarts =
@@ -33758,7 +33763,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 _currentType5TextureWritePhysicalMaxWord = wordOffset;
         }
 
-        _textureWordLastWriters[wordOffset] = new TextureWordLastWriter(
+        var writer = new TextureWordLastWriter(
             pc,
             _currentTextureWriteValue,
             _currentTextureWriteMode,
@@ -33780,6 +33785,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             _currentCommandFifoPacketStart,
             _currentType5TextureWriteReadIndex,
             _currentType5TextureWriteStreaming);
+        _textureWordLastWriters[wordOffset] = writer;
+        if (writer.Type5 && writer.Type5Index >= 0)
+            _textureTargetIndexWords[new FullrectTargetIndexKey(writer.Type5TargetStart, writer.Type5Index)] = wordOffset;
         _textureWordLastWriterVersion++;
     }
 
@@ -37125,6 +37133,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint Type5PayloadHash,
         int Type5Count);
 
+    private readonly record struct FullrectTargetIndexKey(uint TargetStart, int Index);
+
     private readonly record struct FullrectWriterLayoutTraceSource(
         TextureWordLastWriter Writer,
         float S,
@@ -40222,7 +40232,15 @@ sampledTexel:
                 out writerRaw,
                 out result,
                 out string artOwnerStatus);
-            if (!sampledTargetTranslated &&
+            bool sampledTargetLookupMiss =
+                !sampledTargetTranslated &&
+                _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookup &&
+                _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookupStrict &&
+                _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetDelta != 0 &&
+                hasSampledOwner &&
+                sampledWriter.Type5;
+            if (sampledTargetLookupMiss ||
+                (!sampledTargetTranslated &&
                 !TrySelectFullrectWriterLayoutArtOwnerCandidate(
                     writerX,
                     writerY,
@@ -40236,7 +40254,7 @@ sampledTexel:
                     out writerWord,
                     out writerRaw,
                     out result,
-                    out artOwnerStatus))
+                    out artOwnerStatus)))
             {
                 if (_fullrectSampleWriterLayoutArtOwnerTraceCount++ < _experimentFullrectSampleWriterLayoutArtOwnerTraceLimit)
                 {
@@ -40434,10 +40452,47 @@ sampledTexel:
             return false;
         }
 
-        long deltaBytes = (long)targetDelta << 2;
-        byteAddress = (uint)(((long)sampledByteAddress + deltaBytes) & (TextureBytes - 1L));
+        if (IsValidFullrectWriterLayoutArtOwner(sampledOwner) &&
+            !IsRejectedFullrectWriterLayoutArtOwnerPayload(sampledOwner))
+        {
+            byteAddress = sampledByteAddress & (TextureBytes - 1u);
+            int sampledFormat = (int)((sampledOwner.Mode >> 8) & 0x0fu);
+            if (_experimentFullrectSampleWriterLayoutFormatOverride is >= 0 and <= 15)
+                sampledFormat = _experimentFullrectSampleWriterLayoutFormatOverride;
+            bool sampledSixteenBit = sampledOwner.BytesPerTexel == 2 || IsTextureFormat16Bit(sampledFormat);
+            result = ReadTextureRgb565AtByteAddress(
+                byteAddress,
+                sampledFormat,
+                sampledSixteenBit,
+                sampledOwner.Mode,
+                out word,
+                out raw);
+            status = $"transform=sampledtargetdelta delta=identity lookup=1 owner={FormatTextureWordWriterStatus(sampledOwner)}";
+            return raw != 0 && result != 0;
+        }
+
+        uint translatedTargetStart = unchecked((uint)((long)sampledOwner.Type5TargetStart + targetDelta));
+        bool usedTargetLookup = false;
+        if (_experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookup &&
+            sampledOwner.Type5Index >= 0 &&
+            _textureTargetIndexWords.TryGetValue(
+                new FullrectTargetIndexKey(translatedTargetStart, sampledOwner.Type5Index),
+                out int translatedWordOffset))
+        {
+            uint sourceLane = sampledByteAddress & 3u;
+            uint translatedLane = sourceLane >= 2u ? 2u : 0u;
+            byteAddress = (uint)((translatedWordOffset << 2) | (int)translatedLane);
+            usedTargetLookup = true;
+        }
+        else
+        {
+            long deltaBytes = (long)targetDelta << 2;
+            byteAddress = (uint)(((long)sampledByteAddress + deltaBytes) & (TextureBytes - 1L));
+        }
         int wordOffset = (int)(byteAddress >> 2);
         if (!TryGetFullrectWriterLayoutArtOwner(wordOffset, out TextureWordLastWriter owner) ||
+            (usedTargetLookup &&
+             (owner.Type5TargetStart != translatedTargetStart || owner.Type5Index != sampledOwner.Type5Index)) ||
             IsRejectedFullrectWriterLayoutArtOwnerPayload(owner))
         {
             status = $"sampled-target-delta-no-owner delta=0x{targetDelta:X}";
@@ -40456,7 +40511,7 @@ sampledTexel:
             out word,
             out raw);
         status =
-            $"transform=sampledtargetdelta delta=0x{targetDelta:X} " +
+            $"transform=sampledtargetdelta delta=0x{targetDelta:X} lookup={(usedTargetLookup ? 1 : 0)} " +
             $"source={FormatTextureWordWriterStatus(sampledOwner)} owner={FormatTextureWordWriterStatus(owner)}";
         return raw != 0 && result != 0;
     }
