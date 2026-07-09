@@ -30542,7 +30542,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static readonly string[] FullrectWriterLayoutCandidateTransforms = ["linear", "row2x", "row4x", "tile4", "tile8"];
     private static readonly string[] FullrectWriterLayoutPacketLocalCandidateTransforms = ["packet8x8", "packet8x8t", "packet64x", "packet64y"];
     private static readonly string[] FullrectWriterLayoutTargetLocalCandidateTransforms = ["targetword", "targetlinear", "targetrow2x", "targetrow4x", "targettile4", "targettile8"];
-    private static readonly string[] FullrectWriterLayoutPreferredSeedCandidateTransforms = ["preferredlinear", "preferredrow2x", "preferredrow4x", "preferredtile4", "preferredtile8"];
+    private static readonly string[] FullrectWriterLayoutPreferredSeedCandidateTransforms = ["preferredlinear", "preferredrow2x", "preferredrow4x", "preferredtile4", "preferredtile8", "preferredatlas"];
     private const int PixelLastWriterSampleColumns = 20;
     private const int PixelLastWriterSampleRows = 15;
     private const int PixelLastWriterSampleCellWidth = 640 / PixelLastWriterSampleColumns;
@@ -30759,13 +30759,13 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _traceTextureWriteBucketsPerBucketLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_PER_BUCKET_LIMIT"), 0);
     private readonly ulong? _traceTextureOverwriteRangeMin =
-        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_RANGE_MIN");
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_RANGE_MIN"));
     private readonly ulong? _traceTextureOverwriteRangeMax =
-        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_RANGE_MAX");
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_RANGE_MAX"));
     private readonly ulong? _traceTextureOverwriteSeedTargetMin =
-        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_SEED_TARGET_MIN");
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_SEED_TARGET_MIN"));
     private readonly ulong? _traceTextureOverwriteSeedTargetMax =
-        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_SEED_TARGET_MAX");
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_SEED_TARGET_MAX"));
     private readonly int _traceTextureOverwriteLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_OVERWRITE_LIMIT"), 64);
     private readonly bool _traceRenderBufferChoice =
@@ -31207,6 +31207,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_PAYLOAD_HASHES"));
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerRejectTargetStarts =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_TARGET_STARTS"));
+    private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerAllowPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_ALLOW_PCS"));
+    private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerAllowTargetStarts =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_ALLOW_TARGET_STARTS"));
     private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerRejectFloatLikePayloads =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_FLOATLIKE_PAYLOADS"));
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerPreferPcs =
@@ -31219,6 +31223,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_SEED"));
     private readonly int _experimentFullrectSampleWriterLayoutArtOwnerPreferredSeedLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_SEED_LIMIT"), 16);
+    private readonly int _experimentFullrectSampleWriterLayoutArtOwnerPreferredAtlasWidth =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_WIDTH"), 0);
+    private readonly int _experimentFullrectSampleWriterLayoutArtOwnerPreferredAtlasHeight =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_HEIGHT"), 0);
+    private readonly uint _experimentFullrectSampleWriterLayoutArtOwnerPreferredAtlasBase =
+        (uint)(ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_BASE")) ?? 0UL);
     private readonly bool _traceFullrectSampleWriterLayoutArtOwnerUploadWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW"));
     private readonly int _traceFullrectSampleWriterLayoutArtOwnerUploadWindowRadius =
@@ -40634,6 +40644,9 @@ sampledTexel:
         if (!_experimentFullrectSampleWriterLayoutArtOwnerPreferredSeed)
             return false;
 
+        if (transform == "preferredatlas")
+            return TryReadFullrectWriterLayoutPreferredAtlasCandidate(x, y, width, height, out candidate);
+
         string sourceTransform = GetFullrectWriterLayoutPreferredSeedSourceTransform(transform);
         FullrectArtOwnerCandidate best = default;
         bool hasBest = false;
@@ -40727,6 +40740,62 @@ sampledTexel:
 
         candidate = best;
         return hasBest;
+    }
+
+    private bool TryReadFullrectWriterLayoutPreferredAtlasCandidate(
+        int x,
+        int y,
+        int width,
+        int height,
+        out FullrectArtOwnerCandidate candidate)
+    {
+        candidate = default;
+        int atlasWidth = Math.Clamp(_experimentFullrectSampleWriterLayoutArtOwnerPreferredAtlasWidth, 0, 4096);
+        int atlasHeight = Math.Clamp(_experimentFullrectSampleWriterLayoutArtOwnerPreferredAtlasHeight, 0, 4096);
+        if (atlasWidth == 0 || atlasHeight == 0)
+            return false;
+
+        int atlasX = Math.Clamp(width > 0 ? (int)((long)x * atlasWidth / width) : x, 0, atlasWidth - 1);
+        int atlasY = Math.Clamp(height > 0 ? (int)((long)y * atlasHeight / height) : y, 0, atlasHeight - 1);
+        uint byteAddress = (uint)(
+            (_experimentFullrectSampleWriterLayoutArtOwnerPreferredAtlasBase +
+             ((ulong)(atlasY * atlasWidth + atlasX) * 2UL)) &
+            (TextureBytes - 1u));
+        int wordOffset = (int)(byteAddress >> 2);
+        if (!TryGetFullrectWriterLayoutArtOwner(wordOffset, out TextureWordLastWriter owner) ||
+            !IsPreferredFullrectWriterLayoutArtOwner(owner) ||
+            IsRejectedFullrectWriterLayoutArtOwnerPayload(owner))
+        {
+            return false;
+        }
+
+        int ownerFormat = (int)((owner.Mode >> 8) & 0x0fu);
+        if (_experimentFullrectSampleWriterLayoutFormatOverride is >= 0 and <= 15)
+            ownerFormat = _experimentFullrectSampleWriterLayoutFormatOverride;
+        bool ownerSixteenBit = owner.BytesPerTexel == 2 || IsTextureFormat16Bit(ownerFormat);
+        ushort decoded = ReadTextureRgb565AtByteAddress(
+            byteAddress,
+            ownerFormat,
+            ownerSixteenBit,
+            owner.Mode,
+            out uint word,
+            out uint raw);
+
+        candidate = new FullrectArtOwnerCandidate(
+            "preferredatlas",
+            byteAddress,
+            word,
+            raw,
+            decoded,
+            decoded,
+            owner,
+            ownerFormat,
+            owner.BytesPerTexel,
+            0,
+            0,
+            0,
+            0);
+        return true;
     }
 
     private IReadOnlyList<TextureWordLastWriter> GetFullrectPreferredSeedOwners()
@@ -41080,7 +41149,7 @@ sampledTexel:
         transform is "targetword" or "targetlinear" or "targetrow2x" or "targetrow4x" or "targettile4" or "targettile8";
 
     private static bool IsFullrectWriterLayoutPreferredSeedTransform(string transform) =>
-        transform is "preferredlinear" or "preferredrow2x" or "preferredrow4x" or "preferredtile4" or "preferredtile8";
+        transform is "preferredlinear" or "preferredrow2x" or "preferredrow4x" or "preferredtile4" or "preferredtile8" or "preferredatlas";
 
     private static string GetFullrectWriterLayoutPreferredSeedSourceTransform(string transform) =>
         transform switch
@@ -41093,6 +41162,10 @@ sampledTexel:
         };
 
     private bool IsRejectedFullrectWriterLayoutArtOwnerPayload(TextureWordLastWriter owner) =>
+        (_experimentFullrectSampleWriterLayoutArtOwnerAllowPcs.Length != 0 &&
+         !_experimentFullrectSampleWriterLayoutArtOwnerAllowPcs.Contains(owner.Pc & 0xffffffffUL)) ||
+        (_experimentFullrectSampleWriterLayoutArtOwnerAllowTargetStarts.Length != 0 &&
+         !_experimentFullrectSampleWriterLayoutArtOwnerAllowTargetStarts.Contains(owner.Type5TargetStart)) ||
         (_experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Length != 0 &&
          _experimentFullrectSampleWriterLayoutArtOwnerRejectPayloadHashes.Contains(owner.Type5PayloadHash)) ||
         (_experimentFullrectSampleWriterLayoutArtOwnerRejectTargetStarts.Length != 0 &&

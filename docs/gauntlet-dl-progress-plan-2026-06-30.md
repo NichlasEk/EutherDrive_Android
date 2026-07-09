@@ -11762,3 +11762,67 @@ surface. The next fix should make fullrect owner selection reject the remaining
 float/control class and then determine the correct coordinate/layout mapping
 for the retained `0x0000..0x5fff` RGB565 surface. Do not revisit CHD format or
 byte order unless new evidence contradicts this exact raw-memory match.
+
+### 2026-07-09 Strict Owner And Contiguous Atlas Rendering
+
+Added default-off hard allow filters alongside the existing prefer/reject
+controls:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_ALLOW_PCS=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_ALLOW_TARGET_STARTS=...
+```
+
+Unlike `PREFER_*`, a non-empty allow list rejects every candidate outside the
+specified producer/target family. With producer `0x800fe7cc`, injected targets
+`0x8000..0x9f80`, float-like rejection, and `preferredlinear`, the visible
+fullrect path now consumes only the verified RGB565 owner family:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-strict-owner-f300.png
+frameHash=0x393bd37f
+```
+
+This is the first rendered frame with unmistakable injected Gauntlet art on
+emulated primitives. The red/gold frame and character shapes are visible, but
+they repeat in packet-sized strips because each Type5 owner is still treated as
+an independent `256x32` surface.
+
+Added a default-off contiguous preferred-owner atlas diagnostic:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_TRANSFORM=preferredatlas
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_WIDTH=128
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_HEIGHT=96
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_BASE=0
+```
+
+Every atlas read still requires a matching preferred/allowed word owner. The
+full retained `128x96` surface produces:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-strict-atlas-f300.png
+frameHash=0xf6bf3a56
+```
+
+The coherent red/gold arches and figures now span primitives instead of only
+repeating individual packet rows. A crop control using base `0x3000` and height
+`48` produced:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-art-atlas-base3000-f300.png
+frameHash=0x83c64569
+```
+
+Also fixed the Voodoo-local hex environment parsing for the atlas base and the
+texture-overwrite range/seed controls. Those fields previously passed the
+environment variable name to the raw-value parser, which silently made the
+atlas base zero and disabled the overwrite trace.
+
+Current boundary: real image pixels now reach the final framebuffer on real
+emulated primitives. The remaining result is not playable because one global
+atlas is being forced over unrelated primitives and the existing fullrect
+geometry path still has large rejected/empty regions. The next slice should
+associate each visible primitive with its own Type5 target/descriptor and use
+that owner's native dimensions and texture coordinates. Keep `preferredatlas`
+as a proof oracle, not as a renderer default.
