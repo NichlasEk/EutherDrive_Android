@@ -11618,3 +11618,19 @@ large-gradient/noisy-texture failure mode as raw `ged@0x9000`. That makes
 experiments. Next useful move: use the same remap harness on other direct-writer
 targets/sources that are closer to actual sampled owners, instead of spending
 more cycles on this descriptor-list target.
+
+Follow-up target/source control:
+
+```text
+logs/gauntlet/directremap-preset-coldbuild-src802e5f18-ged9000idx18-t9c00-f300.log
+logs/gauntlet/directremap-preset-coldbuild-src802e5f18-ged9000idx18-t9c00-f300.png
+frameHash=0xcf00ccbb
+```
+
+This remapped the fullrect-near `0x9c00` upload source
+`0xffffffff802e5f18` from its original float-like/gei words to raw
+`24:ged@0x9000`, and it still converged to the same large-gradient/noisy-texture
+failure mode. That strongly suggests the visible problem is not only “wrong
+direct-writer target”; the injected `ged` bytes still need the correct upstream
+texture interpretation or palette/format state before they become recognizable
+art.
