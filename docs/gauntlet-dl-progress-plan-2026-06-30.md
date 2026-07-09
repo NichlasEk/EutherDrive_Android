@@ -11359,3 +11359,96 @@ Next continuation point:
    byte statistics over their source words and dumps candidate payloads as small
    tile sheets. Use that to choose a real art owner before wiring it into
    fullrect selection.
+
+### 2026-07-09 Type5 Payload And Texture-RAM Visibility Scan
+
+Added a default-off Type5 payload tile scanner:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_PREFIX=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_SKIP=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_MIN_SCORE=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_PER_PC_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_TARGET_WORDS=...
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_PCS=...
+```
+
+The scanner writes 128x96 PPM sheets with byte/RGB332, byte/grayscale, RGB565,
+and byte-swapped RGB565 panels. Build check:
+
+```text
+dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release -m:1 --no-restore /clp:ErrorsOnly
+0 errors
+```
+
+Payload scan artifacts:
+
+```text
+logs/gauntlet/type5tiles-r1-f300.log
+logs/gauntlet/type5tiles-r1-montage.png
+logs/gauntlet/type5tiles-t9c00-r1-f300.log
+logs/gauntlet/type5tiles-t9c00-r1-montage.png
+logs/gauntlet/type5tiles-r2skip200-f300.log
+logs/gauntlet/type5tiles-r2skip200-montage.png
+logs/gauntlet/type5tiles-r3perpc-f300.log
+logs/gauntlet/type5tiles-r3perpc-montage.png
+```
+
+Result: `0x009C00` is still the wrong payload class. Its tile sheets are
+high-entropy/float-like and do not become image-like when adjacent chunks are
+assembled. The diversified scan finds three non-streaming `cmd=0xC0000205`
+producer classes by PC:
+
+```text
+pc=0x800fe7cc targets 0x008000...
+pc=0x800fe614 targets 0x000000...
+pc=0x800fe5d4 targets 0x007700...
+```
+
+The low-target and `0x7700` block-layout experiments both changed the frame but
+made it worse:
+
+```text
+logs/gauntlet/cleanwarm-seq8-lowtarget-block100-f300.png
+frameHash=0x09a86042
+
+logs/gauntlet/cleanwarm-seq8-target7700-block100-f300.png
+frameHash=0xba727d68
+```
+
+Both produce large flat false surfaces, so the existing
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE5_SEQ8_PACKET_BLOCK_LAYOUT` knob is
+useful as a falsification test but is not a fix for visible graphics.
+
+Added a `GauntletProbe` texture-RAM dumper:
+
+```text
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_PREFIX=...
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_COUNT=...
+```
+
+It reads the Voodoo backend `_textureMemory` and dumps ranked 8-bit RGB332 and
+grayscale surfaces. Baseline result:
+
+```text
+logs/gauntlet/texram-current-f300.log
+logs/gauntlet/texram-current-rgb332-montage.png
+logs/gauntlet/texram-current-gray-montage.png
+frameHash=0x7b252d7d
+```
+
+The top texture-RAM surfaces around `0x003000-0x01d000` are still stripe/noise,
+not recognizable Gauntlet art. Main-RAM RGB565 surface scanning also found only
+noise/stripe candidates around `0x80127000-0x80146000`.
+
+Next continuation point:
+
+1. Treat the current visible failure as bad texture upload/source data, not a
+   final sampler palette issue. The texture RAM itself is visibly polluted.
+2. Use the three Type5 producer PCs as anchors. Trace the CPU-side source words
+   and disk/model offsets for `pc=0x800fe5d4`, `0x800fe614`, and `0x800fe7cc`
+   before the packet enters Voodoo.
+3. Add a source-side scanner over `BGLoadModel`/WTR payload regions that dumps
+   likely 8-bit indexed textures before Type5 packetization. The real art is
+   likely upstream of the current Voodoo texture RAM contents.

@@ -160,6 +160,7 @@ DumpFrame(adapter);
 Console.WriteLine($"debugAfterFrame={adapter.DebugStatus}");
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_BEFORE_FRAME") != "1")
     DumpVoodooColorBuffers(voodoo);
+DumpVoodooTextureSurfaces(voodoo);
 DumpRamSurfaceCandidates(GetProperty(machine, "MemoryMap"));
 
 static object GetField(object instance, string name)
@@ -2034,6 +2035,7 @@ static void DumpRamSurfaceCandidates(object memory)
     if (string.IsNullOrWhiteSpace(prefix))
         return;
 
+    EnsureOutputDirectory(prefix);
     byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
     int maxCandidates = ParsePositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_RAM_SURFACE_COUNT"), 6);
     var formats = new[]
@@ -2080,6 +2082,127 @@ static void DumpRamSurfaceCandidates(object memory)
     }
 
     DumpRequestedRamSurfaces(mainRam, prefix);
+}
+
+static void DumpVoodooTextureSurfaces(object voodoo)
+{
+    string? prefix = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_PREFIX");
+    if (string.IsNullOrWhiteSpace(prefix))
+        return;
+
+    EnsureOutputDirectory(prefix);
+    object backend = GetField(voodoo, "_backend");
+    uint[] textureWords = GetFieldValue<uint[]>(backend, "_textureMemory");
+    byte[] textureBytes = new byte[textureWords.Length * 4];
+    for (int i = 0; i < textureWords.Length; i++)
+        BinaryPrimitives.WriteUInt32LittleEndian(textureBytes.AsSpan(i * 4, 4), textureWords[i]);
+
+    int maxCandidates = ParsePositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_COUNT"), 10);
+    var formats = new[]
+    {
+        new ByteSurfaceFormat(128, 128, 128),
+        new ByteSurfaceFormat(256, 128, 256),
+        new ByteSurfaceFormat(256, 256, 256),
+        new ByteSurfaceFormat(512, 256, 512)
+    };
+
+    List<ByteSurfaceCandidate> candidates = [];
+    foreach (ByteSurfaceFormat format in formats)
+    {
+        int bytes = format.Stride * format.Height;
+        if (bytes <= 0 || bytes > textureBytes.Length)
+            continue;
+
+        for (int offset = 0; offset + bytes <= textureBytes.Length; offset += 0x1000)
+        {
+            ByteSurfaceScore score = ScoreByteSurface(textureBytes, offset, format);
+            if (score.NonZero < 256 || score.UniqueBytes < 12)
+                continue;
+
+            candidates.Add(new ByteSurfaceCandidate(offset, format, score));
+        }
+    }
+
+    candidates = candidates
+        .OrderByDescending(candidate => candidate.Score.Score)
+        .ThenBy(candidate => candidate.Offset)
+        .Take(maxCandidates)
+        .ToList();
+
+    Console.WriteLine("voodooTextureCandidates=" + (candidates.Count == 0
+        ? "none"
+        : string.Join(",", candidates.Select(candidate =>
+            $"0x{candidate.Offset:x6}:{candidate.Format.Width}x{candidate.Format.Height}/s{candidate.Format.Stride}/nz{candidate.Score.NonZero}/u{candidate.Score.UniqueBytes}/t{candidate.Score.Transitions}"))));
+
+    for (int i = 0; i < candidates.Count; i++)
+    {
+        ByteSurfaceCandidate candidate = candidates[i];
+        string rgbPath = $"{prefix}_{i}_0x{candidate.Offset:x6}_{candidate.Format.Width}x{candidate.Format.Height}_rgb332.ppm";
+        string grayPath = $"{prefix}_{i}_0x{candidate.Offset:x6}_{candidate.Format.Width}x{candidate.Format.Height}_gray.ppm";
+        DumpByteSurface(textureBytes, candidate.Offset, candidate.Format, rgbPath, rgb332: true);
+        DumpByteSurface(textureBytes, candidate.Offset, candidate.Format, grayPath, rgb332: false);
+        Console.WriteLine($"voodooTextureDump={rgbPath}");
+        Console.WriteLine($"voodooTextureDump={grayPath}");
+    }
+}
+
+static ByteSurfaceScore ScoreByteSurface(byte[] bytes, int offset, ByteSurfaceFormat format)
+{
+    int nonZero = 0;
+    int transitions = 0;
+    int previous = -1;
+    HashSet<byte> unique = [];
+    int stepX = Math.Max(1, format.Width / 128);
+    int stepY = Math.Max(1, format.Height / 96);
+    for (int y = 0; y < format.Height; y += stepY)
+    {
+        int row = offset + y * format.Stride;
+        for (int x = 0; x < format.Width; x += stepX)
+        {
+            byte value = bytes[row + x];
+            if (value != 0)
+                nonZero++;
+            if (previous >= 0 && value != previous)
+                transitions++;
+            previous = value;
+            unique.Add(value);
+        }
+    }
+
+    long score = (long)nonZero * 8L + unique.Count * 512L + transitions * 2L;
+    return new ByteSurfaceScore(nonZero, unique.Count, transitions, score);
+}
+
+static void DumpByteSurface(byte[] bytes, int offset, ByteSurfaceFormat format, string path, bool rgb332)
+{
+    EnsureOutputDirectory(path);
+    using var stream = File.Create(path);
+    using var writer = new StreamWriter(stream, leaveOpen: true);
+    writer.Write($"P6\n{format.Width} {format.Height}\n255\n");
+    writer.Flush();
+    for (int y = 0; y < format.Height; y++)
+    {
+        int row = offset + y * format.Stride;
+        for (int x = 0; x < format.Width; x++)
+        {
+            byte value = bytes[row + x];
+            if (rgb332)
+            {
+                int r = ((value >> 5) & 0x07) * 255 / 7;
+                int g = ((value >> 2) & 0x07) * 255 / 7;
+                int b = (value & 0x03) * 255 / 3;
+                stream.WriteByte((byte)r);
+                stream.WriteByte((byte)g);
+                stream.WriteByte((byte)b);
+            }
+            else
+            {
+                stream.WriteByte(value);
+                stream.WriteByte(value);
+                stream.WriteByte(value);
+            }
+        }
+    }
 }
 
 static void DumpRequestedRamSurfaces(byte[] mainRam, string prefix)
@@ -2183,6 +2306,7 @@ static RamSurfaceScore ScoreRgb565BufferWindow(ushort[] buffer, int width, int h
 
 static void DumpRgb565Surface(byte[] ram, int offset, RamSurfaceFormat format, string path)
 {
+    EnsureOutputDirectory(path);
     using var stream = File.Create(path);
     using var writer = new StreamWriter(stream, leaveOpen: true);
     writer.Write($"P6\n{format.Width} {format.Height}\n255\n");
@@ -2203,6 +2327,7 @@ static void DumpRgb565Buffer(ushort[] buffer, int width, int height, int strideP
 
 static void DumpRgb565BufferWindow(ushort[] buffer, int width, int height, int stridePixels, int startY, string path)
 {
+    EnsureOutputDirectory(path);
     using var stream = File.Create(path);
     using var writer = new StreamWriter(stream, leaveOpen: true);
     writer.Write($"P6\n{width} {height}\n255\n");
@@ -2226,6 +2351,13 @@ static void WriteRgb565(Stream stream, ushort rgb)
     stream.WriteByte((byte)((r << 3) | (r >> 2)));
     stream.WriteByte((byte)((g << 2) | (g >> 4)));
     stream.WriteByte((byte)((b << 3) | (b >> 2)));
+}
+
+static void EnsureOutputDirectory(string pathOrPrefix)
+{
+    string? directory = Path.GetDirectoryName(pathOrPrefix);
+    if (!string.IsNullOrWhiteSpace(directory))
+        Directory.CreateDirectory(directory);
 }
 
 static int ParsePositiveInt(string? value, int fallback)
@@ -2252,6 +2384,9 @@ static int ParsePositiveInt(string? value, int fallback)
 readonly record struct RamSurfaceFormat(int Width, int Height, int Stride);
 readonly record struct RamSurfaceScore(int NonZero, int Colored, int UniqueColors, long Score);
 readonly record struct RamSurfaceCandidate(int Offset, RamSurfaceFormat Format, RamSurfaceScore Score);
+readonly record struct ByteSurfaceFormat(int Width, int Height, int Stride);
+readonly record struct ByteSurfaceScore(int NonZero, int UniqueBytes, int Transitions, long Score);
+readonly record struct ByteSurfaceCandidate(int Offset, ByteSurfaceFormat Format, ByteSurfaceScore Score);
 
 sealed class ProbeSummaryContext
 {

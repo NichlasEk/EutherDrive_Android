@@ -30554,6 +30554,20 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_LIMIT"), 160);
     private readonly int _traceType5TextureUploadSequenceWords =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_WORDS"), 8);
+    private readonly string _traceType5PayloadTilePrefix =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_PREFIX") ?? "").Trim();
+    private readonly int _traceType5PayloadTileLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_LIMIT"), 24);
+    private readonly int _traceType5PayloadTileSkip =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_SKIP"), 0);
+    private readonly int _traceType5PayloadTileMinScore =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_MIN_SCORE"), 120);
+    private readonly int _traceType5PayloadTilePerPcLimit =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_PER_PC_LIMIT"), 0);
+    private readonly ulong[] _traceType5PayloadTileTargetWords =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_TARGET_WORDS"));
+    private readonly ulong[] _traceType5PayloadTilePcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_PCS"));
     private readonly ulong[] _traceType5PayloadPcs =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_PCS"));
     private readonly bool _traceType5PayloadDedup =
@@ -31128,6 +31142,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _type5PayloadFocusedZeroTargetTraceCount;
     private int _type5PayloadFocusedTargetTraceCount;
     private int _type5TextureUploadSequenceTraceCount;
+    private int _type5PayloadTileCandidateCount;
+    private int _type5PayloadTileDumpCount;
+    private readonly Dictionary<ulong, int> _type5PayloadTileDumpCountsByPc = [];
     private int _controlLikeType5TexturePayloadSkipTraceCount;
     private int _oddFifoPacketTraceCount;
     private int _tmuRegisterWriteTraceCount;
@@ -36740,6 +36757,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint Word,
         uint PayloadWords);
 
+    private readonly record struct Type5PayloadImageStats(
+        int Score,
+        int PayloadWords,
+        int NonZeroWords,
+        int FloatLikeWords,
+        int UniqueBytes,
+        int ByteTransitions,
+        int ZeroBytes,
+        int SaturatedBytes,
+        int Rgb565NonZero,
+        int Rgb565ColorChanges);
+
     private readonly record struct TextureWordLastWriter(
         ulong Pc,
         uint Value,
@@ -37431,6 +37460,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
 
             TraceType5TextureUploadSequence(command, targetStart, space, count, streaming);
+            TraceType5PayloadTile(command, targetStart, space, count, streaming, payloadHash, payloadNonZeroWords, payloadFloatLikeWords);
         }
         finally
         {
@@ -37547,6 +37577,228 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"count={count} payload={payloadWords} nz={nonZero} hash=0x{hash:X8} first=0x{first:X8} last=0x{last:X8} " +
             $"{physicalSpan} packet=0x{_currentCommandFifoPacketStart * 4:X8} rd=0x{_currentType5TextureWriteReadIndex * 4:X8} " +
             $"stream={(streaming ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{storageWords}{rawWords}{pcStatus}");
+    }
+
+    private void TraceType5PayloadTile(
+        uint command,
+        uint targetStart,
+        uint space,
+        int count,
+        bool streaming,
+        uint payloadHash,
+        int payloadNonZeroWords,
+        int payloadFloatLikeWords)
+    {
+        if (string.IsNullOrWhiteSpace(_traceType5PayloadTilePrefix) ||
+            space != 3 ||
+            command != 0xc0000205u ||
+            count <= 0 ||
+            streaming ||
+            _type5PayloadTileDumpCount >= _traceType5PayloadTileLimit)
+        {
+            return;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (_traceType5PayloadTilePcs.Length != 0 &&
+            !_traceType5PayloadTilePcs.Contains(pc & 0xffffffffUL))
+        {
+            return;
+        }
+
+        if (_traceType5PayloadTileTargetWords.Length != 0 &&
+            !_traceType5PayloadTileTargetWords.Contains(targetStart))
+        {
+            return;
+        }
+
+        int payloadWords = Math.Min(count, Math.Max(0, _fifoBuffer.Count - 2));
+        if (payloadWords <= 0)
+            return;
+
+        uint[] words = new uint[payloadWords];
+        for (int i = 0; i < payloadWords; i++)
+        {
+            uint value = _fifoBuffer[i + 2];
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
+            words[i] = value;
+        }
+
+        Type5PayloadImageStats stats = ComputeType5PayloadImageStats(words, payloadNonZeroWords, payloadFloatLikeWords);
+        if (stats.Score < _traceType5PayloadTileMinScore)
+            return;
+
+        _type5PayloadTileCandidateCount++;
+        if (_type5PayloadTileCandidateCount <= _traceType5PayloadTileSkip)
+            return;
+
+        ulong pcKey = pc & 0xffffffffUL;
+        if (_traceType5PayloadTilePerPcLimit > 0)
+        {
+            _type5PayloadTileDumpCountsByPc.TryGetValue(pcKey, out int pcDumpCount);
+            if (pcDumpCount >= _traceType5PayloadTilePerPcLimit)
+                return;
+            _type5PayloadTileDumpCountsByPc[pcKey] = pcDumpCount + 1;
+        }
+
+        _type5PayloadTileDumpCount++;
+        string directory = Path.GetDirectoryName(_traceType5PayloadTilePrefix) ?? "";
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        string path = $"{_traceType5PayloadTilePrefix}-{_type5PayloadTileDumpCount:D3}-pc{pcKey:x8}-t{targetStart:X5}-h{payloadHash:X8}-s{stats.Score}.ppm";
+        DumpType5PayloadTileSheet(path, words);
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TYPE5-PAYLOAD-TILE] n={_type5PayloadTileDumpCount} path={path} " +
+            $"score={stats.Score} cmd=0x{command:X8} target=0x{targetStart:X6}-0x{targetStart + (uint)Math.Max(0, count - 1):X6} " +
+            $"count={count} payload={stats.PayloadWords} hash=0x{payloadHash:X8} nz={stats.NonZeroWords} flt={stats.FloatLikeWords} " +
+            $"uniqB={stats.UniqueBytes} trans={stats.ByteTransitions} zeroB={stats.ZeroBytes} satB={stats.SaturatedBytes} " +
+            $"rgbNz={stats.Rgb565NonZero} rgbChg={stats.Rgb565ColorChanges} pc=0x{pc:x16} packet=0x{_currentCommandFifoPacketStart * 4:X8}");
+    }
+
+    private static Type5PayloadImageStats ComputeType5PayloadImageStats(uint[] words, int nonZeroWords, int floatLikeWords)
+    {
+        bool[] seenBytes = new bool[256];
+        int uniqueBytes = 0;
+        int zeroBytes = 0;
+        int saturatedBytes = 0;
+        int transitions = 0;
+        int previousByte = -1;
+        int rgb565NonZero = 0;
+        int rgb565ColorChanges = 0;
+        ushort previousRgb = 0;
+        bool hasPreviousRgb = false;
+
+        for (int i = 0; i < words.Length; i++)
+        {
+            uint word = words[i];
+            for (int lane = 0; lane < 4; lane++)
+            {
+                int value = (int)((word >> (lane * 8)) & 0xffu);
+                if (!seenBytes[value])
+                {
+                    seenBytes[value] = true;
+                    uniqueBytes++;
+                }
+                if (value == 0)
+                    zeroBytes++;
+                if (value is 0xff or 0x7f or 0x80)
+                    saturatedBytes++;
+                if (previousByte >= 0 && value != previousByte)
+                    transitions++;
+                previousByte = value;
+            }
+
+            for (int half = 0; half < 2; half++)
+            {
+                ushort rgb = (ushort)((word >> (half * 16)) & 0xffffu);
+                if (rgb != 0)
+                    rgb565NonZero++;
+                if (hasPreviousRgb && rgb != previousRgb)
+                    rgb565ColorChanges++;
+                previousRgb = rgb;
+                hasPreviousRgb = true;
+            }
+        }
+
+        int byteCount = Math.Max(1, words.Length * 4);
+        int halfCount = Math.Max(1, words.Length * 2);
+        int zeroPenalty = zeroBytes * 120 / byteCount;
+        int saturationPenalty = saturatedBytes * 60 / byteCount;
+        int floatPenalty = floatLikeWords * 220 / Math.Max(1, words.Length);
+        int transitionScore = Math.Min(120, transitions * 160 / byteCount);
+        int uniqueScore = Math.Min(160, uniqueBytes * 2);
+        int rgbScore = Math.Min(100, rgb565ColorChanges * 140 / halfCount) + Math.Min(80, rgb565NonZero * 100 / halfCount);
+        int nonZeroScore = Math.Min(80, nonZeroWords * 120 / Math.Max(1, words.Length));
+        int score = uniqueScore + transitionScore + rgbScore + nonZeroScore - zeroPenalty - saturationPenalty - floatPenalty;
+
+        return new Type5PayloadImageStats(
+            score,
+            words.Length,
+            nonZeroWords,
+            floatLikeWords,
+            uniqueBytes,
+            transitions,
+            zeroBytes,
+            saturatedBytes,
+            rgb565NonZero,
+            rgb565ColorChanges);
+    }
+
+    private static void DumpType5PayloadTileSheet(string path, uint[] words)
+    {
+        const int width = 128;
+        const int height = 96;
+        byte[] pixels = new byte[width * height * 3];
+        Array.Fill<byte>(pixels, 0x10);
+
+        DrawType5PayloadBytePanel(pixels, width, 0, 0, words, grayscale: false);
+        DrawType5PayloadBytePanel(pixels, width, 0, 32, words, grayscale: true);
+        DrawType5PayloadRgb565Panel(pixels, width, 0, 64, words, byteSwap: false);
+        DrawType5PayloadRgb565Panel(pixels, width, 64, 64, words, byteSwap: true);
+
+        using var stream = File.Create(path);
+        using var writer = new StreamWriter(stream, Encoding.ASCII, leaveOpen: true);
+        writer.Write($"P6\n{width} {height}\n255\n");
+        writer.Flush();
+        stream.Write(pixels, 0, pixels.Length);
+    }
+
+    private static void DrawType5PayloadBytePanel(byte[] pixels, int stridePixels, int originX, int originY, uint[] words, bool grayscale)
+    {
+        int byteCount = words.Length * 4;
+        for (int i = 0; i < byteCount; i++)
+        {
+            byte value = (byte)((words[i >> 2] >> ((i & 3) * 8)) & 0xffu);
+            byte r;
+            byte g;
+            byte b;
+            if (grayscale)
+            {
+                r = g = b = value;
+            }
+            else
+            {
+                ushort rgb = ConvertRgb332ToRgb565(value);
+                Rgb565ToBytes(rgb, out int ri, out int gi, out int bi);
+                r = (byte)ri;
+                g = (byte)gi;
+                b = (byte)bi;
+            }
+
+            DrawScaledPixel(pixels, stridePixels, originX + (i & 31) * 4, originY + (i >> 5) * 4, 4, r, g, b);
+        }
+    }
+
+    private static void DrawType5PayloadRgb565Panel(byte[] pixels, int stridePixels, int originX, int originY, uint[] words, bool byteSwap)
+    {
+        int halfCount = words.Length * 2;
+        for (int i = 0; i < halfCount; i++)
+        {
+            ushort rgb = (ushort)((words[i >> 1] >> ((i & 1) * 16)) & 0xffffu);
+            if (byteSwap)
+                rgb = BinaryPrimitives.ReverseEndianness(rgb);
+            Rgb565ToBytes(rgb, out int r, out int g, out int b);
+            DrawScaledPixel(pixels, stridePixels, originX + (i & 15) * 4, originY + (i >> 4) * 4, 4, (byte)r, (byte)g, (byte)b);
+        }
+    }
+
+    private static void DrawScaledPixel(byte[] pixels, int stridePixels, int x, int y, int scale, byte r, byte g, byte b)
+    {
+        for (int dy = 0; dy < scale; dy++)
+        {
+            int row = (y + dy) * stridePixels * 3;
+            for (int dx = 0; dx < scale; dx++)
+            {
+                int offset = row + (x + dx) * 3;
+                if ((uint)offset >= (uint)(pixels.Length - 2))
+                    continue;
+                pixels[offset] = r;
+                pixels[offset + 1] = g;
+                pixels[offset + 2] = b;
+            }
+        }
     }
 
     private bool ShouldSkipControlLikeType5TexturePayload(uint command, uint targetWord, uint space, int count, bool streaming)
