@@ -1088,6 +1088,10 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_INDEX");
     private readonly ulong _experimentDirectTextureWriterDiskPayloadRemapOffset =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_OFFSET") ?? 0UL;
+    private readonly string _experimentDirectTextureWriterDiskPayloadRemapTransform =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_TRANSFORM") ?? "")
+        .Trim()
+        .ToLowerInvariant();
     private readonly int _experimentDirectTextureWriterDiskPayloadRemapTraceLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_TRACE_LIMIT", 64);
     private readonly ulong[] _experimentDirectTextureWriterDiskPayloadRemapTargetWords =
@@ -6100,10 +6104,10 @@ internal sealed class MipsR5000Core
             return value;
         }
 
-        uint transformedDiskWord = TransformZeroBaseUploadDiskWord(diskWord);
+        uint transformedDiskWord = TransformDirectTextureWriterDiskPayloadRemapWord(diskWord);
         if (_textureUploadDirectWriterDiskPayloadRemapTraceCount++ < _experimentDirectTextureWriterDiskPayloadRemapTraceLimit)
         {
-            string transform = DescribeZeroBaseUploadDiskWordTransform(diskWord, transformedDiskWord);
+            string transform = DescribeDirectTextureWriterDiskPayloadRemapTransform(diskWord, transformedDiskWord);
             string change = value == transformedDiskWord ? "same" : "changed";
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] direct-texture-writer-disk-payload-remap " +
@@ -6114,6 +6118,31 @@ internal sealed class MipsR5000Core
         }
 
         return transformedDiskWord;
+    }
+
+    private uint TransformDirectTextureWriterDiskPayloadRemapWord(uint word)
+    {
+        return _experimentDirectTextureWriterDiskPayloadRemapTransform switch
+        {
+            "be32" or "reverse32" or "byteswap32" => BinaryPrimitives.ReverseEndianness(word),
+            "swap16" or "halfswap" => (word << 16) | (word >> 16),
+            "reverse16" or "byteswap16" or "swapbytes16" => ((word & 0x00ff00ffU) << 8) | ((word & 0xff00ff00U) >> 8),
+            _ => word,
+        };
+    }
+
+    private string DescribeDirectTextureWriterDiskPayloadRemapTransform(uint originalWord, uint transformedWord)
+    {
+        if (transformedWord == originalWord ||
+            string.IsNullOrEmpty(_experimentDirectTextureWriterDiskPayloadRemapTransform) ||
+            _experimentDirectTextureWriterDiskPayloadRemapTransform == "none" ||
+            _experimentDirectTextureWriterDiskPayloadRemapTransform == "le" ||
+            _experimentDirectTextureWriterDiskPayloadRemapTransform == "little")
+        {
+            return "";
+        }
+
+        return $" transform={_experimentDirectTextureWriterDiskPayloadRemapTransform}:0x{transformedWord:x8}";
     }
 
     private uint ApplyDirectTextureWriterZeroWordExperiment(

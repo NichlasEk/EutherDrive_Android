@@ -11550,3 +11550,32 @@ Next continuation point:
 3. Trace how `ged` image-like bytes should be referenced by the model/texture
    descriptors, because the current source `802e1718` is still a descriptor
    list rather than an asset-local texel buffer.
+
+### 2026-07-09 Direct-Writer Remap Word-Lane Controls
+
+Added a remap-local transform knob so source experiments do not have to reuse
+the global zero-base disk-word transform:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DIRECT_TEXTURE_WRITER_DISK_PAYLOAD_REMAP_TRANSFORM=be32|swap16|reverse16
+```
+
+Two cold standard-preset f0->f300 controls were run against the same
+`24:ged@0x9000 -> target 0x8000` proof harness:
+
+```text
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-be32-f300.log
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-be32-f300.png
+frameHash=0xcf00ccbb
+
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-swap16-f300.log
+logs/gauntlet/directremap-preset-coldbuild-src802e1718-ged9000idx18-t8000-swap16-f300.png
+frameHash=0xcf00ccbb
+```
+
+Both transforms changed the remapped words in the trace, but the final frame and
+top texture-RAM candidate class stayed effectively identical to the raw
+`ged@0x9000` remap. That makes simple byte/word-lane ordering a poor next bet.
+The next useful branch is a real source-format transform before injection:
+expand/scramble `ged` as tile/indexed texture data instead of writing its raw
+CHD words into the Type5 payload.
