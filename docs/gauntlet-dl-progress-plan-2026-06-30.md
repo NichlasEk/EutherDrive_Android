@@ -11452,3 +11452,34 @@ Next continuation point:
 3. Add a source-side scanner over `BGLoadModel`/WTR payload regions that dumps
    likely 8-bit indexed textures before Type5 packetization. The real art is
    likely upstream of the current Voodoo texture RAM contents.
+
+Follow-up source trace:
+
+```text
+logs/gauntlet/source-pc-fe5d0-fe7e0-r1-f300.log
+frameHash=0x7b252d7d
+```
+
+The Type5 tile scanner's PC is the CPU PC at decode time, not necessarily the
+original packet writer. Direct-writer tracing over `0xfe5d0-0xfe7e0` shows the
+actual stores are dominated by:
+
+```text
+pc=0x800fe7a0 header store
+pc=0x800fe7b0 target store
+pc=0x800fe7c4/0x800fe7cc payload stores
+```
+
+The first `0x008000` upload comes from `s3=0xffffffff802e1718` with source words
+like:
+
+```text
+s3w=00000012/00000002/00000000/0000000a
+s3ctrl=+0=00000012/00000002/00000000/0000000a
+```
+
+That is descriptor/control-looking data, not image data. This explains why the
+FIFO payload sheets and texture-RAM dump look like structured noise even when
+the upload path is internally consistent. The next fix attempt should move
+upstream: identify why the texture upload writer is pointed at descriptor/WTR
+control records instead of the image-bearing asset payload.
