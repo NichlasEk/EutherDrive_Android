@@ -11634,3 +11634,67 @@ failure mode. That strongly suggests the visible problem is not only “wrong
 direct-writer target”; the injected `ged` bytes still need the correct upstream
 texture interpretation or palette/format state before they become recognizable
 art.
+
+### 2026-07-09 Confirmed RGB565 Art And Upload-Lifetime Boundary
+
+Extended `GauntletProbe` texture diagnostics in two ways:
+
+```text
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_PREFIX=...
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_COUNT=...
+  -> now also ranks/dumps 32x32 through 256x256 RGB565 surfaces
+
+EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_RGB565_SPECS=
+  <hex-index>:<hex-offset>:<width>:<height>:<stride>,...
+```
+
+The explicit payload path produced the first reproducible, unmistakably real
+Gauntlet art directly from the CHD-backed payload:
+
+```text
+INDEXES=18
+RGB565_SPECS=18:2000:128:64:256,18:9000:32:32:64,18:a000:32:32:64
+
+logs/gauntlet/ged-rgb565-proof-montage.png
+logs/gauntlet/ged-rgb565-proof_24_ged_spec0_0x2000_128x64_s256_rgb565.ppm
+```
+
+Important convention: these probe index variables are parsed as hexadecimal.
+Payload table index decimal 24 (`ged`) must therefore be written as `18`, not
+`24`. The earlier documented `INDEX=18` runs were correct; a new broad control
+that used `INDEX=24` was inert and was discarded.
+
+A corrected cold f0->f180 direct-writer control remapped 64 Type5 row packets
+starting at target `0x9c00` from `ged@0x2000`, using `be32` so the existing
+Type5 endian conversion presents the original little-endian RGB565 words to the
+texture port. The trace proves the replacement is active:
+
+```text
+target=0x00009c00 source=0xffffffff802e5f18 index=0x18 offset=0x2000
+disk=24:ged@0x2004 disk=0xbe25591d transform=be32:0x1d5925be
+```
+
+The resulting checkpoint is:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-gedrgb565-target9c-f180.warm
+/tmp/gauntdl-gedrgb565-target9c-f180.ppm
+frameHash=0xe0d35bbf
+```
+
+It still does not show scene art, and a post-run RGB565 scan of Voodoo texture
+RAM does not retain a coherent copy of the injected surface. The failure is now
+narrower than source format or disk visibility: real RGB565 words reach the
+Type5 direct writer, but the physical LOD1 surface is overwritten/re-owned
+before the visible fullrect samples it.
+
+Next continuation point:
+
+1. Trace writer ownership for the physical LOD1 range derived from
+   `mode=0x00000B00`, `texLod=0x00300804`, `base=0x1FFFE200`, target rows
+   `0x9c00..0xbb80`; its MAME-style physical base wraps to `0x001000`.
+2. Record the first write after the verified `ged` injection that changes
+   `0x001000..0x008fff`, including Type5 target, PC, mode/lod/base, and source.
+3. Fix the owner/target lifetime that performs that overwrite. Do not add more
+   RGB565/4bpp transforms: disk format and active Type5 replacement are now
+   proven.

@@ -2145,6 +2145,50 @@ static void DumpVoodooTextureSurfaces(object voodoo)
         Console.WriteLine($"voodooTextureDump={rgbPath}");
         Console.WriteLine($"voodooTextureDump={grayPath}");
     }
+
+    var rgb565Formats = new[]
+    {
+        new RamSurfaceFormat(32, 32, 64),
+        new RamSurfaceFormat(64, 64, 128),
+        new RamSurfaceFormat(128, 128, 256),
+        new RamSurfaceFormat(256, 256, 512)
+    };
+    List<RamSurfaceCandidate> rgb565Candidates = [];
+    foreach (RamSurfaceFormat format in rgb565Formats)
+    {
+        int bytes = format.Stride * format.Height;
+        if (bytes <= 0 || bytes > textureBytes.Length)
+            continue;
+
+        int offsetStep = Math.Min(0x1000, bytes);
+        for (int offset = 0; offset + bytes <= textureBytes.Length; offset += offsetStep)
+        {
+            RamSurfaceScore score = ScoreRgb565Surface(textureBytes, offset, format);
+            if (score.NonZero < 128 || score.UniqueColors < 12)
+                continue;
+
+            rgb565Candidates.Add(new RamSurfaceCandidate(offset, format, score));
+        }
+    }
+
+    rgb565Candidates = rgb565Candidates
+        .OrderByDescending(candidate => candidate.Score.Score)
+        .ThenBy(candidate => candidate.Offset)
+        .Take(maxCandidates)
+        .ToList();
+
+    Console.WriteLine("voodooTextureRgb565Candidates=" + (rgb565Candidates.Count == 0
+        ? "none"
+        : string.Join(",", rgb565Candidates.Select(candidate =>
+            $"0x{candidate.Offset:x6}:{candidate.Format.Width}x{candidate.Format.Height}/s{candidate.Format.Stride}/nz{candidate.Score.NonZero}/c{candidate.Score.Colored}/u{candidate.Score.UniqueColors}"))));
+
+    for (int i = 0; i < rgb565Candidates.Count; i++)
+    {
+        RamSurfaceCandidate candidate = rgb565Candidates[i];
+        string path = $"{prefix}_{i}_0x{candidate.Offset:x6}_{candidate.Format.Width}x{candidate.Format.Height}_rgb565.ppm";
+        DumpRgb565Surface(textureBytes, candidate.Offset, candidate.Format, path);
+        Console.WriteLine($"voodooTextureDump={path}");
+    }
 }
 
 static void DumpKnownTexturePayloadSurfaces(object memory)
@@ -2216,6 +2260,46 @@ static void DumpKnownTexturePayloadSurfaces(object memory)
             Console.WriteLine($"knownTexturePayloadDump={stem}_rgb332.ppm");
             Console.WriteLine($"knownTexturePayloadDump={stem}_gray.ppm");
         }
+
+        DumpRequestedKnownTexturePayloadRgb565Surfaces(payload, bytes, prefix);
+    }
+}
+
+static void DumpRequestedKnownTexturePayloadRgb565Surfaces(KnownTexturePayload payload, byte[] bytes, string prefix)
+{
+    string? specs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_KNOWN_TEXTURE_PAYLOAD_RGB565_SPECS");
+    if (string.IsNullOrWhiteSpace(specs))
+        return;
+
+    int dumpIndex = 0;
+    foreach (string item in specs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        string[] parts = item.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 5 ||
+            !TryParseHexUlong(parts[0], out ulong payloadIndex) ||
+            payloadIndex != payload.Index ||
+            !TryParseHexUlong(parts[1], out ulong offsetValue) ||
+            offsetValue > int.MaxValue ||
+            !int.TryParse(parts[2], out int width) ||
+            !int.TryParse(parts[3], out int height) ||
+            !int.TryParse(parts[4], out int stride) ||
+            width <= 0 || height <= 0 || stride < width * 2)
+        {
+            continue;
+        }
+
+        int offset = (int)offsetValue;
+        int surfaceBytes = stride * height;
+        if (offset < 0 || surfaceBytes <= 0 || offset + surfaceBytes > bytes.Length)
+            continue;
+
+        var format = new RamSurfaceFormat(width, height, stride);
+        RamSurfaceScore score = ScoreRgb565Surface(bytes, offset, format);
+        string path = $"{prefix}_{payload.Index:D2}_{payload.Code}_spec{dumpIndex}_0x{offset:x}_{width}x{height}_s{stride}_rgb565.ppm";
+        DumpRgb565Surface(bytes, offset, format, path);
+        Console.WriteLine(
+            $"knownTexturePayloadRgb565Dump={path} nz={score.NonZero} colored={score.Colored} unique={score.UniqueColors}");
+        dumpIndex++;
     }
 }
 
