@@ -11826,3 +11826,59 @@ geometry path still has large rejected/empty regions. The next slice should
 associate each visible primitive with its own Type5 target/descriptor and use
 that owner's native dimensions and texture coordinates. Keep `preferredatlas`
 as a proof oracle, not as a renderer default.
+
+### 2026-07-09 Per-Target Owner Translation
+
+The first per-primitive control removed the global atlas and mapped the active
+low Type5 target family to the injected art family with a `+0x9000` target-word
+delta. A forced linear layout produced:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-targetdelta9000-linear-f300.png
+frameHash=0xeeff520b
+```
+
+This is positive: separate primitives retain different ornament/character
+regions instead of receiving the same whole atlas. The top borders, lower
+red/gold panels, and repeated figure shapes are stable. A scored
+linear/row2x/row4x/tile4/tile8 control selected quieter black/banded regions and
+was visually worse:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-targetdelta9000-scored-f300.png
+```
+
+Added a default-off direct translation of the word selected by the primitive's
+normal sampler:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_DELTA=0x9000
+```
+
+The translation preserves the primitive's original sampled byte offset and
+moves it by the configured Type5 word delta. The destination must still pass
+the art-owner allow/reject filters. This replaces the 32-entry low-target map
+with one explicit relation and produces the same visual class:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-sampled-targetdelta0x9000-f300.png
+frameHash=0x399d53cc
+```
+
+Trace proof:
+
+```text
+transform=sampledtargetdelta delta=0x9000
+source=pc0x800fe614 ... cmd0xC0000205@0x000B00
+owner=pc0x800fe7cc ... cmd0xC0000205@0x009B00
+```
+
+Important convention: this signed setting parses bare `9000` as decimal. Use
+`0x9000`; the decimal control translated by `0x2328` and was discarded.
+
+Current boundary: target ownership is no longer global or guessed. The
+remaining horizontal repetition is consistent with retaining the source
+sampler's 256-wide page stride while the verified injected RGB565 surface is
+128 pixels wide. The next slice should keep the sampled target relation but
+recompute the destination address from native owner/descriptor width, height,
+and packet-local index rather than adding the delta to the final byte address.

@@ -31213,6 +31213,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_ALLOW_TARGET_STARTS"));
     private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerRejectFloatLikePayloads =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_REJECT_FLOATLIKE_PAYLOADS"));
+    private readonly int _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetDelta =
+        ParseOptionalSignedHexInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_DELTA"),
+            0);
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerPreferPcs =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFER_PCS"));
     private readonly ulong[] _experimentFullrectSampleWriterLayoutArtOwnerPreferTargetStarts =
@@ -40209,7 +40213,17 @@ sampledTexel:
 
         if (_experimentFullrectSampleWriterLayoutRequireArtOwner)
         {
-            if (!TrySelectFullrectWriterLayoutArtOwnerCandidate(
+            bool sampledTargetTranslated = TryReadFullrectSampledTargetDeltaArtOwner(
+                initialWriterByteAddress,
+                sampledWriter,
+                hasSampledOwner,
+                out writerByteAddress,
+                out writerWord,
+                out writerRaw,
+                out result,
+                out string artOwnerStatus);
+            if (!sampledTargetTranslated &&
+                !TrySelectFullrectWriterLayoutArtOwnerCandidate(
                     writerX,
                     writerY,
                     writerWidth,
@@ -40222,7 +40236,7 @@ sampledTexel:
                     out writerWord,
                     out writerRaw,
                     out result,
-                    out string artOwnerStatus))
+                    out artOwnerStatus))
             {
                 if (_fullrectSampleWriterLayoutArtOwnerTraceCount++ < _experimentFullrectSampleWriterLayoutArtOwnerTraceLimit)
                 {
@@ -40394,6 +40408,57 @@ sampledTexel:
         }
 
         return true;
+    }
+
+    private bool TryReadFullrectSampledTargetDeltaArtOwner(
+        uint sampledByteAddress,
+        TextureWordLastWriter sampledOwner,
+        bool hasSampledOwner,
+        out uint byteAddress,
+        out uint word,
+        out uint raw,
+        out ushort result,
+        out string status)
+    {
+        byteAddress = 0;
+        word = 0;
+        raw = 0;
+        result = 0;
+        status = "sampled-target-delta-disabled";
+        int targetDelta = _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetDelta;
+        if (targetDelta == 0 ||
+            !hasSampledOwner ||
+            !sampledOwner.Type5 ||
+            sampledOwner.BytesPerTexel is not (1 or 2))
+        {
+            return false;
+        }
+
+        long deltaBytes = (long)targetDelta << 2;
+        byteAddress = (uint)(((long)sampledByteAddress + deltaBytes) & (TextureBytes - 1L));
+        int wordOffset = (int)(byteAddress >> 2);
+        if (!TryGetFullrectWriterLayoutArtOwner(wordOffset, out TextureWordLastWriter owner) ||
+            IsRejectedFullrectWriterLayoutArtOwnerPayload(owner))
+        {
+            status = $"sampled-target-delta-no-owner delta=0x{targetDelta:X}";
+            return false;
+        }
+
+        int ownerFormat = (int)((owner.Mode >> 8) & 0x0fu);
+        if (_experimentFullrectSampleWriterLayoutFormatOverride is >= 0 and <= 15)
+            ownerFormat = _experimentFullrectSampleWriterLayoutFormatOverride;
+        bool ownerSixteenBit = owner.BytesPerTexel == 2 || IsTextureFormat16Bit(ownerFormat);
+        result = ReadTextureRgb565AtByteAddress(
+            byteAddress,
+            ownerFormat,
+            ownerSixteenBit,
+            owner.Mode,
+            out word,
+            out raw);
+        status =
+            $"transform=sampledtargetdelta delta=0x{targetDelta:X} " +
+            $"source={FormatTextureWordWriterStatus(sampledOwner)} owner={FormatTextureWordWriterStatus(owner)}";
+        return raw != 0 && result != 0;
     }
 
     private bool TrySelectFullrectWriterLayoutArtOwnerCandidate(
