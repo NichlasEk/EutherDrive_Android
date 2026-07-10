@@ -12313,3 +12313,49 @@ image. Keep this diagnostic default-off. The next pass should compare the old
 recognizable strict-identity trace with the fresh cold trace per
 `(source target,index) -> (art target,index,physical word)` and identify which
 target phases or descriptors stopped selecting the non-banded art regions.
+
+### Warm texture bytes with rebuilt owner metadata
+
+The retained-art f180 snapshot is still valid. The missing link was that warm
+snapshots serialize Voodoo texture bytes but not the diagnostic last-writer and
+`(target,index) -> physical word` maps. On reload, the next Type5 packet both
+recreated those maps and replaced the retained RGB565 bytes with its current
+payload. That made the same strict-identity recipe select valid owners backed
+by new band/control data.
+
+The default-off owner-preservation diagnostic now records the current Type5
+writer when a blocked physical word has no owner metadata, while leaving its
+existing texture bytes unchanged. Existing owners remain untouched. Loading
+the old full-row snapshot and blocking `pc=0x800fe7cc` only for targets
+`0x8000..0x9fff` therefore rebuilds the missing map over the retained art:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TARGET_MIN=8000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TARGET_MAX=a000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_AGAINST_PCS=800fe7cc
+```
+
+RGB565 format override `1`, strict physical lookup and the established
+`+0x9000` relation then put recognizable Gauntlet ornament pixels back in the
+selected framebuffer under the current setup/culling defaults:
+
+```text
+logs/gauntlet/gauntdl-current-setup-retained-owner-fmt1-f300-r1.log
+logs/gauntlet/gauntdl-current-setup-retained-owner-fmt1-f300.png
+
+frameHash=0x59290373
+textured=399 covered=394 rejected=5
+```
+
+The frame visibly contains the orange/red ornamental arch and panel detail.
+This is a current, reproducible framebuffer proof rather than only a raw
+texture-RAM decode. It is still a diagnostic composition, not playable scene
+rendering.
+
+A `128x96 preferredatlas` control with the rebuilt partial map renders black.
+That path requires a complete preferred-seed ownership map, which this f180
+warm reload still does not reconstruct. The next step should serialize the
+texture owner/target-index maps with warm state, or deterministically rebuild
+all retained target/index entries on load. Once the complete map survives, use
+native per-descriptor format/dimensions instead of forcing RGB565 and a global
+atlas.

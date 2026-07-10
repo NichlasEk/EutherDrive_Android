@@ -33809,6 +33809,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint wordOffset = (byteOffset & (TextureBytes - 1u)) >> 2;
         if (ShouldPreserveTextureOwner((int)wordOffset, byteOffset, value))
         {
+            if (!_textureWordLastWriters.ContainsKey((int)wordOffset))
+                TrackTextureLastWriter((int)wordOffset);
             TrackTextureMappedWrite((int)wordOffset, value);
             return;
         }
