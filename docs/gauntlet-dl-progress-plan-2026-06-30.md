@@ -12081,3 +12081,76 @@ Current conclusion and next continuation point:
    the fields that turn the bundle base into the per-page `s3` source passed to
    `0x800fe1fc`. The next repair must preserve the bundle and correct its
    asset-local texel offset/type, not replace the bundle pointer wholesale.
+
+## 2026-07-10 - Bundle record to Type5 source chain
+
+Focused CPU traces now identify the complete source calculation without a
+global or body-pointer guess:
+
+```text
+logs/gauntlet/gauntdl-bundle-consumer-af744-af9ff-r1.log
+logs/gauntlet/gauntdl-source-802e1718-limit-caller-r1.log
+logs/gauntlet/gauntdl-source-802e1718-descriptor-producer-r1.log
+logs/gauntlet/gauntdl-source-802e1718-record-caller-r1.log
+logs/gauntlet/gauntdl-upload-caller-code-109570-r1.log
+```
+
+The relevant chain is:
+
+```text
+0x800a7330: sourceBase = *(sp + 0x6c)
+0x800a7764: call 0x801094f4 with the prepared record descriptor
+0x8010959c: source = descriptor +0x10
+0x801095c0: call 0x801096ac for each texture page
+0x801096f0: place source on the low-level upload stack
+0x801096fc: call 0x800fe1fc
+```
+
+`0x801096ac` does not select an asset. It calculates dimensions from the
+`0x80158050` lookup table and forwards the source unchanged. The loop around
+`0x801095c8` advances that source using descriptor fields `+0x08/+0x0c` and two
+stride tables at `0x80157f34/0x80157f50`.
+
+The f180 byte dump proves bundle index 0 begins with model/render records, not
+raw image bytes:
+
+```text
+logs/gauntlet/gauntdl-bundle0-bytes-f180-r1.log
+
+0x802e1718: record ids, self/next pointers and 1.0f matrices
+0x802e4900: later texture record table
+```
+
+Later records calculate source addresses around `0x802ed410`, close to the
+image-bearing part of the bundle. Added an explicit source filter to the direct
+writer trace:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_SOURCE=...
+```
+
+The filter covers the selected 256-byte source page and can be combined with
+the existing writer PC range. Verification:
+
+```text
+logs/gauntlet/gauntdl-source-802ed410-target-r3.log
+logs/gauntlet/gauntdl-source-802ed410-allwriters-r1.log
+frameHash=0xe806de53
+source 0x802ed410 hits=0 for pc 0xfe500..0xfe7e0
+```
+
+This is the important new boundary: later image-side records are calculated by
+the `0x800a77xx` dispatcher but do not reach any of the three observed Type5
+store families during f180->f300. The early metadata pages do reach
+`0x800fe7a0/0x800fe7b0/0x800fe7c4/0x800fe7cc` and fill targets `0x8000..`.
+
+Next continuation point:
+
+1. Trace the return/result and branch outcome for a late record at
+   `0x800a7764 -> 0x801094f4`, filtered by source `0x802ed410`.
+2. Identify the exact skip/reject between `0x801094f4` and `0x801096fc`; likely
+   inputs are the record type byte, target offset/capacity check, or texture
+   format/dimension validation.
+3. Only after proving that reject, test a default-off bypass for one late page
+   and map its real Type5 target. Do not remap the whole bundle or Voodoo target
+   family.

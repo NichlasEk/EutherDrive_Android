@@ -1068,6 +1068,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER"));
     private readonly int _traceTextureUploadDirectWriterLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_LIMIT", 128);
+    private readonly ulong? _traceTextureUploadDirectWriterSource =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_SOURCE");
     private readonly int _traceTextureUploadDirectWriterFollowWords =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_FOLLOW_WORDS", 16);
     private readonly ulong _traceTextureUploadDirectWriterPcMin =
@@ -5808,6 +5810,15 @@ internal sealed class MipsR5000Core
             physicalPc > _traceTextureUploadDirectWriterPcMax)
         {
             return;
+        }
+
+        ulong? sourceFilter = _traceTextureUploadDirectWriterSource ?? _traceTextureUploadRunSource;
+        if (sourceFilter.HasValue)
+        {
+            ulong sourceStart = CanonicalizeTraceAddress(sourceFilter.Value);
+            ulong currentSource = _gpr[19];
+            if (currentSource < sourceStart || currentSource >= sourceStart + 0x100UL)
+                return;
         }
 
         bool hasTargetFilter = _traceTextureUploadPacketTargetWords.Length > 0;
