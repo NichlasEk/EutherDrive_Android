@@ -31389,6 +31389,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_ZERO_TEXTURE_TRANSPARENCY");
     private readonly bool _preserveNonZeroTextureBytes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PRESERVE_NONZERO_TEXTURE_BYTES"));
+    private readonly ulong? _experimentPreserveTextureOwnerTargetMin =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TARGET_MIN"));
+    private readonly ulong? _experimentPreserveTextureOwnerTargetMax =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TARGET_MAX"));
+    private readonly ulong[] _experimentPreserveTextureOwnerAgainstPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_AGAINST_PCS"));
+    private readonly int _experimentPreserveTextureOwnerTraceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TRACE_LIMIT"), 32);
     private readonly bool _visualizeZeroTextureFallback =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_VISUALIZE_ZERO_TEXTURE_FALLBACK"));
     private readonly bool _visualizeTexturedTriangleEdges =
@@ -31401,6 +31409,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _experimentTextureForceLod =
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_FORCE_LOD"), 0);
     private bool _suppressZeroTextureBytesForCurrentWrite;
+    private int _preserveTextureOwnerTraceCount;
     private readonly bool _debugBufferCounts = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_BUFFER_COUNTS") == "1";
     private readonly bool _recordVoodooEvents = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RECORD_VOODOO_EVENTS") == "1";
     private readonly bool _profileStatusPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_STATUS_PCS") == "1";
@@ -33798,6 +33807,12 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void WriteTextureByte(uint byteOffset, byte value)
     {
         uint wordOffset = (byteOffset & (TextureBytes - 1u)) >> 2;
+        if (ShouldPreserveTextureOwner((int)wordOffset, byteOffset, value))
+        {
+            TrackTextureMappedWrite((int)wordOffset, value);
+            return;
+        }
+
         int shift = (int)((byteOffset & 3u) * 8u);
         uint mask = 0xffu << shift;
         if ((_preserveNonZeroTextureBytes || _suppressZeroTextureBytesForCurrentWrite) &&
@@ -33814,6 +33829,37 @@ internal class VoodooBringupBackend : IVoodooBackend
         _textureMemory[wordOffset] = newValue;
         TrackTextureLastWriter((int)wordOffset);
         TrackTextureMappedWrite((int)wordOffset, value);
+    }
+
+    private bool ShouldPreserveTextureOwner(int wordOffset, uint byteOffset, byte value)
+    {
+        if (!_experimentPreserveTextureOwnerTargetMin.HasValue ||
+            !_experimentPreserveTextureOwnerTargetMax.HasValue ||
+            _experimentPreserveTextureOwnerAgainstPcs.Length == 0 ||
+            !_currentType5TextureWriteActive ||
+            _currentType5TextureWriteTargetStart < _experimentPreserveTextureOwnerTargetMin.Value ||
+            _currentType5TextureWriteTargetStart >= _experimentPreserveTextureOwnerTargetMax.Value)
+        {
+            return false;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        if (!MatchesTracePc(_experimentPreserveTextureOwnerAgainstPcs, pc))
+            return false;
+
+        if (_preserveTextureOwnerTraceCount++ < _experimentPreserveTextureOwnerTraceLimit)
+        {
+            string previousOwner = _textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter writer)
+                ? FormatTextureWordWriterStatus(writer)
+                : "none";
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] preserve-texture-owner n={_preserveTextureOwnerTraceCount} " +
+                $"addr=0x{byteOffset & (TextureBytes - 1u):X6}/w0x{wordOffset:X5} value=0x{value:X2} " +
+                $"previous={previousOwner} " +
+                $"blocked=pc0x{pc & 0xffffffffUL:x8}/cmd0x{_currentType5TextureWriteCommand:X8}@0x{_currentType5TextureWriteTargetStart:X6}:0x{_currentType5TextureWriteTargetWord:X6}");
+        }
+
+        return true;
     }
 
     private void TrackTextureLastWriter(int wordOffset)
@@ -40546,12 +40592,12 @@ sampledTexel:
         }
 
         uint translatedTargetStart = unchecked((uint)((long)sampledOwner.Type5TargetStart + targetDelta));
+        var translatedKey = new FullrectTargetIndexKey(translatedTargetStart, sampledOwner.Type5Index);
         bool usedTargetLookup = false;
+        int translatedWordOffset = -1;
         if (_experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookup &&
             sampledOwner.Type5Index >= 0 &&
-            _textureTargetIndexWords.TryGetValue(
-                new FullrectTargetIndexKey(translatedTargetStart, sampledOwner.Type5Index),
-                out int translatedWordOffset))
+            _textureTargetIndexWords.TryGetValue(translatedKey, out translatedWordOffset))
         {
             uint sourceLane = sampledByteAddress & 3u;
             uint translatedLane = sourceLane >= 2u ? 2u : 0u;
@@ -40564,12 +40610,34 @@ sampledTexel:
             byteAddress = (uint)(((long)sampledByteAddress + deltaBytes) & (TextureBytes - 1L));
         }
         int wordOffset = (int)(byteAddress >> 2);
-        if (!TryGetFullrectWriterLayoutArtOwner(wordOffset, out TextureWordLastWriter owner) ||
-            (usedTargetLookup &&
-             (owner.Type5TargetStart != translatedTargetStart || owner.Type5Index != sampledOwner.Type5Index)) ||
-            IsRejectedFullrectWriterLayoutArtOwnerPayload(owner))
+        bool hasPhysicalOwner = _textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter physicalOwner);
+        bool hasArtOwner = TryGetFullrectWriterLayoutArtOwner(wordOffset, out TextureWordLastWriter owner);
+        bool targetMismatch = usedTargetLookup && hasArtOwner &&
+            (owner.Type5TargetStart != translatedTargetStart || owner.Type5Index != sampledOwner.Type5Index);
+        bool rejectedPayload = hasArtOwner && IsRejectedFullrectWriterLayoutArtOwnerPayload(owner);
+        if (!hasArtOwner || targetMismatch || rejectedPayload)
         {
-            status = $"sampled-target-delta-no-owner delta=0x{targetDelta:X}";
+            string lookupStatus = !_experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookup
+                ? "off"
+                : sampledOwner.Type5Index < 0
+                    ? "invalid-index"
+                    : usedTargetLookup
+                        ? $"hit:w0x{translatedWordOffset:X5}"
+                        : "miss";
+            string physicalOwnerStatus = hasPhysicalOwner
+                ? FormatTextureWordWriterStatus(physicalOwner)
+                : "none";
+            string failure = targetMismatch
+                ? "target-mismatch"
+                : rejectedPayload
+                    ? "rejected-payload"
+                    : hasPhysicalOwner
+                        ? "owner-not-allowed"
+                        : "physical-unowned";
+            status =
+                $"sampled-target-delta-no-owner delta=0x{targetDelta:X} " +
+                $"key=0x{translatedKey.TargetStart:X6}:{translatedKey.Index} lookup={lookupStatus} " +
+                $"addr=0x{byteAddress:X6}/w0x{wordOffset:X5} failure={failure} physicalOwner={physicalOwnerStatus}";
             return false;
         }
 

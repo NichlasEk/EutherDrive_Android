@@ -12255,3 +12255,61 @@ black on the right and two narrow noisy horizontal bands. Do not present it as
 real graphics. Continue with the `0x800fe614 / 0xc0000205 / target 0x300..0xe80`
 upload coverage and determine why most of the `0x0264f0..0x030fef` sample range
 is never populated.
+
+### Physical owner overwrite isolation
+
+The strict sampled-target lookup now reports whether `(target,index)` lookup
+missed, whether the selected physical word had no owner, or whether its owner
+failed the art filters. A cold `+0x7e80` run resolves the first restored source
+target exactly but rejects its physical owner:
+
+```text
+logs/gauntlet/gauntdl-ownerreason-cold-r1.log
+
+key=0x008000:0 lookup=hit:w0x075AE addr=0x01D6B8
+failure=owner-not-allowed
+physicalOwner=pc0x800fe5d4 ... cmd0xC0000105@0x008000 ...
+payload hash=0x5DEC0FB9 nonzero=29 floatlike=13
+```
+
+Disabling runtime BGLoadModel asset-pointer normalization leaves that owner,
+the frame hash and the visible result unchanged. That normalization is not the
+source of this overwrite.
+
+A default-off preservation experiment can now block one upload PC only within
+an explicit Type5 target interval:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TARGET_MIN=8000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TARGET_MAX=a000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_AGAINST_PCS=800fe5d4
+```
+
+The first implementation depended on prior last-writer metadata and therefore
+ran after the bad owner was already established. The corrected version gates
+the current Type5 packet before either texture bytes or writer metadata are
+updated. A fresh cold run proves that the injected `pc=0x800fe7cc` owner then
+survives strict physical lookup:
+
+```text
+logs/gauntlet/gauntdl-preserve-artowner-cold-f300-r4.log
+frameHash=0x33af6594
+finalOwner=pc0x800fe7cc ... cmd0xC0000205@0x008000
+```
+
+This is not yet a visual fix. `+0x7e80` remains cyan/black with two narrow
+noise bands. Repeating the control with the older `+0x9000` relation accepts
+32 injected art-owner samples and restores red/orange RGB565 bands, but not
+the earlier recognizable ornament and figure regions:
+
+```text
+logs/gauntlet/gauntdl-preserve-artowner-delta9000-cold-f300-r5.log
+frameHash=0xd1cb7a30
+```
+
+Revised boundary: `pc=0x800fe5d4` is a confirmed destructive writer for the
+proof target family, but suppressing it is insufficient to recover the older
+image. Keep this diagnostic default-off. The next pass should compare the old
+recognizable strict-identity trace with the fresh cold trace per
+`(source target,index) -> (art target,index,physical word)` and identify which
+target phases or descriptors stopped selecting the non-banded art regions.
