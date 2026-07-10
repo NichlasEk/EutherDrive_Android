@@ -33748,7 +33748,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool seq8Downld)
     {
         if (!_traceTextureUploadMameWritePtr ||
-            currentByteOffset == mameByteOffset ||
+            (currentByteOffset == mameByteOffset && _traceTextureUploadMameWritePtrTargetWords.Length == 0) ||
             _textureUploadMameWritePtrTraceCount >= _traceTextureUploadMameWritePtrLimit)
         {
             return;
@@ -33764,6 +33764,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TEXUPLOAD-MAMEPTR] n={++_textureUploadMameWritePtrTraceCount} " +
             $"word=0x{wordOffset:X6} current=0x{currentByteOffset:X6} mame=0x{mameByteOffset:X6} " +
+            $"match={(currentByteOffset == mameByteOffset ? 1 : 0)} " +
             $"lod={lod} ts=0x{ts:X2} tt=0x{tt:X2} size={width}x{height} bpp={bytesPerTexel} seq8={(seq8Downld ? 1 : 0)} " +
             $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8}{type5Status}{pcStatus}");
     }

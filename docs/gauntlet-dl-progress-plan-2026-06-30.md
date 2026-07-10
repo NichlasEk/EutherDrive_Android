@@ -12208,3 +12208,50 @@ variable. This restores 330 covered triangles that the implausible-coordinate
 guard previously discarded and culls 2774 offscreen/back-facing triangles
 before rasterization. The unchanged selected-frame hash means the next blocker
 is texture/display ownership, not Type3 packet framing.
+
+### Restored-triangle texture ownership
+
+An explicit target-filtered MAME write-pointer trace now includes matching as
+well as differing addresses. This makes focused targets useful even when the
+emulator already agrees with MAME:
+
+```text
+logs/gauntlet/gauntdl-type5-30000-writeptr-f180-r2.log
+
+target 0x30000 -> physical 0x006aa0, mode 0x100, lod 6, bpp 1
+target 0x30080 -> physical 0x006aa4
+later asset states map the same targets through 0x007a90..0x009a80
+current == MAME for every focused write
+```
+
+These late `0x30000..0x30100` writes do not own the addresses sampled by the
+restored quad family. A warm f180 trace samples `0x01fb28..0x02a627`, all zero,
+and has no last-writer metadata because that diagnostic map is not serialized:
+
+```text
+logs/gauntlet/gauntdl-restored-triangle-samples-f180-r1.log
+```
+
+A cold run retains ownership from boot and identifies the relevant upload
+family instead:
+
+```text
+logs/gauntlet/gauntdl-cold-restored-triangle-writers-r1.log
+
+sample base=0x0264f0, range=0x0264f0..0x030fef
+writer pc=0x800fe614, cmd=0xc0000205
+dominant owned targets=0x300,0x380,0x400
+later sparse owners=0xb80,0xd00,0xe80
+```
+
+Most sampled pixels still have no writer and decode as zero. The cold run
+produces `frameHash=0x6e031110`, `685` textured triangles, `684` covered and
+only one rejected; the old f180 snapshot produces `0xe806de53`. A fresh f180
+snapshot reproduces the cold hash when reloaded, so the older checked working
+snapshot is stale relative to the current setup and texture state.
+
+The current cold-line f300 dump is still visually negative: cyan on the left,
+black on the right and two narrow noisy horizontal bands. Do not present it as
+real graphics. Continue with the `0x800fe614 / 0xc0000205 / target 0x300..0xe80`
+upload coverage and determine why most of the `0x0264f0..0x030fef` sample range
+is never populated.
