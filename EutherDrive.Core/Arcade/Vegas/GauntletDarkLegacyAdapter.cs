@@ -31291,6 +31291,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalSignedHexInt(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_DELTA"),
             0);
+    private readonly ulong? _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceBase =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_SURFACE_BASE"));
+    private readonly int _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceWidth =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_SURFACE_WIDTH"), 0);
+    private readonly int _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceHeight =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_SURFACE_HEIGHT"), 0);
+    private readonly uint _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceRowStride =
+        (uint)(ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_SURFACE_ROW_STRIDE")) ?? 0x80UL);
     private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookup =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_LOOKUP"));
     private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookupStrict =
@@ -31321,6 +31329,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SELECTED"));
     private readonly int _traceFullrectSampleWriterLayoutArtOwnerSelectedLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SELECTED_LIMIT"), 64);
+    private readonly bool _traceSampledTargetTransitions =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SAMPLED_TARGET_TRANSITIONS"));
+    private readonly int _traceSampledTargetTransitionLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SAMPLED_TARGET_TRANSITIONS_LIMIT"), 256);
     private readonly string _experimentFullrectSampleWriterLayoutAddressTransform =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ADDRESS_TRANSFORM") ?? "")
         .Trim()
@@ -31534,6 +31546,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _fullrectSampleWriterLayoutCandidateTraceCount;
     private int _fullrectSampleWriterLayoutArtOwnerTraceCount;
     private int _fullrectSampleWriterLayoutArtOwnerSelectedTraceCount;
+    private readonly HashSet<string> _sampledTargetTransitionKeys = [];
     private string _lastCommandFifoDecodeStopReason = "";
     private uint _lastCommandFifoDecodeStopCommand;
     private int _lastCommandFifoDecodeStopWordsNeeded;
@@ -38697,8 +38710,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (color == 0)
             color = 0xffff;
 
-        FillTriangle(ax, ay, bx, by, cx, cy, color, source);
-        if (_experimentDisableTriangleWireEdges)
+        bool filled = FillTriangle(ax, ay, bx, by, cx, cy, color, source);
+        if (!filled || _experimentDisableTriangleWireEdges)
             return;
 
         DrawLfbLine(ax, ay, bx, by, color);
@@ -38706,18 +38719,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         DrawLfbLine(cx, cy, ax, ay, color);
     }
 
-    private void FillTriangle(float ax, float ay, float bx, float by, float cx, float cy, ushort color, string source)
+    private bool FillTriangle(float ax, float ay, float bx, float by, float cx, float cy, ushort color, string source)
     {
         if (!float.IsFinite(ax) || !float.IsFinite(ay) ||
             !float.IsFinite(bx) || !float.IsFinite(by) ||
             !float.IsFinite(cx) || !float.IsFinite(cy))
         {
-            return;
+            return false;
         }
 
         float area = Edge(ax, ay, bx, by, cx, cy);
         if (MathF.Abs(area) < 0.001f)
-            return;
+            return false;
 
         GetClip(out int clipX0, out int clipX1, out int clipY0, out int clipY1);
         int minX = Math.Clamp((int)MathF.Floor(MathF.Min(ax, MathF.Min(bx, cx))), clipX0, clipX1);
@@ -38725,7 +38738,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int minY = Math.Clamp((int)MathF.Floor(MathF.Min(ay, MathF.Min(by, cy))), clipY0, clipY1);
         int maxY = Math.Clamp((int)MathF.Ceiling(MathF.Max(ay, MathF.Max(by, cy))), clipY0, clipY1);
         if (maxX <= minX || maxY <= minY)
-            return;
+            return false;
 
         long boxPixels = Math.Max(0, maxX - minX) * (long)Math.Max(0, maxY - minY);
         TraceLargeDirectTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, boxPixels);
@@ -38734,21 +38747,21 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (suppressImplausible)
         {
             CountSuppressedSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, implausible: true, large: false, offscreen: false);
-            return;
+            return false;
         }
 
         bool suppressOffscreen = ShouldSuppressOffscreenDirectTriangle(source, ax, ay, bx, by, cx, cy, boxPixels);
         if (suppressOffscreen)
         {
             CountSuppressedSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, implausible: false, large: false, offscreen: true);
-            return;
+            return false;
         }
 
         bool suppressLarge = _experimentSuppressLargeSolidTriangles && boxPixels >= 640L * 480L;
         if (suppressLarge)
         {
             CountSuppressedSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, implausible: false, large: true, offscreen: false);
-            return;
+            return false;
         }
 
         bool positive = area > 0;
@@ -38782,6 +38795,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
         }
         CountDrawnSolidTriangle(source, color, ax, ay, bx, by, cx, cy, area, minX, maxX, minY, maxY, drawnPixels);
+        return true;
     }
 
     private bool ShouldSuppressImplausibleBulkDirectTriangle(string source, long boxPixels)
@@ -40370,6 +40384,10 @@ sampledTexel:
                 initialWriterByteAddress,
                 sampledWriter,
                 hasSampledOwner,
+                writerX,
+                writerY,
+                writerWidth,
+                writerHeight,
                 out writerByteAddress,
                 out writerWord,
                 out writerRaw,
@@ -40379,7 +40397,8 @@ sampledTexel:
                 !sampledTargetTranslated &&
                 _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookup &&
                 _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookupStrict &&
-                _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetDelta != 0 &&
+                (_experimentFullrectSampleWriterLayoutArtOwnerSampledTargetDelta != 0 ||
+                 HasSampledTargetSurface()) &&
                 hasSampledOwner &&
                 sampledWriter.Type5;
             if (sampledTargetLookupMiss ||
@@ -40575,6 +40594,10 @@ sampledTexel:
         uint sampledByteAddress,
         TextureWordLastWriter sampledOwner,
         bool hasSampledOwner,
+        int x,
+        int y,
+        int width,
+        int height,
         out uint byteAddress,
         out uint word,
         out uint raw,
@@ -40587,7 +40610,8 @@ sampledTexel:
         result = 0;
         status = "sampled-target-delta-disabled";
         int targetDelta = _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetDelta;
-        if (targetDelta == 0 ||
+        bool useSurface = HasSampledTargetSurface();
+        if ((!useSurface && targetDelta == 0) ||
             !hasSampledOwner ||
             !sampledOwner.Type5 ||
             sampledOwner.BytesPerTexel is not (1 or 2))
@@ -40595,7 +40619,8 @@ sampledTexel:
             return false;
         }
 
-        if (IsValidFullrectWriterLayoutArtOwner(sampledOwner) &&
+        if (!useSurface &&
+            IsValidFullrectWriterLayoutArtOwner(sampledOwner) &&
             !IsRejectedFullrectWriterLayoutArtOwnerPayload(sampledOwner))
         {
             byteAddress = sampledByteAddress & (TextureBytes - 1u);
@@ -40614,18 +40639,45 @@ sampledTexel:
             return raw != 0 && result != 0;
         }
 
-        uint translatedTargetStart = unchecked((uint)((long)sampledOwner.Type5TargetStart + targetDelta));
-        var translatedKey = new FullrectTargetIndexKey(translatedTargetStart, sampledOwner.Type5Index);
+        uint translatedTargetStart;
+        int translatedIndex;
+        uint translatedLane;
+        if (useSurface)
+        {
+            int surfaceWidth = _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceWidth;
+            int surfaceHeight = _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceHeight;
+            int surfaceX = Math.Clamp(width > 0 ? (int)((long)x * surfaceWidth / width) : x, 0, surfaceWidth - 1);
+            int surfaceY = Math.Clamp(height > 0 ? (int)((long)y * surfaceHeight / height) : y, 0, surfaceHeight - 1);
+            translatedTargetStart = unchecked(
+                (uint)(_experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceBase!.Value +
+                       (ulong)surfaceY * _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceRowStride));
+            translatedIndex = surfaceX >> 1;
+            translatedLane = (uint)((surfaceX & 1) << 1);
+        }
+        else
+        {
+            translatedTargetStart = unchecked((uint)((long)sampledOwner.Type5TargetStart + targetDelta));
+            translatedIndex = sampledOwner.Type5Index;
+            uint sourceLane = sampledByteAddress & 3u;
+            translatedLane = sourceLane >= 2u ? 2u : 0u;
+        }
+
+        var translatedKey = new FullrectTargetIndexKey(translatedTargetStart, translatedIndex);
         bool usedTargetLookup = false;
         int translatedWordOffset = -1;
         if (_experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookup &&
-            sampledOwner.Type5Index >= 0 &&
+            translatedIndex >= 0 &&
             _textureTargetIndexWords.TryGetValue(translatedKey, out translatedWordOffset))
         {
-            uint sourceLane = sampledByteAddress & 3u;
-            uint translatedLane = sourceLane >= 2u ? 2u : 0u;
             byteAddress = (uint)((translatedWordOffset << 2) | (int)translatedLane);
             usedTargetLookup = true;
+        }
+        else if (useSurface)
+        {
+            status =
+                $"sampled-target-surface-no-owner key=0x{translatedKey.TargetStart:X6}:{translatedKey.Index} lookup=miss";
+            TraceSampledTargetTransition(sampledOwner, translatedTargetStart, -1, false, "none", "surface-miss");
+            return false;
         }
         else
         {
@@ -40636,13 +40688,13 @@ sampledTexel:
         bool hasPhysicalOwner = _textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter physicalOwner);
         bool hasArtOwner = TryGetFullrectWriterLayoutArtOwner(wordOffset, out TextureWordLastWriter owner);
         bool targetMismatch = usedTargetLookup && hasArtOwner &&
-            (owner.Type5TargetStart != translatedTargetStart || owner.Type5Index != sampledOwner.Type5Index);
+            (owner.Type5TargetStart != translatedTargetStart || owner.Type5Index != translatedIndex);
         bool rejectedPayload = hasArtOwner && IsRejectedFullrectWriterLayoutArtOwnerPayload(owner);
         if (!hasArtOwner || targetMismatch || rejectedPayload)
         {
             string lookupStatus = !_experimentFullrectSampleWriterLayoutArtOwnerSampledTargetLookup
                 ? "off"
-                : sampledOwner.Type5Index < 0
+                : translatedIndex < 0
                     ? "invalid-index"
                     : usedTargetLookup
                         ? $"hit:w0x{translatedWordOffset:X5}"
@@ -40661,6 +40713,7 @@ sampledTexel:
                 $"sampled-target-delta-no-owner delta=0x{targetDelta:X} " +
                 $"key=0x{translatedKey.TargetStart:X6}:{translatedKey.Index} lookup={lookupStatus} " +
                 $"addr=0x{byteAddress:X6}/w0x{wordOffset:X5} failure={failure} physicalOwner={physicalOwnerStatus}";
+            TraceSampledTargetTransition(sampledOwner, translatedTargetStart, wordOffset, usedTargetLookup, physicalOwnerStatus, failure);
             return false;
         }
 
@@ -40676,9 +40729,47 @@ sampledTexel:
             out word,
             out raw);
         status =
-            $"transform=sampledtargetdelta delta=0x{targetDelta:X} lookup={(usedTargetLookup ? 1 : 0)} " +
+            $"transform={(useSurface ? "sampledtargetsurface" : "sampledtargetdelta")} " +
+            $"delta=0x{targetDelta:X} lookup={(usedTargetLookup ? 1 : 0)} " +
             $"source={FormatTextureWordWriterStatus(sampledOwner)} owner={FormatTextureWordWriterStatus(owner)}";
+        TraceSampledTargetTransition(
+            sampledOwner,
+            translatedTargetStart,
+            wordOffset,
+            usedTargetLookup,
+            FormatTextureWordWriterStatus(owner),
+            "accept");
         return raw != 0 && result != 0;
+    }
+
+    private bool HasSampledTargetSurface() =>
+        _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceBase.HasValue &&
+        _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceWidth > 0 &&
+        _experimentFullrectSampleWriterLayoutArtOwnerSampledTargetSurfaceHeight > 0;
+
+    private void TraceSampledTargetTransition(
+        TextureWordLastWriter source,
+        uint translatedTargetStart,
+        int physicalWordOffset,
+        bool usedTargetLookup,
+        string ownerStatus,
+        string result)
+    {
+        if (!_traceSampledTargetTransitions ||
+            _sampledTargetTransitionKeys.Count >= _traceSampledTargetTransitionLimit)
+        {
+            return;
+        }
+
+        string key = $"{source.Type5TargetStart:X6}:{translatedTargetStart:X6}:{source.Type5PayloadHash:X8}:{result}";
+        if (!_sampledTargetTransitionKeys.Add(key))
+            return;
+
+        Console.WriteLine(
+            $"[GAUNTDL:SAMPLED-TARGET-TRANSITION] n={_sampledTargetTransitionKeys.Count} result={result} " +
+            $"source=0x{source.Type5TargetStart:X6}:idx{source.Type5Index}/{source.Type5Count}:ph0x{source.Type5PayloadHash:X8} " +
+            $"sourceState=mode0x{source.Mode:X8}/lod0x{source.TexLod:X8}/base0x{source.TextureBase:X8}/l{source.Lod}/bpp{source.BytesPerTexel} " +
+            $"destination=0x{translatedTargetStart:X6}:w0x{physicalWordOffset:X5}:lookup={(usedTargetLookup ? 1 : 0)} owner={ownerStatus}");
     }
 
     private bool TrySelectFullrectWriterLayoutArtOwnerCandidate(

@@ -12437,3 +12437,91 @@ Next implementation boundary: use the serialized v5 map to derive a physical
 surface descriptor for each live low target family. Replace the global atlas
 with `(target,index)`-local base, width, height and native format, while using
 the `0x4d68596b` raw atlas only as a visual reference.
+
+### Native target surfaces and bulk-direct geometry cleanup
+
+A unique transition trace replaced the pixel-first trace that exhausted its
+budget on one packet row:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SAMPLED_TARGET_TRANSITIONS=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_SAMPLED_TARGET_TRANSITIONS_LIMIT=256
+```
+
+The f180-to-f300 scene uses exactly four low-target families in the visible
+fullrect path:
+
+```text
+0x000000 -> 0x009000 payload 0x9CD58651
+0x000080 -> 0x009080 payload 0x9319E3DA
+0x000100 -> 0x009100 payload 0x57A21EA3
+0x000180 -> 0x009180 payload 0xAB7334A9
+```
+
+All four use 64-word packets and strict physical lookup succeeds. This proves
+why a constant target delta can only render horizontal bands: each primitive
+selects one injected 128-pixel row. Row-phase controls at `0x9800`, `0x9a00`,
+`0x9c00` and `0x9e00` change colors and hashes but not the band geometry:
+
+```text
+0x9800 -> 0x278081a6
+0x9a00 -> 0xec6b4546
+0x9c00 -> 0xbc2a6802
+0x9e00 -> 0x71f56362
+```
+
+A default-off target-surface sampler now maps primitive `(x,y)` to a target
+row, packet index and RGB565 halfword lane through the v5 map:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_SURFACE_BASE=9800
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_SURFACE_WIDTH=128
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_SURFACE_HEIGHT=16
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_SAMPLED_TARGET_SURFACE_ROW_STRIDE=80
+```
+
+Both native (`0xd5a05802`) and format-1 (`0xc2ecfe7c`) controls remain narrow
+strips. The address model is now two-dimensional, but the accepted primitive
+geometry itself is only strip-sized at f300. Texture remapping is therefore no
+longer the immediate blocker.
+
+Running the clean v5 state farther changes the scene after f400:
+
+```text
+f300  frameHash=0x6e031110 swaps=444
+f400  frameHash=0x6e031110 swaps=444
+f500  frameHash=0x3e33335d swaps=496
+f600  frameHash=0x3e33335d swaps=496
+```
+
+The new f500/f600 framebuffer was dominated by enormous blue/red direct
+triangles. The existing large-direct trace identifies them as Type1 payload
+misdecodes, not game geometry:
+
+```text
+cmd=0x432B87D1 count=17196 trigger=write
+xy=(-1439.750,256.938)/(512.000,-1695.750)/(256.938,524.375)
+bbox=0..512 x 0..480
+```
+
+The existing implausible bulk-direct suppressor catches this exact class
+because the Type1 count exceeds `0x400`. It is now enabled by default in the
+GauntletProbe bringup profile while remaining overridable. `FillTriangle` also
+returns whether a triangle was accepted, so suppressed payload triangles no
+longer leave wireframe edges behind.
+
+Positive f520 result:
+
+```text
+logs/gauntlet/gauntdl-v5-default-bulk-wirefix-f520-r1.log
+logs/gauntlet/gauntdl-v5-default-bulk-wirefix-f520.png
+
+frameHash=0x51641411
+textured=1309 covered=1308 rejected=1
+```
+
+The huge blue fill and both diagonal wire edges are gone. The selected buffer
+is a clean red background with the two texture strips. All three Voodoo color
+buffers contain substantial distinct raster data at f520, so the next pass
+should dump and compare buffers 0/1/2 directly before changing more geometry
+or texture logic.
