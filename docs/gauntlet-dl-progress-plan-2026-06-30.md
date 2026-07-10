@@ -12135,22 +12135,43 @@ the existing writer PC range. Verification:
 ```text
 logs/gauntlet/gauntdl-source-802ed410-target-r3.log
 logs/gauntlet/gauntdl-source-802ed410-allwriters-r1.log
+logs/gauntlet/gauntdl-source-802ed410-reject-path-r1.log
+logs/gauntlet/gauntdl-source-802ed410-lowlevel-reject-r1.log
+logs/gauntlet/gauntdl-source-802ed410-fe4-writer-r2.log
 frameHash=0xe806de53
-source 0x802ed410 hits=0 for pc 0xfe500..0xfe7e0
+source 0x802ed410 reaches 0x801096fc -> 0x800fe1fc
 ```
 
-This is the important new boundary: later image-side records are calculated by
-the `0x800a77xx` dispatcher but do not reach any of the three observed Type5
-store families during f180->f300. The early metadata pages do reach
-`0x800fe7a0/0x800fe7b0/0x800fe7c4/0x800fe7cc` and fill targets `0x8000..`.
+The first two direct-writer runs produced a false negative because the writer
+window began at `0xfe500` and the source filter assumed every writer kept its
+source in `s3`. This record instead uses an earlier writer at
+`0x800fe4d8/0x800fe4e8/0x800fe544`, with the live payload pointer in `s6` and
+the original base retained in `t2` and `sp+0x6c`. The default trace window now
+begins at `0xfe4b0`, and its source filter matches both writer ABIs.
+
+The corrected trace also changes the record classification. `0x802ed410` is
+not rejected and is not a texture image. It is float-heavy model/vertex data
+sent to the Voodoo FIFO as repeating packets:
+
+```text
+header=0xc000000d
+target=0x000c0000 / 4 = 0x00030000
+payload=bda7396d
+next target=0x00030080, then 0x00030100
+```
+
+The source begins `bda7396d/be751600/3f77adcc/03000018`; the first three words
+are plausible floats. The physical target advances by `0x80` words for each
+record while the payload pointer advances four bytes. This is geometry/setup
+traffic, not a missing Type5 texture upload. The unchanged frame hash confirms
+the new code is diagnostic only.
 
 Next continuation point:
 
-1. Trace the return/result and branch outcome for a late record at
-   `0x800a7764 -> 0x801094f4`, filtered by source `0x802ed410`.
-2. Identify the exact skip/reject between `0x801094f4` and `0x801096fc`; likely
-   inputs are the record type byte, target offset/capacity check, or texture
-   format/dimension validation.
-3. Only after proving that reject, test a default-off bypass for one late page
-   and map its real Type5 target. Do not remap the whole bundle or Voodoo target
-   family.
+1. Follow the `0xc000000d` setup packet from FIFO decode to the direct/setup
+   triangle coordinate registers.
+2. Compare the source floats with the coordinates reported by
+   `VOODOO-IMPLAUSIBLE-SETUP-TRI-IGNORE`; determine whether the corruption is
+   target-register interpretation, fixed-point conversion, or packet stride.
+3. Do not bypass this writer or remap `0x802ed410` into texture memory. Its
+   observed role is valid geometry traffic.

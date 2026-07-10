@@ -1073,7 +1073,7 @@ internal sealed class MipsR5000Core
     private readonly int _traceTextureUploadDirectWriterFollowWords =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_FOLLOW_WORDS", 16);
     private readonly ulong _traceTextureUploadDirectWriterPcMin =
-        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_PC_MIN") ?? 0x000fe790UL;
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_PC_MIN") ?? 0x000fe4b0UL;
     private readonly ulong _traceTextureUploadDirectWriterPcMax =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER_PC_MAX") ?? 0x000fe7e0UL;
     private readonly bool _traceTextureUploadDirectWriterControlTableWrites =
@@ -5812,13 +5812,24 @@ internal sealed class MipsR5000Core
             return;
         }
 
+        ulong sp = _gpr[29];
+        ulong s3 = _gpr[19];
+        ulong s6 = _gpr[22];
+        ulong traceSource = physicalPc < 0x000fe590UL ? s6 : s3;
         ulong? sourceFilter = _traceTextureUploadDirectWriterSource ?? _traceTextureUploadRunSource;
         if (sourceFilter.HasValue)
         {
             ulong sourceStart = CanonicalizeTraceAddress(sourceFilter.Value);
-            ulong currentSource = _gpr[19];
-            if (currentSource < sourceStart || currentSource >= sourceStart + 0x100UL)
+            ulong sourceEnd = sourceStart + 0x100UL;
+            ulong stackSource = CanonicalizeTraceAddress(ReadTraceWord(sp + 0x6cUL));
+            ulong[] sourceCandidates = [s3, s6, _gpr[10], stackSource];
+            int sourceIndex = Array.FindIndex(
+                sourceCandidates,
+                candidate => candidate >= sourceStart && candidate < sourceEnd);
+            if (sourceIndex < 0)
                 return;
+
+            traceSource = sourceCandidates[sourceIndex];
         }
 
         bool hasTargetFilter = _traceTextureUploadPacketTargetWords.Length > 0;
@@ -5848,11 +5859,8 @@ internal sealed class MipsR5000Core
         }
 
         _textureUploadDirectWriterTraceCount++;
-        ulong sp = _gpr[29];
         ulong a2 = _gpr[6];
         ulong s0 = _gpr[16];
-        ulong s3 = _gpr[19];
-        ulong s6 = _gpr[22];
         Console.WriteLine(
             $"[GAUNTDL:TEXUPLOAD-DIRECT-WRITER] n={_textureUploadDirectWriterTraceCount} reason={reason} " +
             $"pc=0x{pc:x16} op=0x{op:x8} sw=r{rt}->[r{rs}+0x{(ushort)simm:x4}] " +
@@ -5863,6 +5871,7 @@ internal sealed class MipsR5000Core
             $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t8=0x{_gpr[24]:x16} t9=0x{_gpr[25]:x16} " +
             $"s0=0x{s0:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{s3:x16} " +
             $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{s6:x16} s7=0x{_gpr[23]:x16} " +
+            $"traceSrc=0x{traceSource:x16} " +
             $"a2src={DescribeKnownRuntimeBgLoadModelUploadSource(a2)} " +
             $"s0src={DescribeKnownRuntimeBgLoadModelUploadSource(s0)} " +
             $"s3src={DescribeKnownRuntimeBgLoadModelUploadSource(s3)} " +
@@ -5881,7 +5890,7 @@ internal sealed class MipsR5000Core
         ulong payloadWords = _gpr[20];
         uint payloadWordCount = payloadWords <= uint.MaxValue ? (uint)payloadWords : 0;
         ulong sourceBytes = payloadWords is > 0UL and <= 0x100000UL ? payloadWords * 4UL : 0UL;
-        TraceRuntimeBgLoadModelWtrEntryContext(s3, traceTargetWord, sourceBytes, payloadWordCount, 0, 0);
+        TraceRuntimeBgLoadModelWtrEntryContext(traceSource, traceTargetWord, sourceBytes, payloadWordCount, 0, 0);
     }
 
     private string FormatDirectTextureWriterControlGroups(ulong source)
