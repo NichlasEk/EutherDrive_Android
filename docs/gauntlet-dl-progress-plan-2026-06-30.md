@@ -12323,16 +12323,19 @@ recreated those maps and replaced the retained RGB565 bytes with its current
 payload. That made the same strict-identity recipe select valid owners backed
 by new band/control data.
 
-The default-off owner-preservation diagnostic now records the current Type5
+The default-off owner-preservation diagnostic can record the current Type5
 writer when a blocked physical word has no owner metadata, while leaving its
-existing texture bytes unchanged. Existing owners remain untouched. Loading
-the old full-row snapshot and blocking `pc=0x800fe7cc` only for targets
-`0x8000..0x9fff` therefore rebuilds the missing map over the retained art:
+existing texture bytes unchanged. This warm-reload behavior is separately
+enabled so cold bad-writer suppression does not create false owners. Existing
+owners remain untouched. Loading the old full-row snapshot and blocking
+`pc=0x800fe7cc` only for targets `0x8000..0x9fff` therefore rebuilds the
+missing map over the retained art:
 
 ```text
 EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TARGET_MIN=8000
 EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TARGET_MAX=a000
 EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_AGAINST_PCS=800fe7cc
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_REBUILD_MISSING_OWNER=1
 ```
 
 RGB565 format override `1`, strict physical lookup and the established
@@ -12359,3 +12362,78 @@ texture owner/target-index maps with warm state, or deterministically rebuild
 all retained target/index entries on load. Once the complete map survives, use
 native per-descriptor format/dimensions instead of forcing RGB565 and a global
 atlas.
+
+### Warm state v5 and retained raw-atlas oracle
+
+GauntletProbe warm state version 5 now serializes the complete Voodoo
+`TextureWordLastWriter` dictionary and exact `(Type5TargetStart,Type5Index) ->
+physical word` map. Versions 1 through 4 remain readable. Entries are written
+in deterministic order and both collections have bounded counts on load.
+
+Round-trip testing loaded a v5 f180 state with its target/index hits and exact
+physical owners intact. This exposed an important distinction in the cold
+art-injection path: a blocked `pc=0x800fe5d4` packet must not seed missing owner
+metadata. Splitting that behavior behind
+`PRESERVE_TEXTURE_OWNER_REBUILD_MISSING_OWNER` produces a clean cold checkpoint
+where target `0x9180:index0` is owned by the injected `pc=0x800fe7cc` payload
+instead of the float-heavy control owner:
+
+```text
+/tmp/gauntdl-rgb565-cleanowners-v5-f180-r3-20260710.warm
+logs/gauntlet/gauntdl-rgb565-cleanowners-v5-cold-f300-r3.log
+
+target=0x9180 owner=pc0x800fe7cc payload=0xAB7334A9
+frameHash=0x5907ac52
+```
+
+The baseline runner now accepts an optional target frame as its second
+argument. A serialized f300 state can therefore be advanced to f301/f320 in
+seconds for layout experiments instead of replaying f180 through f300 every
+time.
+
+The current injected targets are physically scattered by their live Voodoo
+LOD/base state, so the old contiguous `preferredatlas base=0` is not valid for
+that cold checkpoint. For visual comparison with the previously verified
+contiguous `ged@0x2000` surface, two additional default-off oracle controls
+were added:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_PHYSICAL_MIN=0
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_PHYSICAL_MAX=6000
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_TRUST_RETAINED_RANGE=1
+```
+
+The first freezes only the already verified physical RGB565 surface after the
+f180 reload. The second still requires an allowed/preferred art seed for format
+and filtering, but does not require every word in that explicit atlas range to
+have diagnostic owner metadata.
+
+The best current visual oracle uses native owner format, the current MAME-style
+setup/culling defaults, atlas base zero and `128x96` dimensions:
+
+```text
+logs/gauntlet/gauntdl-retained-frozen-rawatlas-nativefmt-f300-r1.log
+logs/gauntlet/gauntdl-retained-frozen-rawatlas-nativefmt-f300.png
+
+frameHash=0x4d68596b
+textured=399 covered=394 rejected=5
+```
+
+It shows a coherent dark arch/pillar region, reflections and the red/gold
+ornamental panel in the selected framebuffer. This is visually stronger than
+the earlier single-row proof, but remains a global diagnostic atlas rather
+than correct scene texture assignment.
+
+Negative controls matter:
+
+- forcing format `1` collapses the atlas back to the striped `0x59290373`
+  class because raw `0x8000` samples decode as zero in that diagnostic mode;
+- historical unsuppressed geometry raises textured work to `3173` but adds
+  banded primitives and is visually worse (`0x4d68596b` with broader noise);
+- the `base=0x3000,height=48` crop produces `0x29ff4d00` and more vertical
+  distortion, so base zero remains the best oracle.
+
+Next implementation boundary: use the serialized v5 map to derive a physical
+surface descriptor for each live low target family. Replace the global atlas
+with `(target,index)`-local base, width, height and native format, while using
+the `0x4d68596b` raw atlas only as a visual reference.

@@ -786,7 +786,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(4);
+        writer.Write(5);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -819,7 +819,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4))
+    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4 or 5))
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1067,6 +1067,7 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
     writer.Write(GetFieldValue<int>(backend, "_cmdFifoAddressMin"));
     writer.Write(GetFieldValue<int>(backend, "_cmdFifoAddressMax"));
     WriteUShortArray(writer, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
+    WriteTextureWriterMaps(writer, backend);
 }
 
 static void LoadVoodoo(BinaryReader reader, object facade, int version)
@@ -1109,6 +1110,115 @@ static void LoadVoodoo(BinaryReader reader, object facade, int version)
     }
     if (reader.BaseStream.CanSeek && reader.BaseStream.Position < reader.BaseStream.Length)
         ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
+    if (version >= 5)
+        ReadTextureWriterMaps(reader, backend);
+}
+
+static void WriteTextureWriterMaps(BinaryWriter writer, object backend)
+{
+    IDictionary writers = GetFieldValue<IDictionary>(backend, "_textureWordLastWriters");
+    var writerEntries = new List<DictionaryEntry>(writers.Count);
+    IDictionaryEnumerator writerEnumerator = writers.GetEnumerator();
+    while (writerEnumerator.MoveNext())
+        writerEntries.Add(writerEnumerator.Entry);
+    DictionaryEntry[] orderedWriters = writerEntries
+        .OrderBy(entry => (int)entry.Key)
+        .ToArray();
+    writer.Write(orderedWriters.Length);
+    foreach (DictionaryEntry entry in orderedWriters)
+    {
+        object value = entry.Value!;
+        writer.Write((int)entry.Key);
+        writer.Write((ulong)GetProperty(value, "Pc"));
+        writer.Write((uint)GetProperty(value, "Value"));
+        writer.Write((uint)GetProperty(value, "Mode"));
+        writer.Write((uint)GetProperty(value, "TexLod"));
+        writer.Write((uint)GetProperty(value, "TextureBase"));
+        writer.Write((uint)GetProperty(value, "Lod"));
+        writer.Write((int)GetProperty(value, "BytesPerTexel"));
+        writer.Write((bool)GetProperty(value, "Seq8Downld"));
+        writer.Write((bool)GetProperty(value, "Type5"));
+        writer.Write((uint)GetProperty(value, "Type5Command"));
+        writer.Write((uint)GetProperty(value, "Type5Space"));
+        writer.Write((uint)GetProperty(value, "Type5TargetStart"));
+        writer.Write((uint)GetProperty(value, "Type5TargetWord"));
+        writer.Write((uint)GetProperty(value, "Type5PayloadHash"));
+        writer.Write((int)GetProperty(value, "Type5PayloadNonZeroWords"));
+        writer.Write((int)GetProperty(value, "Type5PayloadFloatLikeWords"));
+        writer.Write((int)GetProperty(value, "Type5Index"));
+        writer.Write((int)GetProperty(value, "Type5Count"));
+        writer.Write((int)GetProperty(value, "PacketStart"));
+        writer.Write((int)GetProperty(value, "ReadIndex"));
+        writer.Write((bool)GetProperty(value, "Streaming"));
+    }
+
+    IDictionary targetWords = GetFieldValue<IDictionary>(backend, "_textureTargetIndexWords");
+    var targetEntries = new List<DictionaryEntry>(targetWords.Count);
+    IDictionaryEnumerator targetEnumerator = targetWords.GetEnumerator();
+    while (targetEnumerator.MoveNext())
+        targetEntries.Add(targetEnumerator.Entry);
+    DictionaryEntry[] orderedTargets = targetEntries
+        .OrderBy(entry => (uint)GetProperty(entry.Key, "TargetStart"))
+        .ThenBy(entry => (int)GetProperty(entry.Key, "Index"))
+        .ToArray();
+    writer.Write(orderedTargets.Length);
+    foreach (DictionaryEntry entry in orderedTargets)
+    {
+        writer.Write((uint)GetProperty(entry.Key, "TargetStart"));
+        writer.Write((int)GetProperty(entry.Key, "Index"));
+        writer.Write((int)entry.Value!);
+    }
+}
+
+static void ReadTextureWriterMaps(BinaryReader reader, object backend)
+{
+    IDictionary writers = GetFieldValue<IDictionary>(backend, "_textureWordLastWriters");
+    Type writerType = writers.GetType().GetGenericArguments()[1];
+    writers.Clear();
+    int writerCount = reader.ReadInt32();
+    if (writerCount < 0 || writerCount > 1_048_576)
+        throw new InvalidDataException($"Invalid texture writer count: {writerCount}");
+    for (int i = 0; i < writerCount; i++)
+    {
+        int wordOffset = reader.ReadInt32();
+        object value = Activator.CreateInstance(
+            writerType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args:
+            [
+                reader.ReadUInt64(), reader.ReadUInt32(), reader.ReadUInt32(), reader.ReadUInt32(),
+                reader.ReadUInt32(), reader.ReadUInt32(), reader.ReadInt32(), reader.ReadBoolean(),
+                reader.ReadBoolean(), reader.ReadUInt32(), reader.ReadUInt32(), reader.ReadUInt32(),
+                reader.ReadUInt32(), reader.ReadUInt32(), reader.ReadInt32(), reader.ReadInt32(),
+                reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(),
+                reader.ReadBoolean()
+            ],
+            culture: null) ?? throw new InvalidDataException("Could not restore texture writer metadata");
+        writers[wordOffset] = value;
+    }
+
+    IDictionary targetWords = GetFieldValue<IDictionary>(backend, "_textureTargetIndexWords");
+    Type keyType = targetWords.GetType().GetGenericArguments()[0];
+    targetWords.Clear();
+    int targetCount = reader.ReadInt32();
+    if (targetCount < 0 || targetCount > 1_048_576)
+        throw new InvalidDataException($"Invalid texture target count: {targetCount}");
+    for (int i = 0; i < targetCount; i++)
+    {
+        uint targetStart = reader.ReadUInt32();
+        int index = reader.ReadInt32();
+        int wordOffset = reader.ReadInt32();
+        object key = Activator.CreateInstance(
+            keyType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [targetStart, index],
+            culture: null) ?? throw new InvalidDataException("Could not restore texture target metadata");
+        targetWords[key] = wordOffset;
+    }
+
+    SetField(backend, "_textureWordLastWriterVersion", writerCount);
 }
 
 static void WriteByteArray(BinaryWriter writer, byte[] values)

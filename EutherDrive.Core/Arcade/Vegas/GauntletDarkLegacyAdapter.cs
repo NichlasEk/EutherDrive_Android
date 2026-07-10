@@ -31311,6 +31311,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_HEIGHT"), 0);
     private readonly uint _experimentFullrectSampleWriterLayoutArtOwnerPreferredAtlasBase =
         (uint)(ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_BASE")) ?? 0UL);
+    private readonly bool _experimentFullrectSampleWriterLayoutArtOwnerPreferredAtlasTrustRetainedRange =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_PREFERRED_ATLAS_TRUST_RETAINED_RANGE"));
     private readonly bool _traceFullrectSampleWriterLayoutArtOwnerUploadWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT_ART_OWNER_UPLOAD_WINDOW"));
     private readonly int _traceFullrectSampleWriterLayoutArtOwnerUploadWindowRadius =
@@ -31397,6 +31399,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_AGAINST_PCS"));
     private readonly int _experimentPreserveTextureOwnerTraceLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_TRACE_LIMIT"), 32);
+    private readonly bool _experimentPreserveTextureOwnerRebuildMissingOwner =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_OWNER_REBUILD_MISSING_OWNER"));
+    private readonly ulong? _experimentPreserveTexturePhysicalMin =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_PHYSICAL_MIN"));
+    private readonly ulong? _experimentPreserveTexturePhysicalMax =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_TEXTURE_PHYSICAL_MAX"));
     private readonly bool _visualizeZeroTextureFallback =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_VISUALIZE_ZERO_TEXTURE_FALLBACK"));
     private readonly bool _visualizeTexturedTriangleEdges =
@@ -33806,11 +33814,24 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void WriteTextureByte(uint byteOffset, byte value)
     {
-        uint wordOffset = (byteOffset & (TextureBytes - 1u)) >> 2;
+        uint physicalAddress = byteOffset & (TextureBytes - 1u);
+        uint wordOffset = physicalAddress >> 2;
+        if (_experimentPreserveTexturePhysicalMin.HasValue &&
+            _experimentPreserveTexturePhysicalMax.HasValue &&
+            physicalAddress >= _experimentPreserveTexturePhysicalMin.Value &&
+            physicalAddress < _experimentPreserveTexturePhysicalMax.Value)
+        {
+            TrackTextureMappedWrite((int)wordOffset, value);
+            return;
+        }
+
         if (ShouldPreserveTextureOwner((int)wordOffset, byteOffset, value))
         {
-            if (!_textureWordLastWriters.ContainsKey((int)wordOffset))
+            if (_experimentPreserveTextureOwnerRebuildMissingOwner &&
+                !_textureWordLastWriters.ContainsKey((int)wordOffset))
+            {
                 TrackTextureLastWriter((int)wordOffset);
+            }
             TrackTextureMappedWrite((int)wordOffset, value);
             return;
         }
@@ -41026,9 +41047,17 @@ sampledTexel:
              ((ulong)(atlasY * atlasWidth + atlasX) * 2UL)) &
             (TextureBytes - 1u));
         int wordOffset = (int)(byteAddress >> 2);
-        if (!TryGetFullrectWriterLayoutArtOwner(wordOffset, out TextureWordLastWriter owner) ||
-            !IsPreferredFullrectWriterLayoutArtOwner(owner) ||
-            IsRejectedFullrectWriterLayoutArtOwnerPayload(owner))
+        TextureWordLastWriter owner;
+        if (_experimentFullrectSampleWriterLayoutArtOwnerPreferredAtlasTrustRetainedRange)
+        {
+            IReadOnlyList<TextureWordLastWriter> seeds = GetFullrectPreferredSeedOwners();
+            if (seeds.Count == 0)
+                return false;
+            owner = seeds[0];
+        }
+        else if (!TryGetFullrectWriterLayoutArtOwner(wordOffset, out owner) ||
+                 !IsPreferredFullrectWriterLayoutArtOwner(owner) ||
+                 IsRejectedFullrectWriterLayoutArtOwnerPayload(owner))
         {
             return false;
         }

@@ -2,6 +2,7 @@
 set -eu
 
 ROM_PATH="${1:-/home/nichlas/roms/MAME/Midway/Vegas/gauntd}"
+TARGET_FRAMES="${2:-300}"
 CONFIGURATION="${EUTHERDRIVE_GAUNTDL_PROBE_CONFIG:-Release}"
 SNAPSHOT="${EUTHERDRIVE_GAUNTDL_WARMUP_STATE:-/tmp/eutherdrive-gauntlet-probe/gauntdl-qio-metadata-200m.warm}"
 EXTRA_SERIES="${EUTHERDRIVE_GAUNTDL_EXTRA_SERIES-1000000,5100000,20000000}"
@@ -33,7 +34,7 @@ export EUTHERDRIVE_GAUNTDL_WARMUP_STATE="$SNAPSHOT"
 export EUTHERDRIVE_GAUNTDL_EXTRA_SERIES="$EXTRA_SERIES"
 
 if [ -f "$DLL" ]; then
-    exec dotnet "$DLL" "$ROM_PATH" 300 0 0
+    exec dotnet "$DLL" "$ROM_PATH" "$TARGET_FRAMES" 0 0
 fi
 
-exec dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c "$CONFIGURATION" --no-restore -- "$ROM_PATH" 300 0 0
+exec dotnet run --project tools/GauntletProbe/GauntletProbe.csproj -c "$CONFIGURATION" --no-restore -- "$ROM_PATH" "$TARGET_FRAMES" 0 0
