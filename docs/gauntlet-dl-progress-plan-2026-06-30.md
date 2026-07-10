@@ -12149,9 +12149,8 @@ source in `s3`. This record instead uses an earlier writer at
 the original base retained in `t2` and `sp+0x6c`. The default trace window now
 begins at `0xfe4b0`, and its source filter matches both writer ABIs.
 
-The corrected trace also changes the record classification. `0x802ed410` is
-not rejected and is not a texture image. It is float-heavy model/vertex data
-sent to the Voodoo FIFO as repeating packets:
+The corrected trace proves that `0x802ed410` is not rejected. It is sent to the
+Voodoo FIFO as repeating packets:
 
 ```text
 header=0xc000000d
@@ -12161,17 +12160,51 @@ next target=0x00030080, then 0x00030100
 ```
 
 The source begins `bda7396d/be751600/3f77adcc/03000018`; the first three words
-are plausible floats. The physical target advances by `0x80` words for each
-record while the payload pointer advances four bytes. This is geometry/setup
-traffic, not a missing Type5 texture upload. The unchanged frame hash confirms
-the new code is diagnostic only.
+are float-like. The physical target advances by `0x80` words for each record
+while the payload pointer advances four bytes. MAME's current Voodoo 2 command
+FIFO reference confirms `command & 7 == 5` is Type5 and `space == 3` writes the
+texture port. Therefore this is texture-port traffic despite the float-like
+payload; do not classify it as Type3 geometry from its source bytes alone. The
+unchanged frame hash confirms the tracing code itself is diagnostic only.
 
 Next continuation point:
 
-1. Follow the `0xc000000d` setup packet from FIFO decode to the direct/setup
-   triangle coordinate registers.
-2. Compare the source floats with the coordinates reported by
-   `VOODOO-IMPLAUSIBLE-SETUP-TRI-IGNORE`; determine whether the corruption is
-   target-register interpretation, fixed-point conversion, or packet stride.
-3. Do not bypass this writer or remap `0x802ed410` into texture memory. Its
-   observed role is valid geometry traffic.
+1. Keep `0x802ed410` on the Type5 texture path and determine which texture
+   format/base state owns targets `0x30000`, `0x30080`, and `0x30100`.
+2. Correlate those physical writes with the texture addresses sampled by the
+   newly restored setup triangles.
+3. Do not bypass this writer or remap it into a different packet family.
+
+## 2026-07-10 - MAME setup-coordinate and culling parity
+
+Focused Type3 field tracing for the first suppressed packet shows the FIFO is
+correctly framed and the large coordinates are present in the source packet:
+
+```text
+logs/gauntlet/gauntdl-type3-implausible-first-fields-r1.log
+cmd=0x0180a8cb words=19 packetStart=0x88
+v0=(256,-16487) v1=(49588,126) v2=(256,126)
+```
+
+MAME's Voodoo 2 reference converts setup XY with `s16(vertex * 16)` before the
+rasterizer and applies culling to the original float vertices. EutherDrive
+already implemented both operations, but they were explicit-only flags and
+therefore disabled in the normal bringup profile. A current f180 A/B verifies
+their combined behavior:
+
+```text
+logs/gauntlet/gauntdl-setup-coordinate-wrap-f180-r2.log
+logs/gauntlet/gauntdl-setup-wrap-culling-f180-r1.log
+
+old guarded path: textured=69 covered=64 rejected=5 pixels=6275072
+wrap only:       textured=3173 covered=394 rejected=2779 pixels=10925012
+wrap+culling:    textured=399 covered=394 rejected=5 pixels=10925012
+frameHash=0xe806de53 in all three runs
+```
+
+`SETUP_VERTEX_COORDINATE_WRAP` and `SETUP_CULLING` now use the bringup-fix
+default, while each remains independently overridable through its environment
+variable. This restores 330 covered triangles that the implausible-coordinate
+guard previously discarded and culls 2774 offscreen/back-facing triangles
+before rasterization. The unchanged selected-frame hash means the next blocker
+is texture/display ownership, not Type3 packet framing.
