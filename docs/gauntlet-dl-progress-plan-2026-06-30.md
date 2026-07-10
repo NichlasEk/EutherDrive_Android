@@ -11938,3 +11938,66 @@ Current boundary: the dominant remaining problem is geometry/coverage. At f300
 only 393 of 3173 textured triangles cover pixels; 2780 are rejected, including
 2447 by clipping and 331 as empty. The next slice should trace/fix the clipped
 Type3/fullrect vertex and viewport path before further texture-layout tuning.
+
+### 2026-07-10 Geometry Reject Reclassification
+
+A 500-entry reject trace from the current f180 checkpoint shows that the large
+clip count is not missing scene geometry. Every captured reject has the same
+signature:
+
+```text
+reason: clip=423, empty-raster=77
+cmd=0x0180A8CB: 500/500
+pc=0x800c4e5c: 500/500
+clip=(0,41)-(640,645): 500/500
+rawxy=0x432B87D1/0x473FB400: 500/500
+```
+
+Representative decoded vertices are payload-like fullrect work far outside the
+viewport:
+
+```text
+xy=(0,-16614)/(49076,0)/(0,0)
+xy=(49076,382)/(0,-16231)/(49076,-16231)
+```
+
+Artifacts:
+
+```text
+logs/gauntlet/gauntdl-f180-f300-geometry-rejects-r1.log
+```
+
+The existing setup-coordinate-wrap control changes those float coordinates to
+12.4-style wrapped values and reduces textured raster work from about 42.1M to
+5.5M pixels, but the strict physical-owner framebuffer is visually unchanged:
+
+```text
+logs/gauntlet/gauntdl-gedrgb565-targetlookup-setupwrap-f300.png
+```
+
+More importantly, the existing implausible setup-triangle suppressor is
+pixel-neutral on the current checkpoint while removing almost all stale work:
+
+```text
+baseline:
+  frameHash=0xe806de53
+  runMs=34572.1
+  textured=3173/covered393/rejected2780/clip2447/empty331
+
+suppressed:
+  frameHash=0xe806de53
+  runMs=26757.5
+  textured=69/covered64/rejected5/clip1/empty2
+```
+
+The probe runner now enables
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES=1`
+by default, while respecting an explicit environment override. This changes
+only the diagnostic runner, not the emulator default, and makes the current
+f180->f300 iteration roughly 22 percent faster without changing pixels.
+
+Revised boundary: the `clip=2447` headline was stale command/payload workload,
+not the visible blocker. Return focus to the real remaining issue: the same
+injected `ged@0x2000` source is being used across unrelated target/asset pages.
+The next graphics slice should recover per-descriptor CHD payload identity and
+offset instead of applying one proof texture to every target.
