@@ -867,6 +867,14 @@ internal sealed class MipsR5000Core
         .ToLowerInvariant();
     private readonly ulong _runtimeBgLoadModelTextureSourceGlobalRemapBodyOffset =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_GLOBAL_REMAP_BODY_OFFSET") ?? 0UL;
+    private readonly ulong? _runtimeTextureUploadGlobalSourceIndex =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEXTURE_UPLOAD_GLOBAL_SOURCE_INDEX");
+    private readonly string _runtimeTextureUploadGlobalSourceTarget =
+        (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEXTURE_UPLOAD_GLOBAL_SOURCE_TARGET") ?? "header")
+        .Trim()
+        .ToLowerInvariant();
+    private readonly ulong _runtimeTextureUploadGlobalSourceBodyOffset =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEXTURE_UPLOAD_GLOBAL_SOURCE_BODY_OFFSET") ?? 0UL;
     private readonly ulong _runtimeBgLoadModelTextureSourceLimitStackRemapIndexMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_LIMIT_STACK_REMAP_INDEX_MASK") ?? 0UL;
     private readonly uint _runtimeBgLoadModelTextureSourceLimitStackRemapDescriptorSource =
@@ -1167,6 +1175,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
     private int _runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount;
     private int _runtimeBgLoadModelTextureSourceGlobalRemapTraceCount;
+    private int _runtimeTextureUploadGlobalSourceRemapTraceCount;
     private int _runtimeBgLoadModelTextureSourceLimitStackRemapTraceCount;
     private int _runtimeBgLoadModelTextureSourceCallA3RemapTraceCount;
     private int _runtimeBgLoadModelTextureSourceCallA3RemapMissTraceCount;
@@ -1439,6 +1448,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
         ApplyKnownRuntimeBgLoadModelTextureSourceCallA3Remap(pc);
         ApplyKnownRuntimeBgLoadModelTextureSourceGlobalRemap(pc);
+        ApplyKnownRuntimeTextureUploadGlobalSourceRemap(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
@@ -15013,6 +15023,49 @@ internal sealed class MipsR5000Core
             }
 
             return;
+        }
+    }
+
+    private void ApplyKnownRuntimeTextureUploadGlobalSourceRemap(ulong pc)
+    {
+        const ulong uploadCallPc = 0xffffffff800afd04UL;
+        const ulong indexedSourceBase = 0xffffffff802e1718UL;
+
+        if (!_runtimeTextureUploadGlobalSourceIndex.HasValue || pc != uploadCallPc)
+            return;
+
+        ulong index = _runtimeTextureUploadGlobalSourceIndex.Value;
+        if (index == 0 || index > KnownRuntimeBgLoadModelTexturePayloadMaxIndex || index >= 64UL)
+            return;
+
+        ulong original = _gpr[4];
+        if (original != indexedSourceBase)
+            return;
+
+        ulong header = indexedSourceBase + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
+        if (!IsMainRamRange(header + 0x60UL, 4UL) ||
+            !TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out _))
+        {
+            return;
+        }
+
+        uint bodyOffset = _memory.Read32(header + 0x5cUL);
+        ulong body = header + bodyOffset;
+        bool useBody = _runtimeTextureUploadGlobalSourceTarget == "body";
+        ulong replacement = useBody ? body + _runtimeTextureUploadGlobalSourceBodyOffset : header;
+        if ((useBody && bodyOffset == 0) || !IsMainRamRange(replacement, 4UL))
+            return;
+
+        _gpr[4] = replacement;
+        if (_runtimeTextureUploadGlobalSourceRemapTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] runtime-texture-upload-global-source-remap pc={pc:x16} " +
+                $"index={index} code={code} target={(useBody ? "body" : "header")} " +
+                $"bodyOffset=0x{bodyOffset:x} bodyOffsetAdd=0x{(useBody ? _runtimeTextureUploadGlobalSourceBodyOffset : 0UL):x} " +
+                $"a0={original:x16}->{replacement:x16} header={header:x16} body={body:x16} " +
+                $"first={ReadTraceWord(replacement):x8}/{ReadTraceWord(replacement + 0x04UL):x8}/" +
+                $"{ReadTraceWord(replacement + 0x08UL):x8}/{ReadTraceWord(replacement + 0x0cUL):x8}");
         }
     }
 

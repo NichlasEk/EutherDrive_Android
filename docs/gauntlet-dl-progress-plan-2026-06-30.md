@@ -12001,3 +12001,83 @@ not the visible blocker. Return focus to the real remaining issue: the same
 injected `ged@0x2000` source is being used across unrelated target/asset pages.
 The next graphics slice should recover per-descriptor CHD payload identity and
 offset instead of applying one proof texture to every target.
+## 2026-07-10 - Global upload source ownership check
+
+The clean f180 snapshot's direct Type5 writer source was traced one level
+farther upstream. A filtered producer run is in:
+
+```text
+logs/gauntlet/gauntdl-source-802e1718-producer-r1.log
+```
+
+The important load is not the older `0x800fe228` upload selector. The active
+call chain loads the source directly from a game global:
+
+```text
+pc=0x800afd00: lw a0,[0x801620c4]
+pc=0x800afd04: jal 0x800af744
+global 0x801620c4 = 0x802e1718
+```
+
+A cold f0->f180 Main RAM write watch captured the ownership of that global:
+
+```text
+logs/gauntlet/gauntdl-global-source-watch-cold-f180-r1.log
+
+pc=0x800af274: sw s0,[0x801620c4]
+old=0x00000000 new=0x802e1718
+ra=0x800af3e8 a1=0 s0=0x802e1718
+```
+
+The surrounding code shows this is the first successfully allocated bundle
+object becoming the default global when the list is empty. It is not an asset
+table alias accidentally copied into the Voodoo writer. Consequently, replacing
+`0x802e1718` blindly with a CHD body pointer skips bundle structure that the
+upload service expects.
+
+Added a default-off call-site probe for testing that conclusion without
+persistently rewriting the global:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEXTURE_UPLOAD_GLOBAL_SOURCE_INDEX=...
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEXTURE_UPLOAD_GLOBAL_SOURCE_TARGET=header|body
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEXTURE_UPLOAD_GLOBAL_SOURCE_BODY_OFFSET=...
+```
+
+Index-1 `gei` body control:
+
+```text
+logs/gauntlet/gauntdl-global-upload-index1-body-f300.log
+logs/gauntlet/gauntdl-global-upload-index1-body-f300.png
+body=0x802ed7e8 bodyOffset=0xa0d0
+frameHash=0xe0d35bbf
+textured=tri:0
+visual=large flat cyan/white polygons, no scene art
+```
+
+Index-9 `wtr` header control:
+
+```text
+logs/gauntlet/gauntdl-global-upload-index9-header-f300.log
+logs/gauntlet/gauntdl-global-upload-index9-header-f300.png
+header=0x802f3718 bodyOffset=0x2001a
+first=bd7a1433/41cc0000/42e60000/0000fffc
+frameHash=0xe0d35bbf
+textured=tri:0
+```
+
+The WTR words are not a plausible header. This is consistent with the already
+known `0x2000` indexed-source overlap; the earlier `0x20000` stride experiment
+removed that overlap but was also visually negative. Do not promote either the
+new call-site remap or the larger stride from this evidence.
+
+Current conclusion and next continuation point:
+
+1. The Type5 decoder's `space=3` interpretation matches MAME; this packet family
+   really does write texture memory.
+2. The global source points at a bundle base by design. Header/body substitution
+   destroys the upload service's expected structure and is not a graphics fix.
+3. Trace the bundle records consumed inside `0x800af744..0x800af9xx`, especially
+   the fields that turn the bundle base into the per-page `s3` source passed to
+   `0x800fe1fc`. The next repair must preserve the bundle and correct its
+   asset-local texel offset/type, not replace the bundle pointer wholesale.
