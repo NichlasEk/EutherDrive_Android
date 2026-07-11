@@ -2185,7 +2185,9 @@ static void DumpVoodooColorBuffers(object voodoo)
     ushort[][] colorBuffers = GetFieldValue<ushort[][]>(backend, "_colorBuffers");
     int width = 640;
     int height = 480;
-    int stridePixels = 1024;
+    int stridePixels = ParsePositiveInt(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFER_STRIDE"),
+        1024);
     for (int index = 0; index < colorBuffers.Length; index++)
     {
         ushort[] buffer = colorBuffers[index];
