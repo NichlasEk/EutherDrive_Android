@@ -13125,3 +13125,23 @@ must remain diagnostic-only. This closes the class-by-class approach: the next
 implementation must use one generation-aware packet map and retire/integrate
 the four independent trackers, so body ownership is accepted only when header,
 body, and consumer read pointer belong to the same write generation.
+
+### Standard FIFO generation model checkpoint
+
+A new default-off standard-path generation model keeps producer and consumer
+indices unmasked while using the existing 64K-word storage ring:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS=1
+```
+
+Readiness requires the slot's stored logical index to match the consumer's
+logical generation. The first f700 control stopped with `cmdrd=0`, proving that
+masked control flow was still resetting the consumer generation. External
+`cmdFifoRdPtr` writes are now aligned to the current producer generation, and
+Type0 local jumps preserve the current consumer generation (advancing one
+generation on a true ring wrap).
+
+The implementation builds successfully and remains default-off. Next rerun the
+clean f520-to-f700 oracle with only this flag before combining it with any
+class-specific ownership probes.

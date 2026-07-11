@@ -31101,6 +31101,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE5_PRODUCER_BODY_HEADER"));
     private readonly bool _experimentCommandFifoStopOnUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_STOP_ON_UNKNOWN"));
+    private readonly bool _experimentStandardCommandFifoGenerations =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
@@ -31783,7 +31785,10 @@ internal class VoodooBringupBackend : IVoodooBackend
                 SwapBuffers(value);
                 break;
             case RegCmdFifoRdPtr:
-                SetCommandFifoReadIndex(DecodeCommandFifoReadIndex((int)(value >> 2)), "reg-rdptr");
+                int registerReadIndex = (int)(value >> 2);
+                if (!_fixMameCommandFifoModel && _experimentStandardCommandFifoGenerations)
+                    registerReadIndex = CommandFifoStorageIndex(registerReadIndex) + _cmdFifoWriteGenerationBase;
+                SetCommandFifoReadIndex(DecodeCommandFifoReadIndex(registerReadIndex), "reg-rdptr");
                 _cmdFifoReadPointerWritten = true;
                 TraceCommandFifoModel($"reg rdptr value=0x{value:x8}");
                 if (!_decodingCommandFifo)
@@ -32096,7 +32101,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             return baseLocalIndex + generations * CmdFifoWords;
         }
 
-        if (!_fixMameCommandFifoModel || !_experimentMameCommandFifoTrackWriteGeneration)
+        if (!_fixMameCommandFifoModel && !_experimentStandardCommandFifoGenerations)
+            return baseLocalIndex;
+        if (_fixMameCommandFifoModel && !_experimentMameCommandFifoTrackWriteGeneration)
             return baseLocalIndex;
 
         if (_cmdFifoLastWriteStorageIndex >= 0 &&
@@ -35191,7 +35198,12 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool IsCommandFifoPacketReady()
     {
         if (!_fixMameCommandFifoModel)
-            return _cmdFifoValid[_cmdFifoReadIndex & CmdFifoMask];
+        {
+            int storageIndex = CommandFifoStorageIndex(_cmdFifoReadIndex);
+            return _cmdFifoValid[storageIndex] &&
+                   (!_experimentStandardCommandFifoGenerations ||
+                    _cmdFifoStorageLogicalIndex[storageIndex] == _cmdFifoReadIndex);
+        }
 
         if (_cmdFifoDepth <= 0)
         {
@@ -35371,7 +35383,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         if (_fixMameCommandFifoModel && _experimentMameCommandFifoWrapReadToWindow)
             return WrapCommandFifoReadIndexToWindow(value);
-        return _fixMameCommandFifoModel && !_experimentMameCommandFifoMaskReadIndex
+        return ((_fixMameCommandFifoModel && !_experimentMameCommandFifoMaskReadIndex) ||
+                (!_fixMameCommandFifoModel && _experimentStandardCommandFifoGenerations))
             ? value
             : CommandFifoStorageIndex(value);
     }
@@ -35743,6 +35756,16 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private int DecodeCommandFifoLocalJumpTarget(int target)
     {
+        if (!_fixMameCommandFifoModel && _experimentStandardCommandFifoGenerations)
+        {
+            int currentStorage = CommandFifoStorageIndex(_cmdFifoReadIndex);
+            int generationBase = _cmdFifoReadIndex & ~CmdFifoMask;
+            int targetStorage = CommandFifoStorageIndex(target);
+            if (targetStorage < currentStorage && currentStorage - targetStorage > CmdFifoWords / 2)
+                generationBase += CmdFifoWords;
+            return generationBase + targetStorage;
+        }
+
         // MAME builds a byte target from these bits and divides back to a word index.
         int wordTarget = target;
         return _fixMameCommandFifoModel && _experimentMameCommandFifoMaskLocalJump
