@@ -273,3 +273,20 @@ ett godtyckligt payloadord.
 - Both node fields are intentional; substituting `+0x18` for `+0x20` would
   conflate the node's asset and font-object roles. Continue through the font
   object's own `+0x08 -> +0x0c` representation and its upload consumer.
+
+## Cold generations rebaseline
+
+- The late `0x80312998` page-selection path does not execute again in either
+  f180->f300 or f520->f700 CPU traces. The texture-write count also stays fixed
+  at 55,183 through the non-generation f180->f300 control.
+- A checkpoint produced with standard FIFO generations enabled from cold boot
+  (`/tmp/gauntdl-target-cold-f520-20260711.warm`) reaches f700 cleanly with
+  `frameHash=0xf4659d04`.
+- That run has only 7,628 non-black framebuffer pixels and 20 covered textured
+  triangles, versus the fully colored/noisy old warm-f520 continuation. The
+  old late font upload was therefore substantially inherited FIFO state from a
+  snapshot created without generation tracking.
+- Stop treating the old warm-f520 noise frame as the canonical visual oracle.
+  Continue from the cold-generation checkpoint and identify why its small set
+  of legitimate primitives lacks complete texture and coverage. Keep the old
+  snapshot only as a regression control for FIFO migration behavior.
