@@ -31239,6 +31239,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH"));
     private readonly bool _experimentTextureUseLodMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_USE_LOD_MIN"));
+    private readonly int _experimentTextureSampleFormatOverride =
+        ParseOptionalInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_FORMAT_OVERRIDE"),
+            -1);
     private readonly bool _experimentFullrectSampleWriterLayout =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FULLRECT_SAMPLE_WRITER_LAYOUT"));
     private readonly string _experimentFullrectSampleWriterLayoutCoordMode =
@@ -39723,7 +39727,9 @@ sampledTexel:
         uint mode = ReadTextureSampleRegister(RegTextureMode);
         uint lod = ReadTextureSampleRegister(RegTextureLod);
         uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
-        int format = (int)((mode >> 8) & 0x0fu);
+        int format = _experimentTextureSampleFormatOverride is >= 0 and <= 15
+            ? _experimentTextureSampleFormatOverride
+            : (int)((mode >> 8) & 0x0fu);
         int targetLod = GetTextureTargetLod(lod);
         uint sampleBase = GetTextureBaseAddress(registerBase);
         if (_textureSampleBaseBias != 0)
@@ -40116,7 +40122,9 @@ sampledTexel:
         uint textureLod = ReadTextureSampleRegister(RegTextureLod);
         uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int targetLod = GetTextureTargetLod(textureLod);
-        int format = (int)((mode >> 8) & 0x0fu);
+        int format = _experimentTextureSampleFormatOverride is >= 0 and <= 15
+            ? _experimentTextureSampleFormatOverride
+            : (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = IsTextureFormat16Bit(format);
         int width;
         int height;

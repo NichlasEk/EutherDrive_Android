@@ -12525,3 +12525,45 @@ is a clean red background with the two texture strips. All three Voodoo color
 buffers contain substantial distinct raster data at f520, so the next pass
 should dump and compare buffers 0/1/2 directly before changing more geometry
 or texture logic.
+
+### f520 buffer and active-texture ownership profile
+
+Direct dumps of all three Voodoo color buffers rule out a hidden completed
+scene. Buffers 0 and 1 contain the same two texture strips over different clear
+colors; buffer 2 contains only simple solid wedges. Changing the presentation
+buffer is therefore not a graphics fix.
+
+A one-frame run from the v5 f520 checkpoint isolates the active Type3 quad
+family:
+
+```text
+logs/gauntlet/gauntdl-f521-textured-profile-r1.log
+logs/gauntlet/gauntdl-f521-texture-owner-profile-r1.log
+
+geometry=(256,153)-(436,382) and (256,-103)-(436,126)
+cmd=0x0180A8CB words=19 pc=0x800c4e5c
+texture base=0x0264F0 size=256x256 format=0
+sample range=0x0264F0..0x030FEF
+```
+
+The geometry is stable and screen-sized rather than another payload decode.
+The visible strips come from texture coverage: individual triangles sample
+6,238 to 20,610 pixels, but 70 to 98 percent decode as zero. Writer summaries
+show that most addresses have no owner at all. The owned minority belongs to
+`pc=0x800fe614`, `cmd=0xC0000205`, primarily targets `0x300`, `0x380`, `0x400`,
+`0xb80`, `0xd00`, and `0xe80`.
+
+A default-off sampler format override was added for a direct descriptor-format
+control:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_FORMAT_OVERRIDE=10
+logs/gauntlet/gauntdl-f521-format10-r1.log
+```
+
+Forcing Voodoo RGB565 changes the hash from `0x51641411` to `0xb3b1864d`, but
+only turns the strips into denser noise and colored bands. Format 0 remains the
+best interpretation for this active surface. The next blocker is upload
+coverage: trace why the `pc=0x800fe614` page stream leaves most of
+`0x0264F0..0x030FEF` unwritten, starting at the bundle-record page loop rather
+than changing FIFO framing, geometry, or display-buffer selection.
