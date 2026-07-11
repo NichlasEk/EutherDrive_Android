@@ -12567,3 +12567,44 @@ best interpretation for this active surface. The next blocker is upload
 coverage: trace why the `pc=0x800fe614` page stream leaves most of
 `0x0264F0..0x030FEF` unwritten, starting at the bundle-record page loop rather
 than changing FIFO framing, geometry, or display-buffer selection.
+
+### Descriptor upload isolation and index-9 hydration control
+
+A cold Type5 sequence trace shows that the apparent holes between
+`pc=0x800fe614` packets are not physical texture holes. Targets advance by
+`0x80` words while the sequential 8-bit texture-port mapping converts them to
+adjacent rows. The active run covers rows 0 through 31, but its payload is the
+already identified descriptor/scenegraph stream rather than texture data.
+
+Blocking all `pc=0x800fe614` low-target writes is not a repair:
+
+```text
+logs/gauntlet/gauntdl-preserve-against-e614-f180-r1.log
+frameHash=0x9ac85dc5
+textured=132 covered=132 zero=2108700/2108700
+visual=solid white
+```
+
+The standard probe profile hydrates indices 1 through 8 (`mask=0x1fe`, stream
+limit 9), immediately before the active `font_story` index 9. A cold control
+including index 9 uses `mask=0x3fe` and stream limit 10:
+
+```text
+logs/gauntlet/gauntdl-index9-hydrated-f180-r1.log
+logs/gauntlet/gauntdl-index9-hydrated-f300-r1.log
+
+f180 frameHash=0xeb895509 zero=1779756/2108700
+f300 frameHash=0x23cbe645 zero=6601296/7976880
+```
+
+This proves the extra hydration is active: the background changes from white
+to black and nonzero texture coverage rises. It still renders only the two
+noise/band strips, and f300 adds a large magenta solid polygon. Do not promote
+index 9 into the baseline.
+
+The runtime remains at `Loading Game.` throughout both controls and repeatedly
+reports `render-record-null-body`. The visible quads are loading-screen work,
+not the castle scene. The next repair boundary is therefore the render-record
+body/asset completion path: identify which record body slots remain null and
+connect them to their QIO request/result before attempting more sampler,
+format, target-remap, source-stride, or global-source experiments.
