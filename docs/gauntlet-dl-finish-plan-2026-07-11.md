@@ -361,3 +361,30 @@ ett godtyckligt payloadord.
 - `run-gauntdl-baseline.sh` now permits explicit overrides of the historical
   base-shift and sample-bias controls so current-FIFO A/B runs are reproducible;
   defaults remain unchanged.
+
+## Warm-snapshot and late-loading checkpoint
+
+- Warm snapshot format v6 now persists the standard-FIFO logical generation,
+  packet ownership, complete-header set, write sequence, and producer state.
+  The populated-producer save path was round-trip tested after replacing an
+  invalid `DictionaryEntry` cast with deterministic key enumeration.
+- A v6 f700-to-f1800 run changes from `0x6938e29c` to `0xf50c22e3` around
+  f1100. The runtime starts another world-model/QIO wave, but the visible frame
+  stabilizes as larger noisy strips rather than recognizable scene art.
+- Repairing repeated asset aliases gives slots 1..8 distinct sources and names
+  (`gei`, `snm`, `stk`, `kjh`, `pnk`, `geb`, `nin`, `stg`). This corrects the
+  table but does not change the late frame hash.
+- Extending the indexed stream limit to 27 and seeding full known payloads
+  increases draw/upload traffic but still retains `frameHash=0xf50c22e3` at
+  f1300. The stream limit in the probe script is now overridable for focused
+  controls; its default remains 9.
+- A cold TMU trace shows `tLOD=0xff802000` is produced by normal Glide TMU
+  programming, including earlier `0xffffffff`/`0xfffc2fff` states and later
+  packet-local values. It is not another wrapped FIFO register corruption.
+  MAME setup gradients plus fixed fetch only turn the same surface into denser
+  bands (`frameHash=0x4ee884e8`), so that control remains default-off.
+- The next blocker is the payload content feeding the active Type5 page stream:
+  sampled pages are owned by `pc=0x800fe5d4` and are predominantly zero or
+  sparse control-like words. Trace the source cursor and descriptor selected
+  for that writer after the late world-QIO transition; do not add more sampler
+  transforms or promote full-payload hydration.
