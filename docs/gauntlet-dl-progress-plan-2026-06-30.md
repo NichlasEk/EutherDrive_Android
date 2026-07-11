@@ -13062,3 +13062,32 @@ teal rectangles with a black right margin and white lower strip, but it is not
 a recognizable scene. This proves Type4 body re-entry owns the
 `0x0104824c` layer; keep the controls diagnostic-only. Next profile this cleaned
 frame, then replace the class-specific trackers with one packet-generation map.
+
+### Type3/4/5 residual Type1 owner
+
+The combined pixel/FIFO-PC profile identifies the clean rectangular residual:
+
+```text
+logs/gauntlet/gauntdl-f700-type345-residual-profile-r1.log
+frameHash=0x3aa482df
+
+dominant all buffers:
+  pc=0x800fe60c
+  cmd=0x1fffbca9 type=1 words=8192
+  fill=fastfill/swapclear plus solid itri
+```
+
+The remaining real setup geometry is still `cmd=0x0180a8cb` at
+`pc=0x800c4e5c`. Adding `0x1fffbca9` to the exact implausible-Type1 stop filter
+confirms ownership but parks the consumer before Type4 advance can expose later
+work:
+
+```text
+logs/gauntlet/gauntdl-f700-type345-stop-type1s-r1.log
+frameHash=0xb412651a
+```
+
+That run returns to the prior red-line residual and is not a fix. Next implement
+Type1 producer-body ownership with the Type4 rule: an active sequential body
+must take precedence over a payload word that resembles a Type1 header. Advance
+to the recorded packet end; do not add more stop commands.
