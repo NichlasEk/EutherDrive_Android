@@ -31083,6 +31083,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_YIELD_AFTER_TEXTURE_BATCH"));
     private readonly bool _experimentMameCommandFifoDeferWriteDecode =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DEFER_WRITE_DECODE"));
+    private readonly ulong[] _experimentCommandFifoDeferWriteDecodePcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_DEFER_WRITE_DECODE_PCS"));
     private readonly bool _experimentMameCommandFifoWrapClear =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_WRAP_CLEAR"));
     private readonly bool _experimentMameCommandFifoWrapClearInvalidRead =
@@ -32014,7 +32016,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoReadPointerWritten = true;
         }
 
+        ulong writePc = CpuPcProvider?.Invoke() ?? 0;
+        bool deferWriteDecodeForPc = _experimentCommandFifoDeferWriteDecodePcs.Any(
+            candidate => (candidate & 0xffffffffUL) == (writePc & 0xffffffffUL));
         if (_cmdFifoBulkWriteDepth == 0 &&
+            !deferWriteDecodeForPc &&
             (!_fixMameCommandFifoModel || !_experimentMameCommandFifoDeferWriteDecode))
         {
             if (ShouldResyncCommandFifoOutsideStaleWriteRead(out string outsideStaleWriteResyncReason))

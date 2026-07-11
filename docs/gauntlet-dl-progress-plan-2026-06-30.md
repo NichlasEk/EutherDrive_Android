@@ -12733,3 +12733,48 @@ Revised implementation boundary: trace the CPU/MMIO address and aperture mode
 for `0x801031a8` writes, then route FIFO-storage writes without executing their
 payload as direct Voodoo registers/LFB commands. Do not broaden packet skips or
 add more triangle suppression for this class.
+
+### f520-to-f700 FIFO service-boundary controls
+
+The signed CPU trace shows that `0x80103190`, `0x8010319c`, and `0x801031a8`
+are the three stores in one sequential copy loop. They write through guest
+addresses `0xffffffffa820a9e8` and onward, which the PCI adapter classifies as
+the Voodoo command-FIFO aperture. Values include `0xffffffff`, float payloads,
+and the retained `0x432b87d1` context word.
+
+Activating the MAME FIFO model together with deferred write decode changes the
+late frame but does not recover graphics:
+
+```text
+logs/gauntlet/gauntdl-f700-mamefifo-defer-r1.log
+frameHash=0x100db4ce
+direct/setup=443/203
+fastFills=577
+cmdstop=depth at reg-rdptr service
+```
+
+The image becomes an almost entirely brown framebuffer. This agrees with the
+older f260 MAME-FIFO controls: deferred service only moves consumption to the
+next boundary while the same structurally wrong stream remains visible.
+
+A new default-off, PC-filtered control can defer standard FIFO write decode:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_DEFER_WRITE_DECODE_PCS=80103190,8010319c,801031a8
+```
+
+Deferring all three stores in the loop is bit-identical to the clean late
+baseline:
+
+```text
+logs/gauntlet/gauntdl-f700-defer-1031loop-r1.log
+frameHash=0xe233b66f
+direct/setup=444/203
+fastFills=702
+```
+
+Therefore the solid late frame is not caused by servicing between those three
+stores. The next useful boundary is aperture/window ownership: establish which
+guest-programmed command-FIFO base and range are active when `0xa820xxxx` is
+written, and compare that range with the adapter's unconditional masked
+`(offset >> 2) & 0xffff` routing before changing decode scheduling again.
