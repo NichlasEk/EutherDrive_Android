@@ -12702,3 +12702,34 @@ The next focused blocker is the solid-polygon owner at f700. Trace the final
 writers for the red/brown background, green top wedge and red vertical wedge,
 including command packet and register state, before changing more texture
 upload ownership.
+
+### f520-to-f700 framebuffer last-writer ownership
+
+Profiling pixel ownership only after loading f700 is misleading because the
+large colored regions are retained from the transition. A profile covering
+the complete f520-to-f700 run identifies their actual last writers:
+
+```text
+logs/gauntlet/gauntdl-f520-f700-pixel-writers-r1.log
+
+buffer 0 dominant:
+  pc=0x801031a8 fill fastfill color=0x0411
+  pc=0x801031a8 solid itri/ftri
+buffer 1 dominant:
+  pc=0x801027cc fill fastfill color=0xffff
+buffer 2 dominant:
+  pc=0x801031a8 fill fastfill color=0x8100
+  pc=0x801031a8 solid itri color=0x5fe0/0xf800
+```
+
+The `pc=0x801031a8` entries retain command context
+`0x432b87d1/count=17196`, but an explicit filtered payload-Type1 skip does not
+fire and leaves all counters and output unchanged. These writes occur through
+the framebuffer/FIFO aperture before the packet decoder can reject that
+header; the command value is context, not an independently skippable packet at
+this point.
+
+Revised implementation boundary: trace the CPU/MMIO address and aperture mode
+for `0x801031a8` writes, then route FIFO-storage writes without executing their
+payload as direct Voodoo registers/LFB commands. Do not broaden packet skips or
+add more triangle suppression for this class.
