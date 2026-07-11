@@ -33990,6 +33990,14 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 byteOffset = packetBlockByteOffset;
             }
+            if (_currentType5TextureWriteActive)
+            {
+                int physicalWord = (int)((byteOffset & (TextureBytes - 1u)) >> 2);
+                if (_currentType5TextureWritePhysicalMinWord < 0 || physicalWord < _currentType5TextureWritePhysicalMinWord)
+                    _currentType5TextureWritePhysicalMinWord = physicalWord;
+                if (physicalWord > _currentType5TextureWritePhysicalMaxWord)
+                    _currentType5TextureWritePhysicalMaxWord = physicalWord;
+            }
             TraceTextureWriteBucket(wordOffset, byteOffset, value, mode, texLod, textureBase, lod, ts, tt, bytesPerTexel, seq8Downld);
 
             if (bytesPerTexel == 1)

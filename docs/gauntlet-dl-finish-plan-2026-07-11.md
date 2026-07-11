@@ -648,6 +648,23 @@ ett godtyckligt payloadord.
   QIO path and diagnose the standard-generation FIFO consumer/presentation
   state instead of changing asset payload mappings again.
 
+### Missing world texture-page checkpoint
+
+- The restored f900 world draws actively, but its representative textured
+  triangle (`pc=0x800c4e5c`, base `0x00e510`) samples only zero TMU addresses
+  in `0x017c00..0x018f00`. Serialized writer ownership is absent for every
+  sampled word; the last non-zero TMU byte is only `0x015554`. This is a
+  missing upload-page failure, not a later overwrite.
+- No Type5 texture packets occur from f900 through f920, nor in the f610-f700
+  transition. The pages must therefore be diagnosed at their earlier upload
+  point rather than by changing the late sampler or presentation path.
+- A baseline cold f180 trace records 246 ordinary `0xc0000205` texture packets,
+  each 64 words, with logical target starts ending at `0x000f80`. Later snapshot
+  intervals do not repeat those packets. Type5 sequence diagnostics now record
+  physical destination spans unconditionally, without requiring expensive
+  per-word writer history, so the next cold capture can correlate the early
+  upload map directly with the missing f900 range.
+
 ### Generations-clean baseline promotion
 
 - Every request-owned body-read verification above was cold-built with the
