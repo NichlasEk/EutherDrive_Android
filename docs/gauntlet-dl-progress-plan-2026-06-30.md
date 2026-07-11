@@ -12899,3 +12899,58 @@ implementation boundary is producer-generation ownership: retain the bulk
 packet/body boundary installed by the direct Glide producer, and prevent a
 later write-triggered decode from treating a valid payload-body word from that
 generation as a new header after `amin/amax` collapses.
+
+### Type3 producer-body ownership checkpoint
+
+The direct producer's callers explain the payload structure. CPU trace around
+`0x800b0d04..0x800b0d28` shows two calls to `0x800c4dec`, each receiving three
+vertex pointers from one structure:
+
+```text
+logs/gauntlet/gauntdl-f520-f620-cpu-800b0d-callers-r1.log
+
+call 1: a0=a2+0x50, a1=a2+0x28, a2=a2+0x28
+call 2: a0=a2+0x28, a1=a2+0x50, a2=a2+0x78
+return 1: t5=0xbc292a85
+return 2: t5=0x432b87d1
+```
+
+Both values are transformed vertex fields emitted through the direct Glide
+writer. For `0x0180a8cb`, the Type3 decoder computes three vertices with six
+words each, or 19 words including the header. The packet-length calculation is
+internally consistent; the failure is that a later read generation lands on a
+stored body word.
+
+A default-off Type3 producer marker now self-anchors whenever a valid Type3
+header is written and records the following body range across the 64K-word
+ring:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE3_PRODUCER_BODY_HEADER=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER=1
+```
+
+The gate is non-neutral, proving that later decode attempts do start on marked
+Type3 body storage:
+
+```text
+logs/gauntlet/gauntdl-f700-type3-body-gate-r1.log
+frameHash=0xb41eb74a
+direct/setup=444/203
+```
+
+Advancing deterministically to the recorded packet end instead of parking the
+read pointer exposes substantially more later triangle work:
+
+```text
+logs/gauntlet/gauntdl-f700-type3-body-advance-r1.log
+frameHash=0xcc25b512
+direct/setup=3479/203
+```
+
+The visible result remains a brown background with green/red wedges and a noisy
+left strip. Therefore Type3 body re-entry is real and causal, but it is not the
+only packet family whose old body remains eligible. Keep both controls
+default-off. Next use equivalent ownership profiling to identify the packet
+class that owns the remaining wedge/fill layer before generalizing the storage
+generation model.

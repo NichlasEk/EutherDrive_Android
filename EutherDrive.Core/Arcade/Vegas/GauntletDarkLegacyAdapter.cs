@@ -30674,6 +30674,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int[] _cmdFifoStorageLastWriteAddress = new int[CmdFifoFramebufferWords];
     private readonly long[] _cmdFifoStorageLastWriteSequence = new long[CmdFifoFramebufferWords];
     private readonly byte[] _cmdFifoStorageLastWriteSource = new byte[CmdFifoFramebufferWords];
+    private readonly bool[] _cmdFifoStorageType3Body = new bool[CmdFifoFramebufferWords];
+    private readonly int[] _cmdFifoStorageType3PacketEnd = new int[CmdFifoFramebufferWords];
     private readonly Dictionary<int, CommandFifoStorageBulkWriteSource> _cmdFifoStorageBulkWriteSources = [];
     private readonly SetupVertex[] _setupVertices = new SetupVertex[3];
     private readonly int[] _fifoPacketTypeCounts = new int[8];
@@ -30753,6 +30755,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private bool _cmdFifoBulkWriteSourceActive;
     private CommandFifoStorageBulkWriteSource _cmdFifoBulkWriteSource;
     private long _cmdFifoStorageWriteSequence;
+    private int _cmdFifoType3ProducerNextStorageIndex = -1;
+    private int _cmdFifoType3ProducerBodyWordsRemaining;
+    private int _cmdFifoType3ProducerPacketEnd;
     private int _cmdFifoBulkWriteDepth;
     private bool _cmdFifoBulkFirstWritePending;
     private int _cmdFifoBulkStartIndex;
@@ -31063,6 +31068,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_INVALIDATE_PAYLOAD_REMAINDER"));
     private readonly bool _experimentCommandFifoBulkGateCollapsedPayloadChain =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_BULK_GATE_COLLAPSED_PAYLOAD_CHAIN"));
+    private readonly bool _experimentCommandFifoGateType3ProducerBodyHeader =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE3_PRODUCER_BODY_HEADER"));
+    private readonly bool _experimentCommandFifoAdvanceType3ProducerBodyHeader =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER"));
     private readonly bool _experimentCommandFifoStopOnUnknown =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
@@ -31991,6 +32000,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         bool storageWasValid = _cmdFifoValid[storageIndex];
         CaptureCommandFifoProducerBoundaryWrite(storageIndex, logicalWriteIndex, address, value, storageWasValid);
+        TrackCommandFifoType3ProducerWord(storageIndex, value);
         _cmdFifoRam[storageIndex] = value;
         _cmdFifoStorageLogicalIndex[storageIndex] = logicalWriteIndex;
         RecordCommandFifoStorageLastWrite(
@@ -32070,6 +32080,39 @@ internal class VoodooBringupBackend : IVoodooBackend
         return baseLocalIndex + _cmdFifoWriteGenerationBase;
     }
 
+    private void TrackCommandFifoType3ProducerWord(int storageIndex, uint value)
+    {
+        if (!_experimentCommandFifoGateType3ProducerBodyHeader &&
+            !_experimentCommandFifoAdvanceType3ProducerBodyHeader)
+            return;
+
+        int normalized = CommandFifoStorageIndex(storageIndex);
+        uint type = value & 7u;
+        uint code = (value >> 3) & 7u;
+        uint vertices = (value >> 6) & 0x0fu;
+        bool type3Header = type == 3u && code <= 2u && vertices > 0;
+        if (type3Header)
+        {
+            _cmdFifoStorageType3Body[normalized] = false;
+            _cmdFifoType3ProducerBodyWordsRemaining = GetFifoType3WordsNeeded(value) - 1;
+            _cmdFifoType3ProducerPacketEnd = CommandFifoStorageIndex(normalized + _cmdFifoType3ProducerBodyWordsRemaining);
+        }
+        else
+        {
+            bool body = normalized == _cmdFifoType3ProducerNextStorageIndex &&
+                        _cmdFifoType3ProducerBodyWordsRemaining > 0;
+            _cmdFifoStorageType3Body[normalized] = body;
+            if (body)
+                _cmdFifoStorageType3PacketEnd[normalized] = _cmdFifoType3ProducerPacketEnd;
+            if (body)
+                _cmdFifoType3ProducerBodyWordsRemaining--;
+            else
+                _cmdFifoType3ProducerBodyWordsRemaining = 0;
+        }
+
+        _cmdFifoType3ProducerNextStorageIndex = CommandFifoStorageIndex(normalized + 1);
+    }
+
     private void ClearCommandFifoStorageLastWriters()
     {
         Array.Clear(_cmdFifoStorageLastWritePc);
@@ -32078,8 +32121,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         Array.Clear(_cmdFifoStorageLastWriteAddress);
         Array.Clear(_cmdFifoStorageLastWriteSequence);
         Array.Clear(_cmdFifoStorageLastWriteSource);
+        Array.Clear(_cmdFifoStorageType3Body);
+        Array.Clear(_cmdFifoStorageType3PacketEnd);
         _cmdFifoStorageBulkWriteSources.Clear();
         _cmdFifoStorageWriteSequence = 0;
+        _cmdFifoType3ProducerNextStorageIndex = -1;
+        _cmdFifoType3ProducerBodyWordsRemaining = 0;
+        _cmdFifoType3ProducerPacketEnd = 0;
     }
 
     private void RecordCommandFifoStorageLastWrite(
@@ -34396,6 +34444,23 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             int packetStart = _cmdFifoReadIndex;
             uint command = ReadCommandFifoWordAt(packetStart);
+            if ((_experimentCommandFifoGateType3ProducerBodyHeader ||
+                 _experimentCommandFifoAdvanceType3ProducerBodyHeader) &&
+                _cmdFifoStorageType3Body[CommandFifoReadStorageIndex(packetStart)])
+            {
+                if (_experimentCommandFifoAdvanceType3ProducerBodyHeader)
+                {
+                    int startStorage = CommandFifoReadStorageIndex(packetStart);
+                    int packetEnd = _cmdFifoStorageType3PacketEnd[startStorage];
+                    int wordsToSkip = ((packetEnd - startStorage) & CmdFifoMask) + 1;
+                    InvalidateCommandFifoWords(packetStart, wordsToSkip);
+                    SetCommandFifoReadIndex(DecodeCommandFifoReadIndex(packetStart + wordsToSkip), "type3-producer-body-advance", command, wordsToSkip);
+                    continue;
+                }
+                CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "type3-producer-body-header");
+                TraceCommandFifoDecodeStop("type3-producer-body-header", command, GetFifoPacketWordsNeeded(command));
+                return;
+            }
             if (_fixMameCommandFifoModel &&
                 _experimentMameCommandFifoYieldOnType5Boundary &&
                 decodedThisCall > 0 &&
