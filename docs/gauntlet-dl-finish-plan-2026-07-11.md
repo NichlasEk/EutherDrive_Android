@@ -485,6 +485,30 @@ ett godtyckligt payloadord.
   selected by the guest request/state, or retain callback-parsed output, rather
   than preloading guessed object bundles into overlapping fixed windows.
 
+## Diagnostic-exit progression checkpoint
+
+- The request-owned f180 state is inside the game's diagnostic object view.
+  Its own `Exit menu (FIRE 3)` path is reachable through the runtime input
+  bridge. A short P1 Turbo pulse at frames 181..183 is accepted as bit
+  `0x0800`, restarts the world/QIO sequence, and raises swaps from 363 to 503
+  by f260.
+- The pulse is causal but is not the graphics repair. The resulting cold-line
+  continuation reaches f700 with 8,278,723 texture writes and 1,277 swaps, then
+  stabilizes at f1100 with `frameHash=0x44b29c78` and 1,327 swaps. Reproducible
+  v6 states are `/tmp/gauntdl-fire3-exit-f700.warm` and
+  `/tmp/gauntdl-fire3-exit-f1100.warm`.
+- Raw f1100 buffer dumps rule out presentation selection: buffer 1 owns the
+  noise/stripe frame, buffer 0 contains only a thin corrupt top row, and buffer
+  2 is empty. The selected-frame dump is
+  `/tmp/gauntdl-fire3-exit-f1100.ppm`.
+- From f700 through f1100, Type3 remains fixed at 20,774 packets while Type4
+  traffic continues and no new setup raster work appears. The runtime emits
+  `Hall of Legends`, diagnostic object text, and `No Nodes have this object`;
+  render records remain null-body UI/diagnostic records. This moves the narrow
+  blocker upstream of Voodoo presentation: trace the world/render-node owner
+  that should submit new Type3 primitives after the completed loader, without
+  changing the already verified packet-3 layout or adding texture transforms.
+
 ### Relocation-field lifetime proof
 
 - A cold write watch proves the slot-0 QIO hydration is initially correct at
