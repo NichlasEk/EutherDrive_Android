@@ -484,3 +484,23 @@ ett godtyckligt payloadord.
   lifetime rule for the shared scratch buffer. The repair must feed the chunk
   selected by the guest request/state, or retain callback-parsed output, rather
   than preloading guessed object bundles into overlapping fixed windows.
+
+### Relocation-field lifetime proof
+
+- A cold write watch proves the slot-0 QIO hydration is initially correct at
+  `source+0x5c`: disk value `0x0000f758` is present before guest execution.
+- Guest `swc1 f0` at `pc=0x800c9ca8` later changes that exact word to
+  `0x3f800000`, with callers `0x800af31c` and `0x800af3dc`. Reusing the same
+  mutable source for later asset indices then makes the relocation parser add
+  float-one bits to the source pointer; the pointer-normalize repair only hides
+  this lifetime violation.
+- A cold header-only distinct-source control seeds indices 1..8 from their
+  mapped object headers without overlapping payloads. It reaches f180 with
+  `frameHash=0x6a04baad`, `nonBlack=245307`, and distinct relocation offsets
+  such as `gei=0x0000a0d0`, `snm=0x00009144`, and `stg=0x0000ac60`.
+  This is causal progress but not yet a visual fix, so distinct headers remain
+  diagnostic-only.
+- Next determine which callback/body-read owns the bytes beyond each distinct
+  header. Preserve per-object mutability, hydrate only guest-requested body
+  chunks, and then remove the pointer-normalize workaround when all relocation
+  fields remain naturally valid.
