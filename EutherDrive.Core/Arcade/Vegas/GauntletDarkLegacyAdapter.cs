@@ -32006,7 +32006,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _fixMameCommandFifoModel &&
             _experimentMameCommandFifoWrapClearInvalidRead &&
             !_cmdFifoValid[CommandFifoStorageIndex(_cmdFifoReadIndex)];
-        if ((!_fixMameCommandFifoModel ||
+        if (((!_fixMameCommandFifoModel && !_experimentStandardCommandFifoGenerations) ||
              _experimentMameCommandFifoWrapClear ||
              mameWrapInvalidRead) &&
             storageIndex == 0 &&
@@ -35200,9 +35200,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_fixMameCommandFifoModel)
         {
             int storageIndex = CommandFifoStorageIndex(_cmdFifoReadIndex);
-            return _cmdFifoValid[storageIndex] &&
-                   (!_experimentStandardCommandFifoGenerations ||
-                    _cmdFifoStorageLogicalIndex[storageIndex] == _cmdFifoReadIndex);
+            if (!_cmdFifoValid[storageIndex])
+                return false;
+            if (!_experimentStandardCommandFifoGenerations)
+                return true;
+
+            int storedLogicalIndex = _cmdFifoStorageLogicalIndex[storageIndex];
+            if (storedLogicalIndex > _cmdFifoReadIndex)
+                SetCommandFifoReadIndex(storedLogicalIndex, "standard-generation-catchup");
+            return _cmdFifoStorageLogicalIndex[CommandFifoStorageIndex(_cmdFifoReadIndex)] == _cmdFifoReadIndex;
         }
 
         if (_cmdFifoDepth <= 0)

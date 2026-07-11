@@ -109,3 +109,17 @@ Godkant nar en bana kan startas, styras och koras i flera minuter.
 
 Ga inte tillbaka till fler adressremaps eller visuella specialfall innan den
 gemensamma generationsmodellen ar verifierad.
+
+## Iteration 2026-07-11 - generationswrap
+
+- Standardvagens gamla `storageIndex == 0` wrap-clear ar identifierad som en
+  direkt generationsforstorare och ar bortkopplad endast under experimentet.
+- Konsumenten fortsatter nu omaskerad (`cmdrd=0x18410`) och lagrade slots visar
+  nyare producentgenerationer, exempelvis `stored=0x61034`.
+- En enkel header-slot-catchup ar inte tillracklig: headern kan vara gammal
+  medan ett senare body-slot i samma paket redan ar overskrivet av en nyare
+  generation.
+- Nasta steg i Fas 1 ar darfor hel-paket-validering: alla ord fran header till
+  paketslut maste ha sammanhangande logiska index i samma generation. Vid
+  mismatch ska konsumenten flyttas till nasta registrerade header, aldrig till
+  ett godtyckligt payloadord.
