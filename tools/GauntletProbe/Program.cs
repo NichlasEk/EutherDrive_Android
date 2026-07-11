@@ -786,7 +786,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(5);
+        writer.Write(6);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -819,7 +819,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4 or 5))
+    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4 or 5 or 6))
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1068,6 +1068,7 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
     writer.Write(GetFieldValue<int>(backend, "_cmdFifoAddressMax"));
     WriteUShortArray(writer, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
     WriteTextureWriterMaps(writer, backend);
+    WriteStandardFifoGenerationState(writer, backend);
 }
 
 static void LoadVoodoo(BinaryReader reader, object facade, int version)
@@ -1112,6 +1113,73 @@ static void LoadVoodoo(BinaryReader reader, object facade, int version)
         ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
     if (version >= 5)
         ReadTextureWriterMaps(reader, backend);
+    if (version >= 6)
+        ReadStandardFifoGenerationState(reader, backend);
+}
+
+static void WriteStandardFifoGenerationState(BinaryWriter writer, object backend)
+{
+    WriteIntArray(writer, GetFieldValue<int[]>(backend, "_cmdFifoStorageLogicalIndex"));
+    WriteBoolArray(writer, GetFieldValue<bool[]>(backend, "_cmdFifoStoragePacketHeader"));
+    WriteIntArray(writer, GetFieldValue<int[]>(backend, "_cmdFifoStoragePacketEndLogicalIndex"));
+    WriteBoolArray(writer, GetFieldValue<bool[]>(backend, "_cmdFifoStoragePacketOwnerValid"));
+    WriteIntArray(writer, GetFieldValue<int[]>(backend, "_cmdFifoStoragePacketOwnerHeaderLogicalIndex"));
+    WriteIntArray(writer, ((IEnumerable<int>)GetField(backend, "_cmdFifoCompletePacketHeaders")).ToArray());
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoValidCount"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoWriteGenerationBase"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoWriteQueueIndex"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoLastWriteStorageIndex"));
+    writer.Write(GetFieldValue<long>(backend, "_cmdFifoStorageWriteSequence"));
+
+    IDictionary producers = GetFieldValue<IDictionary>(backend, "_cmdFifoPacketMapProducerStates");
+    writer.Write(producers.Count);
+    foreach (DictionaryEntry entry in producers.Cast<DictionaryEntry>().OrderBy(entry => (ulong)entry.Key))
+    {
+        writer.Write((ulong)entry.Key);
+        object state = entry.Value!;
+        writer.Write((int)GetProperty(state, "NextLogicalIndex"));
+        writer.Write((int)GetProperty(state, "BodyWordsRemaining"));
+        writer.Write((int)GetProperty(state, "PacketEndLogicalIndex"));
+        writer.Write((int)GetProperty(state, "HeaderLogicalIndex"));
+    }
+}
+
+static void ReadStandardFifoGenerationState(BinaryReader reader, object backend)
+{
+    ReadIntArrayInto(reader, GetFieldValue<int[]>(backend, "_cmdFifoStorageLogicalIndex"));
+    ReadBoolArrayInto(reader, GetFieldValue<bool[]>(backend, "_cmdFifoStoragePacketHeader"));
+    ReadIntArrayInto(reader, GetFieldValue<int[]>(backend, "_cmdFifoStoragePacketEndLogicalIndex"));
+    ReadBoolArrayInto(reader, GetFieldValue<bool[]>(backend, "_cmdFifoStoragePacketOwnerValid"));
+    ReadIntArrayInto(reader, GetFieldValue<int[]>(backend, "_cmdFifoStoragePacketOwnerHeaderLogicalIndex"));
+    int[] completeHeaders = ReadIntArray(reader);
+    object completeSet = GetField(backend, "_cmdFifoCompletePacketHeaders");
+    completeSet.GetType().GetMethod("Clear")!.Invoke(completeSet, null);
+    MethodInfo addHeader = completeSet.GetType().GetMethod("Add")!;
+    foreach (int header in completeHeaders)
+        addHeader.Invoke(completeSet, [header]);
+    SetField(backend, "_cmdFifoValidCount", reader.ReadInt32());
+    SetField(backend, "_cmdFifoWriteGenerationBase", reader.ReadInt32());
+    SetField(backend, "_cmdFifoWriteQueueIndex", reader.ReadInt32());
+    SetField(backend, "_cmdFifoLastWriteStorageIndex", reader.ReadInt32());
+    SetField(backend, "_cmdFifoStorageWriteSequence", reader.ReadInt64());
+
+    IDictionary producers = GetFieldValue<IDictionary>(backend, "_cmdFifoPacketMapProducerStates");
+    Type stateType = producers.GetType().GetGenericArguments()[1];
+    producers.Clear();
+    int producerCount = reader.ReadInt32();
+    if (producerCount < 0 || producerCount > 4096)
+        throw new InvalidDataException($"Invalid FIFO producer count: {producerCount}");
+    for (int i = 0; i < producerCount; i++)
+    {
+        ulong producer = reader.ReadUInt64();
+        object state = Activator.CreateInstance(
+            stateType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args: [reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32()],
+            culture: null) ?? throw new InvalidDataException("Could not restore FIFO producer state");
+        producers[producer] = state;
+    }
 }
 
 static void WriteTextureWriterMaps(BinaryWriter writer, object backend)
@@ -1334,6 +1402,17 @@ static void ReadIntArrayInto(BinaryReader reader, int[] values)
         throw new InvalidDataException($"Int32 array length mismatch: snapshot={length} runtime={values.Length}");
     for (int i = 0; i < values.Length; i++)
         values[i] = reader.ReadInt32();
+}
+
+static int[] ReadIntArray(BinaryReader reader)
+{
+    int length = reader.ReadInt32();
+    if (length < 0 || length > 1_048_576)
+        throw new InvalidDataException($"Invalid Int32 array length: {length}");
+    int[] values = new int[length];
+    for (int i = 0; i < values.Length; i++)
+        values[i] = reader.ReadInt32();
+    return values;
 }
 
 static void WriteBoolArray(BinaryWriter writer, bool[] values)
