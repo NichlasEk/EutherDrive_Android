@@ -504,3 +504,31 @@ ett godtyckligt payloadord.
   header. Preserve per-object mutability, hydrate only guest-requested body
   chunks, and then remove the pointer-normalize workaround when all relocation
   fields remain naturally valid.
+
+## Request-owned textures.rom body-read fix
+
+- A clean sequential-QIO cold run proves the post-`stk` request is
+  `bytes=0x2000`, `fileOffset=0x214c0`, and state 7. At create time the previous
+  QIO destination still says `0x802e7718`, but the guest-owned output cursor at
+  `fp+0x28` is `0x802e1838`, immediately after the slot-0 header.
+- The old body-read experiment incorrectly reused the previous `stk` window.
+  The repaired capture retains `fp+0x28` before the create helper clears it and
+  reads `textures.rom + 0x214c0`, disk byte `0x0fa214c0`, into that destination.
+  The first word is `0xffe60014`, matching the raw disk control.
+- At f260 the fixed and no-body-read controls are frame-identical
+  (`frameHash=0x3a8cfb23`), proving the repair does not manufacture an immediate
+  visual change. By f400/f520 they diverge in CPU/FIFO progression while the
+  visible loading surface remains nearly identical.
+- At f600 the fixed path reaches runtime PC `0x8001a1bc`; the no-body-read
+  control remains in the render-record loop at `0x800b1e7c`. The fixed path has
+  no further QIO requests from f520 through f600. Asset loading therefore
+  completes far enough to leave the old parser loop, while presentation stays
+  frozen on loading noise.
+- The request-owned body read is promoted into the baseline as
+  `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ=1`.
+  The legacy experiment variable remains accepted for snapshot/regression
+  compatibility.
+- Next blocker: from the fixed f600 snapshot, trace why no new Voodoo writes or
+  swaps reach the selected buffer after runtime entry. Preserve this completed
+  QIO path and diagnose the standard-generation FIFO consumer/presentation
+  state instead of changing asset payload mappings again.

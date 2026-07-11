@@ -41,6 +41,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK", "0x1fe"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_FULL_INDEXED_SOURCE_PAYLOADS", "0"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", "9"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE", "1"),
@@ -933,6 +934,7 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioShortReadFillRemainingExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ_FILL_REMAINING"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioBodyReadExperiment =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ")) ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ"));
     private readonly bool _enableRuntimeBgLoadModelIndexedTextureQioStatusStackLimitExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STATUS_STACK_LIMIT"));
@@ -17332,8 +17334,6 @@ internal sealed class MipsR5000Core
     {
         const ulong requestCreateObjectPc = 0xffffffff800c9678UL;
         const ulong qio = 0xffffffff80217c58UL;
-        const ulong destinationBase = 0xffffffff802e1718UL;
-        ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
         const uint requestedBytes = 0x2000U;
         const uint callback = 0x800ab4e4U;
         const uint pendingStatus = 0xffffffffU;
@@ -17358,31 +17358,27 @@ internal sealed class MipsR5000Core
             return;
         }
 
-        ulong destination = SignExtend32(_memory.Read32(qio + 0x08UL));
-        ulong stackDestinationSlot = _gpr[30] + 0x80UL;
-        ulong stackDestination = IsMainRamRange(stackDestinationSlot, 4)
-            ? SignExtend32(_memory.Read32(stackDestinationSlot))
+        // The previous QIO destination still points at the short-read source.
+        // The guest publishes the body-read output cursor at fp+0x28 before
+        // the create helper clears it, so capture that request-owned address.
+        ulong outputCursorSlot = _gpr[30] + 0x28UL;
+        ulong destination = IsMainRamRange(outputCursorSlot, 4)
+            ? SignExtend32(_memory.Read32(outputCursorSlot))
             : 0;
-        if (destination < destinationBase ||
-            (destination - destinationBase) % sourceStride != 0 ||
-            !IsMainRamRange(destination, requestedBytes) ||
-            IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination) ||
-            stackDestination != destination)
+        if (!IsMainRamRange(destination, requestedBytes))
         {
             return;
         }
 
-        ulong index = (destination - destinationBase) / sourceStride;
-        if (index < 3UL ||
-            index > KnownRuntimeBgLoadModelTexturePayloadMaxIndex ||
-            !TryGetKnownRuntimeBgLoadModelTexturePayload(index, out _, out _, out _))
+        ulong fileOffset = _gpr[17];
+        if (fileOffset == 0 || fileOffset > 0x01000000UL)
         {
             return;
         }
 
         _runtimeBgLoadModelPendingIndexedTextureBodyDestination = destination;
-        _runtimeBgLoadModelPendingIndexedTextureBodyIndex = index;
-        _runtimeBgLoadModelPendingIndexedTextureBodyRequestKey = _gpr[17];
+        _runtimeBgLoadModelPendingIndexedTextureBodyIndex = _gpr[18];
+        _runtimeBgLoadModelPendingIndexedTextureBodyRequestKey = fileOffset;
     }
 
     private bool TryApplyKnownRuntimeBgLoadModelIndexedTextureQioShortReadRepair(ulong pc)
@@ -17462,6 +17458,7 @@ internal sealed class MipsR5000Core
     private bool TryApplyKnownRuntimeBgLoadModelIndexedTextureQioBodyReadRepair(ulong pc)
     {
         const ulong qio = 0xffffffff80217c58UL;
+        const ulong texturesRomDiskBase = 0x0fa00000UL;
         const uint requestedBytes = 0x2000U;
         const uint callback = 0x800ab4e4U;
         const uint objectStatus = 0x300bU;
@@ -17496,15 +17493,23 @@ internal sealed class MipsR5000Core
             return false;
         }
 
-        ulong index = _runtimeBgLoadModelPendingIndexedTextureBodyIndex;
+        ulong requestState = _runtimeBgLoadModelPendingIndexedTextureBodyIndex;
         ulong destination = _runtimeBgLoadModelPendingIndexedTextureBodyDestination;
-        ulong requestKey = _runtimeBgLoadModelPendingIndexedTextureBodyRequestKey;
+        ulong fileOffset = _runtimeBgLoadModelPendingIndexedTextureBodyRequestKey;
         _runtimeBgLoadModelPendingIndexedTextureBodyDestination = 0;
         _runtimeBgLoadModelPendingIndexedTextureBodyIndex = 0;
         _runtimeBgLoadModelPendingIndexedTextureBodyRequestKey = 0;
 
-        if (!TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out string code, out ulong textureByteOffset, out uint firstWord))
+        ulong diskByteOffset = texturesRomDiskBase + fileOffset;
+        if (!_memory.TryReadDiskByteOffsetToMemory(
+                diskByteOffset,
+                destination,
+                requestedBytes,
+                out uint firstWord,
+                out string readFailure))
+        {
             return false;
+        }
 
         _memory.Write32(qio + 0x00UL, unchecked((uint)qioObject));
         _memory.Write32(qio + 0x04UL, callback);
@@ -17520,9 +17525,9 @@ internal sealed class MipsR5000Core
         if (_runtimeBgLoadModelIndexedTextureQioBodyReadTraceCount++ < 16)
         {
             Console.WriteLine(
-                $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio-body-read pc={pc:x16} " +
-                $"index={index} code={code} key={requestKey:x8} qio={qio:x16} object={qioObject:x16} " +
-                $"dest={destination:x16} bytes={requestedBytes:x8} disk={textureByteOffset:x8} " +
+                $"[GAUNTDL:FIX] bgloadmodel-indexed-texture-qio-body-read pc={pc:x16} " +
+                $"state={requestState} fileOffset={fileOffset:x8} qio={qio:x16} object={qioObject:x16} " +
+                $"dest={destination:x16} bytes={requestedBytes:x8} disk={diskByteOffset:x8} " +
                 $"first={firstWord:x8} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
 
