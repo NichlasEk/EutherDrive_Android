@@ -340,3 +340,24 @@ ett godtyckligt payloadord.
   old logical reader generation. Do not use that migrated state as a visual
   oracle; serialize/rebuild the standard-generation packet map or regenerate
   snapshots cold with the wrap fix.
+
+## Raw TMU base checkpoint
+
+- With producer wrap fixed, the active loading quads use legitimate Type4 state
+  from `pc=0x800c4e5c`: `textureMode=0x8c24100f`,
+  `tLOD=0x000020c6`, and `texBaseAddr=0x00004bfc`. These values are not stale
+  payload and must not be format-remapped.
+- The old baseline's `texBaseAddr << 3` repair resolves this base to `0x25fe0`,
+  immediately after the last non-zero texture word around `0x25fd8`. Removing
+  only the historical `+0x510` bias is neutral/slightly negative.
+- A cold f700 run with raw base addressing and zero bias reduces zero samples
+  from `42,301,348` to `12,447,274` and changes `frameHash` from `0xbeefdaf6`
+  to `0x6938e29c`. This is a real sampling improvement, but the frame remains
+  repeated/noisy loading strips.
+- f900 keeps the same selected frame hash while command processing continues:
+  textured coverage reaches `3191/3193`, LFB writes rise to `69,082,185`, and
+  the CPU still reports `Loading Game.`. The next blocker is therefore runtime
+  loading/upload completion and buffer presentation, not TMU format bits.
+- `run-gauntdl-baseline.sh` now permits explicit overrides of the historical
+  base-shift and sample-bias controls so current-FIFO A/B runs are reproducible;
+  defaults remain unchanged.
