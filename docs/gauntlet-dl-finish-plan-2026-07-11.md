@@ -175,3 +175,13 @@ ett godtyckligt payloadord.
   `pc=0x800c4e5c`. Den senaste agaren ligger generationsrent vid
   `rd=pkt=0x583d7`; den roda brus-/remsbilden ar alltsa nu en setup/TMU-fraga,
   inte bevis for den tidigare flera-generationer-stora FIFO-forskjutningen.
+- En generationsren upload-target-korning i
+  `logs/gauntlet/gauntdl-f700-generation-preserved-upload-targets-r1.log`
+  visar att Type5 nar de avsedda malsidorna, men att RAM-kallorna for
+  `targetWord=0x100..0x1400` och `0x7d00..0x7f00` till stor del ar nollade.
+  Exempelvis har `source=0xffffffff80312da4` `nz0/64`, medan motsvarande
+  diskutsnitt ar tatt och icke-noll.
+- Gamla breda diskordsersattningar ska inte aterupptas: de behandlade ra
+  assetbytes som FIFO-struktur och skapade registerbrus. Nasta Fas 4-grans ar
+  i stallet producenten/hydreringen av descriptorparet kring
+  `0xffffffff80312998/0xffffffff803129a4`, och dess avsedda source/extent.
