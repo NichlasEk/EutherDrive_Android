@@ -224,3 +224,21 @@ ett godtyckligt payloadord.
   har byggt den gamla kallkedjan. Nasta kausala kontroll maste byggas kallt och
   bevara `font_story`-kallans ursprungliga langd/assetkoppling innan
   parsersteget ersatter den med allocator-descriptorn.
+
+## Iteration 2026-07-11 - fontobjektets producent
+
+- Dagens kalla preset visar att index 9 har langd `0` redan som `credits` och
+  senare som `font_story`. Den historiska `0x2006f`-langden tillhor en aldre
+  experimentgren och far inte anvandas som aktuell invariant.
+- En ny default-off `EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_SOURCE_CALL_A3_PRODUCER`
+  foljer ett konfigurerbart mal genom valfritt `PC_MIN/PC_MAX`-fonster.
+- `0x800546f0..0x80054784` tar emot `a3=0x80312998` oforandrat; det ar en
+  konsument, inte producenten.
+- Callerkedjan visar den verkliga agaren: `0x800548fc` anropar allocatorn och
+  far `v0=0x80312998`, varefter `0x80054900` lagrar objektet i global
+  `0x8019d1f0`. `0x800549ec` skickar samma objekt vidare som `a0`.
+- `0x80312998` ar darmed ett legitimt allokerat font/renderobjekt. Det ska inte
+  ersattas platt med WTR-header, WTR-body eller en annan BGLoadModel-kalla.
+  Nasta Fas 4-steg ar init/QIO-kedjan efter allokeringen: identifiera vem som
+  ska fylla den 64 KiB payload som borjar vid objektets `+0x0c` och varfor den
+  forblir nollad.

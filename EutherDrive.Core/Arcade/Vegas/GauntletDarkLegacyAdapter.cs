@@ -1054,6 +1054,16 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAGE_SELECTION_SOURCE_MIN");
     private readonly ulong? _traceTextureUploadPageSelectionSourceMax =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAGE_SELECTION_SOURCE_MAX");
+    private readonly bool _traceTextureSourceCallA3Producer =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_SOURCE_CALL_A3_PRODUCER"));
+    private readonly ulong _traceTextureSourceCallA3ProducerTarget =
+        CanonicalizeTraceAddress(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_SOURCE_CALL_A3_PRODUCER_TARGET") ?? 0x80312998UL);
+    private readonly int _traceTextureSourceCallA3ProducerLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_SOURCE_CALL_A3_PRODUCER_LIMIT", 160);
+    private readonly ulong _traceTextureSourceCallA3ProducerPcMin =
+        CanonicalizeTraceAddress(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_SOURCE_CALL_A3_PRODUCER_PC_MIN") ?? 0x800546f0UL);
+    private readonly ulong _traceTextureSourceCallA3ProducerPcMax =
+        CanonicalizeTraceAddress(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_SOURCE_CALL_A3_PRODUCER_PC_MAX") ?? 0x80054784UL);
     private readonly ulong? _traceTextureUploadSourceLimitTablePcMin =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_PC_MIN");
     private readonly ulong? _traceTextureUploadSourceLimitTablePcMax =
@@ -1236,6 +1246,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadSourceProducerTraceCount;
     private int _textureUploadSourceProducerLoadTraceCount;
     private int _textureUploadPageSelectionTraceCount;
+    private int _textureSourceCallA3ProducerTraceCount;
     private int _mainRamWriteTraceCount;
     private int _runtimeBgLoadModelSkipHotDescriptorOverwriteTraceCount;
     private int _textureUploadSourceLimitTableTraceCount;
@@ -1890,6 +1901,7 @@ internal sealed class MipsR5000Core
         TraceTextureUploadSourceProducer(pc, op, "pre");
         TraceTextureUploadSourceProducerLoad(pc, op);
         TraceTextureUploadPageSelection(pc, op);
+        TraceTextureSourceCallA3Producer(pc, op);
         TraceTextureUploadSourceLimitTable(pc, op, "pre");
         TraceInstruction(pc, op);
         TextureUploadCallerTransitionSnapshot textureUploadCallerBefore =
@@ -5703,6 +5715,40 @@ internal sealed class MipsR5000Core
             $"page={tableIndex:x} stride0=0x{stride0:x8} stride1=0x{stride1:x8} " +
             $"desc08=0x{ReadTraceWord(descriptor + 0x08UL):x8} desc0c=0x{ReadTraceWord(descriptor + 0x0cUL):x8} " +
             $"sourceFirst={FormatTraceWords(source, 4)}");
+    }
+
+    private void TraceTextureSourceCallA3Producer(ulong pc, uint op)
+    {
+        if (!_traceTextureSourceCallA3Producer ||
+            _textureSourceCallA3ProducerTraceCount >= _traceTextureSourceCallA3ProducerLimit ||
+            pc < _traceTextureSourceCallA3ProducerPcMin ||
+            pc > _traceTextureSourceCallA3ProducerPcMax)
+        {
+            return;
+        }
+
+        bool matched = false;
+        for (int register = 2; register < _gpr.Length; register++)
+        {
+            if (_gpr[register] == _traceTextureSourceCallA3ProducerTarget)
+            {
+                matched = true;
+                break;
+            }
+        }
+        if (!matched)
+            return;
+
+        _textureSourceCallA3ProducerTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TEXTURE-SOURCE-A3-PRODUCER] n={_textureSourceCallA3ProducerTraceCount} " +
+            $"pc=0x{pc:x16} op=0x{op:x8} {DisassembleBrief(op)} target=0x{_traceTextureSourceCallA3ProducerTarget:x16} " +
+            $"ra=0x{_gpr[31]:x16} sp=0x{_gpr[29]:x16} " +
+            $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} " +
+            $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
+            $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} " +
+            $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
+            $"targetFirst={FormatTraceWords(_traceTextureSourceCallA3ProducerTarget, 8)}");
     }
 
     private readonly struct TextureUploadCallerTransitionSnapshot
