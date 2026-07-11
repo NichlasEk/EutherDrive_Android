@@ -532,3 +532,19 @@ ett godtyckligt payloadord.
   swaps reach the selected buffer after runtime entry. Preserve this completed
   QIO path and diagnose the standard-generation FIFO consumer/presentation
   state instead of changing asset payload mappings again.
+
+### Generations-clean baseline promotion
+
+- Every request-owned body-read verification above was cold-built with the
+  standard FIFO generation model and its producer-wrap repair. The older
+  masked path is already proven to re-enter stale Type1/3/4/5 bodies and is not
+  a valid ordinary-path oracle.
+- Standard FIFO generations are now enabled in both baseline presets. The
+  environment variable remains explicitly overridable for historical control
+  snapshots.
+- Diagnostic literal traces now include their text. The fixed f900 state shows
+  `Hall of Legends` alongside internal object/debug strings; this proves the
+  runtime has left the initial `Loading Game.` state, but does not by itself
+  prove that world nodes are missing. Input active-low service/test defaults
+  are neutral (`0xffff`), so do not patch operator bits without a direct read
+  trace showing an asserted line.

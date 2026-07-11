@@ -34,6 +34,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS", "0x510"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES", "1"),
@@ -16145,7 +16146,8 @@ internal sealed class MipsR5000Core
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] format-literal-wrapper pc={pc:x16} " +
-                $"dst={destination:x16} fmt={format:x16} len={length}");
+                $"dst={destination:x16} fmt={format:x16} len={length} " +
+                $"text=\"{ReadAsciiTraceString(format, 96)}\"");
         }
 
         return true;
@@ -16384,7 +16386,8 @@ internal sealed class MipsR5000Core
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] diagnostic-literal-line-wrapper pc={pc:x16} " +
-                $"dst={globalDestination:x16} fmt={format:x16} len={length}");
+                $"dst={globalDestination:x16} fmt={format:x16} len={length} " +
+                $"text=\"{ReadAsciiTraceString(format, 96)}\"");
         }
 
         return true;
