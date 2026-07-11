@@ -1042,6 +1042,10 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_END");
     private readonly int _traceMainRamWriteLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_LIMIT", 160);
+    private readonly ulong? _traceMainRamPointerReferences =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_POINTER_REFERENCES");
+    private readonly int _traceMainRamPointerReferenceLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_POINTER_REFERENCES_LIMIT", 64);
     private readonly bool _traceTextureUploadSourceLimitTable =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE"));
     private readonly int _traceTextureUploadSourceLimitTableLimit =
@@ -1250,6 +1254,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPageSelectionTraceCount;
     private int _textureSourceCallA3ProducerTraceCount;
     private int _mainRamWriteTraceCount;
+    private bool _mainRamPointerReferencesTraced;
     private int _runtimeBgLoadModelSkipHotDescriptorOverwriteTraceCount;
     private int _textureUploadSourceLimitTableTraceCount;
     private int _textureUploadPayloadSpanTraceCount;
@@ -1891,6 +1896,7 @@ internal sealed class MipsR5000Core
 
         uint op = _memory.Read32(pc);
         LastFetchedInstruction = op;
+        TraceMainRamPointerReferences();
         ulong nextPc = pc + 4;
         bool branchFromPreviousInstruction = _hasPendingBranch;
         ulong branchTarget = _pendingBranchTarget;
@@ -5551,6 +5557,31 @@ internal sealed class MipsR5000Core
             $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
             $"owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(address)} " +
             $"context@0x{context:x16}={FormatTraceWords(context, 20)}");
+    }
+
+    private void TraceMainRamPointerReferences()
+    {
+        if (_mainRamPointerReferencesTraced || !_traceMainRamPointerReferences.HasValue)
+            return;
+
+        _mainRamPointerReferencesTraced = true;
+        uint target = (uint)_traceMainRamPointerReferences.Value;
+        int count = 0;
+        for (uint physical = 0; physical < 32U * 1024U * 1024U; physical += 4U)
+        {
+            ulong address = 0xffffffff80000000UL + physical;
+            if (_memory.Read32(address) != target)
+                continue;
+
+            ulong context = address >= 0x20UL ? address - 0x20UL : address;
+            Console.WriteLine(
+                $"[GAUNTDL:MAINRAM-POINTER-REFERENCE] n={++count} target=0x{target:x8} " +
+                $"addr=0x{address:x16} offset=0x{physical:x8} context@0x{context:x16}={FormatTraceWords(context, 16)}");
+            if (count >= _traceMainRamPointerReferenceLimit)
+                break;
+        }
+
+        Console.WriteLine($"[GAUNTDL:MAINRAM-POINTER-REFERENCE-SUMMARY] target=0x{target:x8} count={count}");
     }
 
     private static bool TryDecodeGprLoad(

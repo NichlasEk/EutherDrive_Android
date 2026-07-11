@@ -259,3 +259,17 @@ ett godtyckligt payloadord.
   this render object to the 64 KiB texture-page uploader. Trace that handoff
   backward from `0x801095c0`, rather than adding another source remap or cold
   hydration experiment.
+
+## Pointer ownership checkpoint
+
+- A snapshot-wide pointer-reference scan finds ten consecutive references to
+  `0x80312998` at `0x8019cba0..0x8019cbc4`, plus one at `0x80312948`.
+- Cold write tracing proves `0x8004c86c` deliberately fills the ten global
+  slots while walking 0x50-byte glyph records. The final slot at `0x8019cbc8`
+  receives the related `0x80312a08` pointer.
+- The `0x80312948` reference belongs to a render node based at `0x80312928`:
+  `0x800af25c` writes asset pointer `0x802e1788` at node `+0x18`, and
+  `0x800af294` writes font object `0x80312998` at node `+0x20`.
+- Both node fields are intentional; substituting `+0x18` for `+0x20` would
+  conflate the node's asset and font-object roles. Continue through the font
+  object's own `+0x08 -> +0x0c` representation and its upload consumer.
