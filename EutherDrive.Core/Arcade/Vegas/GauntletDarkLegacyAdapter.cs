@@ -30676,6 +30676,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly byte[] _cmdFifoStorageLastWriteSource = new byte[CmdFifoFramebufferWords];
     private readonly bool[] _cmdFifoStorageType3Body = new bool[CmdFifoFramebufferWords];
     private readonly int[] _cmdFifoStorageType3PacketEnd = new int[CmdFifoFramebufferWords];
+    private readonly bool[] _cmdFifoStorageType4Body = new bool[CmdFifoFramebufferWords];
+    private readonly int[] _cmdFifoStorageType4PacketEnd = new int[CmdFifoFramebufferWords];
     private readonly bool[] _cmdFifoStorageType5Body = new bool[CmdFifoFramebufferWords];
     private readonly int[] _cmdFifoStorageType5PacketEnd = new int[CmdFifoFramebufferWords];
     private readonly Dictionary<int, CommandFifoStorageBulkWriteSource> _cmdFifoStorageBulkWriteSources = [];
@@ -30760,6 +30762,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _cmdFifoType3ProducerNextStorageIndex = -1;
     private int _cmdFifoType3ProducerBodyWordsRemaining;
     private int _cmdFifoType3ProducerPacketEnd;
+    private int _cmdFifoType4ProducerNextStorageIndex = -1;
+    private int _cmdFifoType4ProducerBodyWordsRemaining;
+    private int _cmdFifoType4ProducerPacketEnd;
     private int _cmdFifoType5ProducerNextStorageIndex = -1;
     private int _cmdFifoType5ProducerBodyWordsRemaining;
     private int _cmdFifoType5ProducerPacketEnd;
@@ -31077,6 +31082,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE3_PRODUCER_BODY_HEADER"));
     private readonly bool _experimentCommandFifoAdvanceType3ProducerBodyHeader =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER"));
+    private readonly bool _experimentCommandFifoGateType4ProducerBodyHeader =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE4_PRODUCER_BODY_HEADER"));
+    private readonly bool _experimentCommandFifoAdvanceType4ProducerBodyHeader =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER"));
     private readonly bool _experimentCommandFifoGateType5ProducerBodyHeader =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE5_PRODUCER_BODY_HEADER"));
     private readonly bool _experimentCommandFifoAdvanceType5ProducerBodyHeader =
@@ -32010,6 +32019,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool storageWasValid = _cmdFifoValid[storageIndex];
         CaptureCommandFifoProducerBoundaryWrite(storageIndex, logicalWriteIndex, address, value, storageWasValid);
         TrackCommandFifoType3ProducerWord(storageIndex, value);
+        TrackCommandFifoType4ProducerWord(storageIndex, value);
         TrackCommandFifoType5ProducerWord(storageIndex, value);
         _cmdFifoRam[storageIndex] = value;
         _cmdFifoStorageLogicalIndex[storageIndex] = logicalWriteIndex;
@@ -32155,6 +32165,36 @@ internal class VoodooBringupBackend : IVoodooBackend
         _cmdFifoType5ProducerNextStorageIndex = CommandFifoStorageIndex(normalized + 1);
     }
 
+    private void TrackCommandFifoType4ProducerWord(int storageIndex, uint value)
+    {
+        if (!_experimentCommandFifoGateType4ProducerBodyHeader &&
+            !_experimentCommandFifoAdvanceType4ProducerBodyHeader)
+            return;
+
+        int normalized = CommandFifoStorageIndex(storageIndex);
+        bool body = normalized == _cmdFifoType4ProducerNextStorageIndex &&
+                    _cmdFifoType4ProducerBodyWordsRemaining > 0;
+        if (body)
+        {
+            _cmdFifoStorageType4Body[normalized] = true;
+            _cmdFifoStorageType4PacketEnd[normalized] = _cmdFifoType4ProducerPacketEnd;
+            _cmdFifoType4ProducerBodyWordsRemaining--;
+        }
+        else if ((value & 7u) == 4u)
+        {
+            _cmdFifoStorageType4Body[normalized] = false;
+            _cmdFifoType4ProducerBodyWordsRemaining = GetFifoPacketWordsNeeded(value) - 1;
+            _cmdFifoType4ProducerPacketEnd = CommandFifoStorageIndex(normalized + _cmdFifoType4ProducerBodyWordsRemaining);
+        }
+        else
+        {
+            _cmdFifoStorageType4Body[normalized] = false;
+            _cmdFifoType4ProducerBodyWordsRemaining = 0;
+        }
+
+        _cmdFifoType4ProducerNextStorageIndex = CommandFifoStorageIndex(normalized + 1);
+    }
+
     private void ClearCommandFifoStorageLastWriters()
     {
         Array.Clear(_cmdFifoStorageLastWritePc);
@@ -32165,6 +32205,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         Array.Clear(_cmdFifoStorageLastWriteSource);
         Array.Clear(_cmdFifoStorageType3Body);
         Array.Clear(_cmdFifoStorageType3PacketEnd);
+        Array.Clear(_cmdFifoStorageType4Body);
+        Array.Clear(_cmdFifoStorageType4PacketEnd);
         Array.Clear(_cmdFifoStorageType5Body);
         Array.Clear(_cmdFifoStorageType5PacketEnd);
         _cmdFifoStorageBulkWriteSources.Clear();
@@ -32172,6 +32214,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         _cmdFifoType3ProducerNextStorageIndex = -1;
         _cmdFifoType3ProducerBodyWordsRemaining = 0;
         _cmdFifoType3ProducerPacketEnd = 0;
+        _cmdFifoType4ProducerNextStorageIndex = -1;
+        _cmdFifoType4ProducerBodyWordsRemaining = 0;
+        _cmdFifoType4ProducerPacketEnd = 0;
         _cmdFifoType5ProducerNextStorageIndex = -1;
         _cmdFifoType5ProducerBodyWordsRemaining = 0;
         _cmdFifoType5ProducerPacketEnd = 0;
@@ -34506,6 +34551,23 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "type3-producer-body-header");
                 TraceCommandFifoDecodeStop("type3-producer-body-header", command, GetFifoPacketWordsNeeded(command));
+                return;
+            }
+            if ((_experimentCommandFifoGateType4ProducerBodyHeader ||
+                 _experimentCommandFifoAdvanceType4ProducerBodyHeader) &&
+                _cmdFifoStorageType4Body[CommandFifoReadStorageIndex(packetStart)])
+            {
+                if (_experimentCommandFifoAdvanceType4ProducerBodyHeader)
+                {
+                    int startStorage = CommandFifoReadStorageIndex(packetStart);
+                    int packetEnd = _cmdFifoStorageType4PacketEnd[startStorage];
+                    int wordsToSkip = ((packetEnd - startStorage) & CmdFifoMask) + 1;
+                    InvalidateCommandFifoWords(packetStart, wordsToSkip);
+                    SetCommandFifoReadIndex(DecodeCommandFifoReadIndex(packetStart + wordsToSkip), "type4-producer-body-advance", command, wordsToSkip);
+                    continue;
+                }
+                CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "type4-producer-body-header");
+                TraceCommandFifoDecodeStop("type4-producer-body-header", command, GetFifoPacketWordsNeeded(command));
                 return;
             }
             if ((_experimentCommandFifoGateType5ProducerBodyHeader ||

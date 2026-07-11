@@ -13034,3 +13034,31 @@ The corruption layers are now ordered rather than speculative:
 Next extend producer-body ownership to Type5 packets, including their target
 word and payload length, then profile whether `0x0000fffd` is a marked Type5
 body word before attempting a general cross-packet generation fix.
+
+### Type4 producer-body ownership checkpoint
+
+Type4 tracking gives an active sequential packet body precedence over a
+payload word that merely resembles another Type4 header. Outside a body, a
+Type4 header anchors the next range. The default-off controls are:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE4_PRODUCER_BODY_HEADER=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER=1
+```
+
+Combined deterministic Type3/4/5 body advance plus the exact `0x432b87d1`
+stop produces:
+
+```text
+logs/gauntlet/gauntdl-f700-type345-advance-r1.log
+frameHash=0x3aa482df
+direct/setup=433/200
+fastFills=651 swaps=856
+lfbWrites=24930908
+```
+
+The brown/red fastfill residual disappears. The frame becomes clean blue and
+teal rectangles with a black right margin and white lower strip, but it is not
+a recognizable scene. This proves Type4 body re-entry owns the
+`0x0104824c` layer; keep the controls diagnostic-only. Next profile this cleaned
+frame, then replace the class-specific trackers with one packet-generation map.
