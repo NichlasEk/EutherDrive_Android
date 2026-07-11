@@ -30668,6 +30668,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly uint[] _cmdFifoRam = new uint[CmdFifoFramebufferWords];
     private readonly bool[] _cmdFifoValid = new bool[CmdFifoFramebufferWords];
     private readonly int[] _cmdFifoStorageLogicalIndex = new int[CmdFifoFramebufferWords];
+    private readonly bool[] _cmdFifoStoragePacketHeader = new bool[CmdFifoFramebufferWords];
+    private readonly int[] _cmdFifoStoragePacketEndLogicalIndex = new int[CmdFifoFramebufferWords];
     private readonly ulong[] _cmdFifoStorageLastWritePc = new ulong[CmdFifoFramebufferWords];
     private readonly uint[] _cmdFifoStorageLastWriteValue = new uint[CmdFifoFramebufferWords];
     private readonly int[] _cmdFifoStorageLastWriteLogicalIndex = new int[CmdFifoFramebufferWords];
@@ -30758,6 +30760,13 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _cmdFifoWriteGenerationBase;
     private int _cmdFifoWriteQueueIndex;
     private int _cmdFifoLastWriteStorageIndex = -1;
+    private int _cmdFifoPacketMapNextLogicalIndex = -1;
+    private int _cmdFifoPacketMapBodyWordsRemaining;
+    private int _cmdFifoPacketMapEndLogicalIndex;
+    private long _cmdFifoPacketMapHeaderWrites;
+    private long _cmdFifoPacketMapBodyWrites;
+    private long _cmdFifoPacketMapResyncs;
+    private long _cmdFifoPacketMapResyncMisses;
     private bool _cmdFifoBulkWriteSourceActive;
     private CommandFifoStorageBulkWriteSource _cmdFifoBulkWriteSource;
     private long _cmdFifoStorageWriteSequence;
@@ -31687,6 +31696,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            GetCommandFifoDecodeCallPcDebugStatus() +
            $"pend={_pendingSwapCount} cmdrd=0x{_cmdFifoReadIndex:X4} cmd={_cmdFifoDepth}/{_cmdFifoHoles}/{_cmdFifoValidCount}/0x{_cmdFifoAddressMin:X}/0x{_cmdFifoAddressMax:X} " +
            $"cmdio={_cmdFifoDepthWordsAdded}/{_cmdFifoDepthWordsDecoded}/{_cmdFifoDepthWordsStreamed} " +
+           $"genmap={_cmdFifoPacketMapHeaderWrites}/{_cmdFifoPacketMapBodyWrites}/{_cmdFifoPacketMapResyncs}/{_cmdFifoPacketMapResyncMisses} " +
            GetCommandFifoDecodeStopDebugStatus() +
            $"peek=0x{PeekCommandFifoWord():X8}:{GetFifoPacketWordsNeeded(PeekCommandFifoWord())} " +
            $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8} " +
@@ -32032,6 +32042,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         bool storageWasValid = _cmdFifoValid[storageIndex];
         CaptureCommandFifoProducerBoundaryWrite(storageIndex, logicalWriteIndex, address, value, storageWasValid);
+        TrackStandardCommandFifoPacketMapWrite(storageIndex, logicalWriteIndex, value);
         TrackCommandFifoType1ProducerWord(storageIndex, value);
         TrackCommandFifoType3ProducerWord(storageIndex, value);
         TrackCommandFifoType4ProducerWord(storageIndex, value);
@@ -32115,6 +32126,45 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         _cmdFifoLastWriteStorageIndex = storageIndex;
         return baseLocalIndex + _cmdFifoWriteGenerationBase;
+    }
+
+    private void TrackStandardCommandFifoPacketMapWrite(int storageIndex, int logicalWriteIndex, uint value)
+    {
+        if (_fixMameCommandFifoModel || !_experimentStandardCommandFifoGenerations)
+            return;
+
+        int normalized = CommandFifoStorageIndex(storageIndex);
+        bool sequentialBody = logicalWriteIndex == _cmdFifoPacketMapNextLogicalIndex &&
+                              _cmdFifoPacketMapBodyWordsRemaining > 0;
+        if (sequentialBody)
+        {
+            _cmdFifoPacketMapBodyWrites++;
+            _cmdFifoStoragePacketHeader[normalized] = false;
+            _cmdFifoStoragePacketEndLogicalIndex[normalized] = _cmdFifoPacketMapEndLogicalIndex;
+            _cmdFifoPacketMapBodyWordsRemaining--;
+        }
+        else
+        {
+            int wordsNeeded = Math.Max(1, GetFifoPacketWordsNeeded(value));
+            bool plausibleHeader = (value & 7u) <= 5u &&
+                                   !IsImplausibleCommandFifoPacket(value, wordsNeeded) &&
+                                   wordsNeeded <= CmdFifoWords;
+            _cmdFifoStoragePacketHeader[normalized] = plausibleHeader;
+            if (plausibleHeader)
+            {
+                _cmdFifoPacketMapHeaderWrites++;
+                _cmdFifoPacketMapBodyWordsRemaining = wordsNeeded - 1;
+                _cmdFifoPacketMapEndLogicalIndex = logicalWriteIndex + wordsNeeded - 1;
+                _cmdFifoStoragePacketEndLogicalIndex[normalized] = _cmdFifoPacketMapEndLogicalIndex;
+            }
+            else
+            {
+                _cmdFifoPacketMapBodyWordsRemaining = 0;
+                _cmdFifoStoragePacketEndLogicalIndex[normalized] = logicalWriteIndex;
+            }
+        }
+
+        _cmdFifoPacketMapNextLogicalIndex = logicalWriteIndex + 1;
     }
 
     private void TrackCommandFifoType3ProducerWord(int storageIndex, uint value)
@@ -32244,6 +32294,8 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void ClearCommandFifoStorageLastWriters()
     {
+        Array.Clear(_cmdFifoStoragePacketHeader);
+        Array.Clear(_cmdFifoStoragePacketEndLogicalIndex);
         Array.Clear(_cmdFifoStorageLastWritePc);
         Array.Clear(_cmdFifoStorageLastWriteValue);
         Array.Clear(_cmdFifoStorageLastWriteLogicalIndex);
@@ -32260,6 +32312,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         Array.Clear(_cmdFifoStorageType5PacketEnd);
         _cmdFifoStorageBulkWriteSources.Clear();
         _cmdFifoStorageWriteSequence = 0;
+        _cmdFifoPacketMapNextLogicalIndex = -1;
+        _cmdFifoPacketMapBodyWordsRemaining = 0;
+        _cmdFifoPacketMapEndLogicalIndex = 0;
+        _cmdFifoPacketMapHeaderWrites = 0;
+        _cmdFifoPacketMapBodyWrites = 0;
+        _cmdFifoPacketMapResyncs = 0;
+        _cmdFifoPacketMapResyncMisses = 0;
         _cmdFifoType1ProducerNextStorageIndex = -1;
         _cmdFifoType1ProducerBodyWordsRemaining = 0;
         _cmdFifoType1ProducerPacketEnd = 0;
@@ -35205,10 +35264,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             if (!_experimentStandardCommandFifoGenerations)
                 return true;
 
-            int storedLogicalIndex = _cmdFifoStorageLogicalIndex[storageIndex];
-            if (storedLogicalIndex > _cmdFifoReadIndex)
-                SetCommandFifoReadIndex(storedLogicalIndex, "standard-generation-catchup");
-            return _cmdFifoStorageLogicalIndex[CommandFifoStorageIndex(_cmdFifoReadIndex)] == _cmdFifoReadIndex;
+            if (_cmdFifoStorageLogicalIndex[storageIndex] == _cmdFifoReadIndex &&
+                _cmdFifoStoragePacketHeader[storageIndex])
+            {
+                if (IsStandardCommandFifoPacketComplete(_cmdFifoReadIndex))
+                    return true;
+                return TryResyncStandardCommandFifoToNextPacket();
+            }
+
+            return TryResyncStandardCommandFifoToNextPacket();
         }
 
         if (_cmdFifoDepth <= 0)
@@ -35307,6 +35371,47 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         CountCommandFifoReadyPc(true, "ready");
         return true;
+    }
+
+    private bool IsStandardCommandFifoPacketComplete(int headerLogicalIndex)
+    {
+        int headerStorage = CommandFifoStorageIndex(headerLogicalIndex);
+        if (!_cmdFifoValid[headerStorage] ||
+            !_cmdFifoStoragePacketHeader[headerStorage] ||
+            _cmdFifoStorageLogicalIndex[headerStorage] != headerLogicalIndex)
+            return false;
+
+        int packetEnd = _cmdFifoStoragePacketEndLogicalIndex[headerStorage];
+        if (packetEnd < headerLogicalIndex || packetEnd - headerLogicalIndex >= CmdFifoWords)
+            return false;
+        for (int logical = headerLogicalIndex; logical <= packetEnd; logical++)
+        {
+            int storage = CommandFifoStorageIndex(logical);
+            if (!_cmdFifoValid[storage] || _cmdFifoStorageLogicalIndex[storage] != logical)
+                return false;
+        }
+        return true;
+    }
+
+    private bool TryResyncStandardCommandFifoToNextPacket()
+    {
+        for (int offset = 1; offset <= CmdFifoWords; offset++)
+        {
+            int storage = CommandFifoStorageIndex(_cmdFifoReadIndex + offset);
+            if (!_cmdFifoValid[storage] || !_cmdFifoStoragePacketHeader[storage])
+                continue;
+            int candidate = _cmdFifoStorageLogicalIndex[storage];
+            if (candidate <= _cmdFifoReadIndex)
+                continue;
+            if (IsStandardCommandFifoPacketComplete(candidate))
+            {
+                SetCommandFifoReadIndex(candidate, "standard-generation-next-header");
+                _cmdFifoPacketMapResyncs++;
+                return true;
+            }
+        }
+        _cmdFifoPacketMapResyncMisses++;
+        return false;
     }
 
     private bool IsMameCommandFifoReadInsideAddressWindow()

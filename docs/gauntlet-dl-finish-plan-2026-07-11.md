@@ -121,5 +121,20 @@ gemensamma generationsmodellen ar verifierad.
   generation.
 - Nasta steg i Fas 1 ar darfor hel-paket-validering: alla ord fran header till
   paketslut maste ha sammanhangande logiska index i samma generation. Vid
-  mismatch ska konsumenten flyttas till nasta registrerade header, aldrig till
-  ett godtyckligt payloadord.
+mismatch ska konsumenten flyttas till nasta registrerade header, aldrig till
+ett godtyckligt payloadord.
+
+## Iteration 2026-07-11 - hel-paketkarta
+
+- En gemensam packet map registrerar plausibel header, body och logiskt
+  paketslut for samtliga paketklasser.
+- Readiness kraver att hela paketintervallet har exakt sammanhangande lagrade
+  logiska index.
+- f700 registrerar `41946` headers och `321959` body-ord, men hittar bara tva
+  kompletta resync-kandidater och `205303` missar.
+- Den globala producentsekvensen bryts av separata direkta/bulk-anrop innan
+  senare paket ar kompletta. En full ringskanning vid varje miss ar dessutom
+  for dyr (`fps=3.16`).
+- Nasta Fas 1-iteration ska halla packet assembly per producentstrom och
+  bulkgrans, samt indexera kompletta headers direkt. Readiness ska da kunna
+  valja nasta kompletta header utan ringskanning.
