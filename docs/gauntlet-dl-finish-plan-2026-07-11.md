@@ -202,3 +202,25 @@ ett godtyckligt payloadord.
   kopplingen. Nasta Fas 4-steg ska folja bundle-recordets `+0x08/+0x0c`-falt
   och stride-tabellerna som valjer varje per-page source/extent; varken hela
   containern eller dess body ska matas platt till uploadservicen.
+
+## Iteration 2026-07-11 - sen page selection
+
+- En ny default-off `EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAGE_SELECTION`
+  loggar sidvalet vid `0x801095c0` och source-additionen vid `0x80109620`.
+  Valfria `SOURCE_MIN/SOURCE_MAX`-filter gor den sena bundlen sparbar utan att
+  tracebudgeten forbrukas av den tidiga `0x802e...`-kedjan.
+- Den normala bundlen avancerar deterministiskt med helper-resultat som
+  `0x1000`, `0x4000`, `0x800` och mindre mip-steg. Detta ar inte en enkel
+  konstant-stridebugg.
+- Den sena problemkedjan ar exakt:
+  `source=0xffffffff80312998`, `desc08=3`, `desc0c=0`, helper-resultat
+  `v0=0x10000`. Caller behandlar alltsa `font_story`-descriptorn som en
+  64 KiB textsida.
+- Lag-nivan foljer redan descriptorstartens `+0x0c`-pekare till
+  `0xffffffff803129a4`; den gamla pointer-start-flaggan ar darfor bitidentisk
+  med generationskontrollen (`frameHash=0x128080b4`). Felet ar att de 64 KiB
+  efter pekaren ar ohydrerade, inte att descriptorordet sjalvt laddas upp.
+- Ett varmt index-9/full-container-overwrite ar inert eftersom f520-state redan
+  har byggt den gamla kallkedjan. Nasta kausala kontroll maste byggas kallt och
+  bevara `font_story`-kallans ursprungliga langd/assetkoppling innan
+  parsersteget ersatter den med allocator-descriptorn.

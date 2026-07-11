@@ -1046,6 +1046,14 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE"));
     private readonly int _traceTextureUploadSourceLimitTableLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_LIMIT", 128);
+    private readonly bool _traceTextureUploadPageSelection =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAGE_SELECTION"));
+    private readonly int _traceTextureUploadPageSelectionLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAGE_SELECTION_LIMIT", 160);
+    private readonly ulong? _traceTextureUploadPageSelectionSourceMin =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAGE_SELECTION_SOURCE_MIN");
+    private readonly ulong? _traceTextureUploadPageSelectionSourceMax =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_PAGE_SELECTION_SOURCE_MAX");
     private readonly ulong? _traceTextureUploadSourceLimitTablePcMin =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_PC_MIN");
     private readonly ulong? _traceTextureUploadSourceLimitTablePcMax =
@@ -1227,6 +1235,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadSourceSelectorSetupTraceCount;
     private int _textureUploadSourceProducerTraceCount;
     private int _textureUploadSourceProducerLoadTraceCount;
+    private int _textureUploadPageSelectionTraceCount;
     private int _mainRamWriteTraceCount;
     private int _runtimeBgLoadModelSkipHotDescriptorOverwriteTraceCount;
     private int _textureUploadSourceLimitTableTraceCount;
@@ -1880,6 +1889,7 @@ internal sealed class MipsR5000Core
         TraceTextureUploadSourceSelector(pc, op);
         TraceTextureUploadSourceProducer(pc, op, "pre");
         TraceTextureUploadSourceProducerLoad(pc, op);
+        TraceTextureUploadPageSelection(pc, op);
         TraceTextureUploadSourceLimitTable(pc, op, "pre");
         TraceInstruction(pc, op);
         TextureUploadCallerTransitionSnapshot textureUploadCallerBefore =
@@ -5658,6 +5668,41 @@ internal sealed class MipsR5000Core
             $"sp4c={sp4c:x8} sp50={sp50:x8} sp54={sp54:x8} " +
             $"caller1c={ReadTraceWord(callerSp + 0x1cUL):x8} caller24={ReadTraceWord(callerSp + 0x24UL):x8} " +
             $"table={tableWords} targetFirst={targetWords}");
+    }
+
+    private void TraceTextureUploadPageSelection(ulong pc, uint op)
+    {
+        if (!_traceTextureUploadPageSelection ||
+            _textureUploadPageSelectionTraceCount >= _traceTextureUploadPageSelectionLimit ||
+            pc is not (0xffffffff801095c0UL or 0xffffffff80109620UL))
+        {
+            return;
+        }
+
+        ulong source = _gpr[16];
+        ulong sourceMin = CanonicalizeOptionalTraceAddress(_traceTextureUploadPageSelectionSourceMin, 0UL);
+        ulong sourceMax = CanonicalizeOptionalTraceAddress(_traceTextureUploadPageSelectionSourceMax, ulong.MaxValue);
+        if (source < sourceMin || source >= sourceMax)
+            return;
+
+        ulong descriptor = _gpr[19];
+        ulong strideTable0 = _gpr[20];
+        ulong strideTable1 = _gpr[21];
+        ulong tableIndex = _gpr[23] & 0xffffffffUL;
+        ulong tableOffset = tableIndex * 4UL;
+        uint stride0 = ReadTraceWord(strideTable0 + tableOffset);
+        uint stride1 = ReadTraceWord(strideTable1 + tableOffset);
+
+        _textureUploadPageSelectionTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TEXUPLOAD-PAGE-SELECT] n={_textureUploadPageSelectionTraceCount} " +
+            $"pc=0x{pc:x16} op=0x{op:x8} {DisassembleBrief(op)} ra=0x{_gpr[31]:x16} " +
+            $"source=0x{source:x16} descriptor=0x{descriptor:x16} " +
+            $"v0=0x{_gpr[2]:x16} a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} " +
+            $"t2=0x{_gpr[10]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} " +
+            $"page={tableIndex:x} stride0=0x{stride0:x8} stride1=0x{stride1:x8} " +
+            $"desc08=0x{ReadTraceWord(descriptor + 0x08UL):x8} desc0c=0x{ReadTraceWord(descriptor + 0x0cUL):x8} " +
+            $"sourceFirst={FormatTraceWords(source, 4)}");
     }
 
     private readonly struct TextureUploadCallerTransitionSnapshot
