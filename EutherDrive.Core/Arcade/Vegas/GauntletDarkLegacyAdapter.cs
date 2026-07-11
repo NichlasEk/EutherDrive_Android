@@ -42966,23 +42966,49 @@ sampledTexel:
         if (((textureLod >> 19) & 1u) != 0)
             lodMask = ((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u;
 
-        uint baseAddress = GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr));
-        if (_textureSampleBaseBias != 0)
-            baseAddress = (uint)((baseAddress + _textureSampleBaseBias) & (TextureBytes - 1));
-
         int bppShift = (int)(((textureMode >> 8) & 0x0fu) >> 3);
         int lodLimit = Math.Clamp(targetLod, 0, 8);
-        for (int lod = 1; lod <= lodLimit; lod++)
+        uint baseAddress = GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr));
+        bool multiBase = ((textureLod >> 24) & 1u) != 0 && ((textureLod >> 28) & 0x0fu) == 0;
+        if (multiBase && lodLimit != 0)
         {
-            int previousLod = lod - 1;
-            if (((lodMask >> previousLod) & 1u) != 0)
+            baseAddress = lodLimit switch
             {
-                uint size = ((widthMask >> previousLod) + 1u) * ((heightMask >> previousLod) + 1u);
-                if (previousLod >= 4 && size < 4u)
-                    size = 4u;
-                baseAddress = (baseAddress + (size << bppShift)) & (TextureBytes - 1u);
+                1 => GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr1)),
+                2 => GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr2)),
+                _ => GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr38))
+            };
+
+            if (lodLimit > 3)
+            {
+                for (int lod = 4; lod <= lodLimit; lod++)
+                {
+                    int previousLod = lod - 1;
+                    if (((lodMask >> previousLod) & 1u) == 0)
+                        continue;
+                    uint size = ((widthMask >> previousLod) + 1u) * ((heightMask >> previousLod) + 1u);
+                    if (size < 4u)
+                        size = 4u;
+                    baseAddress = (baseAddress + (size << bppShift)) & (TextureBytes - 1u);
+                }
             }
         }
+        else
+        {
+            for (int lod = 1; lod <= lodLimit; lod++)
+            {
+                int previousLod = lod - 1;
+                if (((lodMask >> previousLod) & 1u) != 0)
+                {
+                    uint size = ((widthMask >> previousLod) + 1u) * ((heightMask >> previousLod) + 1u);
+                    if (previousLod >= 4 && size < 4u)
+                        size = 4u;
+                    baseAddress = (baseAddress + (size << bppShift)) & (TextureBytes - 1u);
+                }
+            }
+        }
+        if (_textureSampleBaseBias != 0)
+            baseAddress = (uint)((baseAddress + _textureSampleBaseBias) & (TextureBytes - 1));
 
         int ownedLod = lodLimit;
         if (((lodMask >> ownedLod) & 1u) == 0 && ownedLod < 8)

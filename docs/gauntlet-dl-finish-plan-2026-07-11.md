@@ -415,3 +415,25 @@ ett godtyckligt payloadord.
   against the guest's alternating bank addresses. The source and 256-packet
   limit are guest-authored; the remaining likely error is how Type5 target
   addresses map those 64-word rows into TMU memory, not another QIO remap.
+
+## MAME fetch and fullrect control checkpoint
+
+- MAME-compatible Type5 write-pointer addressing and the Type5 endian control
+  are byte-neutral on the late visible frame. MAME fetch addressing changes the
+  sampled bytes but retains the same noise/strip family.
+- The MAME fetch helper now mirrors Voodoo 2 multi-base LOD selection through
+  `texBaseAddr_1`, `_2`, and `_3_8`, matching the already-correct upload helper.
+  The current `tLOD=0xff802000` deliberately disables that mode because its
+  magic nibble is non-zero, so this is a correctness repair rather than the
+  current visual fix.
+- Explicit TMU0/TMU1 sampling, MAME fixed fetch, and MAME setup gradients do
+  not reveal scene art. The gradient variants make the bands denser and remain
+  default-off.
+- Exact Type3 field tracing confirms that the dominant full-screen pair is a
+  guest-authored `0x0180a8cb` packet with clean X/Y and intentional
+  `S=0xffc00000` NaNs. Reinterpreting alpha/Z as S or forcing zero/rejection is
+  worse or neutral. Do not change the Type3 layout.
+- The next narrow target remains upstream ownership of the late vertex/source
+  state: determine why the `0x800c4e5c` producer receives NaN S after the world
+  transition while earlier fullrect pairs carry finite S, alongside the
+  `0x802e2c68` Type5 source descriptor selected for that surface.
