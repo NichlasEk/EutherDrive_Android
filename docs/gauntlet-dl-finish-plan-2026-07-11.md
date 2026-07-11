@@ -592,6 +592,34 @@ ett godtyckligt payloadord.
   back to one logical file and remain within its requested/refilled stream
   before changing any TMU or Type5 addressing.
 
+### FSYS-owned static_lr texture body base
+
+- Raw FSYS directory decoding identifies root id `0x5d` as `/static_lr` and
+  its children as `objects.rom=0x5e`, `textures.rom=0x5f`, and
+  `anim.rom=0x60`. The `textures.rom` extent header is at disk byte
+  `0x00ffee00`; it owns a `0x000b1708`-byte payload beginning at LBA `0x7ff8`,
+  disk byte `0x00fff000`.
+- The body-read repair previously used synthetic base `0x0fa00000`. Its state-7
+  request at logical offset `0x214c0` therefore read disk `0x0fa214c0`, outside
+  the resolved file. That old chunk has 256 distinct byte values and begins
+  `0xffe60014`; it is retained only through the explicit
+  `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ_DISK_BASE`
+  regression override.
+- The ordinary repair now reads the same request from the FSYS-owned address
+  `0x00fff000 + 0x214c0 = 0x010204c0` into guest-owned output cursor
+  `0x802e1838`. The chunk has 17 distinct byte values and sparse/indexed
+  texture-like content rather than the old unrelated high-entropy bytes.
+- From the same `/tmp/gauntdl-owned-bodyread-f180.warm` state, f260 A/B keeps
+  CPU, geometry, FIFO, `frameHash=0xd083385f`, and textured coverage
+  `396/396` identical while non-zero TMU words rise from 9,811 to 14,220.
+  The explicit old-base override reproduces 9,811 exactly. This is a causal
+  texture-payload ownership repair; it does not yet make the selected frame
+  recognizable.
+- Next follow the newly populated words into the restored f700/f900 world
+  packets. Resolve each indexed asset's companion `textures.rom` extent (the
+  current `gei/snm/...` table points at `objects.rom` payloads) and keep model
+  headers separate from texture-body QIO output.
+
 ## Request-owned textures.rom body-read fix
 
 - A clean sequential-QIO cold run proves the post-`stk` request is

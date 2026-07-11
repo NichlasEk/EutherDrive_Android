@@ -17495,7 +17495,9 @@ internal sealed class MipsR5000Core
     private bool TryApplyKnownRuntimeBgLoadModelIndexedTextureQioBodyReadRepair(ulong pc)
     {
         const ulong qio = 0xffffffff80217c58UL;
-        const ulong texturesRomDiskBase = 0x0fa00000UL;
+        ulong texturesRomDiskBase =
+            ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ_DISK_BASE") ??
+            0x00fff000UL;
         const uint requestedBytes = 0x2000U;
         const uint callback = 0x800ab4e4U;
         const uint objectStatus = 0x300bU;
@@ -19060,7 +19062,6 @@ internal sealed class MipsR5000Core
             "/d0/static_lr/textures.rom" => 0x0007d000UL,
             _ => requestedByteCount == 0x2000U && callback == 0x800ab4e4U && !hasKnownIndexedTexturePayload ? 0x0007d000UL : 0
         };
-
         ulong fileState = IsMainRamRange(qioObject, 4) ? SignExtend32(_memory.Read32(qioObject)) : 0;
         if (!IsMainRamRange(fileState + 0x118UL, 4))
         {
