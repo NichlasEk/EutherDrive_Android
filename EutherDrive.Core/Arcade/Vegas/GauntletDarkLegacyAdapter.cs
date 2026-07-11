@@ -43,7 +43,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_FULL_INDEXED_SOURCE_PAYLOADS", "0"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_BODY_READ", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", "9"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", "13"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE", "1"),
     ];
@@ -17661,8 +17661,23 @@ internal sealed class MipsR5000Core
         if (streamIndex > KnownRuntimeBgLoadModelTexturePayloadMaxIndex || !knownLoadedSource)
             return;
 
+        uint sourceOwnedLimit = _memory.Read32(loadedSource + 0x64UL);
+        if (sourceOwnedLimit <= _gpr[20] ||
+            sourceOwnedLimit > (uint)_runtimeBgLoadModelIndexedTextureQioStreamLimit)
+        {
+            if (_runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:TRACE] bgloadmodel-indexed-texture-qio-stream-limit-reject pc={pc:x16} " +
+                    $"streamIndex={streamIndex} sourceCursor={sourceCursor} currentLimit={_gpr[20]} " +
+                    $"sourceOwnedLimit={sourceOwnedLimit} configuredMax={_runtimeBgLoadModelIndexedTextureQioStreamLimit} " +
+                    $"loadedSource={loadedSource:x16} sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(loadedSource)}");
+            }
+            return;
+        }
+
         ulong oldLimit = _gpr[20];
-        _gpr[20] = (ulong)_runtimeBgLoadModelIndexedTextureQioStreamLimit;
+        _gpr[20] = sourceOwnedLimit;
         _gpr[0] = 0;
 
         if (_runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount++ < 16)

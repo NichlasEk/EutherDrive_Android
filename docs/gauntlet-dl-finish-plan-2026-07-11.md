@@ -767,3 +767,23 @@ ett godtyckligt payloadord.
   prove that world nodes are missing. Input active-low service/test defaults
   are neutral (`0xffff`), so do not patch operator bits without a direct read
   trace showing an asserted line.
+
+### Source-owned stream-count checkpoint
+
+- The loop at `0x800abe30..0x800abea0` does not index the synthetic `0x2000`
+  source windows. It derives a record table at `source + 0x68 +
+  source[0x60] * 0x8c`, then addresses records as `table + index * 0x50`.
+  The old stream-limit guard therefore validated the wrong allocation.
+- The hydrated source header owns the real record count at `source + 0x64`.
+  The `snm` header reports 13 and the later `stk` header reports 9. The repair
+  now accepts only a larger count read from that exact hydrated source, capped
+  at 13; it no longer assigns the configured maximum directly.
+- From `/tmp/gauntdl-owned-bodyread-f180.warm`, the chained transitions
+  `2->13` and `2->9` reproduce the authoritative f260 oracle exactly:
+  `frameHash=0xd083385f`, Type5 `1630/93904`, and 47,147 non-zero texture-map
+  writes. This preserves the state-7 body read without the invalid limit-27
+  full-screen stream.
+- A 4-bpp expansion of the state-7 body was also rejected. It causally raised
+  final non-zero TMU words from 14,220 to 21,840, but the f700 image became a
+  denser corrupt mosaic. The experiment was removed; the body is structured
+  parser input, not a raw texture page to scale into RGB332.
