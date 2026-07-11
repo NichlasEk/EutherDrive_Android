@@ -1210,6 +1210,8 @@ internal sealed class MipsR5000Core
     private int _runtimeFormatBufferFastPathTraceCount;
     private int _runtimeRenderListSaturationRepairTraceCount;
     private int _runtimeRenderRecordNullBodyTraceCount;
+    private readonly int _runtimeRenderRecordNullBodyTraceLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RENDER_RECORD_NULL_BODY_LIMIT", 8);
     private int _runtimeRecordScanAllocateTraceCount;
     private int _runtimeRecordScanAllocateRejectTraceCount;
     private int _runtimeInterruptSuppressTraceCount;
@@ -13922,11 +13924,17 @@ internal sealed class MipsR5000Core
 
         AdvanceCp0Count(_cp0CountStep * 12UL);
         _instructionCounter += 12UL;
-        if (_runtimeRenderRecordNullBodyTraceCount++ < 8)
+        if (_runtimeRenderRecordNullBodyTraceCount++ < _runtimeRenderRecordNullBodyTraceLimit)
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] render-record-null-body pc={pc:x16} " +
-                $"record={record:x16} s2={s2:x16} slot={slotIndex:x8}");
+                $"record={record:x16} words={_memory.Read32(record + 0x00UL):x8}/" +
+                $"{_memory.Read32(record + 0x04UL):x8}/{_memory.Read32(record + 0x08UL):x8}/" +
+                $"{_memory.Read32(record + 0x0cUL):x8}/{_memory.Read32(record + 0x10UL):x8}/" +
+                $"{_memory.Read32(record + 0x14UL):x8}/{_memory.Read32(record + 0x18UL):x8}/" +
+                $"{_memory.Read32(record + 0x1cUL):x8}/{_memory.Read32(record + 0x20UL):x8} " +
+                $"s1={s1:x16} s2={s2:x16} s7={s7:x16} slot={slotIndex:x8} " +
+                $"table={tableEntry:x16} s6={s6:x16}");
         }
 
         return true;
@@ -31219,6 +31227,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK"));
     private readonly bool _experimentSuppressNonNeutralFastFill =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_NON_NEUTRAL_FASTFILL"));
+    private readonly bool _experimentForceVisibleClip =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_VISIBLE_CLIP"));
     private readonly bool _experimentSuppressWhiteFastFillAfterRaster =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_WHITE_FASTFILL_AFTER_RASTER"));
     private readonly bool _fixRgbBufferMask =
@@ -42476,6 +42486,15 @@ sampledTexel:
 
     private void GetClip(out int x0, out int x1, out int y0, out int y1)
     {
+        if (_experimentForceVisibleClip)
+        {
+            x0 = 0;
+            x1 = 640;
+            y0 = 0;
+            y1 = 480;
+            return;
+        }
+
         uint clipX = _registers[RegClipLeftRight];
         uint clipY = _registers[RegClipLowYHighY];
         x0 = Math.Clamp((int)((clipX >> 16) & 0x3ff), 0, 1024);

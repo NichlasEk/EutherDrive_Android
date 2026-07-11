@@ -12608,3 +12608,61 @@ not the castle scene. The next repair boundary is therefore the render-record
 body/asset completion path: identify which record body slots remain null and
 connect them to their QIO request/result before attempting more sampler,
 format, target-remap, source-stride, or global-source experiments.
+
+### Late f700 runtime transition and setup-gradient controls
+
+The f520 state is not permanently stalled. Advancing without the default extra
+CPU series triggers another QIO/asset wave after f600 and reaches a distinct,
+stable render state at f700:
+
+```text
+/tmp/gauntdl-clean-v5-f700-20260711.warm
+logs/gauntlet/gauntdl-f700-r2.log
+
+f700 frameHash=0xe233b66f
+swaps=859
+textured raster pixels=1224092
+TMU NCC/palette state is now populated
+```
+
+The framebuffer is not yet real scene graphics: large red/green solid regions
+cover most of the display and a noisy texture strip occupies the left edge.
+f900 retains `0xe233b66f`, so waiting longer does not change this state.
+
+Expanded null-body diagnostics prove the repeated records are loading-text
+glyph records. They reference only material slots 0, 1 and 10 in the table at
+`0x8020f1d8`; the table is zero-initialized at boot and never receives a
+nonzero write. This is not a collection of missing castle model bodies and
+must not be populated with guessed pointers. Coin/start input also reaches the
+runtime input bridge correctly but leaves the f700 state unchanged.
+
+The active f700 Type3 quad is `512x384`, but the live clip registers are
+`clipX=0x22`, `clipY=0x51a4`, restricting it to the left 34 pixels. A new
+default-off full-visible-clip control proves no completed scene is hidden by
+that scissor:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_VISIBLE_CLIP=1
+logs/gauntlet/gauntdl-f701-fullclip-r1.log
+frameHash=0xdfc09529
+```
+
+The expanded surface contains only noise and horizontal bands. Keep the live
+scissor behavior.
+
+The same quad has non-finite vertex S coordinates. MAME setup gradients alone
+sample all zero, while gradients plus fixed fetch make most samples nonzero:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH=1
+
+logs/gauntlet/gauntdl-f701-mamefixed-r1.log
+frameHash=0xcea24b5a zero=13158/117198
+```
+
+Combining fixed fetch with the full-clip oracle still produces only horizontal
+bands (`0x4ce2b9ba`). Coordinate fallback is therefore not the remaining
+graphics blocker. Continue from the f700 snapshot and correlate the late QIO
+wave with the active TMU upload row layout/content before enabling either
+control by default.
