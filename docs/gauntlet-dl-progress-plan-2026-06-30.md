@@ -13091,3 +13091,37 @@ That run returns to the prior red-line residual and is not a fix. Next implement
 Type1 producer-body ownership with the Type4 rule: an active sequential body
 must take precedence over a payload word that resembles a Type1 header. Advance
 to the recorded packet end; do not add more stop commands.
+
+### Type1 producer-body ownership checkpoint
+
+Type1 now has the same default-off sequential body/end controls as Type4:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE1_PRODUCER_BODY_HEADER=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE1_PRODUCER_BODY_HEADER=1
+```
+
+Running Type1/3/4/5 advance without any hard-coded command stop removes the
+noisy wedges and produces a clean blue-left/black-right frame:
+
+```text
+logs/gauntlet/gauntdl-f700-type1345-advance-r1.log
+frameHash=0xc0d9e688
+```
+
+This is not a visual fix. The residual profile proves severe consumer
+under-run/starvation:
+
+```text
+logs/gauntlet/gauntdl-f700-type1345-residual-profile-r1.log
+cmd depth=17849 valid=17849
+pc=800c4e5c decoded Type3 packets=12
+cmdstop=invalid-standard-window on legitimate 0x0180a8cb
+```
+
+Historical `0x432b87d1` fills also remain the selected buffers' last writers.
+The class-specific Type1 advance therefore over-retains an old generation and
+must remain diagnostic-only. This closes the class-by-class approach: the next
+implementation must use one generation-aware packet map and retire/integrate
+the four independent trackers, so body ownership is accepted only when header,
+body, and consumer read pointer belong to the same write generation.
