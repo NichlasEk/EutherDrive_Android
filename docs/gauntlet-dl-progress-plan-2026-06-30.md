@@ -12666,3 +12666,39 @@ bands (`0x4ce2b9ba`). Coordinate fallback is therefore not the remaining
 graphics blocker. Continue from the f700 snapshot and correlate the late QIO
 wave with the active TMU upload row layout/content before enabling either
 control by default.
+
+### f700 active owner and low-target preservation control
+
+An f701 sample-owner profile using MAME fixed fetch identifies one writer
+family across the active strip:
+
+```text
+logs/gauntlet/gauntdl-f701-late-owner-profile-r1.log
+
+sample range=0x00060f..0x01040f
+writer pc=0x800fe5d4
+mode=0 lod=0x00000800 base=0
+targets=0x300..0xe00
+```
+
+This is the same float/control-like writer family already shown to overwrite
+art data at high targets. Blocking it only for low targets during the late
+f520-to-f700 QIO transition changes the frame hash:
+
+```text
+logs/gauntlet/gauntdl-f700-preserve-e5d4-low-r2.log
+logs/gauntlet/gauntdl-f700-preserve-e5d4-low-r3.log
+
+baseline f700=0xe233b66f
+preserved f700=0xadd32952
+```
+
+The visible result is still the same large red/green solid-polygon frame. Only
+the noisy left strip changes. Do not enable this preservation range by
+default: `pc=0x800fe5d4` is a bad active texture owner, but removing that
+overwrite alone does not reveal the scene.
+
+The next focused blocker is the solid-polygon owner at f700. Trace the final
+writers for the red/brown background, green top wedge and red vertical wedge,
+including command packet and register state, before changing more texture
+upload ownership.
