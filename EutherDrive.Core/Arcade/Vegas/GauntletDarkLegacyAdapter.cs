@@ -38795,12 +38795,18 @@ internal class VoodooBringupBackend : IVoodooBackend
             : "";
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        int tmu = (int)((targetStart >> 19) & 0x03u);
+        string textureState =
+            $" tmu={tmu} " +
+            $"tmode=0x{ReadTextureUploadRegister(tmu, RegTextureMode):X8} " +
+            $"tlod=0x{ReadTextureUploadRegister(tmu, RegTextureLod):X8} " +
+            $"tbase=0x{ReadTextureUploadRegister(tmu, RegTextureBaseAddr):X8}";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TYPE5-TEXSEQ] n={_type5TextureUploadSequenceTraceCount} " +
             $"cmd=0x{command:X8} target=0x{targetStart:X6}-0x{targetStart + (uint)Math.Max(0, count - 1):X6} " +
             $"count={count} payload={payloadWords} nz={nonZero} hash=0x{hash:X8} first=0x{first:X8} last=0x{last:X8} " +
             $"{physicalSpan} packet=0x{_currentCommandFifoPacketStart * 4:X8} rd=0x{_currentType5TextureWriteReadIndex * 4:X8} " +
-            $"stream={(streaming ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{storageWords}{rawWords}{pcStatus}");
+            $"stream={(streaming ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{textureState}{storageWords}{rawWords}{pcStatus}");
     }
 
     private void TraceType5PayloadTile(

@@ -787,3 +787,24 @@ ett godtyckligt payloadord.
   final non-zero TMU words from 14,220 to 21,840, but the f700 image became a
   denser corrupt mosaic. The experiment was removed; the body is structured
   parser input, not a raw texture page to scale into RGB332.
+
+### Upload/render texture-page lifetime checkpoint
+
+- A complete f180-to-f260 Type5 sequence capture proves every texture payload
+  write lands in physical TMU words `0x0000..0x3fff`. Logical targets continue
+  through later LOD ranges, but no packet owns the world sample page beginning
+  near word `0x5f00`.
+- Type5 sequence diagnostics now include the live upload TMU, texture mode,
+  LOD and base registers. All 1,382 captured `0xc0000205` texture sequences use
+  mode `0x0c26100f`, LOD `0xff802000`, and texture base zero; 1,126 target TMU0
+  and 256 target TMU1.
+- The TMU base-register trace shows an intentional-looking context switch:
+  upload setup at guest PC `0x80106a74` writes base zero, while the active world
+  descriptor at `0x800bd19c` repeatedly writes base `0x1c00`. The later world
+  sampler resolves that to byte base `0xe510` and walks into the unowned next
+  64 KiB page.
+- A mode-only 64 KiB sample wrap reproduces the earlier global-wrap hash
+  `0x52cbc54b` exactly but still renders noisy mosaic data. It was removed.
+  The next fix belongs in upload page placement/lifetime: identify why several
+  logical upload passes overwrite page zero instead of owning the continuation
+  selected by the `0x1c00` render base.
