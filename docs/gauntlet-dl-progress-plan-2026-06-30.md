@@ -12955,6 +12955,47 @@ default-off. Next use equivalent ownership profiling to identify the packet
 class that owns the remaining wedge/fill layer before generalizing the storage
 generation model.
 
+### Type5 producer-body ownership checkpoint
+
+Type5 producer tracking now self-anchors on the backend's strict
+`IsType5TexturePacketHeader` predicate and records the target/payload body to
+its deterministic packet end. The default-off controls are:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE5_PRODUCER_BODY_HEADER=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE5_PRODUCER_BODY_HEADER=1
+```
+
+Combining Type3 and Type5 body advance with the exact `0x432b87d1` stop removes
+the stale LFB explosion:
+
+```text
+logs/gauntlet/gauntdl-f700-type35-advance-stop432b-r1.log
+frameHash=0xb412651a
+lfbWrites=21745247 (down from 336295785)
+direct/setup=309/136
+```
+
+All noisy loading strips disappear. The remaining image is a clean brown field
+with red lines/wedges. Residual pixel ownership identifies the next layer:
+
+```text
+logs/gauntlet/gauntdl-f700-type35-residual-pixel-writers-r1.log
+
+buffer 0 dominant:
+  pc=0x801027cc fill fastfill color=0xffff
+  cmd=0x0104824c words=4
+
+minor real geometry:
+  pc=0x800c4e5c textured setup color=0x07e0
+  cmd=0x0180a8cb words=19
+```
+
+Type5 body re-entry is therefore proven and causal. The next corrupted visual
+layer is Type4/register payload re-entering through `0x0104824c` and issuing
+fastfill. Extend the same anchored body/end ownership to Type4 before replacing
+the three class-specific probes with one generation-aware packet map.
+
 ### Type3 advance residual-owner checkpoint
 
 Pixel-last-writer profiling with deterministic Type3 body advance confirms that
