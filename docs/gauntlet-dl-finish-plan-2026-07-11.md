@@ -709,6 +709,29 @@ ett godtyckligt payloadord.
   64 KiB render/font object ownership transition instead of globally wrapping
   every texture.
 
+### Post-body mip-source ownership checkpoint
+
+- The request-owned f180-to-f260 run reaches the ordinary page loop at
+  `0x801095c0`; the extra Type5 traffic is not invented solely by the backend
+  fastpath. The state-7 descriptor has `desc08=3`, `desc0c=0`, and its first
+  helper result is `0x10000` bytes from source `0x802e1718`.
+- The following mip sources advance to `0x802f1718`, `0x802f5718`,
+  `0x802f6718`, and smaller tails. Those sources are entirely zero in the
+  current ordinary run. A second descriptor starts at `0x802e1918`, inside the
+  new `textures.rom` body, and likewise declares a `0x10000`-byte first level.
+- This exposes the remaining ownership mismatch: the state-7 QIO request owns
+  only `0x2000` bytes at `0x802e1838`, while the upload descriptor consumes a
+  complete mip chain extending well beyond that request. Earlier synthetic
+  indexed windows at `0x802e3718`, `0x802e5718`, and `0x802e7718` also fall
+  inside the declared first-level span.
+- Repeating the request payload across the declared mip span is causal but
+  invalid: Type5 rises from `1630/93904` to `2144/126800`, activates additional
+  synthetic stream indices, and leaves the f260 frame bit-identical at
+  `0xd083385f`. The experiment was removed.
+- Next trace the real `0x800ab4e4` completion/parser contract for state 7 and
+  identify the owned expanded/output allocation. Do not enlarge or repeat the
+  raw disk request, and do not promote the global 64 KiB sampler wrap.
+
 ### Generations-clean baseline promotion
 
 - Every request-owned body-read verification above was cold-built with the
