@@ -709,6 +709,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeStackRecordCopyFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STACK_RECORD_COPY");
     private readonly bool _enableRuntimeRenderRecordSkipFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP");
     private readonly bool _enableRuntimeByteMoveFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE");
+    private readonly bool _fixWorldScratchRelocationOwnership =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SCRATCH_RELOCATION_OWNERSHIP");
     private readonly bool _enableRuntimeBgLoadModelDispatchFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISPATCH");
     private readonly bool _enableRuntimeVertexFifoEmitFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT");
     private readonly bool _fixRuntimeVertexFifoFullrectSFromX =
@@ -1681,6 +1683,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeStackRecordCopy(pc))
             return;
         if (TryFastPathKnownRuntimeByteMove(pc))
+            return;
+        if (TryFastPathKnownRuntimeRepeatedWorldScratchRelocation(pc))
             return;
         if (TryFastPathKnownRuntimeStringLength(pc))
             return;
@@ -14311,6 +14315,33 @@ internal sealed class MipsR5000Core
         _gpr[6] = ulong.MaxValue;
         _gpr[7] = ulong.MaxValue;
         Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeRepeatedWorldScratchRelocation(ulong pc)
+    {
+        const ulong entry = 0xffffffff800c9980UL;
+        const ulong table = 0xffffffff8019cc28UL;
+        const ulong scratch = 0xffffffff802e1718UL;
+        const ulong callerReturn = 0xffffffff8004eb6cUL;
+        if (!_fixWorldScratchRelocationOwnership ||
+            pc != entry ||
+            _gpr[4] != table ||
+            _gpr[5] != scratch ||
+            _gpr[31] != callerReturn ||
+            _memory.Read32(scratch) != 1U ||
+            _memory.Read32(scratch + 4UL) != 4U)
+        {
+            return false;
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] skip-unowned-world-scratch-relocation " +
+            $"pc={pc:x16} table={table:x16} scratch={scratch:x16}");
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        Pc = _gpr[31];
         CompleteFastPathStep();
         return true;
     }

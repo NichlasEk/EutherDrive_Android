@@ -509,6 +509,35 @@ ett godtyckligt payloadord.
   that should submit new Type3 primitives after the completed loader, without
   changing the already verified packet-3 layout or adding texture transforms.
 
+## World scratch relocation ownership fix
+
+- Focused CPU and memory tracing found the geometry cutoff in the castle-world
+  scan. The relocator at `0x800c9980`, called from `0x8004eb6c`, was handed the
+  shared slot-0 scratch object `0x802e1718` as though it were an owned world
+  relocation block. Its header begins with `1,4`; relocation converted those
+  words into `0x802e1719/0x802e171c` and then rewrote the live scratch header.
+  Later traversal consequently received unaligned values such as
+  `0x2e171800` and stopped producing world primitives.
+- `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SCRATCH_RELOCATION_OWNERSHIP` now
+  guards only that exact callsite, table, scratch base, and `1,4` signature.
+  The ordinary relocator and legitimately owned blocks are unchanged. The fix
+  follows the bringup-default policy and remains explicitly overridable.
+- The f520-to-f700 A/B is causal. The old path freezes at Type3 `20,774`,
+  `880/880` covered triangles and `frameHash=0x44b29c78`. The ownership fix
+  preserves the scratch header, reaches Type3 `23,320`, covers `2,401/2,506`
+  triangles, and produces `frameHash=0x714eb9b4`.
+- Later f900 progression remains active: Type3 reaches `31,454`, swaps `1,463`,
+  and textured coverage `6,845/7,174` with `frameHash=0xce4baf57`. The image
+  now contains a full scene-sized geometry layer, but textures remain noisy;
+  this is a verified geometry stage, not completion of the visual bringup.
+- Reproducible states and dumps are
+  `/tmp/gauntdl-skip-worldreloc-f700.warm`,
+  `/tmp/gauntdl-skip-worldreloc-f900.warm`,
+  `/tmp/gauntdl-skip-worldreloc-f700.ppm`, and
+  `/tmp/gauntdl-skip-worldreloc-f900.ppm`. Next trace texture-page ownership
+  for the restored world primitives rather than changing geometry or packet
+  framing.
+
 ### Relocation-field lifetime proof
 
 - A cold write watch proves the slot-0 QIO hydration is initially correct at
