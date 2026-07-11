@@ -31119,6 +31119,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DROP_IMPLAUSIBLE_REGISTER_PACKETS"));
     private readonly bool _experimentStopImplausibleCommandFifoRegisterPackets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STOP_IMPLAUSIBLE_REGISTER_PACKETS"));
+    private readonly ulong[] _experimentStopImplausibleCommandFifoRegisterPacketCommands =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STOP_IMPLAUSIBLE_REGISTER_PACKET_COMMANDS"));
     private readonly bool _experimentIgnoreImplausibleCommandFifoSelfRegisterWrites =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_SELF_REG_WRITES")) ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_IGNORE_IMPLAUSIBLE_SELF_REG_PACKETS"));
@@ -34453,7 +34455,9 @@ internal class VoodooBringupBackend : IVoodooBackend
                 return;
             }
             if (_experimentStopImplausibleCommandFifoRegisterPackets &&
-                implausiblePacket)
+                implausiblePacket &&
+                (_experimentStopImplausibleCommandFifoRegisterPacketCommands.Length == 0 ||
+                 _experimentStopImplausibleCommandFifoRegisterPacketCommands.Contains(command)))
             {
                 CountCommandFifoDecodeCallPc(decodeCallPc, decodedThisCall, decodeCallStartReadIndex, decodeCallStartDepth, _cmdFifoReadIndex, decodeCallFirstCommand, decodeCallLastCommand, decodeCallTypeMask, "implausible-packet");
                 TraceCommandFifoDecodeStop("implausible-packet", command, wordsNeeded);

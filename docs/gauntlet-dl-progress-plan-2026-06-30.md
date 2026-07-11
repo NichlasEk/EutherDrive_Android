@@ -12844,3 +12844,58 @@ render work. Keep strict gating diagnostic-only. The next trace should follow
 the `pc=0x800c4e5c` producer that writes the stale packet at local offset
 `0x08`: capture its guest source/destination transition and determine why the
 standard FIFO read pointer accepts that storage after `amin/amax` collapse.
+
+### f520-to-f700 direct producer and exact Type1 stop
+
+A signed CPU trace around the storage owner shows that `pc=0x800c4e5c` is the
+normal direct Glide FIFO producer, not a RAM-copy helper:
+
+```text
+logs/gauntlet/gauntdl-f520-f620-cpu-800c4e5c-r1.log
+
+t2=0xffffffffa820aa3c, a820aa88, a820ab38 ...
+t5=0xbc292a85 on alternating payload writes
+```
+
+The guest advances through the Voodoo2 direct command window and the existing
+16-bit word wrap matches the hardware path. Earlier framebuffer-sized storage
+controls already showed NOP/stale-zero drain, so widening the 64K-word mask is
+not the next fix.
+
+The collapsed-bulk-chain gate is neutral at the late transition and does not
+catch the write-triggered `0x432b87d1` packet:
+
+```text
+logs/gauntlet/gauntdl-f700-collapsed-chain-gate-r1.log
+frameHash=0xe233b66f
+```
+
+The existing implausible-register-packet stop now accepts an optional exact
+command filter:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STOP_IMPLAUSIBLE_REGISTER_PACKETS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STOP_IMPLAUSIBLE_REGISTER_PACKET_COMMANDS=432b87d1
+```
+
+Stopping only that packet produces exactly the same result as stopping every
+implausible register packet in the f520-to-f700 interval:
+
+```text
+logs/gauntlet/gauntdl-f700-stop-432b87d1-r1.log
+logs/gauntlet/gauntdl-f700-stop-implausible-type1-r1.log
+
+frameHash=0xded2736c
+direct/setup=309/136
+fastFills=587 swaps=807
+```
+
+The large wedges disappear, leaving the brown background and two noisy loading
+strips. This proves `0x432b87d1` alone owns the removable late polygon family,
+but stopping on it parks the read pointer and cannot recover the scene.
+
+Do not add a raw-word plausibility scan for the next packet. The safe next
+implementation boundary is producer-generation ownership: retain the bulk
+packet/body boundary installed by the direct Glide producer, and prevent a
+later write-triggered decode from treating a valid payload-body word from that
+generation as a new header after `amin/amax` collapses.
