@@ -30763,6 +30763,11 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _cmdFifoWriteGenerationBase;
     private int _cmdFifoWriteQueueIndex;
     private int _cmdFifoLastWriteStorageIndex = -1;
+    private long _cmdFifoGenerationBaseRegisterResets;
+    private long _cmdFifoGenerationBaseBulkResets;
+    private long _cmdFifoGenerationBaseWrapClearResets;
+    private long _cmdFifoGenerationBaseWrapAdvances;
+    private ulong _cmdFifoGenerationBaseLastResetPc;
     private readonly Dictionary<ulong, PacketMapProducerState> _cmdFifoPacketMapProducerStates = [];
     private long _cmdFifoPacketMapHeaderWrites;
     private long _cmdFifoPacketMapBodyWrites;
@@ -31700,6 +31705,8 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"genmap={_cmdFifoPacketMapHeaderWrites}/{_cmdFifoPacketMapBodyWrites}/{_cmdFifoPacketMapResyncs}/{_cmdFifoPacketMapResyncMisses}" +
            $":set{_cmdFifoCompletePacketHeaders.Count}:min{(_cmdFifoCompletePacketHeaders.Count > 0 ? _cmdFifoCompletePacketHeaders.Min : -1):X}" +
            $":max{(_cmdFifoCompletePacketHeaders.Count > 0 ? _cmdFifoCompletePacketHeaders.Max : -1):X}:wb{_cmdFifoWriteGenerationBase:X} " +
+           $"genbase={_cmdFifoGenerationBaseRegisterResets}/{_cmdFifoGenerationBaseBulkResets}/{_cmdFifoGenerationBaseWrapClearResets}/{_cmdFifoGenerationBaseWrapAdvances}" +
+           $":pc{_cmdFifoGenerationBaseLastResetPc:X} " +
            GetCommandFifoDecodeStopDebugStatus() +
            $"peek=0x{PeekCommandFifoWord():X8}:{GetFifoPacketWordsNeeded(PeekCommandFifoWord())} " +
            $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8} " +
@@ -31776,9 +31783,14 @@ internal class VoodooBringupBackend : IVoodooBackend
                     _cmdFifoRamBase = (int)((value & 0x000003ffu) << 12);
                     _cmdFifoRamEnd = Math.Clamp((int)((((value >> 16) & 0x000003ffu) + 1u) << 12), 4, CmdFifoWords * 4);
                 }
-                _cmdFifoWriteGenerationBase = 0;
-                _cmdFifoWriteQueueIndex = 0;
-                _cmdFifoLastWriteStorageIndex = -1;
+                _cmdFifoGenerationBaseRegisterResets++;
+                _cmdFifoGenerationBaseLastResetPc = CpuPcProvider?.Invoke() ?? 0;
+                if (!_experimentStandardCommandFifoGenerations)
+                {
+                    _cmdFifoWriteGenerationBase = 0;
+                    _cmdFifoWriteQueueIndex = 0;
+                    _cmdFifoLastWriteStorageIndex = -1;
+                }
                 TraceCommandFifoModel($"reg base value=0x{value:x8}");
                 break;
             case RegTriangleCommand:
@@ -31998,6 +32010,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoDepthWordsDecoded = 0;
             _cmdFifoDepthWordsStreamed = 0;
             _cmdFifoWriteGenerationBase = logicalWriteIndex & ~CmdFifoMask;
+            _cmdFifoGenerationBaseBulkResets++;
+            _cmdFifoGenerationBaseLastResetPc = CpuPcProvider?.Invoke() ?? 0;
             _cmdFifoWriteQueueIndex = logicalWriteIndex;
             _cmdFifoLastWriteStorageIndex = storageIndex;
             _cmdFifoReadPointerWritten = true;
@@ -32038,6 +32052,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoAddressMin = _cmdFifoRamBase - 4;
             _cmdFifoAddressMax = _cmdFifoRamBase - 4;
             _cmdFifoWriteGenerationBase = 0;
+            _cmdFifoGenerationBaseWrapClearResets++;
+            _cmdFifoGenerationBaseLastResetPc = CpuPcProvider?.Invoke() ?? 0;
             _cmdFifoWriteQueueIndex = 0;
             _cmdFifoLastWriteStorageIndex = -1;
             _cmdFifoJumped = false;
@@ -32125,6 +32141,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoLastWriteStorageIndex - storageIndex > CmdFifoWords / 2)
         {
             _cmdFifoWriteGenerationBase += CmdFifoWords;
+            _cmdFifoGenerationBaseWrapAdvances++;
         }
 
         _cmdFifoLastWriteStorageIndex = storageIndex;

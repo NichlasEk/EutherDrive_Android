@@ -151,3 +151,27 @@ ett godtyckligt payloadord.
 - I generationslaget ignoreras nu endast interna packet-writes till FIFO:s
   kontrollbank. Externa MMIO-skrivningar bevaras. Release-bygget ar verifierat;
   nasta korning ska mata stabil write-base och komplett-header-span.
+
+## Iteration 2026-07-11 - bevarad producentgeneration
+
+- Orsaksraknare visar fyra riktiga producent-wraps men tre skrivningar till
+  FIFO-basregistret fran `pc=0xffffffff800fe7c4`. De tre aterstallningarna gav
+  tidigare nettobasen `0x10000` medan konsumenten stod pa `0x40000`.
+- Registertracen visar en omojlig mellanliggande fonsterdefinition
+  (`base=0xc8000`, `end=0x01000`) foljd av tva nollskrivningar mitt i aktiv ko.
+- Standard-generationslaget bevarar nu logisk write-generation och senaste
+  ringposition over basregisterskrivningar. Ordinarie och MAME-vag ar
+  oforandrade.
+- f700 med endast generationsflaggan slutar med producentbas `0x50000`, sista
+  kompletta header `0x5840a` och konsument `0x58410`. Paketantalet okar fran
+  `108643` till `110937` och frame hash andras fran `0x51641411` till
+  `0x128080b4` utan renderkollaps.
+- Fas 1:s stora producent/konsument-generationsfel ar darmed stangt i denna
+  kontroll. Nasta kontroll ar pixelagare och paketstopp vid den sex ord stora
+  svansen efter sista kompletta headern, foljt av verklig geometriprogression.
+- Profilkorningen
+  `logs/gauntlet/gauntdl-f700-generation-preserved-profile-r1.log` bekraftar
+  att synlig buffer 0 nu domineras av setup-texturerad `cmd=0x0180a8cb` fran
+  `pc=0x800c4e5c`. Den senaste agaren ligger generationsrent vid
+  `rd=pkt=0x583d7`; den roda brus-/remsbilden ar alltsa nu en setup/TMU-fraga,
+  inte bevis for den tidigare flera-generationer-stora FIFO-forskjutningen.
