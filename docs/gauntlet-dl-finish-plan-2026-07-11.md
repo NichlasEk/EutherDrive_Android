@@ -465,3 +465,22 @@ ett godtyckligt payloadord.
   chunk placement or parsed-output hydration. Preserve the clean no-overlap
   snapshot family as the oracle and require restored scene content without
   reintroducing cross-source stripes.
+
+## Shared QIO scratch ownership checkpoint
+
+- The clean f1000-to-f1050 QIO trace shows repeated slot-0 requests with the
+  same destination `0x802e1718`, callback `0x800ab4e4`, and forced
+  `static_lr` read offset `0x001b0830`. The model state advances from 0 through
+  at least 8 while the repair reloads the same 0x2000-byte chunk.
+- The asset parser is deliberately invoked for indices 0 through 8, but its
+  source table points every index at the shared `0x802e1718` scratch buffer.
+  The hard-coded `gei/snm/stk/...` bulk copies are therefore not derived from
+  the active QIO request and cannot be considered owned parser output.
+- Partial/full indexed payload hydration is now disabled in both baseline
+  presets. It remains explicitly overridable for regression controls. This
+  promotes the clean no-overlap cold path and prevents known cross-source
+  corruption from being presented as normal bringup output.
+- Next trace the slot-0 file-state/current-offset producer and the callback's
+  lifetime rule for the shared scratch buffer. The repair must feed the chunk
+  selected by the guest request/state, or retain callback-parsed output, rather
+  than preloading guessed object bundles into overlapping fixed windows.
