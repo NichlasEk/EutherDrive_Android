@@ -290,3 +290,28 @@ ett godtyckligt payloadord.
   Continue from the cold-generation checkpoint and identify why its small set
   of legitimate primitives lacks complete texture and coverage. Keep the old
   snapshot only as a regression control for FIFO migration behavior.
+
+## Cold-generation clip ownership checkpoint
+
+- The exact baseline-script cold checkpoint was rebuilt after the host freeze.
+  The probe must use `run-gauntdl-baseline.sh`; the broader bringup preset is not
+  equivalent and produced a contaminated `0x969428e2` control.
+- The rebuilt `/tmp/gauntdl-target-cold-f520-20260711.warm` reproduces f700
+  `frameHash=0xf4659d04`, `nonBlack=7628`, and textured coverage `20/81`.
+- Reject tracing shows `60/61` rejected textured triangles fail clip. Active
+  clip windows include `(0,0)-(7,200)` and `(0,0)-(664,15)`, despite otherwise
+  plausible 180x229 loading quads.
+- Register-write tracing in
+  `logs/gauntlet/gauntdl-cold-generations-f700-clip-writers-r1.log` identifies
+  direct writers `pc=0x800fe7c4/0x800fe7cc`. They emit clip pairs
+  `0x00000007/0x000018c8`, `0x00003298/0x0000000f`, and
+  `0x00000022/0x000051a4`; these look like stream payload, not stable clip
+  rectangles.
+- Forcing the visible 640x480 clip is causal but not corrective: coverage rises
+  to `78/81`, `nonBlack=128708`, and `frameHash=0xf8689d8b`, while the exposed
+  image is colored noise and horizontal stripes. Keep the force-clip flag
+  diagnostic-only.
+- Next trace the source packet/producer generation that feeds the paired
+  `0x800fe7c4/0x800fe7cc` writes to registers `0x46/0x47`. The safe repair
+  boundary is preventing stale or misclassified payload from becoming global
+  clip state, not clamping arbitrary clip values.
