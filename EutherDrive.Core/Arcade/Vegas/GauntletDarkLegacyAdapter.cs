@@ -1064,6 +1064,8 @@ internal sealed class MipsR5000Core
         CanonicalizeTraceAddress(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_SOURCE_CALL_A3_PRODUCER_PC_MIN") ?? 0x800546f0UL);
     private readonly ulong _traceTextureSourceCallA3ProducerPcMax =
         CanonicalizeTraceAddress(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_SOURCE_CALL_A3_PRODUCER_PC_MAX") ?? 0x80054784UL);
+    private readonly bool _traceTextureSourceCallA3ProducerRequireMatch =
+        !GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_SOURCE_CALL_A3_PRODUCER_ALL"));
     private readonly ulong? _traceTextureUploadSourceLimitTablePcMin =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_LIMIT_TABLE_PC_MIN");
     private readonly ulong? _traceTextureUploadSourceLimitTablePcMax =
@@ -5736,7 +5738,7 @@ internal sealed class MipsR5000Core
                 break;
             }
         }
-        if (!matched)
+        if (_traceTextureSourceCallA3ProducerRequireMatch && !matched)
             return;
 
         _textureSourceCallA3ProducerTraceCount++;

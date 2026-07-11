@@ -242,3 +242,20 @@ ett godtyckligt payloadord.
   Nasta Fas 4-steg ar init/QIO-kedjan efter allokeringen: identifiera vem som
   ska fylla den 64 KiB payload som borjar vid objektets `+0x0c` och varfor den
   forblir nollad.
+# 2026-07-11: font_story source is a live render object, not an unhydrated asset
+
+- The late `0x80312998` source is a legitimate `0x20000`-byte allocation stored
+  through global `0x8019d1f0`; replacing it wholesale with a WTR body/header is
+  therefore not a valid repair.
+- The constructor at `0x80054480..0x800546ef` contains no nested calls. It
+  computes layout directly and retains the allocated object in `a3`.
+- A focused main-RAM write watch over `0x80312998..0x80312ba4` shows the object
+  header being maintained by `0x8004c850` and `0x8004c858`. In particular,
+  object `+0x08` deliberately points to object `+0x0c` (`0x803129a4`).
+- The same watch shows generated float/render data beginning around object
+  `+0xac`, written by `0x800c9ca8`; the apparent zero payload at `+0x0c` is not
+  evidence of a missed disk read.
+- Consequently the next blocker is the ownership/type transition that passes
+  this render object to the 64 KiB texture-page uploader. Trace that handoff
+  backward from `0x801095c0`, rather than adding another source remap or cold
+  hydration experiment.
