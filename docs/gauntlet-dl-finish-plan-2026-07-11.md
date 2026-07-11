@@ -558,6 +558,40 @@ ett godtyckligt payloadord.
   chunks, and then remove the pointer-normalize workaround when all relocation
   fields remain naturally valid.
 
+### Type5 source and FSYS logical-file ownership
+
+- A fresh bringup-preset cold trace at f180 identifies the noisy Type5 page
+  `targetWord=0x0f80` as guest packet `0xc0000205`, emitted by
+  `pc=0x800fe5f8/0x800fe60c/0x800fe614`. Its payload cursor is
+  `s6=0x802e3619`, with 64 words per row. The cursor starts at slot-0 scratch
+  `0x802e1718 + 0x1f01` and crosses the synthetic 0x2000-byte QIO window.
+- The odd cursor is intentional byte-stream positioning in this path, not the
+  older generic pointer flag. Clearing it in the pair-copy fastpath is causal
+  but negative: cold f180 changes from `frameHash=0xd083385f`, Type5 `252`,
+  and 9,811 non-zero texture words to `frameHash=0xc284aba7`, Type5 `384`,
+  and only 1,688 non-zero texture words. At f300, 9,839,830 of 9,840,600
+  textured pixels sample zero. Keep both low-bit experiments default-off.
+- The QIO trace exposes the upstream mismatch. The guest create call at
+  `pc=0x800c9678` names `objects.rom`, while the slot-0 metadata repair later
+  reports a synthetic `static_lr` hydration from `textures.rom` base LBA
+  `0x7d000` and forced logical offset `0x1b0830`.
+- Raw-disk inspection confirms that Gauntlet's FSYS files are not flat
+  `baseLba * 512 + logicalOffset` ranges. `c0edbabe` headers describe payload
+  extents and directory entries identify `objects.rom`, `textures.rom`, and
+  `anim.rom`; extent headers and unrelated payloads occur between their disk
+  sectors. The current flat-offset hydration can therefore copy FSYS metadata
+  or a neighboring file into the texture upload scratch, matching the observed
+  code/control-like words.
+- A guessed contiguous second QIO chunk at `destination+0x2000`, including a
+  0x4000 distinct-source stride, is byte-neutral at f180 and was removed. The
+  body-read repair is not the owner of this initial slot-0 hydration.
+- Next implement a narrow read-only FSYS logical-file resolver for the active
+  `static_lr/objects.rom` and `static_lr/textures.rom` entries. QIO hydration
+  must resolve the guest filename and logical offset through file extents,
+  then copy only request-owned bytes. Require the `0x802e3619` payload to map
+  back to one logical file and remain within its requested/refilled stream
+  before changing any TMU or Type5 addressing.
+
 ## Request-owned textures.rom body-read fix
 
 - A clean sequential-QIO cold run proves the post-`stk` request is
