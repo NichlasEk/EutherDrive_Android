@@ -732,6 +732,26 @@ ett godtyckligt payloadord.
   identify the owned expanded/output allocation. Do not enlarge or repeat the
   raw disk request, and do not promote the global 64 KiB sampler wrap.
 
+### Callback and stream-limit boundary checkpoint
+
+- Canonical cold and f180-to-f260 CPU traces show no execution at the QIO
+  callback pointer `0x800ab4e4`. The current completion fastpath marks requests
+  complete and the model dispatcher consumes their records without entering
+  that address.
+- A narrow state-7 callback kick using the established QIO ABI (`a0=qio`) is
+  structurally safe but exactly neutral: f260 remains `0xd083385f`, Type5 stays
+  `1630/93904`, and the TMU map is unchanged. The callback is not the missing
+  texture expansion stage, so the experiment was removed.
+- Restoring the guest's observed stream limit `2` prevents state 7 entirely:
+  f260 retains only the inherited 252 Type5 packets and 9,811 non-zero TMU
+  words. Limit 9 is therefore required to reach the request-owned body read,
+  even though the current synthetic source windows behind entries 4..8 are not
+  ownership-correct.
+- The next narrow boundary is the missing per-entry QIO lifetime for stream
+  entries 4..8. Recover their guest-selected filename, logical offset,
+  destination, and completion order instead of reducing the count or filling
+  their windows from guessed object payloads.
+
 ### Generations-clean baseline promotion
 
 - Every request-owned body-read verification above was cold-built with the
