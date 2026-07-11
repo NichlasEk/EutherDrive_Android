@@ -437,3 +437,9 @@ ett godtyckligt payloadord.
   state: determine why the `0x800c4e5c` producer receives NaN S after the world
   transition while earlier fullrect pairs carry finite S, alongside the
   `0x802e2c68` Type5 source descriptor selected for that surface.
+- Source-write tracing narrows the NaN transition to guest `swc1 f22` at
+  `pc=0x800b0a38`, writing `0xffc00000` into vertex `+0x0c`. At that call,
+  `s0=0x802593a0` and `s1=0x80332a00`; the FIFO emitter merely copies the
+  resulting vertex. Extending the guarded S-from-X reconstruction to all-NaN
+  fullrects is visually neutral, so keep that experiment unchanged and trace
+  the descriptor/FPU producer before this store.
