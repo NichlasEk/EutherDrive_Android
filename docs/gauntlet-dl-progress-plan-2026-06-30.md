@@ -12778,3 +12778,69 @@ stores. The next useful boundary is aperture/window ownership: establish which
 guest-programmed command-FIFO base and range are active when `0xa820xxxx` is
 written, and compare that range with the adapter's unconditional masked
 `(offset >> 2) & 0xffff` routing before changing decode scheduling again.
+
+### f520-to-f700 collapsed-window packet provenance
+
+The late FIFO PC profile makes the apparent `0x801031a8` control-register
+ownership precise:
+
+```text
+logs/gauntlet/gauntdl-f520-f700-fifo-window-profile-r1.log
+
+cmdwr 801031a8=402 writes
+slots base/rdptr/amin/amax/depth/holes=67 each
+cmdtgt 801031a8 ... cf402 ff67 sw67 su134 tri135
+```
+
+The focused self-register packet trace identifies one raw payload header behind
+all 402 writes:
+
+```text
+logs/gauntlet/gauntdl-f520-f700-selfreg-packets-r1.log
+
+cmd=0x432b87d1 type=1 target=0x0fa count=17195 inc=1
+packetStart=0x00000008
+amin=amax=0xfffffffc
+trigger=write pc=0x801031a8
+values=473fb400/c681cc00/437f0000/3f800000/43fd5b56/432b87d1
+```
+
+Because the incrementing Type1 target wraps through the 8-bit register bank,
+this raw model/control payload crosses all six command-FIFO control registers
+67 times. Storage provenance is more important than the decode PC: the header
+and following words were installed at local FIFO offsets `0x08`, `0x0c`, and
+`0x10` by `pc=0x800c4e5c` while the tracked address window was already
+collapsed.
+
+The existing write-only implausible self-register guard catches exactly this
+packet, but is visually and behaviorally neutral at f700:
+
+```text
+logs/gauntlet/gauntdl-f700-ignore-implausible-selfreg-r1.log
+frameHash=0xe233b66f
+direct/setup=444/203
+fastFills=702
+```
+
+This confirms that the 402 self-register writes are a consequence of the bad
+packet alignment, not the render owner that should be suppressed.
+
+Strict command-FIFO enable gating is non-neutral without the MAME FIFO model:
+
+```text
+logs/gauntlet/gauntdl-f700-strict-fifo-r1.log
+frameHash=0xfbbf2c62
+direct/setup=621/292
+fastFills=765 swaps=1051
+
+logs/gauntlet/gauntdl-f900-strict-fifo-r1.log
+frameHash=0xfbbf2c62
+fifoWords=6155471 texturedPixels=58369392
+```
+
+The strict image exposes more wedges and two loading-strip remnants, but it is
+still not a scene and remains bit-stable from f700 through f900 despite heavy
+render work. Keep strict gating diagnostic-only. The next trace should follow
+the `pc=0x800c4e5c` producer that writes the stale packet at local offset
+`0x08`: capture its guest source/destination transition and determine why the
+standard FIFO read pointer accepts that storage after `amin/amax` collapse.
