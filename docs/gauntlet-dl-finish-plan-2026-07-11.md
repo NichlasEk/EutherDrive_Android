@@ -443,3 +443,25 @@ ett godtyckligt payloadord.
   resulting vertex. Extending the guarded S-from-X reconstruction to all-NaN
   fullrects is visually neutral, so keep that experiment unchanged and trace
   the descriptor/FPU producer before this store.
+
+## Indexed hydration ownership checkpoint
+
+- The probe script now permits explicit `0` overrides for both partial and
+  full indexed-source hydration. A cold f700 run with both disabled reaches a
+  stable snapshot and removes most of the large false stripe fields; its PPM is
+  `logs/gauntlet/gauntdl-cold-no-overlap-hydration-f700-r1.ppm`.
+- Chained v6 snapshots verify that the same clean condition progresses through
+  f800, f900, f1000, and f1100. The late image remains mostly black with a
+  narrow noisy lower band (`gauntdl-no-overlap-hydration-f1100-r1.ppm`), so
+  simply disabling hydration is not a finished visual fix.
+- The control proves an ownership bug: baseline copies `0x9f60..0xa13c` bytes
+  into sources spaced only `0x2000` apart, and those overlapping copies create
+  the dominant false bands. Hydrating only the full `gei` payload is also
+  negative (`f300=0xd083385f`, nearly black), so do not promote either extreme.
+- `GauntletProbe` can now save a deterministic final snapshot with
+  `EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE`, allowing long progression tests to be
+  divided into bounded, reproducible segments.
+- Next target: replace fixed-window bulk hydration with ownership-correct QIO
+  chunk placement or parsed-output hydration. Preserve the clean no-overlap
+  snapshot family as the oracle and require restored scene content without
+  reintroducing cross-source stripes.
