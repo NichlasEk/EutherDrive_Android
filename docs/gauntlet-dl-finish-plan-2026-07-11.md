@@ -388,3 +388,30 @@ ett godtyckligt payloadord.
   sparse control-like words. Trace the source cursor and descriptor selected
   for that writer after the late world-QIO transition; do not add more sampler
   transforms or promote full-payload hydration.
+
+## Late Type5 source-boundary controls
+
+- A focused f1000-to-f1100 trace identifies the repeated active upload exactly:
+  `pc=0x800fe5d4`, `source=0x802e2c68`, `index=0/255`, `sp74=255`,
+  `words=64`. The guest itself requests all 256 packets for both texture banks
+  (`sourceBase=0` and `0x200000`); the fastpath is not inventing the run limit.
+- The 64 KiB source crosses the synthetic `0x2000` indexed-source windows.
+  `0x20000` stride keeps all headers valid, but breaks the intentionally
+  contiguous stream and produces a mostly black frame (`f1300=0xb174085a`).
+  Keep the default stride.
+- Hydrating the full `gei` payload only, or expanding slot 0 from its mapped
+  disk range through the full upload span, changes the frame but retains the
+  same noise/band family. The latter also collides with later indexed QIO
+  writes. Neither model is correct and both probes remain uncommitted.
+- Disabling the outer-payload fastpath after the FIFO-wrap fix removes the
+  original band blocks at f700 (`0x98a9f813`), but later lets float payloads
+  become render registers (`fbz=0xbf4271c5`) and ends as a red solid frame.
+  The fastpath is therefore required until the guest loop/register path is more
+  complete; disabling it is not a fix.
+- The existing fullrect S-from-X candidate is neutral on the current f700/f720
+  oracle. The active source still produces the same image, so constant S is not
+  the remaining primary blocker after clip ownership was fixed.
+- Next target: compare the `0x802e2c68` run's Type5 upload address/endian mapping
+  against the guest's alternating bank addresses. The source and 256-packet
+  limit are guest-authored; the remaining likely error is how Type5 target
+  addresses map those 64-word rows into TMU memory, not another QIO remap.
