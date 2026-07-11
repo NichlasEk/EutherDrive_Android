@@ -1133,10 +1133,10 @@ static void WriteStandardFifoGenerationState(BinaryWriter writer, object backend
 
     IDictionary producers = GetFieldValue<IDictionary>(backend, "_cmdFifoPacketMapProducerStates");
     writer.Write(producers.Count);
-    foreach (DictionaryEntry entry in producers.Cast<DictionaryEntry>().OrderBy(entry => (ulong)entry.Key))
+    foreach (object producerKey in producers.Keys.Cast<object>().OrderBy(key => (ulong)key))
     {
-        writer.Write((ulong)entry.Key);
-        object state = entry.Value!;
+        writer.Write((ulong)producerKey);
+        object state = producers[producerKey]!;
         writer.Write((int)GetProperty(state, "NextLogicalIndex"));
         writer.Write((int)GetProperty(state, "BodyWordsRemaining"));
         writer.Write((int)GetProperty(state, "PacketEndLogicalIndex"));
