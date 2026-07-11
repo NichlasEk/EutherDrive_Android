@@ -697,6 +697,7 @@ internal sealed class MipsR5000Core
     private readonly bool _enableBootLoaderAddressBase = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_LOADER_ADDRESS_BASE");
     private readonly bool _enableBootSerialCopyLoop = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_SERIAL_COPY_LOOP");
     private readonly bool _enableBootCountDelay = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY");
+    private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
     private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
     private readonly bool _enableSelftestLatchRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_SELFTEST_LATCH");
@@ -12896,7 +12897,7 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownRuntimeInputPoll(ulong pc)
     {
         const ulong entry = 0xffffffff800eb078UL;
-        if (!_enableBootCountDelay || pc != entry)
+        if (!_enableRuntimeInputPollBridge || pc != entry)
             return false;
 
         if (_memory.Read32(entry + 0x00UL) != 0x27bdffa0U ||
@@ -16147,6 +16148,7 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:FIX] format-literal-wrapper pc={pc:x16} " +
                 $"dst={destination:x16} fmt={format:x16} len={length} " +
+                $"ra={_gpr[31]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
                 $"text=\"{ReadAsciiTraceString(format, 96)}\"");
         }
 
@@ -16387,6 +16389,7 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:FIX] diagnostic-literal-line-wrapper pc={pc:x16} " +
                 $"dst={globalDestination:x16} fmt={format:x16} len={length} " +
+                $"ra={returnAddress:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
                 $"text=\"{ReadAsciiTraceString(format, 96)}\"");
         }
 
@@ -25329,8 +25332,10 @@ internal sealed class VegasMemoryMap
     public void RecordRuntimeInputPollEffects()
     {
         const ulong table = 0xffffffff80262b90UL;
+        const ulong record0 = table;
+        const ulong record1 = table + 1UL * 28UL;
         const ulong record5 = table + 5UL * 28UL;
-        if (!IsMainRamRange(record5, 28U))
+        if (_input is null || !IsMainRamRange(record5, 28U))
             return;
 
         uint player12AndSystem = BuildPlayerInputPort12() |
@@ -25345,14 +25350,50 @@ internal sealed class VegasMemoryMap
 
         uint previousLowBits = Read32(record5) & 0x0000ffffu;
         uint systemBits = activeBits & 0xffff0000u;
+        uint player1Bits = BuildRuntimePlayerButtonBits(_input.Player1);
+        uint player2Bits = BuildRuntimePlayerButtonBits(_input.Player2);
         if (_traceRuntimeInputBridge && _traceRuntimeInputBridgeCount++ < 48)
         {
             Console.WriteLine(
                 $"[GAUNTDL:INPUTBRIDGE] player12={player12AndSystem & 0xffffu:x4} " +
                 $"system={(player12AndSystem >> 16) & 0xffffu:x4} port0={(port34And0 >> 16) & 0xffffu:x4} " +
-                $"active={activeBits:x8} previousLow={previousLowBits:x4} value={(previousLowBits | systemBits):x8}");
+                $"active={activeBits:x8} p1={player1Bits:x8} p2={player2Bits:x8} " +
+                $"previousLow={previousLowBits:x4} value={(previousLowBits | systemBits):x8}");
         }
+        UpdateRuntimeInputBitfieldRecord(record0, player1Bits);
+        UpdateRuntimeInputBitfieldRecord(record1, player2Bits);
         UpdateRuntimeInputBitfieldRecord(record5, previousLowBits | systemBits);
+    }
+
+    private static uint BuildRuntimePlayerButtonBits(GauntletPlayerInput player)
+    {
+        ReadOnlySpan<byte> directionMap =
+        [
+            0x00, 0x10, 0x00, 0x20,
+            0x00, 0x00, 0x00, 0x30,
+            0x00, 0x00, 0x00, 0x00,
+            0x40, 0x00, 0x80, 0xc0
+        ];
+        uint directionIndex = 0;
+        if (player.Up)
+            directionIndex |= 0x01U;
+        if (player.Down)
+            directionIndex |= 0x02U;
+        if (player.Left)
+            directionIndex |= 0x04U;
+        if (player.Right)
+            directionIndex |= 0x08U;
+
+        uint value = directionMap[(int)directionIndex];
+        if (player.Start)
+            value |= 0x0100U;
+        if (player.Fight)
+            value |= 0x0200U;
+        if (player.Magic)
+            value |= 0x0400U;
+        if (player.Turbo)
+            value |= 0x0800U;
+        return value;
     }
 
     private void UpdateRuntimeInputBitfieldRecord(ulong record, uint value)
