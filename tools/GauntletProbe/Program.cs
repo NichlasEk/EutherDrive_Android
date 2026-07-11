@@ -160,6 +160,7 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS")
 
 object voodoo = GetProperty(machine, "Voodoo");
 DumpVoodoo(voodoo);
+DumpRequestedTextureWordOwners(voodoo);
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_BEFORE_FRAME") == "1")
     DumpVoodooColorBuffers(voodoo);
 DumpFrame(adapter);
@@ -2802,6 +2803,36 @@ static ulong[] ParseHexList(string? value)
         .Select(item => TryParseHexUlong(item, out ulong parsed) ? parsed : ulong.MaxValue)
         .Where(parsed => parsed != ulong.MaxValue)
         .ToArray();
+}
+
+static void DumpRequestedTextureWordOwners(object voodoo)
+{
+    ulong[] words = ParseHexList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_TEXTURE_WORD_OWNERS"));
+    if (words.Length == 0)
+        return;
+
+    object backend = GetField(voodoo, "_backend");
+    IDictionary owners = GetFieldValue<IDictionary>(backend, "_textureWordLastWriters");
+    foreach (ulong requestedWord in words)
+    {
+        if (requestedWord > int.MaxValue || !owners.Contains((int)requestedWord))
+        {
+            Console.WriteLine($"textureWordOwner word=0x{requestedWord:x6} owner=-");
+            continue;
+        }
+
+        object owner = owners[(int)requestedWord]!;
+        Console.WriteLine(
+            $"textureWordOwner word=0x{requestedWord:x6} " +
+            $"pc=0x{GetProperty(owner, "Pc"):x16} value=0x{GetProperty(owner, "Value"):x8} " +
+            $"mode=0x{GetProperty(owner, "Mode"):x8} lod=0x{GetProperty(owner, "TexLod"):x8} " +
+            $"base=0x{GetProperty(owner, "TextureBase"):x8} level={GetProperty(owner, "Lod")} " +
+            $"bpp={GetProperty(owner, "BytesPerTexel")} seq8={GetProperty(owner, "Seq8Downld")} " +
+            $"type5={GetProperty(owner, "Type5")} cmd=0x{GetProperty(owner, "Type5Command"):x8} " +
+            $"targetStart=0x{GetProperty(owner, "Type5TargetStart"):x6} target=0x{GetProperty(owner, "Type5TargetWord"):x6} " +
+            $"index={GetProperty(owner, "Type5Index")}/{GetProperty(owner, "Type5Count")} " +
+            $"packet=0x{(int)GetProperty(owner, "PacketStart") * 4:x8} read=0x{(int)GetProperty(owner, "ReadIndex") * 4:x8}");
+    }
 }
 
 readonly record struct RamSurfaceFormat(int Width, int Height, int Stride);

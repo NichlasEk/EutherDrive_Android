@@ -687,6 +687,28 @@ ett godtyckligt payloadord.
   legitimate upload ownership ends at physical TMU word `0x5554` before the
   world samples `0x5f00..0x6380`.
 
+### Physical 64 KiB page boundary checkpoint
+
+- Raw f260/f900 TMU dumps correct the previous high-water interpretation:
+  word `0x5555=0xdeadbeef` is a sentinel, not uploaded texture content. All
+  genuine non-zero data ends at word `0x3fff` (byte `0xffff`), and every
+  f260-to-f900 texture change also remains below that 64 KiB boundary.
+- Live writer ownership confirms the page layout. LOD0 Type5 rows fill through
+  physical word `0x3fff`; subsequent LOD clears reach `0x554f` with zero
+  payload. The last clear is `cmd=0xc0000015`, target
+  `0x0a8380..0x0a8381`. Words `0x5550+` have no writer.
+- A default-off `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_64K_PAGE_WRAP`
+  masks sample addresses to the populated 64 KiB page. From the same f900
+  snapshot, f920 changes from `frameHash=0x5c54e46b` to `0x52cbc54b` and
+  reduces zero-colored textured pixels from about 5.79M to 0.51M. The exposed
+  image is still noisy and therefore the global wrap is diagnostic-only, but
+  it proves that the active render object expects page-local addressing while
+  the current sampler treats its base as one flat TMU address.
+- Probe diagnostics now support focused main-RAM read watches and arbitrary
+  texture-word owner dumps. Next constrain page-local addressing to the actual
+  64 KiB render/font object ownership transition instead of globally wrapping
+  every texture.
+
 ### Generations-clean baseline promotion
 
 - Every request-owned body-read verification above was cold-built with the

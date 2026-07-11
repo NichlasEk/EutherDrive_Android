@@ -31522,6 +31522,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FLOAT_TRIANGLE_COLOR_GRADIENT"));
     private readonly bool _experimentReverse8BitTextureSampleLanes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
+    private readonly bool _experimentTextureSample64KPageWrap =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_64K_PAGE_WRAP"));
     private readonly bool _experimentReverse16BitTextureSampleLanes =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_16BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
     private readonly bool _experimentTextureFilterHalfTexel =
@@ -42768,6 +42770,8 @@ sampledTexel:
         out uint raw)
     {
         byteAddress &= TextureBytes - 1u;
+        if (_experimentTextureSample64KPageWrap)
+            byteAddress &= 0xffffu;
         if (sixteenBit)
         {
             word = ReadTexture32(byteAddress & ~3u);
@@ -42895,6 +42899,8 @@ sampledTexel:
         if (sixteenBit)
         {
             byteAddress = (baseAddress + texelIndex * 2u) & (TextureBytes - 1u);
+            if (_experimentTextureSample64KPageWrap)
+                byteAddress &= 0xffffu;
             word = ReadTexture32(byteAddress & ~3u);
             uint laneByteAddress = GetTexture16BitLaneByteAddress(byteAddress);
             ushort packed = (ushort)((word >> (int)((laneByteAddress & 2u) * 8u)) & 0xffffu);
@@ -42903,6 +42909,8 @@ sampledTexel:
         }
 
         byteAddress = (baseAddress + texelIndex) & (TextureBytes - 1u);
+        if (_experimentTextureSample64KPageWrap)
+            byteAddress &= 0xffffu;
         word = ReadTexture32(byteAddress & ~3u);
         uint lane = byteAddress & 3u;
         if (_experimentReverse8BitTextureSampleLanes)
