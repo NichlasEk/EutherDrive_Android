@@ -185,3 +185,20 @@ ett godtyckligt payloadord.
   assetbytes som FIFO-struktur och skapade registerbrus. Nasta Fas 4-grans ar
   i stallet producenten/hydreringen av descriptorparet kring
   `0xffffffff80312998/0xffffffff803129a4`, och dess avsedda source/extent.
+
+## Iteration 2026-07-11 - kall hydrering och source extent
+
+- Den nuvarande partiella hydreringen kopierar upp till `0x9f60` byte men
+  placerar indexkallor med bara `0x2000` bytes mellanrum. Ett kallt
+  `0x20000`-strideprov eliminerar overlap men visar fortfarande tre
+  brusremsor och `Loading Game.` vid f700 (`frameHash=0x7e8f9588`).
+- Body-only-hydrering med samma stride ar kraftigt negativ: f300 producerar
+  `7436357` FIFO-ord, bara `19` Type3-paket och inga tackta texturerade
+  trianglar (`frameHash=0x4ef1de5d`). Containerhuvudet far inte hoppas over.
+- Full containerhydrering ar strukturellt stabil och generationsren vid f300
+  (`wb=0x50000`, sista header `0x5677a`, lasare `0x56780`), men bilden ar
+  fortfarande samma brusremsor (`frameHash=0xf8321b56`).
+- Slutsats: overlap och for kort extent ar verkliga brister men inte den sista
+  kopplingen. Nasta Fas 4-steg ska folja bundle-recordets `+0x08/+0x0c`-falt
+  och stride-tabellerna som valjer varje per-page source/extent; varken hela
+  containern eller dess body ska matas platt till uploadservicen.
