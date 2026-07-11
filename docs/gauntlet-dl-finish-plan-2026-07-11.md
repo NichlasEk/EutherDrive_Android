@@ -138,3 +138,16 @@ ett godtyckligt payloadord.
 - Nasta Fas 1-iteration ska halla packet assembly per producentstrom och
   bulkgrans, samt indexera kompletta headers direkt. Readiness ska da kunna
   valja nasta kompletta header utan ringskanning.
+
+## Iteration 2026-07-11 - producentlokal assembly
+
+- Packet assembly ar nu separerad per skrivande CPU-PC.
+- Ett direkt `SortedSet`-index over kompletta headers ersatter ringskanning och
+  aterstaller cirka `4.7 fps`.
+- f700 ger `4034` resyncs och tar bort de stora kil-artifakterna.
+- Type0-trace visar korrekt jump-skalning; generationsspridningen orsakas i
+  stallet av att feltolkade FIFO-paket skriver FIFO:s egna kontrollregister och
+  nollstaller write-generationen.
+- I generationslaget ignoreras nu endast interna packet-writes till FIFO:s
+  kontrollbank. Externa MMIO-skrivningar bevaras. Release-bygget ar verifierat;
+  nasta korning ska mata stabil write-base och komplett-header-span.
