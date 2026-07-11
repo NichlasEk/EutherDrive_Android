@@ -315,3 +315,28 @@ ett godtyckligt payloadord.
   `0x800fe7c4/0x800fe7cc` writes to registers `0x46/0x47`. The safe repair
   boundary is preventing stale or misclassified payload from becoming global
   clip state, not clamping arbitrary clip values.
+
+## Cold-generation producer-wrap fix
+
+- Focused CPU/register correlation identifies the leaking writes as one
+  64-word Type5 producer at `ra=0x800fe338`. The payload comes from hydrated
+  `gei` RAM (`s3=0x802e3968`, `0x802e3d50`, and `0x802e4130`).
+- The first block is valid packet traffic until the physical producer pointer
+  advances from the Glide command-FIFO aperture through `0xa82fffff` to
+  `0xa8300108`. PCI decoding then treated the wrapped packet as registers;
+  payload offsets `+0x118/+0x11c` became clip registers `0x46/0x47`.
+- Under standard FIFO generations, the PCI path now folds the wrapped
+  `0x300000..0x3fffff` producer generation back into the command-FIFO aperture
+  before register decoding. The ordinary path is unchanged.
+- A cold f700 run in
+  `logs/gauntlet/gauntdl-wrapfix-cold-f700-r1.log` has no payload-owned clip
+  writes. Producer and consumer finish together at `wb=0xd0000` and
+  `cmdrd=0xd8410`; textured coverage rises from `20/81` to `2637/2639` with no
+  clip rejects (`frameHash=0xbeefdaf6`).
+- This is a FIFO correctness fix, not yet a visual fix. The exposed frame is
+  still noisy because `42,301,348 / 42,946,338` textured pixels sample zero.
+  The next blocker is the active texture source/target ownership.
+- Loading the pre-fix f520 snapshot with the new wrap behavior stalls at its
+  old logical reader generation. Do not use that migrated state as a visual
+  oracle; serialize/rebuild the standard-generation packet map or regenerate
+  snapshots cold with the wrap fix.

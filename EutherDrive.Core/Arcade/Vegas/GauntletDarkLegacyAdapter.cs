@@ -343,6 +343,7 @@ internal sealed class GauntletDarkLegacyMachine
         MemoryMap.AttachInput(Input);
         Cpu = new MipsR5000Core(MemoryMap);
         Voodoo.SetCpuPcProvider(() => Cpu.Pc);
+        Voodoo.SetCpuGprProvider(Cpu.GetGpr);
     }
 
     public void Load(GauntletRomSet romSet, byte[]? picNvram, byte[]? timekeeperRam)
@@ -1358,6 +1359,7 @@ internal sealed class MipsR5000Core
     }
 
     public ulong Pc { get; private set; }
+    public ulong GetGpr(int index) => (uint)index < _gpr.Length ? _gpr[index] : 0;
     public uint LastFetchedInstruction { get; private set; }
     public ulong Cp0Status => _cp0[12];
     public ulong Cp0Cause => _cp0[13];
@@ -28019,6 +28021,8 @@ internal sealed class VegasVoodooPciDevice
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_LOW_OFFSET_WRITES"));
     private readonly bool _experimentCommandFifoDirectEndian =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DIRECT_ENDIAN"));
+    private readonly bool _experimentStandardCommandFifoGenerations =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS"));
     private IVoodooBackend? _voodoo;
     private uint _bar0 = 0xff000000u;
     private bool _bar0Probe;
@@ -28133,7 +28137,10 @@ internal sealed class VegasVoodooPciDevice
 
         if (offset < 0x00400000u)
         {
-            if ((offset >= 0x00200000u &&
+            bool wrappedGenerationWindow =
+                _experimentStandardCommandFifoGenerations && offset >= 0x00300000u;
+            if (wrappedGenerationWindow ||
+                (offset >= 0x00200000u &&
                  (IsCommandFifoEnabled || (!_experimentStrictCommandFifoEnable && IsGlideCommandFifoWindow(offset)))) ||
                 (_experimentCommandFifoLowOffsetWrites &&
                  offset >= 0x00001000u &&
@@ -28141,7 +28148,8 @@ internal sealed class VegasVoodooPciDevice
             {
                 if (_experimentCommandFifoDirectEndian && (offset & 0x00040000u) != 0)
                     value = BinaryPrimitives.ReverseEndianness(value);
-                _voodoo?.WriteFifo((offset >> 2) & 0xffffu, value);
+                uint fifoOffset = wrappedGenerationWindow ? offset - 0x00100000u : offset;
+                _voodoo?.WriteFifo((fifoOffset >> 2) & 0xffffu, value);
                 Trace($"fifo write off={offset:x6} value={value:x8}");
             }
             else
@@ -30543,6 +30551,7 @@ internal sealed class VoodooFacade : IVoodooBackend
     public string DebugStatus => _backend.DebugStatus;
     public string RecentEventStatus => _backend.RecentEventStatus;
     private Func<ulong>? _cpuPcProvider;
+    private Func<int, ulong>? _cpuGprProvider;
     private bool _commandFifoBulkWriteSourceActive;
     private ulong _commandFifoBulkWriteSource;
     private uint _commandFifoBulkWriteSourceBase;
@@ -30556,6 +30565,12 @@ internal sealed class VoodooFacade : IVoodooBackend
     public void SetCpuPcProvider(Func<ulong> provider)
     {
         _cpuPcProvider = provider;
+        ApplyCpuPcProvider();
+    }
+
+    public void SetCpuGprProvider(Func<int, ulong> provider)
+    {
+        _cpuGprProvider = provider;
         ApplyCpuPcProvider();
     }
 
@@ -30654,7 +30669,10 @@ internal sealed class VoodooFacade : IVoodooBackend
     private void ApplyCpuPcProvider()
     {
         if (_backend is VoodooBringupBackend bringup)
+        {
             bringup.CpuPcProvider = _cpuPcProvider;
+            bringup.CpuGprProvider = _cpuGprProvider;
+        }
     }
 }
 
@@ -31796,6 +31814,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _type5Seq8PacketBlockLayoutTraceCount;
 
     public Func<ulong>? CpuPcProvider { get; set; }
+    public Func<int, ulong>? CpuGprProvider { get; set; }
     public int DrawPacketCount => _fifoDrawPacketCount;
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
@@ -32005,6 +32024,9 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         _registerWriteTraceCount++;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string cpuStatus = CpuGprProvider is null
+            ? ""
+            : $" ra=0x{CpuGprProvider(31):x16} s3=0x{CpuGprProvider(19):x16} s4=0x{CpuGprProvider(20):x16}";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-REGWRITE] n={_registerWriteTraceCount} reg=0x{register:x2} value=0x{value:x8} " +
             $"decode={(_decodingCommandFifo ? 1 : 0)} cmd=0x{_currentCommandFifoCommand:x8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:x8}:rd0x{_cmdFifoReadIndex * 4:x8} " +
@@ -32013,7 +32035,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"st=0x{_registers[RegFstartS]:x8}/0x{_registers[RegFstartT]:x8}/0x{_registers[0xa3]:x8}/0x{_registers[0xa4]:x8} " +
             $"fbz=0x{_registers[RegFbzMode]:x8} fbzcp=0x{_registers[RegFbzColorPath]:x8} " +
             $"tmode=0x{ReadTextureSampleRegister(RegTextureMode):x8} tlod=0x{ReadTextureSampleRegister(RegTextureLod):x8} " +
-            $"tbase=0x{ReadTextureSampleRegister(RegTextureBaseAddr):x8}{pcStatus}");
+            $"tbase=0x{ReadTextureSampleRegister(RegTextureBaseAddr):x8}{cpuStatus}{pcStatus}");
     }
 
     private uint ApplyRegisterWriteMask(uint register, uint value)
