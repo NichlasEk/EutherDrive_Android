@@ -1041,6 +1041,12 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LOAD_PC_MIN");
     private readonly ulong? _traceTextureUploadSourceProducerLoadPcMax =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_SOURCE_PRODUCER_LOAD_PC_MAX");
+    private readonly ulong? _traceMainRamReadStart =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_READS_START");
+    private readonly ulong? _traceMainRamReadEnd =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_READS_END");
+    private readonly int _traceMainRamReadLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_READS_LIMIT", 160);
     private readonly bool _traceMainRamWrites =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES"));
     private readonly ulong? _traceMainRamWriteStart =
@@ -1258,6 +1264,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadSourceSelectorSetupTraceCount;
     private int _textureUploadSourceProducerTraceCount;
     private int _textureUploadSourceProducerLoadTraceCount;
+    private int _mainRamReadTraceCount;
     private int _textureUploadPageSelectionTraceCount;
     private int _textureSourceCallA3ProducerTraceCount;
     private int _mainRamWriteTraceCount;
@@ -1918,6 +1925,7 @@ internal sealed class MipsR5000Core
         TraceTextureUploadSourceSelector(pc, op);
         TraceTextureUploadSourceProducer(pc, op, "pre");
         TraceTextureUploadSourceProducerLoad(pc, op);
+        TraceMainRamReadWatch(pc, op);
         TraceTextureUploadPageSelection(pc, op);
         TraceTextureSourceCallA3Producer(pc, op);
         TraceTextureUploadSourceLimitTable(pc, op, "pre");
@@ -5524,6 +5532,31 @@ internal sealed class MipsR5000Core
             $"s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} " +
             $"owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(loadedValue)} " +
             $"context@0x{contextAddress:x16}={contextWords} targetFirst={targetWords}");
+    }
+
+    private void TraceMainRamReadWatch(ulong pc, uint op)
+    {
+        if (!_traceMainRamReadStart.HasValue ||
+            _mainRamReadTraceCount >= _traceMainRamReadLimit ||
+            !TryDecodeGprLoad(op, out string mnemonic, out int baseRegister, out int targetRegister, out int offset, out int bytes, out _))
+        {
+            return;
+        }
+
+        ulong start = CanonicalizeTraceAddress(_traceMainRamReadStart.Value);
+        ulong end = CanonicalizeTraceAddress(_traceMainRamReadEnd ?? (start + 4UL));
+        ulong address = CanonicalizeTraceAddress(unchecked(_gpr[baseRegister] + (ulong)(long)offset));
+        if (end <= start || address >= end || address + (ulong)bytes <= start || !IsMainRamRange(address, (ulong)bytes))
+            return;
+
+        ulong value = bytes == 8 ? _memory.Read64(address) : _memory.Read32(address);
+        _mainRamReadTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:MAIN-RAM-READ] n={_mainRamReadTraceCount} pc=0x{pc:x16} op=0x{op:x8} {DisassembleBrief(op)} " +
+            $"load={mnemonic} r{targetRegister},[r{baseRegister}+0x{offset:x}] addr=0x{address:x16} bytes={bytes} value=0x{value:x16} " +
+            $"ra=0x{_gpr[31]:x16} sp=0x{_gpr[29]:x16} a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} " +
+            $"a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} " +
+            $"s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{_gpr[22]:x16}");
     }
 
     private void TraceMainRamWriteWatch(ulong pc, uint op, string kind, string detail, ulong address, int bytes, ulong oldValue, ulong newValue)

@@ -665,6 +665,28 @@ ett godtyckligt payloadord.
   per-word writer history, so the next cold capture can correlate the early
   upload map directly with the missing f900 range.
 
+### Body-read consumer and preset checkpoint
+
+- The authoritative f180-to-f260 oracle is reproduced only through
+  `tools/GauntletProbe/run-gauntdl-baseline.sh`: `frameHash=0xd083385f`,
+  Type3 `19,800`, and `1,630 / 93,904` Type5 packets/words. The broader
+  `EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE` preset is not equivalent because it
+  also enables texture-download alignment and enters a contaminated packet
+  path.
+- A focused guest-load watch proves the state-7 body at `0x802e1838` is
+  consumed by the texture descriptor/parser chain at `0x800af7xx`,
+  `0x800afaxx`, and `0x800bd1xx`. Reading `/static_lr/objects.rom + 0x214c0`
+  instead of `/static_lr/textures.rom + 0x214c0` cuts Type5 to `256 / 16,384`
+  and stalls the uploader while preserving the immediate frame. The request
+  therefore really owns `textures.rom`; the missing world pages are downstream
+  of descriptor consumption, not a filename swap.
+- Raising the synthetic indexed stream limit from 9 to 27 walks source windows
+  that the guest has not hydrated and reintroduces the full-screen false Type5
+  stream (`frameHash=0xf4ccc0af` at f400). Keep limit 9. The next trace should
+  follow the parsed descriptor/output cursor at `0x802e2158` and establish why
+  legitimate upload ownership ends at physical TMU word `0x5554` before the
+  world samples `0x5f00..0x6380`.
+
 ### Generations-clean baseline promotion
 
 - Every request-owned body-read verification above was cold-built with the
