@@ -12954,3 +12954,42 @@ only packet family whose old body remains eligible. Keep both controls
 default-off. Next use equivalent ownership profiling to identify the packet
 class that owns the remaining wedge/fill layer before generalizing the storage
 generation model.
+
+### Type3 advance residual-owner checkpoint
+
+Pixel-last-writer profiling with deterministic Type3 body advance confirms that
+the old Type1 reinterpretation still owns the dominant visible regions in a
+different ring generation:
+
+```text
+logs/gauntlet/gauntdl-f700-type3-advance-pixel-writers-r1.log
+
+buffer 0: pc=801031a8 cmd=432b87d1 fill/itri/ftri
+buffer 2: pc=801031a8 cmd=432b87d1 fill/itri
+buffer 1: pc=801027cc cmd=0104824c fastfill
+```
+
+Combining verified Type3-body advance with the exact `0x432b87d1` stop removes
+the wedge/fill family while preserving the later triangle work:
+
+```text
+logs/gauntlet/gauntdl-f700-type3-advance-stop432b-r1.log
+frameHash=0x5fb0c667
+direct/setup=3344/136
+```
+
+This exposes the next stale packet class rather than a scene. The run jumps to
+`336295785` LFB writes and displays a horizontal noisy line plus the two loading
+strips. The prior pixel profile identifies the relevant family as
+`pc=0x800fe870`, `cmd=0x0000fffd`, Type5/LFB traffic.
+
+The corruption layers are now ordered rather than speculative:
+
+1. Type3 vertex body re-enters as the Type1 header `0x432b87d1` and creates the
+   large fill/triangle wedges.
+2. Once that layer is advanced/stopped, stale Type5/LFB ownership dominates and
+   emits an extreme LFB write expansion.
+
+Next extend producer-body ownership to Type5 packets, including their target
+word and payload length, then profile whether `0x0000fffd` is a marked Type5
+body word before attempting a general cross-packet generation fix.
