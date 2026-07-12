@@ -1202,6 +1202,10 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelIndexedTextureQioBodyReadTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioObjectMetadataTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount;
+    private int _runtimeBgLoadModelTextureChunkReturnTraceCount;
+    private ulong _runtimeBgLoadModelPendingTextureRecord;
+    private uint _runtimeBgLoadModelPendingTextureRecordOffset;
+    private uint _runtimeBgLoadModelPendingTextureChunkOffset;
     private int _runtimeBgLoadModelIndexedTextureQioStatusStackLimitTraceCount;
     private int _runtimeWorldTextureDescriptorTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
@@ -1499,6 +1503,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelTextureSourceGlobalRemap(pc);
         ApplyKnownRuntimeTextureUploadGlobalSourceRemap(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
+        TraceKnownRuntimeBgLoadModelTextureChunkReturn(pc);
         TraceKnownRuntimeWorldTextureDescriptor(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
@@ -17496,9 +17501,13 @@ internal sealed class MipsR5000Core
 
         ulong index = _gpr[18];
         ulong destination = destinationBase + index * sourceStride;
+        uint hydratedBytes = (uint)Math.Clamp(
+            ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ_HYDRATE_BYTES") ?? requestedBytes,
+            requestedBytes,
+            sourceStride);
         if (!IsMainRamRange(destination, requestedBytes) ||
             !IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination) ||
-            !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out string code, out ulong textureByteOffset, out uint firstWord))
+            !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, hydratedBytes, out string code, out ulong textureByteOffset, out uint firstWord))
         {
             return false;
         }
@@ -17522,7 +17531,7 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio-short-read pc={pc:x16} " +
                 $"index={index} code={code} qio={qio:x16} object={qioObject:x16} " +
-                $"dest={destination:x16} bytes={requestedBytes:x8} disk={textureByteOffset:x8} " +
+                $"dest={destination:x16} bytes={requestedBytes:x8} hydrated={hydratedBytes:x8} disk={textureByteOffset:x8} " +
                 $"first={firstWord:x8} fillRemaining={filledRemaining} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
 
@@ -17690,7 +17699,75 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio-stream-limit pc={pc:x16} " +
                 $"streamIndex={streamIndex} sourceCursor={sourceCursor} limit={oldLimit}->{_gpr[20]} " +
                 $"loadedSource={loadedSource:x16}");
+
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_BGLOADMODEL_SOURCE_RECORD_TABLE") == "1")
+                TraceKnownRuntimeBgLoadModelSourceRecordTable(streamIndex, loadedSource, sourceOwnedLimit);
         }
+    }
+
+    private void TraceKnownRuntimeBgLoadModelSourceRecordTable(ulong streamIndex, ulong source, uint recordCount)
+    {
+        uint tableIndex = ReadTraceWord(source + 0x60UL);
+        ulong table = source + 0x68UL + (ulong)tableIndex * 0x8cUL;
+        uint boundedCount = Math.Min(recordCount, 13U);
+        for (uint recordIndex = 0; recordIndex < boundedCount; recordIndex++)
+        {
+            ulong record = table + recordIndex * 0x50UL;
+            var words = new StringBuilder();
+            for (ulong offset = 0; offset < 0x50UL; offset += 4UL)
+            {
+                if (offset != 0)
+                    words.Append('/');
+                words.Append(ReadTraceWord(record + offset).ToString("x8", CultureInfo.InvariantCulture));
+            }
+
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] bgloadmodel-source-record-table streamIndex={streamIndex} " +
+                $"source={source:x16} tableIndex={tableIndex} table={table:x16} " +
+                $"record={recordIndex}/{recordCount} address={record:x16} words={words}");
+        }
+    }
+
+    private void TraceKnownRuntimeBgLoadModelTextureChunkReturn(ulong pc)
+    {
+        const ulong textureChunkCallPc = 0xffffffff800abeb0UL;
+        const ulong textureChunkReturnPc = 0xffffffff800abeb8UL;
+        bool trace = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_BGLOADMODEL_TEXTURE_CHUNK_RETURN") == "1";
+        if (!trace)
+            return;
+
+        if (pc == textureChunkCallPc)
+        {
+            _runtimeBgLoadModelPendingTextureRecord = _gpr[4];
+            _runtimeBgLoadModelPendingTextureRecordOffset = ReadTraceWord(_gpr[4] + 0x08UL);
+            _runtimeBgLoadModelPendingTextureChunkOffset = ReadTraceWord(0xffffffff8021f180UL);
+            return;
+        }
+
+        if (pc != textureChunkReturnPc ||
+            _runtimeBgLoadModelTextureChunkReturnTraceCount >= 64)
+        {
+            return;
+        }
+
+        _runtimeBgLoadModelTextureChunkReturnTraceCount++;
+
+        ulong buffer = SignExtend32(unchecked((uint)_gpr[2]));
+        var words = new StringBuilder();
+        for (ulong offset = 0; offset < 0x40UL; offset += 4UL)
+        {
+            if (offset != 0)
+                words.Append('/');
+            words.Append(ReadTraceWord(buffer + offset).ToString("x8", CultureInfo.InvariantCulture));
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-texture-chunk-return pc={pc:x16} " +
+            $"buffer={buffer:x16} record={_runtimeBgLoadModelPendingTextureRecord:x16} " +
+            $"recordOffset={_runtimeBgLoadModelPendingTextureRecordOffset:x8} " +
+            $"fileHandle={ReadTraceWord(0xffffffff8021f178UL):x8} " +
+            $"chunkOffset={_runtimeBgLoadModelPendingTextureChunkOffset:x8} " +
+            $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} ra={_gpr[31]:x16} words={words}");
     }
 
     private void TraceKnownRuntimeWorldTextureDescriptor(ulong pc)

@@ -873,3 +873,27 @@ ett godtyckligt payloadord.
   into expanded destinations. Next trace the active record table fields and
   recover that file-offset/destination QIO step instead of swapping either
   whole payload.
+
+### Record table and texture-chunk ABI checkpoint
+
+- A source-owned table dump confirms that `snm` has 13 live 0x50-byte texture
+  records. Their `+0x08` offsets advance from `0x0000` through `0xabd0`, which
+  fits its `0xb120` companion extent exactly. The ordinary `stk` short read,
+  however, leaves its table at `source+0x10d0` entirely zero.
+- A default-off same-file hydration to `0x2000` restores all nine `stk`
+  records without changing f260's `0xd083385f` oracle or packet counts. It
+  changes non-zero texture-map writes from 47,147 to 66,637 and final TMU
+  non-zero words from 14,220 to 14,527. At f700 the hash becomes `0xdc079d0d`,
+  but the image remains a banded noisy mosaic, so valid records alone are not
+  the missing texel payload.
+- Disassembly at `0x800abea0..0x800abed0` proves the guest masks record `+0x08`
+  to a 0x200-byte chunk, calls helper `0x800a64a0`, then forms the consumer
+  pointer as `returnedBuffer + (recordOffset - chunkOffset)`. The live state-7
+  record at `0x802e21f8` requests `0x18f20`, while the helper sees zero file and
+  chunk globals and returns null.
+- Directly returning a scratch buffer filled from `textures.rom+0x18e00` is the
+  wrong abstraction level: even with the chunk global repaired, Type5 falls
+  from 1,882 packets to the inherited 252 because it bypasses the established
+  descriptor/source remap. That injection was removed. Next repair the helper's
+  file/chunk ownership before its descriptor consumer, preserving the normal
+  source-selection path.
