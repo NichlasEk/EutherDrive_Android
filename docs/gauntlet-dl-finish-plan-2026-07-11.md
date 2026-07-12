@@ -897,3 +897,39 @@ ett godtyckligt payloadord.
   descriptor/source remap. That injection was removed. Next repair the helper's
   file/chunk ownership before its descriptor consumer, preserving the normal
   source-selection path.
+- The helper at `0x800a64a0` is not disk I/O: its code derives a size/offset
+  from the structure passed in `a0`. The caller writes the masked record offset
+  to `0x8021f180` in the JAL delay slot; the earlier trace sampled that global
+  one instruction too early and has been corrected to report its live value at
+  return.
+- Supplying either allocation base `0x802e1718` or owned body cursor
+  `0x802e1838` as the missing `0x8021f178` source pointer is exactly neutral:
+  f260 remains `0xd083385f`, Type5 remains 1,882 packets, and the helper still
+  returns null for record offset `0x18f20`. That pointer is therefore not a raw
+  body address; the experiment was removed. Next trace the established
+  downstream source remap back to the structure it substitutes for this null
+  helper result.
+
+### Record-owned world upload payload checkpoint
+
+- The low-level selector at `0x800fe228` proves the state-7 upload sequence:
+  the initial descriptor uses `0x802e1718`, later mip pointers advance through
+  zero-owned `0x802f1718..0x802f6c6d`, and the secondary descriptor repeatedly
+  selects `0x802e1918`. This secondary source corresponds to the live
+  `0x802e21f8` record whose companion-file offset is `0x18f20`.
+- A default-off, record-owned source experiment fills a separate 64 KiB upload
+  buffer from FSYS `textures.rom+0x18f20` and replaces only selector source
+  `0x802e1918`; ordinary Glide and Type5 packet flow is untouched. At f260 the
+  oracle remains `0xd083385f` and Type5 remains 1,882 packets, while non-zero
+  texture-map writes rise from 66,637 to 93,573 and TMU non-zero words from
+  14,527 to 15,106.
+- At f700 this source produces `0xc48304f3`, lowers zero-colored textured pixels
+  from about 53.0M to 45.1M, and exposes a contiguous orange/yellow texture in
+  the lower-left surface. The rest remains banded mosaic, so the payload is
+  causal and plausibly owned but not yet interpreted or placed completely.
+- Retesting linear hardware download addressing with this improved payload
+  gives f700 `0x4eb727af`, 32,768 touched TMU words, 26,258 non-zero TMU words,
+  and about 33.5M zero-colored textured pixels. More coherent color regions
+  appear, but the image is still not recognizable. Keep both switches
+  default-off; next correlate record format/LOD fields with physical placement
+  rather than promoting global linear addressing.

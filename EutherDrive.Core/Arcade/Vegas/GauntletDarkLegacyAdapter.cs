@@ -1931,6 +1931,7 @@ internal sealed class MipsR5000Core
 
         TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
         TraceTextureUploadSourceSelectorSetup(pc, op, "pre");
+        ApplyKnownRuntimeWorldTextureUploadSourceRepair(pc, op);
         TraceTextureUploadSourceSelector(pc, op);
         TraceTextureUploadSourceProducer(pc, op, "pre");
         TraceTextureUploadSourceProducerLoad(pc, op);
@@ -5445,6 +5446,48 @@ internal sealed class MipsR5000Core
             $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} " +
             $"first={ReadTraceWord(selectedSource):x8}/{ReadTraceWord(selectedSource + 0x04UL):x8}/" +
             $"{ReadTraceWord(selectedSource + 0x08UL):x8}/{ReadTraceWord(selectedSource + 0x0cUL):x8}");
+    }
+
+    private void ApplyKnownRuntimeWorldTextureUploadSourceRepair(ulong pc, uint op)
+    {
+        const ulong sourceSelectorPc = 0xffffffff800fe228UL;
+        const uint sourceSelectorOp = 0x8fb3006cU;
+        const uint descriptorSource = 0x802e1918U;
+        const ulong texturesRomDiskBase = 0x00fff000UL;
+        const ulong textureFileOffset = 0x00018f20UL;
+        const ulong scratch = 0xffffffff80400000UL;
+        const uint bytes = 0x10000U;
+
+        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SOURCE") != "1" ||
+            pc != sourceSelectorPc ||
+            op != sourceSelectorOp)
+        {
+            return;
+        }
+
+        ulong sourceSlot = _gpr[29] + 0x6cUL;
+        if (!IsMainRamRange(sourceSlot, 4UL) || _memory.Read32(sourceSlot) != descriptorSource)
+            return;
+
+        if (!_memory.TryReadDiskByteOffsetToMemory(
+            texturesRomDiskBase + textureFileOffset,
+            scratch,
+            bytes,
+            out uint firstWord,
+            out string failure))
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] runtime-world-texture-upload-source-failed pc={pc:x16} " +
+                $"disk={texturesRomDiskBase + textureFileOffset:x8} bytes={bytes:x8} failure={failure}");
+            return;
+        }
+
+        _memory.Write32(sourceSlot, unchecked((uint)scratch));
+        Console.WriteLine(
+            $"[GAUNTDL:EXPERIMENT] runtime-world-texture-upload-source pc={pc:x16} " +
+            $"slot={sourceSlot:x16} source={descriptorSource:x8}->{unchecked((uint)scratch):x8} " +
+            $"fileOffset={textureFileOffset:x8} disk={texturesRomDiskBase + textureFileOffset:x8} " +
+            $"bytes={bytes:x8} first={firstWord:x8}");
     }
 
     private void TraceTextureUploadSourceProducer(ulong pc, uint op, string phase)
@@ -17766,7 +17809,7 @@ internal sealed class MipsR5000Core
             $"buffer={buffer:x16} record={_runtimeBgLoadModelPendingTextureRecord:x16} " +
             $"recordOffset={_runtimeBgLoadModelPendingTextureRecordOffset:x8} " +
             $"fileHandle={ReadTraceWord(0xffffffff8021f178UL):x8} " +
-            $"chunkOffset={_runtimeBgLoadModelPendingTextureChunkOffset:x8} " +
+            $"chunkOffset={ReadTraceWord(0xffffffff8021f180UL):x8} " +
             $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} ra={_gpr[31]:x16} words={words}");
     }
 
