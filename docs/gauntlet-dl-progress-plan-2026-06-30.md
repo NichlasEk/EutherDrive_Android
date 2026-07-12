@@ -13288,3 +13288,25 @@ the valid GEB upload and why no later terrain upload retakes that page. Keep
 the payload bytes and Voodoo sampler unchanged; repair bundle/descriptor page
 lifetime or the missing later world upload, then verify from a cold non-linear
 baseline.
+## 2026-07-12 - cold baseline timing and stream-limit bracket
+
+- A true cold f700 A/B from the same pre-upload state was byte-identical with
+  linear texture-download addressing on and off (`frameHash=0xf29eb67c`, PPM
+  SHA-256 `85d4d105086f3f57396a26266efded9f219de444e41349ee0ecd4875f58a9721`).
+  Both runs were still in `Loading Game.` and had performed no texture writes
+  after the shared snapshot, so this does not decide the Voodoo layout.
+- The probe runner enabled `BRINGUP_FAST` but did not export the baseline
+  preset's explicit 200000 R5000 steps per frame. It therefore silently used
+  the 60000-step fast fallback. The runner now defaults
+  `EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME` to 200000 while preserving an
+  explicit caller override.
+- A cold stream-limit control proved that index 7's owned extent is rejected
+  with the runner default 13 but accepted with 27 (`limit=2->19`). At f260 the
+  accepted run had slightly more FIFO/swap progress (`55084/1416`, swap 210)
+  than the rejected control (`55052/1397`, swap 206), but was still on the
+  loading screen. Keep 27 diagnostic-only until later cold progression proves
+  that it completes the world load.
+- The old `/tmp/gauntdl-fullall-stride-f260.warm` is a useful graphics handoff
+  but is not a reproducible cold-f260 oracle: it already contains roughly ten
+  million FIFO words while both fresh cold f260/f700 states remain near 55k.
+  Cold-start completion must be verified independently of that handoff.
