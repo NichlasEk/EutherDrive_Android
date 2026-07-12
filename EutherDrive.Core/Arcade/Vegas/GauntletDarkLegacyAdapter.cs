@@ -5792,7 +5792,7 @@ internal sealed class MipsR5000Core
                 payload,
                 copyBytes,
                 out uint firstWord,
-                out failure))
+                out string failure))
         {
             if (_runtimeFontStoryGebBackingTraceCount++ < 4)
                 Console.WriteLine($"[GAUNTDL:EXPERIMENT] font-story-geb-backing-failed reason={failure}");
