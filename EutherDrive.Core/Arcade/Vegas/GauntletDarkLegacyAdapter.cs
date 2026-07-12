@@ -925,6 +925,8 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SOURCE_CALL_A3_HYDRATE_INDEX_MASK") ?? 0UL;
     private readonly bool _experimentRuntimeBgLoadModelSkipHotDescriptorOverwrite =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SKIP_HOT_DESCRIPTOR_OVERWRITE"));
+    private readonly bool _experimentRuntimeFontStoryGebBacking =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_FONT_STORY_GEB_BACKING"));
     private readonly ulong[] _experimentRuntimeBgLoadModelSkipHotDescriptorOverwriteExtraHeads =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SKIP_HOT_DESCRIPTOR_OVERWRITE_EXTRA_HEADS"));
     private readonly ulong _runtimeBgLoadModelOverlapZeroFillIndexedSourceMask =
@@ -1281,6 +1283,7 @@ internal sealed class MipsR5000Core
     private int _mainRamWriteTraceCount;
     private bool _mainRamPointerReferencesTraced;
     private int _runtimeBgLoadModelSkipHotDescriptorOverwriteTraceCount;
+    private int _runtimeFontStoryGebBackingTraceCount;
     private int _textureUploadSourceLimitTableTraceCount;
     private int _textureUploadPayloadSpanTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
@@ -1936,6 +1939,7 @@ internal sealed class MipsR5000Core
 
         TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
         TraceTextureUploadSourceSelectorSetup(pc, op, "pre");
+        ApplyRuntimeFontStoryGebBacking(pc, 0xffffffff803129a0UL, 0x803129a4U);
         ApplyKnownRuntimeWorldTextureUploadSourceRepair(pc, op);
         TraceTextureUploadSourceSelector(pc, op);
         TraceTextureUploadSourceProducer(pc, op, "pre");
@@ -5760,6 +5764,48 @@ internal sealed class MipsR5000Core
         }
 
         return true;
+    }
+
+    private void ApplyRuntimeFontStoryGebBacking(ulong pc, ulong address, uint value)
+    {
+        const ulong descriptor = 0xffffffff80312998UL;
+        const ulong payload = descriptor + 0x0cUL;
+        const ulong gebPayloadOffset = 0x128cUL;
+        bool descriptorWrite =
+            pc == 0xffffffff8004c858UL &&
+            CanonicalizeTraceAddress(address) == descriptor + 0x08UL &&
+            value == unchecked((uint)payload);
+        bool uploadSelect =
+            pc == 0xffffffff800fe228UL &&
+            _memory.Read32(payload) == 0;
+        if (!_experimentRuntimeFontStoryGebBacking ||
+            (!descriptorWrite && !uploadSelect) ||
+            !TryGetKnownRuntimeBgLoadModelTexturePayload(6, out _, out ulong gebDiskOffset, out uint gebBytes) ||
+            gebBytes <= gebPayloadOffset)
+        {
+            return;
+        }
+
+        uint copyBytes = (uint)Math.Min(0x10000UL, gebBytes - gebPayloadOffset);
+        if (!_memory.TryReadDiskByteOffsetToMemory(
+                gebDiskOffset + gebPayloadOffset,
+                payload,
+                copyBytes,
+                out uint firstWord,
+                out failure))
+        {
+            if (_runtimeFontStoryGebBackingTraceCount++ < 4)
+                Console.WriteLine($"[GAUNTDL:EXPERIMENT] font-story-geb-backing-failed reason={failure}");
+            return;
+        }
+
+        if (_runtimeFontStoryGebBackingTraceCount++ < 4)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] font-story-geb-backing descriptor={descriptor:x16} " +
+                $"payload={payload:x16} disk={gebDiskOffset + gebPayloadOffset:x8} " +
+                $"bytes={copyBytes:x8} first={firstWord:x8}");
+        }
     }
 
     private void TraceTextureUploadSourceLimitTable(ulong pc, uint op, string phase)
@@ -24040,6 +24086,7 @@ internal sealed class MipsR5000Core
                     if (ShouldSkipRuntimeBgLoadModelHotDescriptorOverwrite(pc, address, oldValue, value))
                         break;
                     _memory.Write32(address, value);
+                    ApplyRuntimeFontStoryGebBacking(pc, address, value);
                     TraceMainRamWriteWatch(pc, op, "sw", $"r{rt}->[r{rs}+0x{simm:x4}]", address, 4, oldValue, value);
                     TraceRuntimeVertexSourceWrite(pc, op, "sw", $"r{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
                     TraceTextureUploadDirectWriterControlTableWrite(pc, op, "sw", $"r{rt}", rs, simm, address, oldValue, value);

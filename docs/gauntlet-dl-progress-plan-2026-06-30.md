@@ -13208,3 +13208,29 @@ The frame changes to `0xd1433bab`, but remains unrecognizable and reports
 owner contamination as the current blocker. Next trace the record-relative
 material/texture offsets between these correct selectors and the Voodoo upload
 source; do not add more sampler or terrain geometry changes.
+# 2026-07-12: restore the font_story descriptor's GEB backing
+
+The dominant zero-base upload after full model hydration remains descriptor
+`80312998` (`font_story`). Its payload pointer is `803129a4`, but the 0x20000
+model stride leaves that backing zero. Older 0x8000-layout traces identified
+the same address as `geb + 0x128c`; raw disk verification gives the expected
+first word `07e3fc01` at `0x1578288c`.
+
+Added the default-off diagnostic:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_FONT_STORY_GEB_BACKING=1
+```
+
+It restores the available `geb` tail at the descriptor payload on the hot
+descriptor write and, for warm snapshots, immediately before upload selection.
+At f300 this changes the hash from `0xb4a9de69` to `0xa18aad05`, reduces sampled
+zero pixels from 4,115,623 to 876,206, and raises nonzero texture-map writes
+from 63,414 to 1,340,135. At f700 the focused owner-mask run changes from
+`0xd1433bab` to `0xbbb66385`, reduces zero pixels from 75,689,152 to 23,207,674,
+and raises colored framebuffer pixels from 172,154 to 226,223.
+
+A reconstructed `geb/nin/stg` 0x8000-overlap window was rejected: it increased
+artifact coverage and zero sampling at f300. Keep the simpler `geb` backing and
+trace the next selected zero source rather than assuming the entire old overlap
+layout.
