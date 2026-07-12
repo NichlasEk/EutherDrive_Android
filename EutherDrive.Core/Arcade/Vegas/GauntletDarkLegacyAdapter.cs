@@ -766,6 +766,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
     private readonly bool _experimentRuntimeBgLoadModelHydratedSourceOwner =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_HYDRATED_SOURCE_OWNER"));
+    private readonly ulong _experimentRuntimeBgLoadModelHydratedSourceOwnerMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_HYDRATED_SOURCE_OWNER_MASK") ?? ulong.MaxValue;
     private readonly bool _enableRuntimeBgLoadModelIndexedSourceHeadersRepair =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_HEADERS"));
     private readonly bool _enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair =
@@ -17205,8 +17207,15 @@ internal sealed class MipsR5000Core
             break;
         }
 
+        uint hydrationBytes = requestedBytes;
+        if (_enableRuntimeBgLoadModelFullIndexedSourcePayloadsExperiment &&
+            TryGetKnownRuntimeBgLoadModelTexturePayload(index, out _, out _, out uint fullPayloadBytes))
+        {
+            hydrationBytes = Math.Min(fullPayloadBytes, (uint)_runtimeBgLoadModelIndexedSourceStride);
+        }
+
         if (index == 0 ||
-            !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out string code, out ulong textureByteOffset, out uint firstWord))
+            !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, hydrationBytes, out string code, out ulong textureByteOffset, out uint firstWord))
         {
             return false;
         }
@@ -17225,14 +17234,16 @@ internal sealed class MipsR5000Core
         EnsureKnownRuntimeBgLoadModelIndexedTextureQioObjectMetadata(pc, qioObject, "indexed");
         int filledAll = 0;
         if (_enableRuntimeBgLoadModelIndexedTextureQioFillAllExperiment)
-            filledAll = HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(requestedBytes);
+            filledAll = HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(
+                hydrationBytes,
+                (ulong)_runtimeBgLoadModelIndexedSourceStride);
 
         if (_runtimeBgLoadModelIndexedTextureQioTraceCount++ < 16)
         {
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio pc={pc:x16} " +
                 $"index={index} code={code} qio={qio:x16} object={qioObject:x16} " +
-                $"dest={destination:x16} bytes={requestedBytes:x8} disk={textureByteOffset:x8} " +
+                $"dest={destination:x16} bytes={requestedBytes:x8} hydrated={hydrationBytes:x8} disk={textureByteOffset:x8} " +
                 $"first={firstWord:x8} fillAll={filledAll} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
 
@@ -17626,6 +17637,8 @@ internal sealed class MipsR5000Core
         oldSourceOwner = 0;
         newSourceOwner = (uint)destination;
         if (!_experimentRuntimeBgLoadModelHydratedSourceOwner ||
+            index >= 64UL ||
+            (_experimentRuntimeBgLoadModelHydratedSourceOwnerMask & (1UL << (int)index)) == 0 ||
             !IsMainRamRange(sourceOwnerSlot, 4UL) ||
             !IsMainRamRange(destination + 0x64UL, 4UL) ||
             _memory.Read32(destination + 0x40UL) != 0xf00b0001U ||
@@ -17637,6 +17650,13 @@ internal sealed class MipsR5000Core
         }
 
         oldSourceOwner = _memory.Read32(sourceOwnerSlot);
+        const uint staticSourceOwner = 0x802e1718U;
+        if (oldSourceOwner != 0 &&
+            oldSourceOwner != staticSourceOwner &&
+            oldSourceOwner != newSourceOwner)
+        {
+            return false;
+        }
         if (oldSourceOwner == newSourceOwner)
             return true;
         _memory.Write32(sourceOwnerSlot, newSourceOwner);
@@ -17915,23 +17935,29 @@ internal sealed class MipsR5000Core
         for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
         {
             ulong destination = destinationBase + index * sourceStride;
+            uint sourceBytes = requestedBytes;
+            if (_enableRuntimeBgLoadModelFullIndexedSourcePayloadsExperiment &&
+                TryGetKnownRuntimeBgLoadModelTexturePayload(index, out _, out _, out uint fullPayloadBytes))
+            {
+                sourceBytes = Math.Min(fullPayloadBytes, (uint)sourceStride);
+            }
             if (!IsKnownRuntimeBgLoadModelSourceWindowEmpty(destination))
             {
                 TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
                     "remaining-skip-nonempty",
                     index,
                     destination,
-                    requestedBytes,
+                    sourceBytes,
                     $"stride={sourceStride:x}");
                 continue;
             }
-            if (!TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, requestedBytes, out _, out _, out _))
+            if (!TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(index, destination, sourceBytes, out _, out _, out _))
             {
                 TraceKnownRuntimeBgLoadModelIndexedSourceHydration(
                     "remaining-hydrate-fail",
                     index,
                     destination,
-                    requestedBytes,
+                    sourceBytes,
                     $"stride={sourceStride:x}");
                 continue;
             }
@@ -17940,7 +17966,7 @@ internal sealed class MipsR5000Core
                 "remaining-hydrate",
                 index,
                 destination,
-                requestedBytes,
+                sourceBytes,
                 $"stride={sourceStride:x}");
             hydrated++;
         }

@@ -13177,3 +13177,34 @@ still not recognizable, so this is an ownership checkpoint rather than the
 final graphics fix. The next narrow blocker is the record-owned model/texture
 body consumption after these now-correct parser selectors, not the source-table
 writer and not terrain geometry.
+# 2026-07-12: non-overlapping full model payloads and owner isolation
+
+The parser's final `header + bodyOffset` targets for `snm`, `stk`, and `kjh`
+were all zero under the old 0x2000 source stride. The existing full-payload and
+fill-all diagnostics now hydrate each indexed file at its real length while
+preserving the guest's 0x2000 QIO metadata request. With source stride 0x20000,
+the body proof is:
+
+```text
+8032a85c snm: BK_BLUE ... BTMB
+8034babc stk: BK_BLUE ... BOMB
+8036b170 kjh: BK_GREEN ... BOMB
+```
+
+Added `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_HYDRATED_SOURCE_OWNER_MASK`
+to isolate ownership. The owner repair also refuses to replace an already
+distinct guest source, preserving the special index 9/10 font sources.
+
+The focused `0x1c` owner mask produces correct source and selector tables for
+only indices 2, 3, and 4 at f700:
+
+```text
+source:   80321718 / 80341718 / 80361718
+selector: 8032a52c / 8034b7ec / 8036aea0
+```
+
+The frame changes to `0xd1433bab`, but remains unrecognizable and reports
+75,689,152 zero-texture pixels. This rejects missing model bodies and broad
+owner contamination as the current blocker. Next trace the record-relative
+material/texture offsets between these correct selectors and the Voodoo upload
+source; do not add more sampler or terrain geometry changes.
