@@ -808,3 +808,13 @@ ett godtyckligt payloadord.
   The next fix belongs in upload page placement/lifetime: identify why several
   logical upload passes overwrite page zero instead of owning the continuation
   selected by the `0x1c00` render base.
+- CPU tracing at `0x801096fc` proves the low-level Glide upload receives guest
+  `a1` values `0`, `0x10000`, `0x20000`, and `0x30000`. Treating those values
+  as raw linear texture-memory byte offsets expands touched ownership from
+  21,840 to 38,224 words without changing the f260 oracle, but is visually
+  negative later: f700 becomes `0x77005ce6` and f900 `0xc15f6bdd`, with a
+  mostly black/noisy world surface. The linear flag remains disabled.
+- Therefore the guest values are hardware download addresses interpreted via
+  TMU/LOD/ts/tt state, not direct physical offsets. Return to the missing
+  asset/descriptor completion path; neither global sample wrap nor linear write
+  placement supplies the absent world payload.
