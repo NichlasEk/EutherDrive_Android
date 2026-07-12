@@ -764,6 +764,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_STATIC_ALIAS_SOURCE"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
+    private readonly bool _experimentRuntimeBgLoadModelHydratedSourceOwner =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_HYDRATED_SOURCE_OWNER"));
     private readonly bool _enableRuntimeBgLoadModelIndexedSourceHeadersRepair =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_INDEXED_SOURCE_HEADERS"));
     private readonly bool _enableRuntimeBgLoadModelPartialIndexedSourcePayloadsRepair =
@@ -1499,6 +1501,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
         ApplyKnownRuntimeBgLoadModelPreserveAssetSource(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
+        ApplyKnownRuntimeBgLoadModelHydratedSourceOwnerRepair(pc);
         ApplyKnownRuntimeBgLoadModelTextureSourceCallA3Remap(pc);
         ApplyKnownRuntimeBgLoadModelTextureSourceGlobalRemap(pc);
         ApplyKnownRuntimeTextureUploadGlobalSourceRemap(pc);
@@ -15057,6 +15060,24 @@ internal sealed class MipsR5000Core
         }
     }
 
+    private void ApplyKnownRuntimeBgLoadModelHydratedSourceOwnerRepair(ulong pc)
+    {
+        if (!_experimentRuntimeBgLoadModelHydratedSourceOwner ||
+            pc is not (0xffffffff800aabfcUL or 0xffffffff800aac20UL or
+                       0xffffffff800aac48UL or 0xffffffff800aadf0UL or
+                       0xffffffff800aae98UL))
+        {
+            return;
+        }
+
+        ulong index = _gpr[16] & 0xffffffffUL;
+        if (index is 0 or > KnownRuntimeBgLoadModelTexturePayloadMaxIndex)
+            return;
+
+        ulong source = 0xffffffff802e1718UL + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
+        TryAssignKnownRuntimeBgLoadModelHydratedSourceOwner(index, source, out _, out _, out _);
+    }
+
     private void ApplyKnownRuntimeBgLoadModelTextureSourceCallA3Remap(ulong pc)
     {
         if (_runtimeBgLoadModelTextureSourceCallA3RemapIndexMask == 0 ||
@@ -17190,6 +17211,8 @@ internal sealed class MipsR5000Core
             return false;
         }
 
+        TryAssignKnownRuntimeBgLoadModelHydratedSourceOwner(index, destination, out _, out _, out _);
+
         _memory.Write32(qio + 0x00UL, unchecked((uint)qioObject));
         _memory.Write32(qio + 0x04UL, callback);
         _memory.Write32(qio + 0x08UL, unchecked((uint)destination));
@@ -17557,6 +17580,13 @@ internal sealed class MipsR5000Core
             return false;
         }
 
+        bool assignedSourceOwner = TryAssignKnownRuntimeBgLoadModelHydratedSourceOwner(
+            index,
+            destination,
+            out ulong sourceOwnerSlot,
+            out uint oldSourceOwner,
+            out _);
+
         _memory.Write32(qio + 0x00UL, unchecked((uint)qioObject));
         _memory.Write32(qio + 0x04UL, callback);
         _memory.Write32(qio + 0x08UL, unchecked((uint)destination));
@@ -17577,9 +17607,43 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio-short-read pc={pc:x16} " +
                 $"index={index} code={code} qio={qio:x16} object={qioObject:x16} " +
                 $"dest={destination:x16} bytes={requestedBytes:x8} hydrated={hydratedBytes:x8} disk={textureByteOffset:x8} " +
-                $"first={firstWord:x8} fillRemaining={filledRemaining} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
+                $"first={firstWord:x8} fillRemaining={filledRemaining} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8} " +
+                $"sourceOwner={(assignedSourceOwner ? $"{sourceOwnerSlot:x16}:{oldSourceOwner:x8}->{(uint)destination:x8}" : "unchanged")}");
         }
 
+        return true;
+    }
+
+    private bool TryAssignKnownRuntimeBgLoadModelHydratedSourceOwner(
+        ulong index,
+        ulong destination,
+        out ulong sourceOwnerSlot,
+        out uint oldSourceOwner,
+        out uint newSourceOwner)
+    {
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        sourceOwnerSlot = sourceTable + index * 4UL;
+        oldSourceOwner = 0;
+        newSourceOwner = (uint)destination;
+        if (!_experimentRuntimeBgLoadModelHydratedSourceOwner ||
+            !IsMainRamRange(sourceOwnerSlot, 4UL) ||
+            !IsMainRamRange(destination + 0x64UL, 4UL) ||
+            _memory.Read32(destination + 0x40UL) != 0xf00b0001U ||
+            _memory.Read32(destination + 0x5cUL) == 0 ||
+            _memory.Read32(destination + 0x60UL) == 0 ||
+            _memory.Read32(destination + 0x64UL) == 0)
+        {
+            return false;
+        }
+
+        oldSourceOwner = _memory.Read32(sourceOwnerSlot);
+        if (oldSourceOwner == newSourceOwner)
+            return true;
+        _memory.Write32(sourceOwnerSlot, newSourceOwner);
+        Console.WriteLine(
+            $"[GAUNTDL:EXPERIMENT] bgloadmodel-hydrated-source-owner index={index} " +
+            $"slot={sourceOwnerSlot:x16}:{oldSourceOwner:x8}->{newSourceOwner:x8} " +
+            $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(destination)}");
         return true;
     }
 

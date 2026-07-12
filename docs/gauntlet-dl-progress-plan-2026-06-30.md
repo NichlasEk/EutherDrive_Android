@@ -13145,3 +13145,35 @@ generation on a true ring wrap).
 The implementation builds successfully and remains default-off. Next rerun the
 clean f520-to-f700 oracle with only this flag before combining it with any
 class-specific ownership probes.
+# 2026-07-12: hydrated source ownership survives the parser writer
+
+The indexed object headers were present but `802529a0` still collapsed indices
+2 through 4 back onto `802e1718`. Enabling the older broad distinct-source
+experiment was too early: it published index 4 before its QIO hydration and the
+parser consumed an empty header.
+
+Added the default-off diagnostic:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_HYDRATED_SOURCE_OWNER=1
+```
+
+It publishes an indexed source only after validating `f00b0001`, body offset,
+table index, and record count. It also reapplies the owner at the five known
+source-table writer/parser PCs, because the guest later rewrites the table.
+
+The f610-to-f700 proof changed the source table to:
+
+```text
+index 2: 802e5718 (snm)
+index 3: 802e7718 (stk)
+index 4: 802e9718 (kjh)
+```
+
+Parser output at `802551d0` now derives distinct selectors for all three. The
+f700 result changes from `0xc2807c29` to `0x3879bc31`; TMU nonzero words rise
+from 31788 to 36480 and touched texture words from 32768 to 38568. The frame is
+still not recognizable, so this is an ownership checkpoint rather than the
+final graphics fix. The next narrow blocker is the record-owned model/texture
+body consumption after these now-correct parser selectors, not the source-table
+writer and not terrain geometry.
