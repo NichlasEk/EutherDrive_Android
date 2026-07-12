@@ -837,3 +837,21 @@ ett godtyckligt payloadord.
   Next recover the real post-read callback/parser ABI and follow the compressed
   body into its expanded texel allocation; do not substitute another sampler
   wrap or raw 4-bpp guess.
+
+### Contiguous body-span rejection
+
+- A default-off diagnostic enlarged the state-7 `textures.rom` body hydration
+  from its owned `0x2000` bytes to `0x10000` contiguous bytes while preserving
+  the request destination and logical QIO metadata. At f260 it kept the oracle
+  hash `0xd083385f`, but made the previously empty physical `0xe000` upload row
+  non-zero and raised non-zero texture-map writes from 47,147 to 82,685.
+- The causal fill is visually invalid. Continued from the same run, f700 is
+  `0x6da5df77` and f900 is `0x0437c079`; the f900 dump is a full-screen noisy,
+  horizontally repeated mosaic with 114,799 white pixels. More contiguous raw
+  file bytes therefore populate the declared surface but are not its decoded
+  texels. The experiment was removed.
+- The QIO completion callback at `0x800ab4e4` only updates request progress and
+  byte counters; it is not a decompressor. Keep the FSYS-owned base
+  `0x00fff000` and the owned `0x2000` request. The next boundary is the indexed
+  asset companion payload/compression consumer that produces the descriptor's
+  expanded surfaces, not the callback and not a larger raw read.
