@@ -855,3 +855,21 @@ ett godtyckligt payloadord.
   `0x00fff000` and the owned `0x2000` request. The next boundary is the indexed
   asset companion payload/compression consumer that produces the descriptor's
   expanded surfaces, not the callback and not a larger raw read.
+
+### Object/texture companion separation checkpoint
+
+- FSYS extent headers prove each synthetic indexed object payload has a nearby
+  companion payload: for example `snm` object `0x14a54800/0x91b0` is followed
+  by `0x14a5dc00/0xb120`, `gei` by `0x14a79a00/0xccf8`, and `stk` by
+  `0x15122200/0x83fc`. The same pairing holds through the active indices 1-9.
+- Substituting companion bytes for the indexed object source is structurally
+  rejected. The `snm` source begins `0x6f88887c` instead of an object header,
+  its `source+0x64` word is not a bounded record count, and the source-owned
+  stream repair correctly leaves the limit at 2. Type5 then falls to the
+  inherited 252 packets and 9,811 non-zero TMU words; the experiment was
+  removed.
+- The ownership split is now explicit: indexed sources must remain object
+  records, while their records drive reads from companion texture payloads
+  into expanded destinations. Next trace the active record table fields and
+  recover that file-offset/destination QIO step instead of swapping either
+  whole payload.
