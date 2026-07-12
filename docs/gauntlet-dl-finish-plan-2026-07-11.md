@@ -959,3 +959,23 @@ ett godtyckligt payloadord.
   primary blocker. Keep the source and linear switches default-off while
   tracing the 9,700 rejected degenerate setup triangles and their coordinate
   producer; promote them only after geometry is visually correct.
+
+### Terrain geometry and missing object-stream checkpoint
+
+- A f700-to-f701 reject/coverage trace corrects the initial geometry suspicion.
+  The live `0x0180a8cb` packets form valid paired perspective quads with finite
+  screen coordinates, S/T and Q values; the visible terrain quads cover tens
+  of thousands of pixels each. The accumulated 9,700 degenerate rejects belong
+  to earlier progression and are not the active f701 blocker.
+- Enabling barycentric S/T/Q perspective interpolation changes the f701 hash
+  but is visually neutral and leaves coverage/zero counts unchanged. The
+  existing per-vertex perspective path is not what creates the large missing
+  scene content.
+- Raw inspection of the fallback static link at `0x0f100000` identifies an
+  intentional actor table (`GRUNT`, `RAT`, `KNIGHT`, `GOLLUM`), not mistaken
+  world vertex data. Do not replace that table with the `sel_lr` objects file.
+- With terrain texels nearly complete, the next missing layer is the runtime
+  object/model stream. At about f600 QIO advances to indexed source 4 (`kjh`),
+  while later indexed object sources and their companion textures remain
+  unhydrated. Continue from the f700 terrain checkpoint by tracing and restoring
+  those owned QIO records; do not return to sampler-format or geometry guesses.
