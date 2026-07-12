@@ -933,3 +933,29 @@ ett godtyckligt payloadord.
   appear, but the image is still not recognizable. Keep both switches
   default-off; next correlate record format/LOD fields with physical placement
   rather than promoting global linear addressing.
+
+### sel_lr texture extent and near-complete TMU coverage checkpoint
+
+- A raw RGB332 dump of the initial `static_lr` candidate proves it is a
+  diagnostic text atlas. The live format 0 and 256x256 layout are correct; the
+  wrong content came from resolving record `0x18f20` against the wrong logical
+  `textures.rom`, not from a 16-bit format bug.
+- FSYS extent grouping identifies the next world triplet as objects payload
+  `0x0113f600`, texture payload `0x01407000`, and animation payload
+  `0x015cde00`. This matches the executable's `sel_lr` world name used by Hall
+  of Legends. The probe now supports explicit 8-bit RGB332 RAM-surface dumps
+  so these payloads can be inspected without conflating pairs as RGB565.
+- Resolving the same record offset against `sel_lr/textures.rom` produces a
+  coherent green/blue 256x256 world texture and fills all 16,384 words of the
+  ordinary 64 KiB TMU page. At f260 the oracle remains `0xd083385f`, while
+  non-zero texture-map writes rise to 197,205.
+- Without linear placement, f700 is `0x77f1af93` with about 27.9M zero-colored
+  textured pixels. With hardware download addresses placed linearly, f700 is
+  `0xc2807c29`, touches 32,768 TMU words, owns 31,788 non-zero words, and drops
+  zero-colored textured pixels to 592,084. This is the first run with almost
+  complete texture coverage through the ordinary draw packets.
+- The frame is still not recognizable: correct green/blue payload is arranged
+  in horizontal bands and stretched blocks. Texture absence is no longer the
+  primary blocker. Keep the source and linear switches default-off while
+  tracing the 9,700 rejected degenerate setup triangles and their coordinate
+  producer; promote them only after geometry is visually correct.

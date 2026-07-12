@@ -5453,7 +5453,9 @@ internal sealed class MipsR5000Core
         const ulong sourceSelectorPc = 0xffffffff800fe228UL;
         const uint sourceSelectorOp = 0x8fb3006cU;
         const uint descriptorSource = 0x802e1918U;
-        const ulong texturesRomDiskBase = 0x00fff000UL;
+        ulong texturesRomDiskBase =
+            ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_DISK_BASE") ??
+            0x00fff000UL;
         const ulong textureFileOffset = 0x00018f20UL;
         const ulong scratch = 0xffffffff80400000UL;
         const uint bytes = 0x10000U;

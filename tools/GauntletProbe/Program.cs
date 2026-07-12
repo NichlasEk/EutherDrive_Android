@@ -2620,8 +2620,7 @@ static void DumpByteSurface(byte[] bytes, int offset, ByteSurfaceFormat format, 
 static void DumpRequestedRamSurfaces(byte[] mainRam, string prefix)
 {
     string? specs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_RAM_SURFACE_SPECS");
-    if (string.IsNullOrWhiteSpace(specs))
-        return;
+    specs ??= "";
 
     int index = 0;
     foreach (string item in specs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -2648,6 +2647,38 @@ static void DumpRequestedRamSurfaces(byte[] mainRam, string prefix)
         RamSurfaceScore score = ScoreRgb565Surface(mainRam, offset, format);
         Console.WriteLine($"ramSurfaceSpecDump={path} nz={score.NonZero} colored={score.Colored} unique={score.UniqueColors}");
         index++;
+    }
+
+    string? byteSpecs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_RAM_BYTE_SURFACE_SPECS");
+    if (string.IsNullOrWhiteSpace(byteSpecs))
+        return;
+
+    int byteIndex = 0;
+    foreach (string item in byteSpecs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        string[] parts = item.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 4 ||
+            !TryParseHexUlong(parts[0], out ulong address) ||
+            !int.TryParse(parts[1], out int width) ||
+            !int.TryParse(parts[2], out int height) ||
+            !int.TryParse(parts[3], out int stride) ||
+            width <= 0 || height <= 0 || stride < width)
+        {
+            continue;
+        }
+
+        int offset = (int)(address & 0x1fffffffUL);
+        int bytes = stride * height;
+        if (offset < 0 || offset + bytes > mainRam.Length)
+            continue;
+
+        var format = new ByteSurfaceFormat(width, height, stride);
+        ByteSurfaceScore score = ScoreByteSurface(mainRam, offset, format);
+        string path = $"{prefix}_byte{byteIndex}_{0x80000000u + (uint)offset:x8}_{width}x{height}_s{stride}_rgb332.ppm";
+        DumpByteSurface(mainRam, offset, format, path, rgb332: true);
+        Console.WriteLine(
+            $"ramByteSurfaceSpecDump={path} nz={score.NonZero} unique={score.UniqueBytes} transitions={score.Transitions}");
+        byteIndex++;
     }
 }
 
