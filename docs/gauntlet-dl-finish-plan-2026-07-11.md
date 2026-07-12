@@ -818,3 +818,22 @@ ett godtyckligt payloadord.
   TMU/LOD/ts/tt state, not direct physical offsets. Return to the missing
   asset/descriptor completion path; neither global sample wrap nor linear write
   placement supplies the absent world payload.
+
+### State-7 world descriptor checkpoint
+
+- The active f900 TMU setup at guest PC `0x800bd19c` receives descriptor
+  `0x802e2158`; the secondary format uses `0x802e21a8`. Both addresses are
+  inside the request-owned state-7 `textures.rom` body at `0x802e1838`.
+  The missing world texture is therefore not an unrelated asset guess.
+- A new default-off `EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_DESCRIPTOR`
+  dump records all 20 words of the live 0x50-byte descriptor together with
+  mode, LOD, base, material and owner registers.
+- The primary descriptor contains base register `0x1c00`, physical base
+  `0xe000`, and later addresses `0x14fe8`, `0x17a94`, `0x17f60`, plus mode/LOD
+  fields matching the active `0x8c24100f/0x20c6` render state. The missing
+  sample range `0x17c00..0x18f00` begins inside this declared layout.
+- State-7 thus supplies the correct runtime layout but the current QIO
+  completion path never materializes/uploads all surfaces described by it.
+  Next recover the real post-read callback/parser ABI and follow the compressed
+  body into its expanded texel allocation; do not substitute another sampler
+  wrap or raw 4-bpp guess.

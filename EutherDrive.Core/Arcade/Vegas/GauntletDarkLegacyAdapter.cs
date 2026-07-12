@@ -978,6 +978,8 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRd0Home = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RD0_HOME") == "1";
     private readonly bool _traceRuntimeBgLoadModelLoop = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_LOOP") == "1";
     private readonly bool _traceRuntimeBgLoadModelRecords = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_RECORDS") == "1";
+    private readonly bool _traceRuntimeWorldTextureDescriptor =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_DESCRIPTOR"));
     private readonly bool _traceRuntimeBgLoadModelStateDelta = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STATE_DELTA") == "1";
     private readonly bool _traceRuntimeBgLoadModelQioRequests = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS") == "1";
     private readonly int _traceRuntimeBgLoadModelQioRequestLimit =
@@ -1201,6 +1203,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelIndexedTextureQioObjectMetadataTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioStatusStackLimitTraceCount;
+    private int _runtimeWorldTextureDescriptorTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
@@ -1496,6 +1499,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelTextureSourceGlobalRemap(pc);
         ApplyKnownRuntimeTextureUploadGlobalSourceRemap(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
+        TraceKnownRuntimeWorldTextureDescriptor(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
         TraceKnownRuntimeBgLoadModelGebSourceState(pc, "step");
@@ -17687,6 +17691,32 @@ internal sealed class MipsR5000Core
                 $"streamIndex={streamIndex} sourceCursor={sourceCursor} limit={oldLimit}->{_gpr[20]} " +
                 $"loadedSource={loadedSource:x16}");
         }
+    }
+
+    private void TraceKnownRuntimeWorldTextureDescriptor(ulong pc)
+    {
+        const ulong textureBaseStorePc = 0xffffffff800bd19cUL;
+        if (!_traceRuntimeWorldTextureDescriptor ||
+            pc != textureBaseStorePc ||
+            _runtimeWorldTextureDescriptorTraceCount++ >= 64)
+        {
+            return;
+        }
+
+        ulong descriptor = _gpr[18];
+        var words = new StringBuilder();
+        for (ulong offset = 0; offset < 0x50UL; offset += 4UL)
+        {
+            if (offset != 0)
+                words.Append('/');
+            words.Append(ReadTraceWord(descriptor + offset).ToString("x8", CultureInfo.InvariantCulture));
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] runtime-world-texture-descriptor n={_runtimeWorldTextureDescriptorTraceCount} " +
+            $"pc={pc:x16} descriptor={descriptor:x16} words={words} " +
+            $"mode={_gpr[16]:x16} lod={_gpr[21]:x16} base={_gpr[2]:x16} " +
+            $"material={_gpr[17]:x16} owner={_gpr[20]:x16} ra={_gpr[31]:x16}");
     }
 
     private int HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(uint requestedBytes, ulong sourceStride = 0)
