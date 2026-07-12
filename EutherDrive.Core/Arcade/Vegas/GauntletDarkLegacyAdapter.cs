@@ -7691,10 +7691,24 @@ internal sealed class MipsR5000Core
         out string sourceDescription)
     {
         const ulong destinationBase = 0xffffffff802e1718UL;
+        const ulong fontStoryPayload = 0xffffffff803129a4UL;
+        const ulong gebPayloadOffset = 0x128cUL;
+        const ulong fontStoryGebBytes = 0x9ea4UL;
         ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
 
         word = 0;
         sourceDescription = "";
+        if (address >= fontStoryPayload &&
+            address + 4UL <= fontStoryPayload + fontStoryGebBytes &&
+            TryGetKnownRuntimeBgLoadModelTexturePayload(6, out _, out ulong gebDiskOffset, out _) &&
+            _memory.TryReadDiskByteOffsetWord(
+                gebDiskOffset + gebPayloadOffset + (address - fontStoryPayload),
+                out word))
+        {
+            sourceDescription = $"font_story:geb@0x{gebPayloadOffset + address - fontStoryPayload:x}";
+            return true;
+        }
+
         uint fallbackWord = 0;
         string fallbackDescription = "";
         bool hasFallback = false;
@@ -7738,6 +7752,12 @@ internal sealed class MipsR5000Core
     private string DescribeKnownRuntimeBgLoadModelUploadSource(ulong source)
     {
         const ulong destinationBase = 0xffffffff802e1718UL;
+        const ulong fontStoryPayload = 0xffffffff803129a4UL;
+        const ulong gebPayloadOffset = 0x128cUL;
+        const ulong fontStoryGebBytes = 0x9ea4UL;
+        if (source >= fontStoryPayload && source < fontStoryPayload + fontStoryGebBytes)
+            return $"bgsrc=font_story:geb+0x{gebPayloadOffset + source - fontStoryPayload:x}";
+
         ulong sourceStride = (ulong)_runtimeBgLoadModelIndexedSourceStride;
         StringBuilder builder = new();
         int matches = 0;

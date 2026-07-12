@@ -13234,3 +13234,57 @@ A reconstructed `geb/nin/stg` 0x8000-overlap window was rejected: it increased
 artifact coverage and zero sampling at f300. Keep the simpler `geb` backing and
 trace the next selected zero source rather than assuming the entire old overlap
 layout.
+
+# 2026-07-12: f700 sampled-owner attribution after GEB backing
+
+The font upload limit is not a safe repair. The live producer stack contains
+`limit=0xff`, but forcing the available GEB packet count `0x9e` leaves swaps at
+611 and stops new texture traffic. Both the producer-level clamp and its trace
+were removed.
+
+Long f260-to-f700 runs are now executed in detached probe sessions so the
+process is not truncated by the command runner. A broad hydrated-owner control
+(`mask=0x1fc`) reaches:
+
+```text
+frameHash=0x09a0f37f
+textured=2776/covered=2692/rejected=84
+texture touched words=42664
+```
+
+The late zero bundle selectors at `0x802e6c10..0x802e9ff8` carry plausible
+companion offsets, but backing them from `sel_lr/textures.rom` is visually
+neutral. Both the direct and mip-delta-preserving variants are byte-identical
+to the broad-owner f700 baseline. Those selectors are not the final sampled
+surface and the experiment was removed.
+
+A writer profile retained continuously from f260 through f700 identifies the
+actual active terrain owner at render frame 600:
+
+```text
+draw pc=0x800c4e5c cmd=0x0180a8cb
+sample base=0x510, address around 0xf800
+writer pc=0x800fe5d4
+Type5 cmd=0xc0000205 target=0x3e00
+payload hash=0x7bff787c, nonzero=60/64, floatlike=32/64
+```
+
+The upload link resolves its source to `0x8031a5a4`. Under the synthetic
+0x20000 indexed stride this was incorrectly labelled `gei+0x18e8c`; the real
+historical owner is `font_story: GEB+0x8e8c`. RAM words
+`41500000/0000fffe/3c84e6f7/becc497c` match raw GEB disk byte
+`0x1578a48c` exactly. Source diagnostics now give the font-story GEB window
+precedence, so disk hashes no longer compare this payload against unrelated
+GEI bytes.
+
+Disabling linear texture-download placement after the f260 snapshot changes
+the late hashes (`0x53fe96ca` broad, `0x7c245777` focused) and reduces touched
+ownership, but both images remain the same unrecognizable mosaic family. This
+proves the linear mapping creates a real GEB/terrain collision, but removing it
+after f260 is insufficient and is not yet a graphics fix.
+
+Next boundary: trace why the world descriptor samples the page last owned by
+the valid GEB upload and why no later terrain upload retakes that page. Keep
+the payload bytes and Voodoo sampler unchanged; repair bundle/descriptor page
+lifetime or the missing later world upload, then verify from a cold non-linear
+baseline.
