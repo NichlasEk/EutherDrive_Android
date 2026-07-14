@@ -39445,7 +39445,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             out CommandFifoStorageBulkWriteSource bulkSource);
         if (_traceType5TextureUploadSequenceSource.HasValue &&
             (!hasBulkSource ||
-             (uint)bulkSource.Source != (uint)_traceType5TextureUploadSequenceSource.Value))
+             !MatchesType5TextureUploadSequenceSource(bulkSource, (uint)_traceType5TextureUploadSequenceSource.Value)))
         {
             return;
         }
@@ -39486,7 +39486,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"tlod=0x{ReadTextureUploadRegister(tmu, RegTextureLod):X8} " +
             $"tbase=0x{ReadTextureUploadRegister(tmu, RegTextureBaseAddr):X8}";
         string sourceStatus = hasBulkSource
-            ? $" source=0x{bulkSource.Source:x16}/base=0x{bulkSource.SourceBase:x8}/packetSource=0x{bulkSource.PacketSourceAddress:x8}/packet={bulkSource.Packet}/index={bulkSource.Index}/{bulkSource.Limit}"
+            ? $" source=0x{bulkSource.Source:x16}/root=0x{GetType5TextureUploadSequenceSourceRoot(bulkSource):x8}/base=0x{bulkSource.SourceBase:x8}/packetSource=0x{bulkSource.PacketSourceAddress:x8}/packet={bulkSource.Packet}/index={bulkSource.Index}/{bulkSource.Limit}"
             : " source=-";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TYPE5-TEXSEQ] n={_type5TextureUploadSequenceTraceCount} " +
@@ -39495,6 +39495,14 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"{physicalSpan} packet=0x{_currentCommandFifoPacketStart * 4:X8} rd=0x{_currentType5TextureWriteReadIndex * 4:X8} " +
             $"stream={(streaming ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{textureState}{sourceStatus}{storageWords}{rawWords}{pcStatus}");
     }
+
+    private static bool MatchesType5TextureUploadSequenceSource(
+        CommandFifoStorageBulkWriteSource source,
+        uint filter)
+        => (uint)source.Source == filter || GetType5TextureUploadSequenceSourceRoot(source) == filter;
+
+    private static uint GetType5TextureUploadSequenceSourceRoot(CommandFifoStorageBulkWriteSource source)
+        => unchecked((uint)source.Source - source.Index * source.PayloadWords * 4u);
 
     private void TraceType5PayloadTile(
         uint command,

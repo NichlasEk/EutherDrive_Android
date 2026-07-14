@@ -596,3 +596,46 @@ Bilden är fortfarande korrupta fullrect-ränder. Reglerna är alltså teknisk
 skuld som senare bör ersättas, men deras MAME-korrekta värden är inte ensamma
 bringup-fixen. Nästa kausala gräns är write_ptr/fetch-layoutens gemensamma
 LOD-offset och adressmask för TMU0, inte registerägare eller payload-endian.
+
+### Hela `0x802e2c68`-runens adressmatris
+
+Type5-sekvensens source-filter matchar nu både aktuell packet-source och den
+beräknade run-roten:
+
+```text
+root = source - index * payloadWords * 4
+```
+
+Det gör att ett filter på `802e2c68` följer alla 256 packet i stället för bara
+index noll. Den fulla f1200-tracen stänger adressfrågan:
+
+```text
+TMU1 index 0:   target 080000..08003f -> phys 00000..0003f
+TMU1 index 255: target 087f80..087fbf -> phys 03fc0..03fff
+TMU0 index 0:   target 000000..00003f -> phys 00000..0003f
+TMU0 index 255: target 007f80..007fbf -> phys 03fc0..03fff
+```
+
+Varje source-packet flyttar `0x100` byte, guest-target flyttar `0x80` words,
+och den aktiva seq8-layouten packar detta till en helt sammanhängande fysisk
+64 KiB-yta. Runnen fullbordar först TMU1, därefter TMU0, och börjar sedan om
+med samma root. Med gemensamt texture-minne är den andra banken därför en
+byteidentisk omskrivning; det förklarar både den neutrala bankproben och varför
+separata TMU-minnen fördubblar touched-ytan utan att ändra den aktiva bilden.
+
+En första trace såg exakt 160 poster, men det var trace-defaulttaket: rätt
+variabel är singular `EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_LIMIT`.
+Med `600` syns completionen ovan. Det finns inget producerstopp vid 160.
+
+Som kontroll kördes både baseline och de tre MAME-uploadsemantikerna från den
+tidigare rena f700-snapshoten till f1100. Baseline reproducerade PPM-oraklet
+byteexakt (`4a6a28ea91fe...`, `frameHash=0x42925e78`); MAME-varianten gav
+`frameHash=0x1b334252` och SHA-256 `3bb043fc1917...`, men fortfarande samma
+korrupta randfamilj. Resultatet från f1000-snapshoten var alltså inte en
+warmstate-artefakt.
+
+Targetsteg, completion, bankordning, writer-state och MAME write_ptr är nu
+bracketerade. Nästa slice ska klassificera de 64 KiB source-byten som korsar
+QIO-fönstren: mät kontrollord/entropi per 0x100-packet och bind varje fönster
+till dess asset-/diskintervall. Om kontrollposterna dominerar ska nästa fix
+ligga i source-owner/klassvalet före `0x800fe604`, inte i Voodoo-adresseringen.
