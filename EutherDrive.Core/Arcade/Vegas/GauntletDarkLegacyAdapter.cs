@@ -988,6 +988,8 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeBgLoadModelRecords = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_RECORDS") == "1";
     private readonly bool _traceRuntimeWorldTextureDescriptor =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_DESCRIPTOR"));
+    private readonly int _traceRuntimeWorldTextureDescriptorMinFrame =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_DESCRIPTOR_MIN_FRAME", 0);
     private readonly bool _traceRuntimeBgLoadModelStateDelta = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STATE_DELTA") == "1";
     private readonly bool _traceRuntimeBgLoadModelQioRequests = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS") == "1";
     private readonly int _traceRuntimeBgLoadModelQioRequestLimit =
@@ -18107,6 +18109,7 @@ internal sealed class MipsR5000Core
     {
         const ulong textureBaseStorePc = 0xffffffff800bd19cUL;
         if (!_traceRuntimeWorldTextureDescriptor ||
+            _memory.VoodooRenderFrameCount < _traceRuntimeWorldTextureDescriptorMinFrame ||
             pc != textureBaseStorePc ||
             _runtimeWorldTextureDescriptorTraceCount++ >= 64)
         {
@@ -18124,7 +18127,7 @@ internal sealed class MipsR5000Core
 
         Console.WriteLine(
             $"[GAUNTDL:TRACE] runtime-world-texture-descriptor n={_runtimeWorldTextureDescriptorTraceCount} " +
-            $"pc={pc:x16} descriptor={descriptor:x16} words={words} " +
+            $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} descriptor={descriptor:x16} words={words} " +
             $"mode={_gpr[16]:x16} lod={_gpr[21]:x16} base={_gpr[2]:x16} " +
             $"material={_gpr[17]:x16} owner={_gpr[20]:x16} ra={_gpr[31]:x16}");
     }
@@ -25765,6 +25768,8 @@ internal sealed class VegasMemoryMap
     private bool _ioasicPicTimeJustWritten;
     private bool _ioasicPicNvramInitialized;
     private bool _ioasicPicNvramDirty;
+
+    public int VoodooRenderFrameCount => _voodoo?.RenderFrameCount ?? 0;
     private bool _timekeeperRamDirty;
     private bool _fpgaConfigSeenLow;
     private bool _fpgaConfigStatusHigh;
@@ -31198,6 +31203,7 @@ internal sealed class VoodooFacade : IVoodooBackend
     public bool TraceEnabled => _backend is VoodooTraceBackend;
     public bool HasVideoActivity => _backend is VoodooBringupBackend { HasVideoActivity: true };
     public bool HasDrawPackets => _backend is VoodooBringupBackend { DrawPacketCount: > 0 };
+    public int RenderFrameCount => _backend is VoodooBringupBackend bringup ? bringup.RenderFrameCount : 0;
     public string DebugStatus => _backend.DebugStatus;
     public string RecentEventStatus => _backend.RecentEventStatus;
     private Func<ulong>? _cpuPcProvider;
@@ -32488,6 +32494,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     public Func<ulong>? CpuPcProvider { get; set; }
     public Func<int, ulong>? CpuGprProvider { get; set; }
     public int DrawPacketCount => _fifoDrawPacketCount;
+    public int RenderFrameCount => _renderFrame;
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
         => $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +

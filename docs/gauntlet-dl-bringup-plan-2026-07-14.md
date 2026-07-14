@@ -710,3 +710,32 @@ bind sena `regbase=0x1c00` och dess deklarerade `0x14fe8/0x17a94/0x17f60`-
 layout till exakt QIO/body-record, file offset och material-owner som
 `pc=0x800bd19c` konsumerar. Först därefter finns underlag för rätt upload-page
 eller rätt source hydration.
+
+### Sena state-7-descriptorn är stabil över world-drawen
+
+World-descriptor-tracen har fått samma render-frame-avgränsning som Voodoo-
+tracerna:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_DESCRIPTOR_MIN_FRAME=1150
+```
+
+Den läser Voodoo-backendens serialiserade render-frame via en read-only kedja;
+ingen separat adapterräknare eller emulerad state introduceras. En ren f1200-
+replay behåller `frameHash=0xacaece21`.
+
+F1150--f1151 växlar bara mellan två descriptors, båda med samma material
+`0x80262d64` och owner `0x80213618`:
+
+```text
+primary   descriptor=802e2158 mode=8c24100f lod=20c6 base=1c00
+secondary descriptor=802e21a8 mode=8c241faf lod=2cea base=2000
+```
+
+Primären är state-7-body `0x802e1838 + 0x920`; sekundären ligger exakt
+`0x50` byte efter den. Primärens egna ord deklarerar `0xe000`, `0x14fe8`,
+`0x17a94` och `0x17f60`, medan sekundären deklarerar nästa format/base. Det
+senare draw-felet är därför inte ett descriptorbyte mellan upload och render:
+samma request-owned layout är aktiv hela tiden. Nästa trace ska dumpa och
+deduplicera material-/owner-strukturerna och följa deras record/file-offset-
+pekare tillbaka till companion-texturen som ska materialisera dessa ytor.
