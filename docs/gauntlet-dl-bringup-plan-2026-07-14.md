@@ -739,3 +739,32 @@ senare draw-felet är därför inte ett descriptorbyte mellan upload och render:
 samma request-owned layout är aktiv hela tiden. Nästa trace ska dumpa och
 deduplicera material-/owner-strukturerna och följa deras record/file-offset-
 pekare tillbaka till companion-texturen som ska materialisera dessa ytor.
+
+### Texture-set-tabellen och packed record-ABI:n
+
+Den deduplicerade related-struct-tracen visar bara de två förväntade
+descriptors och behåller f1200-oraklet. `owner=0x80213618` är en tunn rendernod
+vars `+0x08` pekar på `material=0x80262d64`; materialets enda tydliga state är
+Voodoo-basen `0xa8000000`, en self-pointer och `0x00620000`. Varken owner eller
+material bär companion-file-offseten.
+
+En RAM-pointer-scan hittar däremot nio referenser till primärdescriptorn i ett
+sammanhängande texture-set-table vid `0x802545a0..0x802545c0`. Nästa två poster
+är `0x80312a00` och `0x80332a00`. Read-watch visar att bara
+`pc=0x800a92a8` läser tabellen i den observerade world-loopen.
+
+Kodorden vid `0x800a9290` ger den exakta ABI:n:
+
+```text
+setIndex    = a0 >> 16
+recordIndex = a0 & 0xffff
+result      = *(0x802545a0 + setIndex * 4) + recordIndex * 0x50
+```
+
+Alla 15 observerade f1000--f1001-anrop har `a0=0` vid tabelläsningen och väljer
+alltså set 0, record 0, dvs `0x802e2158`. Descriptorn når drawen genom ett
+avsiktligt texture-set/record-uppslag, inte som en lös RAM-pekare. Tracen
+skriver nu även `textureSetTable=` så nästa cold producerkörning kan fånga när
+de nio aliasen skapas och vilket parserresultat som borde ersätta dem. Den
+närmaste fixgränsen är set-tabellens producent/aliasering före `0x800a9290`,
+inte sampleradressen eller rendernodens materialpekare.

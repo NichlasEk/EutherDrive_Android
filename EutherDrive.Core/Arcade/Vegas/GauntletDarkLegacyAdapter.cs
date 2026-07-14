@@ -1226,6 +1226,8 @@ internal sealed class MipsR5000Core
     private uint _runtimeBgLoadModelPendingTextureChunkOffset;
     private int _runtimeBgLoadModelIndexedTextureQioStatusStackLimitTraceCount;
     private int _runtimeWorldTextureDescriptorTraceCount;
+    private readonly HashSet<(ulong Descriptor, ulong Material, ulong Owner, ulong Mode, ulong Lod, ulong Base)>
+        _runtimeWorldTextureDescriptorTraceKeys = [];
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
@@ -18110,26 +18112,29 @@ internal sealed class MipsR5000Core
         const ulong textureBaseStorePc = 0xffffffff800bd19cUL;
         if (!_traceRuntimeWorldTextureDescriptor ||
             _memory.VoodooRenderFrameCount < _traceRuntimeWorldTextureDescriptorMinFrame ||
-            pc != textureBaseStorePc ||
-            _runtimeWorldTextureDescriptorTraceCount++ >= 64)
+            pc != textureBaseStorePc)
         {
             return;
         }
 
         ulong descriptor = _gpr[18];
-        var words = new StringBuilder();
-        for (ulong offset = 0; offset < 0x50UL; offset += 4UL)
+        ulong material = _gpr[17];
+        ulong owner = _gpr[20];
+        var key = (descriptor, material, owner, _gpr[16], _gpr[21], _gpr[2]);
+        if (!_runtimeWorldTextureDescriptorTraceKeys.Add(key) ||
+            _runtimeWorldTextureDescriptorTraceCount++ >= 64)
         {
-            if (offset != 0)
-                words.Append('/');
-            words.Append(ReadTraceWord(descriptor + offset).ToString("x8", CultureInfo.InvariantCulture));
+            return;
         }
 
         Console.WriteLine(
             $"[GAUNTDL:TRACE] runtime-world-texture-descriptor n={_runtimeWorldTextureDescriptorTraceCount} " +
-            $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} descriptor={descriptor:x16} words={words} " +
+            $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} descriptor={descriptor:x16} " +
+            $"words={FormatTraceWords(descriptor, 20)} " +
             $"mode={_gpr[16]:x16} lod={_gpr[21]:x16} base={_gpr[2]:x16} " +
-            $"material={_gpr[17]:x16} owner={_gpr[20]:x16} ra={_gpr[31]:x16}");
+            $"material={material:x16} materialWords={FormatTraceWords(material, 16)} " +
+            $"owner={owner:x16} ownerWords={FormatTraceWords(owner, 16)} " +
+            $"textureSetTable={FormatTraceWords(0xffffffff802545a0UL, 16)} ra={_gpr[31]:x16}");
     }
 
     private int HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(uint requestedBytes, ulong sourceStride = 0)
