@@ -431,3 +431,51 @@ den hör till fel asset-/recordklass när den kopplas in i den aktiva FIFO-
 strömmen. Båda fokuserade körningarna var observationsrena och behöll exakt
 `frameHash=0xf4ccc0af`, `fifoWords=10292873`, `texWrites=8788243` och
 `swap=1263` vid f1050.
+
+### Källägaren före `0x800fe604`
+
+Den generiska main-RAM-writetracen omfattar nu även direkta disk-LBA-/byte-
+kopior, PCI-window-writes och device-to-RAM-kopior. Detta stängde hålet där
+fastpath-hydrering skrev direkt i `_mainRam` utan att passera CPU:ns vanliga
+`Write32`/`Write8`-spårning.
+
+Den rena f1000-staten har fortfarande noll vid källroten:
+
+```text
+mem[802e2c68] = 00000000/00000000/00000000/00000000
+```
+
+Med den kanoniska baseline-flaggstacken och coin+start på f1001..f1004 fångar
+f1000–f1050-körningen den första skrivaren:
+
+```text
+[GAUNTDL:MEM] pc=ffffffff800c9944 disk-byte-copy
+address=ffffffff802e2c68 value=0001e69c old=00000000
+byteOffset=0x0fbb0830 lba=0x7dd8e sourceOffset=0 count=0x200 offset=0x180
+```
+
+Hela QIO-kopian börjar på `0x802e1718`, är `0x2000` byte och kommer från
+`static_lr/textures.rom` vid raw-disk-offset `0x0fbb0830`. Källroten ligger
+alltså `0x1550` byte in i detta riktiga assetblock, motsvarande raw-disk-offset
+`0x0fbb1d80`; den byggs inte av record-parsern och är inte en senare slumpmässig
+RAM-överskrivning. Samma hydrering och kontrolltabellens byte-exakta diskägare
+var redan observerad i 30-juni-planens hydration-range-checkpoint, men den nya
+tracen knyter nu den specifika post-input-runnen till samma ägare.
+
+Körningen förblev exakt på f1050-oraklet:
+
+```text
+frameHash=0xf4ccc0af
+swap=1263
+fifoWords=10292873
+texWrites=8788243
+```
+
+Detta falsifierar hypotesen att `0x802e2c68` hör till fel QIO-asset eller får
+fel recordklass vid hydreringen. Gästprogrammet väljer och skickar byte-exakt
+data ur `static_lr/textures.rom`. Nästa gräns flyttas tillbaka framåt till
+tolkningen av denna verkliga kontroll-/payload-stream: följ ett representativt
+0x20-byte-record från raw bytes genom `0x800a7094`, FIFO-orden vid
+`0x800fe604/0x800fe608` och Type5-target/payload-dekodningen. Jämför där mot
+Voodoo-kommandots förväntade byte-/word-/masklayout innan någon owner-skip eller
+source-remap övervägs.

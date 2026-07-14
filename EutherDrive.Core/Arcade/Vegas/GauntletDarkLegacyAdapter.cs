@@ -26158,6 +26158,11 @@ internal sealed class VegasMemoryMap
                 firstWord = BinaryPrimitives.ReadUInt32LittleEndian(sector);
 
             int count = (int)Math.Min(sectorSize, remaining);
+            TraceMainRamBulkCopy(
+                "disk-lba-copy",
+                cursor,
+                sector.AsSpan(0, count),
+                $"lba=0x{sectorLba:x} sourceOffset=0x0");
             sector.AsSpan(0, count).CopyTo(_mainRam.AsSpan((int)cursor, count));
             cursor += (uint)count;
             remaining -= (uint)count;
@@ -26219,6 +26224,11 @@ internal sealed class VegasMemoryMap
             int count = (int)Math.Min(sectorSize - sourceOffset, remaining);
             if (lba == startLba)
                 firstWord = BinaryPrimitives.ReadUInt32LittleEndian(sector.AsSpan((int)sourceOffset, 4));
+            TraceMainRamBulkCopy(
+                "disk-byte-copy",
+                cursor,
+                sector.AsSpan((int)sourceOffset, count),
+                $"byteOffset=0x{byteOffset:x} lba=0x{lba:x} sourceOffset=0x{sourceOffset:x}");
             sector.AsSpan((int)sourceOffset, count).CopyTo(_mainRam.AsSpan((int)cursor, count));
             cursor += (uint)count;
             remaining -= (uint)count;
@@ -27010,7 +27020,10 @@ internal sealed class VegasMemoryMap
         if (_voodooPci.TryWriteMemory32(pciAddress, value))
             return;
         if (pciAddress + 3 < _mainRam.Length)
+        {
+            Trace("pci-write32", 0xffffffff80000000UL + pciAddress, value, "mainram pci-window");
             BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)pciAddress, 4), value);
+        }
     }
 
     private void WritePciMemory8(uint pciAddress, byte value)
@@ -27018,7 +27031,10 @@ internal sealed class VegasMemoryMap
         if (_voodooPci.TryWriteMemory8(pciAddress, value))
             return;
         if (pciAddress < _mainRam.Length)
+        {
+            Trace("pci-write8", 0xffffffff80000000UL + pciAddress, value, "mainram pci-window");
             _mainRam[pciAddress] = value;
+        }
     }
 
     internal void WritePciMemoryFromDevice(uint pciAddress, ReadOnlySpan<byte> data)
@@ -27027,7 +27043,30 @@ internal sealed class VegasMemoryMap
             return;
 
         int count = Math.Min(data.Length, _mainRam.Length - (int)pciAddress);
+        TraceMainRamBulkCopy(
+            "devicecopy",
+            pciAddress,
+            data[..count],
+            $"base=0x{pciAddress:x8}");
         data[..count].CopyTo(_mainRam.AsSpan((int)pciAddress, count));
+    }
+
+    private void TraceMainRamBulkCopy(string kind, uint physical, ReadOnlySpan<byte> data, string detail)
+    {
+        for (int offset = 0; _traceEnabled && offset + 4 <= data.Length; offset += 4)
+        {
+            ulong chunkAddress = 0xffffffff80000000UL + physical + (uint)offset;
+            if (!TraceAddressMatches(chunkAddress))
+                continue;
+
+            uint oldWord = BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical + offset, 4));
+            uint newWord = BinaryPrimitives.ReadUInt32LittleEndian(data.Slice(offset, 4));
+            Trace(
+                kind,
+                chunkAddress,
+                newWord,
+                $"mainram bulk-copy {detail} count=0x{data.Length:x} offset=0x{offset:x} old=0x{oldWord:x8}");
+        }
     }
 
     internal uint ReadPciMemoryFromDevice32(uint pciAddress)
