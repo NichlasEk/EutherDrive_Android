@@ -1003,6 +1003,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_RECORD_CALL"));
     private readonly int _traceRuntimeBgLoadModelTextureRecordCallLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_RECORD_CALL_LIMIT", 96);
+    private readonly bool _traceRuntimeBgLoadModelTextureSourceOffsets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_SOURCE_OFFSETS"));
+    private readonly int _traceRuntimeBgLoadModelTextureSourceOffsetsLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_SOURCE_OFFSETS_LIMIT", 64);
     private readonly bool _traceRuntimeWorldDataTableRepair = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_TABLE") == "1";
     private readonly bool _traceRuntimeWorldDataAllocation = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_ALLOCATION") == "1";
     private readonly bool _traceRuntimeWorldDataLoader = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_LOADER") == "1";
@@ -1259,6 +1263,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelGebSourceTraceCount;
     private int _runtimeBgLoadModelIndexedSourceStateTraceCount;
     private int _runtimeBgLoadModelTextureRecordCallTraceCount;
+    private int _runtimeBgLoadModelTextureSourceOffsetsTraceCount;
     private int _runtimeBgLoadModelLookupHelperTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
     private int _runtimeBgLoadModelLateStreamScanTraceCount;
@@ -1306,6 +1311,7 @@ internal sealed class MipsR5000Core
     private int _glideFifoPayloadPairSourceLowBitMaskTraceCount;
     private int _textureUploadPayloadLinkTraceCount;
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixTraceSources = [];
+    private readonly HashSet<string> _runtimeBgLoadModelTextureSourceOffsetTraceKeys = [];
     private readonly HashSet<ulong> _zeroBaseUploadUnknownPrefixPacketTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadStopAtKnownBoundaryTraceSources = [];
     private readonly HashSet<ulong> _zeroBaseUploadPacketAddressStrideTraceSources = [];
@@ -1952,6 +1958,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeWorldTextureUploadSourceRepair(pc, op);
         TraceTextureUploadSourceSelector(pc, op);
         TraceTextureUploadSourceProducer(pc, op, "pre");
+        TraceRuntimeBgLoadModelTextureSourceOffsets(pc);
         TraceTextureUploadSourceProducerLoad(pc, op);
         TraceMainRamReadWatch(pc, op);
         TraceTextureUploadPageSelection(pc, op);
@@ -5556,6 +5563,43 @@ internal sealed class MipsR5000Core
             $"s3w={ReadTraceWord(_gpr[19] + 0x00UL):x8}/{ReadTraceWord(_gpr[19] + 0x08UL):x8}/{ReadTraceWord(_gpr[19] + 0x0cUL):x8} " +
             $"first={ReadTraceWord(target):x8}/{ReadTraceWord(target + 0x04UL):x8}/" +
             $"{ReadTraceWord(target + 0x08UL):x8}/{ReadTraceWord(target + 0x0cUL):x8}");
+    }
+
+    private void TraceRuntimeBgLoadModelTextureSourceOffsets(ulong pc)
+    {
+        const ulong sourceOffsetAddPc = 0xffffffff800a7338UL;
+        if (!_traceRuntimeBgLoadModelTextureSourceOffsets ||
+            pc != sourceOffsetAddPc)
+        {
+            return;
+        }
+
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(sp + 0x70UL, 4UL))
+            return;
+
+        uint sourceWord = ReadTraceWord(sp + 0x6cUL);
+        ulong source = SignExtend32(sourceWord);
+        if (!AllowsTextureUploadRunSourceTrace(source))
+            return;
+        if (_runtimeBgLoadModelTextureSourceOffsetsTraceCount >= _traceRuntimeBgLoadModelTextureSourceOffsetsLimit)
+            return;
+
+        uint priorOffset = ReadTraceWord(sp + 0x20UL);
+        uint subtractOffset = ReadTraceWord(sp + 0x70UL);
+        uint computedSource = unchecked(sourceWord + priorOffset - subtractOffset);
+        string key = $"{priorOffset:x8}:{subtractOffset:x8}:{_gpr[4]:x16}:{_gpr[5]:x16}:{_gpr[6]:x16}:{_gpr[7]:x16}:" +
+                     $"{_gpr[16]:x16}:{_gpr[17]:x16}:{_gpr[18]:x16}:{_gpr[19]:x16}";
+        if (!_runtimeBgLoadModelTextureSourceOffsetTraceKeys.Add(key))
+            return;
+
+        _runtimeBgLoadModelTextureSourceOffsetsTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:BGLOADMODEL-TEXTURE-SOURCE-OFFSET] pc={pc:x16} ra={_gpr[31]:x16} sp={sp:x16} " +
+            $"source={sourceWord:x8} priorOffset={priorOffset:x8} subtract={subtractOffset:x8} computed={computedSource:x8} " +
+            $"classIn={_gpr[4]:x8} record={_gpr[5]:x16} recordOffset={_gpr[6]:x8} limit={_gpr[7]:x8} " +
+            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+            $"s3w={ReadTraceWord(_gpr[19]):x8}/{ReadTraceWord(_gpr[19] + 0x08UL):x8}/{ReadTraceWord(_gpr[19] + 0x0cUL):x8}");
     }
 
     private void TraceTextureUploadSourceProducerLoad(ulong pc, uint op)

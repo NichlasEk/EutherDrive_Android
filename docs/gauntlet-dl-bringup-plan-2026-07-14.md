@@ -396,3 +396,38 @@ dess call till `0x800a64fc`: verifiera om gästkoden först tolkar
 0x20-byte-posterna till payloadpekare, medan vår Voodoo/FIFO-fastpath råkar
 behandla den bevarade katalogpekaren som rå texturdata. Record-call-tracen är
 default-off och den fokuserade körningen behöll `frameHash=0xf4ccc0af`.
+
+### Source-offset-kontraktet och den riktiga nästa gränsen
+
+Den hypotesen är nu falsifierad. `0x800a64fc` är en liten jump-table som mappar
+klass `0..6` till offset `3,2,1,0,1,2,3`. Den problematiska körningen går in med
+klass `3`, så nolloffseten är ett avsiktligt gästresultat, inte en tappad
+payloadpekare. Den nya default-off-tracen
+`EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_SOURCE_OFFSETS=1`, filtrerad med
+`EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE=802e2c68`, visar att alla
+observerade poster behåller:
+
+```text
+source=802e2c68 priorOffset=00000000 subtract=00000000 computed=802e2c68
+classIn=00000003
+```
+
+Samtidigt flyttar output-/record-sidan vidare från `813815a0` i steg om
+`0x50`, och `s0` växlar genom de väntade `0x40xxxx`/`0x0xxxxx`-familjerna.
+Som kontroll visar den tidigare källan `802e1718` ett verkligt offsetfall:
+`0x18f20 - 0x18e00 = 0x120`, alltså fungerar samma beräkning när klassen och
+recordet kräver det.
+
+En separat main-RAM-read-watch över `802e2c68..802e3df0` visar dessutom att
+gästkoden själv läser området sekventiellt vid `0x800fe604/0x800fe608` och har
+Voodoo-FIFO-destinationer i `a0=0xa8299a..`. Exempelvis läses
+`802e2c69 -> 0x880001e6`, följt av `802e2c6d -> 0x0b000011`. Därmed är det inte
+bara EutherDrives bulk-/FIFO-fastpath som råkar behandla katalogroten som
+payload; gästprogrammet bygger och skickar denna källa som en FIFO-ström.
+
+Nästa gräns är därför källans innehåll/ägare före `0x800fe604`, inte ännu en
+pekaremappning i `0x800a7094`: följ vem som fyller `802e2c68`-familjen och om
+den hör till fel asset-/recordklass när den kopplas in i den aktiva FIFO-
+strömmen. Båda fokuserade körningarna var observationsrena och behöll exakt
+`frameHash=0xf4ccc0af`, `fifoWords=10292873`, `texWrites=8788243` och
+`swap=1263` vid f1050.
