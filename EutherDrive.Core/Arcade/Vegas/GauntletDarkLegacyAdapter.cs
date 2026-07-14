@@ -31334,6 +31334,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int LfbRows = LfbPixels / LfbRowPixels;
     private const int TextureBytes = 8 * 1024 * 1024;
     private const int TextureWords = TextureBytes / 4;
+    private const int TextureBankBytes = TextureBytes / 2;
     private const int TextureZeroSampleBucketShift = 12;
     private const int TextureZeroSampleBucketCount = TextureBytes >> TextureZeroSampleBucketShift;
     private const int CmdFifoWords = 1 << 16;
@@ -31717,6 +31718,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_LIMIT"), 160);
     private readonly int _traceType5TextureUploadSequenceWords =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_WORDS"), 8);
+    private readonly ulong? _traceType5TextureUploadSequenceSource =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE"));
     private readonly string _traceType5PayloadTilePrefix =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_PREFIX") ?? "").Trim();
     private readonly int _traceType5PayloadTileLimit =
@@ -32239,6 +32242,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES_LIMIT"), 80);
     private readonly bool _experimentTextureUploadTmuBanks =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS"));
+    private readonly bool _experimentSeparateTmuTextureMemory =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SEPARATE_TMU_TEXTURE_MEMORY"));
     private readonly bool _experimentTextureUploadMameWritePtr =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR"));
     private readonly ulong[] _experimentTextureUploadMameWritePtrPcs =
@@ -34531,7 +34536,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             if (_fixLinearTextureDownloadAddressing)
             {
-                WriteTextureLinear32(wordOffset, value, bytesPerTexel);
+                WriteTextureLinear32(wordOffset, value, bytesPerTexel, tmu);
                 _textureWriteCount++;
                 return;
             }
@@ -34577,6 +34582,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 byteOffset = packetBlockByteOffset;
             }
+            byteOffset = MapTextureBankByteAddress(tmu, byteOffset);
             if (_currentType5TextureWriteActive)
             {
                 int physicalWord = (int)((byteOffset & (TextureBytes - 1u)) >> 2);
@@ -34929,9 +34935,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"mode=0x{mode:X8} tlod=0x{texLod:X8} tbase=0x{textureBase:X8}{type5Status}{pcStatus}");
     }
 
-    private void WriteTextureLinear32(uint wordOffset, uint value, int bytesPerTexel)
+    private void WriteTextureLinear32(uint wordOffset, uint value, int bytesPerTexel, int tmu)
     {
-        uint byteOffset = (wordOffset << 2) & (TextureBytes - 1u);
+        uint byteOffset = MapTextureBankByteAddress(tmu, wordOffset << 2);
         if (bytesPerTexel == 1)
         {
             bool previousSuppressZero = _suppressZeroTextureBytesForCurrentWrite;
@@ -37292,22 +37298,45 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private uint ReadTextureSampleRegister(int register)
     {
-        if ((uint)_experimentTextureSampleTmu <= 1u)
-            return ReadTextureRegisterForTmu(_experimentTextureSampleTmu, register);
+        int tmu = GetTextureSampleTmuIndex();
+        if (tmu >= 0)
+            return ReadTextureRegisterForTmu(tmu, register);
         return ReadTextureRegister(register);
+    }
+
+    private int GetTextureSampleTmuIndex()
+    {
+        if ((uint)_experimentTextureSampleTmu <= 1u)
+            return _experimentTextureSampleTmu;
+        if (_fixTmuRegisterBanks)
+        {
+            if (_tmuRegisterValid[0][RegTextureMode])
+                return 0;
+            if (_tmuRegisterValid[1][RegTextureMode])
+                return 1;
+        }
+        return -1;
+    }
+
+    private uint MapTextureBankByteAddress(int tmu, uint byteAddress)
+    {
+        if (!_experimentSeparateTmuTextureMemory || (uint)tmu > 1u)
+            return byteAddress & (TextureBytes - 1u);
+
+        return (uint)(tmu * TextureBankBytes) + (byteAddress & (TextureBankBytes - 1u));
+    }
+
+    private uint MapTextureSampleBankByteAddress(uint byteAddress)
+    {
+        int tmu = GetTextureSampleTmuIndex();
+        return MapTextureBankByteAddress(tmu < 0 ? 0 : tmu, byteAddress);
     }
 
     private string GetTextureSampleRegisterSourceLabel()
     {
-        if ((uint)_experimentTextureSampleTmu <= 1u)
-            return $"tmu{_experimentTextureSampleTmu}";
-        if (_fixTmuRegisterBanks)
-        {
-            if (_tmuRegisterValid[0][RegTextureMode])
-                return "tmu0";
-            if (_tmuRegisterValid[1][RegTextureMode])
-                return "tmu1";
-        }
+        int tmu = GetTextureSampleTmuIndex();
+        if (tmu >= 0)
+            return $"tmu{tmu}";
         return "global";
     }
 
@@ -39368,6 +39397,17 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
         }
 
+        int sourceStorageIndex = CommandFifoReadStorageIndex(_currentCommandFifoPacketStart);
+        bool hasBulkSource = _cmdFifoStorageBulkWriteSources.TryGetValue(
+            sourceStorageIndex,
+            out CommandFifoStorageBulkWriteSource bulkSource);
+        if (_traceType5TextureUploadSequenceSource.HasValue &&
+            (!hasBulkSource ||
+             (uint)bulkSource.Source != (uint)_traceType5TextureUploadSequenceSource.Value))
+        {
+            return;
+        }
+
         _type5TextureUploadSequenceTraceCount++;
 
         int payloadAvailable = Math.Max(0, _fifoBuffer.Count - 2);
@@ -39403,12 +39443,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"tmode=0x{ReadTextureUploadRegister(tmu, RegTextureMode):X8} " +
             $"tlod=0x{ReadTextureUploadRegister(tmu, RegTextureLod):X8} " +
             $"tbase=0x{ReadTextureUploadRegister(tmu, RegTextureBaseAddr):X8}";
+        string sourceStatus = hasBulkSource
+            ? $" source=0x{bulkSource.Source:x16}/base=0x{bulkSource.SourceBase:x8}/packetSource=0x{bulkSource.PacketSourceAddress:x8}/packet={bulkSource.Packet}/index={bulkSource.Index}/{bulkSource.Limit}"
+            : " source=-";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TYPE5-TEXSEQ] n={_type5TextureUploadSequenceTraceCount} " +
             $"cmd=0x{command:X8} target=0x{targetStart:X6}-0x{targetStart + (uint)Math.Max(0, count - 1):X6} " +
             $"count={count} payload={payloadWords} nz={nonZero} hash=0x{hash:X8} first=0x{first:X8} last=0x{last:X8} " +
             $"{physicalSpan} packet=0x{_currentCommandFifoPacketStart * 4:X8} rd=0x{_currentType5TextureWriteReadIndex * 4:X8} " +
-            $"stream={(streaming ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{textureState}{storageWords}{rawWords}{pcStatus}");
+            $"stream={(streaming ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{textureState}{sourceStatus}{storageWords}{rawWords}{pcStatus}");
     }
 
     private void TraceType5PayloadTile(
@@ -41581,7 +41624,7 @@ sampledTexel:
         uint texelIndex = (uint)(y * width + x);
         if (sixteenBit)
         {
-            uint byteAddress = (baseAddress + texelIndex * 2u) & (TextureBytes - 1u);
+            uint byteAddress = MapTextureSampleBankByteAddress(baseAddress + texelIndex * 2u);
             if (TrySampleFullrectTextureFromWriterLayout(
                     s,
                     t,
@@ -41608,7 +41651,7 @@ sampledTexel:
             return result;
         }
 
-        uint byteOffset = (baseAddress + texelIndex) & (TextureBytes - 1u);
+        uint byteOffset = MapTextureSampleBankByteAddress(baseAddress + texelIndex);
         if (TrySampleFullrectTextureFromWriterLayout(
                 s,
                 t,
@@ -43414,9 +43457,9 @@ sampledTexel:
         out uint word,
         out uint raw)
     {
-        byteAddress &= TextureBytes - 1u;
+        byteAddress = MapTextureSampleBankByteAddress(byteAddress);
         if (_experimentTextureSample64KPageWrap)
-            byteAddress &= 0xffffu;
+            byteAddress = MapTextureSampleBankByteAddress(byteAddress & 0xffffu);
         if (sixteenBit)
         {
             word = ReadTexture32(byteAddress & ~3u);
@@ -43543,9 +43586,9 @@ sampledTexel:
     {
         if (sixteenBit)
         {
-            byteAddress = (baseAddress + texelIndex * 2u) & (TextureBytes - 1u);
+            byteAddress = MapTextureSampleBankByteAddress(baseAddress + texelIndex * 2u);
             if (_experimentTextureSample64KPageWrap)
-                byteAddress &= 0xffffu;
+                byteAddress = MapTextureSampleBankByteAddress(byteAddress & 0xffffu);
             word = ReadTexture32(byteAddress & ~3u);
             uint laneByteAddress = GetTexture16BitLaneByteAddress(byteAddress);
             ushort packed = (ushort)((word >> (int)((laneByteAddress & 2u) * 8u)) & 0xffffu);
@@ -43553,9 +43596,9 @@ sampledTexel:
             return ConvertTextureFormatToRgb565(format, packed, textureMode);
         }
 
-        byteAddress = (baseAddress + texelIndex) & (TextureBytes - 1u);
+        byteAddress = MapTextureSampleBankByteAddress(baseAddress + texelIndex);
         if (_experimentTextureSample64KPageWrap)
-            byteAddress &= 0xffffu;
+            byteAddress = MapTextureSampleBankByteAddress(byteAddress & 0xffffu);
         word = ReadTexture32(byteAddress & ~3u);
         uint lane = byteAddress & 3u;
         if (_experimentReverse8BitTextureSampleLanes)

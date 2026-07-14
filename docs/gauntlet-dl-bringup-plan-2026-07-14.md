@@ -479,3 +479,46 @@ tolkningen av denna verkliga kontroll-/payload-stream: följ ett representativt
 `0x800fe604/0x800fe608` och Type5-target/payload-dekodningen. Jämför där mot
 Voodoo-kommandots förväntade byte-/word-/masklayout innan någon owner-skip eller
 source-remap övervägs.
+
+### Type5-källan genom TMU-bankerna
+
+Type5-sekvenstracen kan nu återanvända
+`EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE` som source-filter och
+rapporterar RAM-källa, packet source, target, råa/avkodade ord, TMU-state och
+fysisk destination i samma rad. För `0x802e2c68` visar den första uploaden:
+
+```text
+cmd=0xc0000205 count=64
+raw=0001e69c/00001188/0000000b/00000000/...
+decoded=9ce60100/88110000/0b000000/00000000/...
+TMU1 target=080000..08003f
+TMU0 target=000000..00003f
+mode=0c26100f lod=ff802000 base=00000000
+```
+
+Upload-fälten matchar MAMEs packet-5-kontrakt: word 0 anger space/count, word 1
+är byteadressen som divideras med fyra, och space 3 går genom texture-porten.
+Tracen avslöjade däremot att EutherDrive hade en gemensam fysisk texture-array
+för båda TMU-targetfamiljerna. MAME initierar separata RAM-ytor för
+`m_tmu[0]` och `m_tmu[1]`.
+
+En default-off, state-formatneutral probe delar därför den befintliga 8 MiB-
+arrayen i två 4 MiB-banker:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SEPARATE_TMU_TEXTURE_MEMORY=1
+```
+
+Med proben landar TMU0-paketet på word `0x000000..0x00003f` och TMU1-paketet
+på `0x100000..0x10003f`. Antalet touched words vid f1050 ökar från 16384 till
+32768 och sista touched word flyttar från `0x003fff` till `0x103fff`, vilket
+bekräftar att bankseparationen verkligen sker.
+
+Den visuella A/B-kontrollen är samtidigt negativ: f1100 ger fortfarande exakt
+`frameHash=0x42925e78`, och PPM-filerna är byteidentiska med SHA-256
+`4a6a28ea91fed6f9c8c4c2cd401f7da63a0a6b651cb4918e6ed9b111062e543b`.
+De växelvisa TMU0/TMU1-uppladdningarna innehåller samma bytes, och den nuvarande
+samplaren väljer TMU0, så cross-TMU-aliaseringen är verklig men inte den synliga
+f1100-orsaken. Proben ska förbli default-off tills två-TMU-combinern modelleras;
+nästa mätpunkt är i stället varför samma static-lr-kontrollstream tolkas som
+den aktiva TMU0-ytan och hur dess Type3-primitive väljer texture mode/base.
