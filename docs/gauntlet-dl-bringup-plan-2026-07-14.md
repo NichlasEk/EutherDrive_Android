@@ -364,3 +364,35 @@ spårpunkt flyttas därför tillbaka till record-loopens direkta anrop
 `0x800ab3b0 -> 0x800a7094`: klassificera entryn som ger `a2=0`, `a3=0x1188`
 och `a1=0x802e2c68`, och identifiera det body-/payload-offset som borde nå
 upload-wrappern. Store-masken ska förbli default-off som regressionsprobe.
+
+### Record-call vid `0x800ab3b0`
+
+En source-filtrerad record-call-trace visar att bara ett anrop matar den
+aktuella `0x802e2c68`-familjen före f1050:
+
+```text
+source=0x802e2c68
+a0/tableEntry=0x813815a0
+a2/recordOffset=0
+a3/cursor/limit=0x1188
+outer=0
+phase=-1
+candidate=0
+```
+
+Källans första 0x50 byte är en följd av 0x20-byte-liknande poster, inte råa
+texels:
+
+```text
+0001e69c/00001188/0000000b/00000000/0000000d/000000ca/00021118/000215f8
+0001e67c/00001188/0000000b/00000000/0000000d/000000ca/000210f8/000215d8
+0001e65c/00001188/0000000b/...
+```
+
+Detta gör kontraktet tydligare: `0x800ab3b0` skickar medvetet katalogroten,
+offset noll och spannet `0x1188` till `0x800a7094`. Källan uppstår alltså inte
+genom ett tappat source-table-index. Nästa gräns är inne i `0x800a7094` och
+dess call till `0x800a64fc`: verifiera om gästkoden först tolkar
+0x20-byte-posterna till payloadpekare, medan vår Voodoo/FIFO-fastpath råkar
+behandla den bevarade katalogpekaren som rå texturdata. Record-call-tracen är
+default-off och den fokuserade körningen behöll `frameHash=0xf4ccc0af`.

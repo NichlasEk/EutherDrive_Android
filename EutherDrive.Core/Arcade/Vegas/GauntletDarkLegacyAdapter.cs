@@ -999,6 +999,10 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE_INDEX");
     private readonly int _traceRuntimeBgLoadModelIndexedSourceStateLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE_LIMIT", 96);
+    private readonly bool _traceRuntimeBgLoadModelTextureRecordCall =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_RECORD_CALL"));
+    private readonly int _traceRuntimeBgLoadModelTextureRecordCallLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_RECORD_CALL_LIMIT", 96);
     private readonly bool _traceRuntimeWorldDataTableRepair = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_TABLE") == "1";
     private readonly bool _traceRuntimeWorldDataAllocation = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_ALLOCATION") == "1";
     private readonly bool _traceRuntimeWorldDataLoader = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_WORLD_DATA_LOADER") == "1";
@@ -1254,6 +1258,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelAssetParserTraceCount;
     private int _runtimeBgLoadModelGebSourceTraceCount;
     private int _runtimeBgLoadModelIndexedSourceStateTraceCount;
+    private int _runtimeBgLoadModelTextureRecordCallTraceCount;
     private int _runtimeBgLoadModelLookupHelperTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
     private int _runtimeBgLoadModelLateStreamScanTraceCount;
@@ -1520,6 +1525,7 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
         TraceKnownRuntimeBgLoadModelGebSourceState(pc, "step");
         TraceKnownRuntimeBgLoadModelIndexedSourceState(pc, "step");
+        TraceKnownRuntimeBgLoadModelTextureRecordCall(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
         TraceKnownRuntimeBgLoadModelLoop(pc);
         TraceKnownRuntimeBgLoadModelRecords(pc);
@@ -18730,6 +18736,39 @@ internal sealed class MipsR5000Core
             $"{ReadTraceWord(assetEntry + 0x04UL):x8}/{ReadTraceWord(assetEntry + 0x08UL):x8}/" +
             $"\"{ReadAsciiTraceString(assetEntry + 0x10UL, 24)}\" " +
             $"asset={TraceKnownRuntimeBgLoadModelAssetTableSummary((long)index)}");
+    }
+
+    private void TraceKnownRuntimeBgLoadModelTextureRecordCall(ulong pc)
+    {
+        const ulong callPc = 0xffffffff800ab3b0UL;
+        if (!_traceRuntimeBgLoadModelTextureRecordCall ||
+            pc != callPc ||
+            _runtimeBgLoadModelTextureRecordCallTraceCount >= _traceRuntimeBgLoadModelTextureRecordCallLimit)
+        {
+            return;
+        }
+
+        ulong source = CanonicalizeTraceAddress(_gpr[5]);
+        if (_traceTextureUploadRunSource.HasValue &&
+            source != CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value))
+        {
+            return;
+        }
+
+        ulong record = CanonicalizeTraceAddress(_gpr[16]);
+        ulong tableEntry = CanonicalizeTraceAddress(_gpr[4]);
+        ulong table = CanonicalizeTraceAddress(_gpr[30]);
+        _runtimeBgLoadModelTextureRecordCallTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-texture-record-call n={_runtimeBgLoadModelTextureRecordCallTraceCount} " +
+            $"pc={pc:x16} ra={_gpr[31]:x16} source={source:x16} " +
+            $"table={table:x16} tableEntry={tableEntry:x16} record={record:x16} " +
+            $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"outer={_gpr[20]:x16} cursor={_gpr[17]:x16} recordOffset={_gpr[18]:x16} " +
+            $"limit={_gpr[21]:x16} phase={_gpr[22]:x16} candidate={_gpr[19]:x16} " +
+            $"recordWords={FormatTraceWords(record, 20)} " +
+            $"tableEntryWords={FormatTraceWords(tableEntry, 8)} " +
+            $"sourceWords={FormatTraceWords(source, 20)}");
     }
 
     private void TraceKnownRuntimeBgLoadModelQioRequests(ulong pc, string phase)
