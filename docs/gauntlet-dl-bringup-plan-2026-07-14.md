@@ -768,3 +768,36 @@ skriver nu även `textureSetTable=` så nästa cold producerkörning kan fånga 
 de nio aliasen skapas och vilket parserresultat som borde ersätta dem. Den
 närmaste fixgränsen är set-tabellens producent/aliasering före `0x800a9290`,
 inte sampleradressen eller rendernodens materialpekare.
+
+### Cold producer-watch bevisar static-source-aliaseringen
+
+En cold write-watch på `0x802545a0..0x802545d0` hittar hela tabellens
+producentkedja utan Voodoo-ingrepp. Initieringen vid `pc=0x800103a4` nollar
+12 poster. Därefter:
+
+```text
+set 0    pc=800ac42c  -> 802e2158
+set 1-8  pc=800aae64  -> 802e2158
+set 9    pc=800aae64  80312a70 -> 80312a00
+set 10   pc=800aae64  00000000 -> 80332a00
+```
+
+F300-kontrollen ger oraklet `frameHash=0xd083385f`; f300--f700-replayen ger
+det rena kalla f700-oraklet `frameHash=0xf4ccc0af`. Watchen är alltså
+observationsren.
+
+Registerstate vid samma `0x800aae64`-store skiljer den felaktiga familjen från
+de självständiga setten. För varje set 1--8 är parser-source `s2` exakt samma
+`0x802e1718`, så helper-resultatet `v0` blir samma `0x802e2158`. För set 9 är
+`s2=0x80312998` och `v0=s2+0x68=0x80312a00`; för set 10 är motsvarande värden
+`0x80332998` och `0x80332a00`. De nio descriptoraliasen skapas alltså därför
+att asset-tabellen matar samma static source till guest-parsern, inte därför
+att helpern eller texture-set-tabellen tappar indexet.
+
+Koden har redan den exakt avgränsade default-off-repairen
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_STATIC_ALIAS_SOURCE`. Den
+ersätter ett asset-entry-source endast när det fortfarande är static-aliasen,
+ett känt index har ett hydratiserat distinct-source-fönster och det fönstret
+inte är tomt. Nästa A/B ska därför köras kallt med just denna flagga, först till
+f300 för descriptor-diversitet och orakel, därefter till f700 för faktisk
+bild/hash. Ingen sampler-, upload- eller file-offset-probe ska blandas in.
