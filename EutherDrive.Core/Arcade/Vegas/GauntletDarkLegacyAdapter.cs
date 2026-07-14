@@ -31695,6 +31695,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceType3Packets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS") == "1";
     private readonly int _traceType3PacketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS_LIMIT"), 96);
+    private readonly int _traceType3PacketsMinFrame =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_MIN_FRAME"), 0);
     private readonly ulong[] _traceType3PacketCommands =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_COMMANDS"));
     private readonly ulong[] _traceType3PacketReadIndexes =
@@ -39086,7 +39088,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void TraceType3Packet(uint command, int wordsNeeded)
     {
-        if (!_traceType3Packets)
+        if (!_traceType3Packets || _renderFrame < _traceType3PacketsMinFrame)
             return;
 
         if (_traceType3PacketCommands.Length != 0 &&

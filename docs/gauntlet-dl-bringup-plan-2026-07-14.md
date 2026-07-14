@@ -639,3 +639,45 @@ bracketerade. Nästa slice ska klassificera de 64 KiB source-byten som korsar
 QIO-fönstren: mät kontrollord/entropi per 0x100-packet och bind varje fönster
 till dess asset-/diskintervall. Om kontrollposterna dominerar ska nästa fix
 ligga i source-owner/klassvalet före `0x800fe604`, inte i Voodoo-adresseringen.
+
+### Sen draw-owner och den saknade texture-sidan
+
+Source-klassificeringen för första 256-packetsrunnen visar 111 unika packet
+och 146 helt nollade packet. De tidiga `gei`, `snm` och `kjh`-fönstren bär
+data, medan nästan hela den senare halvan (`pnk`, `geb`, `nin`, `stg`) är
+ohydrerad. `stk` har bara två icke-nollade packet. Baselines sparse8-regel gör
+de helt nollade packeten inerta, så detta är inte ensamt en förklaring till
+bilden, men det bevisar att den syntetiska QIO-sourceägaren inte fyller hela
+den sida som upload-tjänsten publicerar.
+
+Type3-tracen kan nu avgränsas på render-frame med:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_MIN_FRAME=1150
+```
+
+På den sena f1200-ytan skrivs TMU0:s hela state om omedelbart före draw av
+`pc=0x800bd19c`, `cmd=0x00059604`:
+
+```text
+mode=8c24100f  lod=000020c6  regbase=00001c00
+Type3 pc=800c4e5c cmd=0180a8cb
+```
+
+Detta är alltså inte stale state. Triangle-sample/writer-tracen resolverar
+basen till `0x00e510` för RGB332 256x256 och ser adresser upp till cirka
+`0x01900f`. Mellan 75 och 98 procent av sample-pixlarna är nollade, och de
+flesta sample-adresser saknar helt direct writer. De få träffarna ägs av
+`pc=0x800fe5d4`, frame 1028, source-index 230--253 och TMU1-targets nära
+slutet av sidan (`0x087300`--`0x087e80`) -- exakt den nästan helt ohydrerade
+`nin`/`stg`-svansen.
+
+Den kausala gränsen är därmed smal: sena drawen använder en bas nära slutet av
+en fysisk 64 KiB upload-sida och fortsätter att sampla förbi `0xffff`, medan
+runnen endast har writer-ägarskap inom sidan. Den äldre globala 64 KiB-wrap-
+proben minskade nollpixlarna kraftigt men gav fortfarande brus, så global wrap
+är inte en slutfix. Nästa observationsrena slice ska för varje direct
+writer-miss även slå upp `address & 0xffff` och summera dess writer/root. Om
+de wrapade adresserna binds till samma run får vi välja mellan fel descriptor-
+page/base och en snävt owner-scopad sampler-wrap; om de binds till en annan
+hydratiserad run ligger felet i page-/descriptorvalet före draw.
