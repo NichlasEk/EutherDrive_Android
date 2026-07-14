@@ -198,3 +198,60 @@ skapar nya band/mosaik och frame progression fortsätter i flera minuter.
 
 Det första målet är alltså inte en snyggare hash. Det är en komplett,
 maskinläsbar ägarskapskedja för den yta som faktiskt syns fel.
+
+## Utfört 14 juli – kall oracle och första provenance-ledgern
+
+Den vanliga 60000-step-vägen är nu återbaserad från kallstart med v6-state:
+
+| Checkpoint | Resultat |
+| --- | --- |
+| kall f700 | `frameHash=0xf4ccc0af`, swap 779, PPM SHA-256 `14efebcd674d1daf00fe00a26b19957a9e7e4b849e188fb9bdbe29bb1866c458` |
+| f1000 före input | `frameHash=0xf4ccc0af`, swap 779 |
+| coin+start f1001..f1004, f1100 | `frameHash=0x42925e78`, swap 1307 |
+| samma input, f1200 | `frameHash=0xacaece21`, swap 1387 |
+
+f1200 avviker från den äldre `0xb38fc156`/swap-1379-noteringen men är
+reproducerbar två gånger från den nya f1100-staten. Den äldre punkten är därför
+inte längre promotion-oracle; f700 och f1100 matchar fortfarande exakt.
+
+Den nya default-off writer-provenancen bevarar den logiska FIFO-källan över
+ring-slot-överskrivningar och lägger följande fält på varje samplad Type5-owner:
+
+```text
+source pointer / sourceBase / packet source / packet+index / upload frame
+```
+
+Kontinuerlig f1000–f1201-trace kopplar den aktiva ytan till:
+
+```text
+draw pc=0x800c4e5c cmd=0x0180a8cb
+mode=0x8c24100f lod=0x000020c6 regbase=0x1c00
+sample byte range=0x00e510..0x013e0f
+writer pc=0x800fe5d4 cmd=0xc0000205
+logical targets=0x087300..0x087f80
+upload frame=1028 sourceBase=0x00200000
+source bytes=0x802f1274..0x802f2a74
+run start=0x802e2c68, 256 packets x 64 words
+```
+
+CPU-trace bekräftar samtidigt att gästkedjan själv väljer källan:
+
+```text
+0x8010957c  source = descriptor+0x10
+0x801095b4  source -> outgoing stack argument
+0x801096c0  low-level wrapper reloads source
+0x801096fc  call 0x800fe1fc
+```
+
+En tillfällig, source-specifik kausalitetsprobe hoppade över endast
+`0x802e2c68` med 256 paket. f1200 behöll swap 1387 men ändrades från
+`0xacaece21` till `0xaed77688`; stora vänster- och bottenfält av brus
+försvann. Bilden var fortfarande inte igenkännbar. Proben togs därför bort:
+uploaden är en bevisad korruptionskälla, men suppression är inte lösningen.
+
+Nästa mätpunkt är nu smalare än den ursprungliga planen: för den request-ägda
+state-7-descriptorn runt `0x802e2158..0x802e21a8`, följ post-read/parsern till
+den texelkropp som borde materialiseras innan 256-paketsuploaden. Klassificera
+de aktiva sample-sidorna separat som aldrig skrivna respektive skrivna av
+`0x802e2c68`-familjen. Ändra inte Type5-adressering eller TMU-fetch innan den
+saknade parser-/body-kedjan antingen är bevisad eller utesluten.
