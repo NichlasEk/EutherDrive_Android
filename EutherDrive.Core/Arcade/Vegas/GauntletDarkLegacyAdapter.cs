@@ -758,6 +758,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE");
     private readonly ulong _experimentRuntimeBgLoadModelAssetPointerNormalizeSkipMask =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_ASSET_POINTER_NORMALIZE_SKIP_INDEX_MASK") ?? 0UL;
+    private readonly ulong _experimentRuntimeBgLoadModelSourceTableStoreSkipMask =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SOURCE_TABLE_STORE_SKIP_INDEX_MASK") ?? 0UL;
     private readonly bool _enableRuntimeBgLoadModelAssetNameExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
     private readonly bool _enableRuntimeBgLoadModelAssetStaticAliasSourceRepair =
@@ -1223,6 +1225,7 @@ internal sealed class MipsR5000Core
     private int _runtimeLoadingResetHelperTraceCount;
     private int _runtimeBgLoadModelQioAliasTraceCount;
     private int _runtimeBgLoadModelAssetPointerNormalizeTraceCount;
+    private int _runtimeBgLoadModelSourceTableStoreSkipTraceCount;
     private int _runtimeBgLoadModelPreserveAssetSourceTraceCount;
     private int _runtimeBgLoadModelDistinctSourcesTraceCount;
     private int _runtimeBgLoadModelDistinctSourceIndexedHeaderTraceCount;
@@ -5764,6 +5767,42 @@ internal sealed class MipsR5000Core
                 $"kind={(sceneNodeDescriptorHead ? "head" : "payload")} " +
                 $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
                 $"ra=0x{_gpr[31]:x16} first={FormatTraceWords(canonicalS0, 8)}");
+        }
+
+        return true;
+    }
+
+    private bool ShouldSkipRuntimeBgLoadModelSourceTableStore(ulong pc, ulong address, uint oldValue, uint value)
+    {
+        const ulong writerPc = 0xffffffff800aac18UL;
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong sourceTableEnd = sourceTable + 0x40UL * 4UL;
+
+        if (_experimentRuntimeBgLoadModelSourceTableStoreSkipMask == 0 || pc != writerPc)
+            return false;
+
+        ulong canonicalAddress = CanonicalizeTraceAddress(address);
+        if (canonicalAddress < sourceTable || canonicalAddress >= sourceTableEnd ||
+            ((canonicalAddress - sourceTable) & 3UL) != 0)
+        {
+            return false;
+        }
+
+        ulong index = (canonicalAddress - sourceTable) / 4UL;
+        if ((_experimentRuntimeBgLoadModelSourceTableStoreSkipMask & (1UL << (int)index)) == 0)
+            return false;
+
+        if (_runtimeBgLoadModelSourceTableStoreSkipTraceCount++ < 32)
+        {
+            const ulong assetTable = 0xffffffff8024f9a0UL;
+            const ulong assetStride = 0x30UL;
+            ulong assetEntry = assetTable + index * assetStride;
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-source-table-store-skip pc={pc:x16} " +
+                $"index={index} slot={canonicalAddress:x16}:{oldValue:x8}-/->{value:x8} " +
+                $"asset={ReadTraceWord(assetEntry):x8}/{ReadTraceWord(assetEntry + 0x04UL):x8}/" +
+                $"{ReadTraceWord(assetEntry + 0x08UL):x8}/\"{ReadAsciiTraceString(assetEntry + 0x10UL, 24)}\" " +
+                $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16}");
         }
 
         return true;
@@ -24152,6 +24191,8 @@ internal sealed class MipsR5000Core
                     value = ApplyDirectTextureWriterDiskWordExperiment(pc, rt, value);
                     value = ApplyDirectTextureWriterZeroWordExperiment(pc, rt, value);
                     TraceTextureUploadDirectWriterStore(pc, op, rs, rt, simm, address, value);
+                    if (ShouldSkipRuntimeBgLoadModelSourceTableStore(pc, address, oldValue, value))
+                        break;
                     if (ShouldSkipRuntimeBgLoadModelHotDescriptorOverwrite(pc, address, oldValue, value))
                         break;
                     _memory.Write32(address, value);

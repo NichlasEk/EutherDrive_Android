@@ -332,3 +332,35 @@ Type5-routingen: avgör vilka av slots 9..16 som record-token-listan verkligen
 avser och varför samma arenaobjekt publiceras för hela intervallet. Testa sedan
 en exakt owner-/klassgräns mot den befintliga f1050/f1100/f1200-orakeln; ändra
 inte payloadadress eller target stride innan den gränsen är bevisad.
+
+### Kausalitetsresultat för source-table-store
+
+En default-off mask lades på exakt `0x800aac18`:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SOURCE_TABLE_STORE_SKIP_INDEX_MASK=0x1fe00
+```
+
+Den stoppar endast `sourceTable[index] = s2` för slots 9..16. I den fokuserade
+f1000–f1050-körningen träffade den slots 9..15 och bevarade bland annat
+`font_story=0x80312998` och `movies/movie3=0x80332998`. Trots det valde
+upload-wrappern fortfarande `0x802e2c68`. Slot 16, som publiceras via en annan
+väg, var då den enda exakta table-ownern.
+
+Resultatet var bitstabilt mot ordinarie f1050:
+
+```text
+frameHash=0xf4ccc0af
+swap=1263
+fifoWords=10292873
+texWrites=8788243
+selected=0x802e2c68
+selectedTableOwners=16:<empty>/asset=80304220
+```
+
+Det utesluter stores för slots 9..15 som orsak till upload-valet. Aliaseringen
+är en följd av record-processningen, inte den länk som matar wrappern. Nästa
+spårpunkt flyttas därför tillbaka till record-loopens direkta anrop
+`0x800ab3b0 -> 0x800a7094`: klassificera entryn som ger `a2=0`, `a3=0x1188`
+och `a1=0x802e2c68`, och identifiera det body-/payload-offset som borde nå
+upload-wrappern. Store-masken ska förbli default-off som regressionsprobe.
