@@ -522,3 +522,35 @@ samplaren väljer TMU0, så cross-TMU-aliaseringen är verklig men inte den synl
 f1100-orsaken. Proben ska förbli default-off tills två-TMU-combinern modelleras;
 nästa mätpunkt är i stället varför samma static-lr-kontrollstream tolkas som
 den aktiva TMU0-ytan och hur dess Type3-primitive väljer texture mode/base.
+
+### Upload-semantikens f1100-matris
+
+Den separata registerbanken (`TEXTURE_UPLOAD_TMU_BANKS=1`) är också visuellt
+neutral tillsammans med separata TMU-minnen: TMU1 behåller då sitt tidiga
+`mode=0/lod=0x800`, medan TMU0 använder `0x0c26100f/0xff802000`, men f1100-PPM
+är fortfarande byteidentisk med oraklet. Det bekräftar att den aktiva
+samplingen i denna scen går genom TMU0 och inte påverkas av TMU1:s state.
+
+En kombinerad MAME-layoutprobe med separata banker, bankade upload-register,
+MAME-writepekare och de tre historiska bringup-reglerna avstängda gav
+`frameHash=0xfc42f6eb`. Bilden fyllde större del av framebufferområdet men var
+fortfarande samma korrupta randfamilj; en hashändring är därför inte en
+visuell förbättring här.
+
+Fyra isolerade A/B-körningar från samma f1000-snapshot gav:
+
+```text
+baseline             frameHash=0x42925e78  ppmSha256=4a6a28ea91fe...
+Type5 endian=0       frameHash=0x01000566  ppmSha256=ef6dbe6d1b78...
+seq8 download=0      frameHash=0x0d982fd4  ppmSha256=32a9e75398b0...
+sparse8 upload=0     frameHash=0x91b6b557  ppmSha256=a710030efb2d...
+MAME write ptr=1     frameHash=0x42925e78  ppmSha256=4a6a28ea91fe...
+```
+
+MAME-writepekaren är alltså helt neutral i den nuvarande TMU0-layouten. De tre
+bringup-reglerna för endian/seq8/sparse8 är var för sig bildbärande, men ingen
+av deras alternativa bilder innehåller begriplig scenkonst. De ska därför inte
+promotas eller tas bort på visuell gissning. Nästa spårgräns är Type3-state:
+identifiera de sista bankade skrivningarna till TMU0 `textureMode`, `tLOD` och
+`texBaseAddr` före den aktiva `pc=0x800c4e5c`-primitiven, och bind dem till
+exakt upload-owner/target innan fler layoutkombinationer testas.
