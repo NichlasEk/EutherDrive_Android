@@ -292,3 +292,43 @@ Nästa kodarbete ska följa de redan korrekta `snm/stk/kjh`-selektorerna och
 state-7-recordens companion-offset till den world-upload som uteblir efter
 frame 662. En source-skip, global page-wrap eller linjär targetplacering är
 fortfarande endast kausalitetsprober och får inte promoveras.
+
+## Utfört 14 juli – dynamisk source-table-owner
+
+Coin/start-övergången från den rena f1000-staten visar nu var den sena
+`0x802e2c68`-runnen publiceras. BGLoadModel laddar först `kjh`, passerar
+stream-index 2 och 3, och bygger sedan arenaobjektet. Vid `0x800aac18` skriver
+parsern samma pekare till flera source-table-slots:
+
+```text
+writer pc=0x800aac18
+source=0x802e2c68
+slot 9 -> font_story
+slot 10 -> movies/movie3
+slots 11..15 -> namnlösa asset-poster
+slot 16 -> namnlös asset-post med asset pointer 0x80304220
+```
+
+Före övergången pekar slot 9 och 10 fortfarande på sina separata
+asset-deskriptorer `0x80312998` respektive `0x80332998`. Vid den faktiska
+upload-selecten har alla slots 9..16 aliaserats till `0x802e2c68`, vars första
+ord är `0001e69c/00001188/0000000b/00000000`. Det förklarar varför den äldre
+statiska BG-payload-klassificeringen rapporterade `bgsrc=none`: källan ägs av
+den dynamiska source-tabellen, inte av ett fast hydratiserat payloadintervall.
+
+Texture-selector-tracen rapporterar nu även `selectedTableOwners`, med
+asset-namn, ursprunglig asset-pointer och side-pointer för varje exakt matchande
+slot. Den fokuserade f1000–f1050-körningen bekräftade aliaseringen och behöll
+oraklet exakt:
+
+```text
+frameHash=0xf4ccc0af
+swap=1263
+selectedTableOwners=9:font_story,10:movies/movie3,11:<empty>,...,16:<empty>
+```
+
+Nästa kausalitetsprobe ska därför ligga vid parserns source-table-store, inte i
+Type5-routingen: avgör vilka av slots 9..16 som record-token-listan verkligen
+avser och varför samma arenaobjekt publiceras för hela intervallet. Testa sedan
+en exakt owner-/klassgräns mot den befintliga f1050/f1100/f1200-orakeln; ändra
+inte payloadadress eller target stride innan den gränsen är bevisad.

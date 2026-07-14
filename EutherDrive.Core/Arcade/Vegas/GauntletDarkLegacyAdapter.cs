@@ -5363,6 +5363,7 @@ internal sealed class MipsR5000Core
             $"s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} " +
             $"s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
             $"selectedOwners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(selectedSource)} " +
+            $"selectedTableOwners={DescribeRuntimeBgLoadModelSourceTableOwners(selectedSource)} " +
             $"sp60={ReadTraceWord(sp + 0x60UL):x8} sp64={ReadTraceWord(sp + 0x64UL):x8} " +
             $"sp68={ReadTraceWord(sp + 0x68UL):x8} sp6c={ReadTraceWord(sp + 0x6cUL):x8} " +
             $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} sp78={ReadTraceWord(sp + 0x78UL):x8} " +
@@ -5451,6 +5452,7 @@ internal sealed class MipsR5000Core
             $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
             $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
             $"selectedOwners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(selectedSource)} " +
+            $"selectedTableOwners={DescribeRuntimeBgLoadModelSourceTableOwners(selectedSource)} " +
             $"sp60={ReadTraceWord(sp + 0x60UL):x8} sp64={ReadTraceWord(sp + 0x64UL):x8} " +
             $"sp68={ReadTraceWord(sp + 0x68UL):x8} sp6c={ReadTraceWord(sp + 0x6cUL):x8} " +
             $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} " +
@@ -7878,6 +7880,52 @@ internal sealed class MipsR5000Core
             }
 
             if (matches >= 8)
+                break;
+        }
+
+        return matches == 0 ? "none" : builder.ToString();
+    }
+
+    private string DescribeRuntimeBgLoadModelSourceTableOwners(ulong source)
+    {
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong sideTable = 0xffffffff802549a0UL;
+        const ulong assetTable = 0xffffffff8024f9a0UL;
+        const ulong assetStride = 0x30UL;
+        const ulong slotCount = 0x40UL;
+
+        uint sourceWord = unchecked((uint)source);
+        StringBuilder builder = new();
+        int matches = 0;
+        for (ulong index = 0; index < slotCount; index++)
+        {
+            ulong sourceSlot = sourceTable + index * 4UL;
+            if (!IsMainRamRange(sourceSlot, 4UL) || _memory.Read32(sourceSlot) != sourceWord)
+                continue;
+
+            ulong sideSlot = sideTable + index * 4UL;
+            ulong assetEntry = assetTable + index * assetStride;
+            uint assetPointer = IsMainRamRange(assetEntry, assetStride)
+                ? _memory.Read32(assetEntry)
+                : 0U;
+            uint sidePointer = IsMainRamRange(sideSlot, 4UL)
+                ? _memory.Read32(sideSlot)
+                : 0U;
+            string name = IsMainRamRange(assetEntry, assetStride)
+                ? ReadAsciiTraceString(assetEntry + 0x10UL, 24)
+                : "";
+
+            if (matches++ > 0)
+                builder.Append(',');
+            builder.Append(index);
+            builder.Append(':');
+            builder.Append(name.Length == 0 ? "<empty>" : name);
+            builder.Append("/asset=");
+            builder.Append(assetPointer.ToString("x8", CultureInfo.InvariantCulture));
+            builder.Append("/side=");
+            builder.Append(sidePointer.ToString("x8", CultureInfo.InvariantCulture));
+
+            if (matches >= 16)
                 break;
         }
 
