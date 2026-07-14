@@ -40580,6 +40580,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         Dictionary<TextureSampleWriterKey, int>? sampleWriterBuckets =
             traceSampleSummary &&
             (_traceTexturedTriangleSampleWriters || _traceTexturedTriangleSampleSummaryRequireWriter) ? [] : null;
+        Dictionary<TextureSampleWriterKey, int>? sampleWrapped64KWriterBuckets =
+            sampleWriterBuckets is not null ? [] : null;
         int sampleCount = 0;
         int sampleCoordCount = 0;
         uint sampleFirstAddress = uint.MaxValue;
@@ -40710,6 +40712,14 @@ sampledTexel:
                         TextureSampleWriterKey writerKey = GetTextureSampleWriterKey(address);
                         sampleWriterBuckets[writerKey] =
                             sampleWriterBuckets.TryGetValue(writerKey, out int writerCount) ? writerCount + 1 : 1;
+                        if (writerKey.Equals(default(TextureSampleWriterKey)) && address >= 0x10000u)
+                        {
+                            TextureSampleWriterKey wrappedWriterKey = GetTextureSampleWriterKey(address & 0xffffu);
+                            sampleWrapped64KWriterBuckets![wrappedWriterKey] =
+                                sampleWrapped64KWriterBuckets.TryGetValue(wrappedWriterKey, out int wrappedWriterCount)
+                                    ? wrappedWriterCount + 1
+                                    : 1;
+                        }
                     }
                     if (address < sampleFirstAddress)
                         sampleFirstAddress = address;
@@ -40789,6 +40799,7 @@ sampledTexel:
                     sampleColorBuckets!,
                     sampleAddressBuckets!,
                     sampleWriterBuckets,
+                    sampleWrapped64KWriterBuckets,
                     bufferIndex);
             }
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
@@ -41246,6 +41257,7 @@ sampledTexel:
         IReadOnlyDictionary<uint, int> sampleColorBuckets,
         IReadOnlyDictionary<uint, int> sampleAddressBuckets,
         IReadOnlyDictionary<TextureSampleWriterKey, int>? sampleWriterBuckets,
+        IReadOnlyDictionary<TextureSampleWriterKey, int>? sampleWrapped64KWriterBuckets,
         int bufferIndex)
     {
         if (_texturedTriangleSampleSummaryTraceCount++ >= _traceTexturedTriangleSampleSummaryLimit)
@@ -41293,6 +41305,7 @@ sampledTexel:
             $"raw={FormatTopTextureSampleBuckets(sampleRawBuckets, 4)} rgb={FormatTopTextureSampleBuckets(sampleColorBuckets, 4)} " +
             $"addr={FormatTopTextureAddressBuckets(sampleAddressBuckets)} " +
             $"writers={FormatTopTextureSampleWriterBuckets(sampleWriterBuckets)} " +
+            $"wrap64writers={FormatTopTextureSampleWriterBuckets(sampleWrapped64KWriterBuckets)} " +
             $"regs={FormatTextureRegisterWriteStatus()} " +
             $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +

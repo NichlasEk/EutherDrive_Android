@@ -681,3 +681,32 @@ writer-miss även slå upp `address & 0xffff` och summera dess writer/root. Om
 de wrapade adresserna binds till samma run får vi välja mellan fel descriptor-
 page/base och en snävt owner-scopad sampler-wrap; om de binds till en annan
 hydratiserad run ligger felet i page-/descriptorvalet före draw.
+
+### Wrap-owner-kontrollen väljer descriptor/page-spåret
+
+Sample-summaryn skriver nu även `wrap64writers=...` för direct writer-missar
+över `0xffff`. Detta är en ren parallell provenance-lookup på
+`address & 0xffff`; sampleradress, texture-minne och framebuffer ändras inte.
+Den rena f1000--f1200-replayen behåller därför exakt orakel
+`frameHash=0xacaece21`.
+
+Resultatet avvisar en generell 64 KiB sampler-wrap. De wrapade missarna binds
+inte entydigt till den sena `0x802e2c68`-runnen. De främsta ägarna är en mix
+av:
+
+- tidiga packet i samma run, exempelvis index 3 och 6;
+- äldre sourcelösa Type5-uploads med `lod=0x00700800` och base 0/0x800;
+- adresser som fortfarande saknar writer efter wrap.
+
+Exempelvis har första triangeln 8 124 direct misses; dess största wrapade
+bucketar är `none:89`, en äldre source-lös upload `:72`, source-index 3 `:65`
+och source-index 6 `:62`. Den parade triangeln som huvudsakligen samplar över
+`0x10000` pekar i stället främst på äldre base-0x800-packet. Samma mönster
+upprepas för alla sex quads.
+
+En adressmask kan alltså bara välja historiskt innehåll som råkar ligga i den
+låga sidan, inte rätt asset. Nästa slice flyttas bakåt till descriptorägaren:
+bind sena `regbase=0x1c00` och dess deklarerade `0x14fe8/0x17a94/0x17f60`-
+layout till exakt QIO/body-record, file offset och material-owner som
+`pc=0x800bd19c` konsumerar. Först därefter finns underlag för rätt upload-page
+eller rätt source hydration.
