@@ -31216,6 +31216,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool[] _textureTouchedWords = new bool[TextureWords];
     private readonly Dictionary<int, TextureWordLastWriter> _textureWordLastWriters = [];
     private readonly Dictionary<int, TextureWordSourceProvenance> _textureWordSourceProvenance = [];
+    private readonly Dictionary<int, TextureWordPreviousWriter> _textureWordPreviousWriters = [];
     private readonly Dictionary<FullrectTargetIndexKey, int> _textureTargetIndexWords = [];
     private readonly HashSet<int> _textureOverwriteSeededWords = [];
     private readonly List<TextureWordLastWriter> _fullrectPreferredSeedOwners = [];
@@ -34859,22 +34860,41 @@ internal class VoodooBringupBackend : IVoodooBackend
             _currentCommandFifoPacketStart,
             _currentType5TextureWriteReadIndex,
             _currentType5TextureWriteStreaming);
-        _textureWordLastWriters[wordOffset] = writer;
+        TextureWordSourceProvenance source = default;
         if (_currentType5TextureWriteActive &&
             _cmdFifoLogicalPacketBulkWriteSources.TryGetValue(
                 _currentCommandFifoPacketStart,
-                out CommandFifoStorageBulkWriteSource source))
+                out CommandFifoStorageBulkWriteSource bulkSource))
         {
-            _textureWordSourceProvenance[wordOffset] = new TextureWordSourceProvenance(
-                unchecked((ulong)(long)(int)((uint)source.Source + (uint)Math.Max(0, _currentType5TextureWriteIndex) * 4U)),
-                source.SourceBase,
-                source.PacketSourceAddress,
-                source.Packet,
-                source.Index,
-                source.Limit,
-                source.Word,
-                source.PayloadWords,
+            source = new TextureWordSourceProvenance(
+                unchecked((ulong)(long)(int)((uint)bulkSource.Source + (uint)Math.Max(0, _currentType5TextureWriteIndex) * 4U)),
+                bulkSource.SourceBase,
+                bulkSource.PacketSourceAddress,
+                bulkSource.Packet,
+                bulkSource.Index,
+                bulkSource.Limit,
+                bulkSource.Word,
+                bulkSource.PayloadWords,
                 _renderFrame);
+        }
+
+        if (_textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter previousWriter))
+        {
+            _textureWordSourceProvenance.TryGetValue(wordOffset, out TextureWordSourceProvenance previousSource);
+            bool sameKnownSource = source.Source != 0 && previousSource.Source == source.Source;
+            bool distinctOwner = !sameKnownSource &&
+                (previousWriter.Pc != writer.Pc ||
+                 previousSource.Source != source.Source ||
+                 previousWriter.PacketStart != writer.PacketStart ||
+                 previousWriter.Type5TargetStart != writer.Type5TargetStart);
+            if (distinctOwner)
+                _textureWordPreviousWriters[wordOffset] = new TextureWordPreviousWriter(previousWriter, previousSource);
+        }
+
+        _textureWordLastWriters[wordOffset] = writer;
+        if (source.Source != 0)
+        {
+            _textureWordSourceProvenance[wordOffset] = source;
         }
         else
         {
@@ -38335,6 +38355,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint PayloadWords,
         int RenderFrame);
 
+    private readonly record struct TextureWordPreviousWriter(
+        TextureWordLastWriter Writer,
+        TextureWordSourceProvenance Source);
+
     private readonly record struct Type5PayloadImageStats(
         int Score,
         int PayloadWords,
@@ -38435,7 +38459,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint SourcePacket,
         uint SourceIndex,
         uint SourceLimit,
-        int SourceRenderFrame);
+        int SourceRenderFrame,
+        ulong PreviousPc,
+        uint PreviousType5TargetStart,
+        ulong PreviousSource,
+        int PreviousSourceRenderFrame);
 
     private sealed class SwapPcStats
     {
@@ -41014,6 +41042,7 @@ sampledTexel:
             return default;
 
         _textureWordSourceProvenance.TryGetValue(wordOffset, out TextureWordSourceProvenance source);
+        _textureWordPreviousWriters.TryGetValue(wordOffset, out TextureWordPreviousWriter previous);
 
         return new TextureSampleWriterKey(
             writer.Pc,
@@ -41035,7 +41064,11 @@ sampledTexel:
             source.Packet,
             source.Index,
             source.Limit,
-            source.RenderFrame);
+            source.RenderFrame,
+            previous.Writer.Pc,
+            previous.Writer.Type5TargetStart,
+            previous.Source.Source,
+            previous.Source.RenderFrame);
     }
 
     private static string FormatTopTextureSampleWriterBuckets(IReadOnlyDictionary<TextureSampleWriterKey, int>? buckets)
@@ -41062,7 +41095,10 @@ sampledTexel:
         string source = key.Source != 0
             ? $"/src=0x{key.Source:x16}/srcBase=0x{key.SourceBase:x8}/pktSrc=0x{key.PacketSourceAddress:x8}/p={key.SourcePacket}/idx={key.SourceIndex}-{key.SourceLimit}/frame={key.SourceRenderFrame}"
             : "/src=-";
-        return $"pc={key.Pc & 0xffffffffUL:x8}/m=0x{key.Mode:X8}/lod=0x{key.TexLod:X8}/base=0x{key.TextureBase:X8}/l={key.Lod}/bpp={key.BytesPerTexel}/seq={((key.Seq8Downld) ? 1 : 0)}{type5}{source}";
+        string previous = key.PreviousPc != 0
+            ? $"/prev=pc{key.PreviousPc & 0xffffffffUL:x8}@0x{key.PreviousType5TargetStart:X6}:src{(key.PreviousSource != 0 ? $"0x{key.PreviousSource:x16}" : "-")}:frame{key.PreviousSourceRenderFrame}"
+            : "/prev=-";
+        return $"pc={key.Pc & 0xffffffffUL:x8}/m=0x{key.Mode:X8}/lod=0x{key.TexLod:X8}/base=0x{key.TextureBase:X8}/l={key.Lod}/bpp={key.BytesPerTexel}/seq={((key.Seq8Downld) ? 1 : 0)}{type5}{source}{previous}";
     }
 
     private void TraceTexturedTriangleReject(

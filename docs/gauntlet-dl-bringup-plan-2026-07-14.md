@@ -249,9 +249,46 @@ En tillfällig, source-specifik kausalitetsprobe hoppade över endast
 försvann. Bilden var fortfarande inte igenkännbar. Proben togs därför bort:
 uploaden är en bevisad korruptionskälla, men suppression är inte lösningen.
 
-Nästa mätpunkt är nu smalare än den ursprungliga planen: för den request-ägda
-state-7-descriptorn runt `0x802e2158..0x802e21a8`, följ post-read/parsern till
-den texelkropp som borde materialiseras innan 256-paketsuploaden. Klassificera
-de aktiva sample-sidorna separat som aldrig skrivna respektive skrivna av
-`0x802e2c68`-familjen. Ändra inte Type5-adressering eller TMU-fetch innan den
-saknade parser-/body-kedjan antingen är bevisad eller utesluten.
+State-7-parsern och dess record-/companion-kontrakt är redan kartlagda i den
+senare 11–12-juli-evidensen. Nästa mätpunkt är därför den efterföljande
+sidlivstiden: klassificera de aktiva sample-sidorna separat som aldrig skrivna,
+kvarlämnade av en äldre world/mip-upload eller omskrivna av
+`0x802e2c68`-familjen. Följ sedan den korrekta record-ownern till den senare
+world-upload som skulle återta sidan. Ändra inte Type5-adressering eller
+TMU-fetch innan den kedjan är bevisad eller utesluten.
+
+## Utfört 14 juli – kall writer-livstid
+
+Writer-ledgern utökades med föregående distinkta innehållsägare. Upprepningar
+av samma RAM-source via olika writer-PC:n och TMU0/TMU1-targets räknas som en
+ägare, så bankduplikat skymmer inte föregående innehåll.
+
+En full kall f0–f1201-körning med `min render frame=1028` behöll den ordinarie
+slutpunkten exakt:
+
+```text
+frameHash=0xe5a96eee
+swap=1387
+fifoWords=10495079
+texWrites=8788243
+```
+
+Ledgern visar ett blandat livstidsfel:
+
+- LOD0-orden i den lägre samplade sidan skrivs om vid render frame 1027 av
+  `pc=0x800fe5d4`, källa `0x802f1274..0x802f2974`, ur 256-paketsrunnen som
+  börjar vid `0x802e2c68`.
+- Samma innehåll passerar först alternativa writer-PC:n och logiska
+  TMU0/TMU1-targets; det är duplikat, inte en separat terrain-owner.
+- Stora delar av `0x015000..0x019000` saknar aktuell owner. De små ägda delarna
+  ligger kvar från LOD2/3-paket vid render frame 662, bland annat sources
+  `0x802f6424`, `0x802f6724` och `0x802f6a24`.
+- För de fyra representativa post-input-halvorna är ungefär 0 %, 12 %, 57 %
+  respektive 89 % av samples owner-lösa.
+
+Detta väljer Fas-3-grenen `saknad senare upload/page lifetime`. Den synliga
+ytan kombinerar en sen felaktig LOD0-owner med aldrig återtagna högre sidor.
+Nästa kodarbete ska följa de redan korrekta `snm/stk/kjh`-selektorerna och
+state-7-recordens companion-offset till den world-upload som uteblir efter
+frame 662. En source-skip, global page-wrap eller linjär targetplacering är
+fortfarande endast kausalitetsprober och får inte promoveras.
