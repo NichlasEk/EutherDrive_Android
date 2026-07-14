@@ -13310,3 +13310,46 @@ baseline.
   but is not a reproducible cold-f260 oracle: it already contains roughly ten
   million FIFO words while both fresh cold f260/f700 states remain near 55k.
   Cold-start completion must be verified independently of that handoff.
+
+### 200000-step default correction
+
+- A subsequent true ordinary cold run disproved promotion of the explicit
+  200000-step runner default. At f700 it generated substantially more FIFO and
+  texture traffic than the historical v5 oracle (`fifo=12787659`,
+  `texWrites=8788243`) and produced a dense noise/band framebuffer
+  (`frameHash=0x2389f986`, PPM SHA-256
+  `6cc2d4bf24c7dc7fd0b2fc6d647a9932dfe520a58625691c2468c6fdd65e214f`).
+- The historical f520-to-f700 v5 run used the fast fallback cadence and reached
+  f700 in the 60000-step family. The runner therefore again leaves
+  `EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME` unset by default; 200000 remains an
+  explicit diagnostic override, not ordinary-path policy.
+- A fresh ordinary 60000-step cold f700 control is the new required oracle
+  before any texture-layout experiment is promoted.
+
+### Ordinary cold f700 source proof
+
+- The corrected 60000-step ordinary cold run reaches f700 reproducibly:
+  `frameHash=0xf4ccc0af`, PPM SHA-256
+  `14efebcd674d1daf00fe00a26b19957a9e7e4b849e188fb9bdbe29bb1866c458`,
+  `fifo=1234126/149102`, `texWrites=488467`, `swap=779`. The framebuffer is
+  still noise and horizontal bands, so cold-start reproducibility is now
+  proven but recognizable graphics are not.
+- A one-frame serialized-owner profile identifies the sampled 256x256 surface
+  as the known `pc=0x800fe5d4`, Type5 `0xc0000205` family. At target rows
+  `0x7b00..0x7f80`, source bytes are all zero while the source walk spans the
+  live `font_story` allocation into the address range attributed to GED.
+- Replacing all known zero-base words from disk is causal
+  (`frameHash=0x077ce75d`, nonzero writes `318->100584`) but invalid because it
+  also replaces the live font object with unrelated GEB-overlap bytes. Filling
+  zero words through the index-24/GED mask is also only a visual bracket
+  (`frameHash=0x1cd87842`): it reveals more structured color but still produces
+  bands and treats model/float data as texture pixels.
+- Therefore the missing fix is not global GED hydration. The 256-packet caller
+  is still selecting the allocated `font_story` render descriptor as a texture
+  payload. Continue at the source/type selection before `800fe1fc/800fe5d4`;
+  do not promote either disk-word experiment.
+- A source-specific skip of only the `803129a4`, 256-packet run was tested both
+  from the clean f520 checkpoint and from frame zero. Both f700 results were
+  byte-identical to the ordinary baseline (`frameHash=0xf4ccc0af`). The bad
+  source selection is real, but this upload is a duplicate/symptom rather than
+  the cause of the current visible f700 bands. Do not promote the skip.
