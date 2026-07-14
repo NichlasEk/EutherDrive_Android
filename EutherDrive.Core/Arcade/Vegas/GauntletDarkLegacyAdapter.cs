@@ -31695,6 +31695,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _traceType3Packets = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS") == "1";
     private readonly int _traceType3PacketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_PACKETS_LIMIT"), 96);
+    private readonly ulong[] _traceType3PacketCommands =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_COMMANDS"));
     private readonly ulong[] _traceType3PacketReadIndexes =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_READS"));
     private readonly bool _traceType3PacketFields =
@@ -32447,6 +32449,11 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint _currentCommandFifoCommand;
     private int _currentCommandFifoPacketStart;
     private int _currentCommandFifoWordsNeeded;
+    private readonly ulong[][] _tmuRegisterLastWriterPc = [new ulong[256], new ulong[256]];
+    private readonly uint[][] _tmuRegisterLastWriterCommand = [new uint[256], new uint[256]];
+    private readonly int[][] _tmuRegisterLastWriterPacketStart = [new int[256], new int[256]];
+    private readonly int[][] _tmuRegisterLastWriterSequence = [new int[256], new int[256]];
+    private int _tmuRegisterWriterSequence;
     private bool _currentCommandFifoIgnoreImplausibleSelfRegisterWrites;
     private bool _currentType5TextureWriteActive;
     private uint _currentType5TextureWriteCommand;
@@ -37214,14 +37221,42 @@ internal class VoodooBringupBackend : IVoodooBackend
         if ((chipmask & 0x2u) != 0)
         {
             WriteTmuRegisterOrPalette(0, index, value);
+            RecordTmuRegisterWriter(0, index);
         }
         if ((chipmask & 0x4u) != 0)
         {
             WriteTmuRegisterOrPalette(1, index, value);
+            RecordTmuRegisterWriter(1, index);
         }
         _registerWriteCount++;
         RecordVoodooEvent($"tmu[{chipmask:x1}:{register:x2}]=0x{value:x8}");
         return true;
+    }
+
+    private void RecordTmuRegisterWriter(int tmu, int register)
+    {
+        int sequence = ++_tmuRegisterWriterSequence;
+        _tmuRegisterLastWriterPc[tmu][register] = CpuPcProvider?.Invoke() ?? 0;
+        _tmuRegisterLastWriterCommand[tmu][register] = _currentCommandFifoCommand;
+        _tmuRegisterLastWriterPacketStart[tmu][register] = _currentCommandFifoPacketStart;
+        _tmuRegisterLastWriterSequence[tmu][register] = sequence;
+    }
+
+    private string FormatTmuRegisterWriterStatus(int tmu)
+        => $"tmu{tmu}:" +
+           FormatTmuRegisterWriter("mode", tmu, RegTextureMode) + "/" +
+           FormatTmuRegisterWriter("lod", tmu, RegTextureLod) + "/" +
+           FormatTmuRegisterWriter("base", tmu, RegTextureBaseAddr);
+
+    private string FormatTmuRegisterWriter(string name, int tmu, int register)
+    {
+        int sequence = _tmuRegisterLastWriterSequence[tmu][register];
+        if (sequence == 0)
+            return $"{name}=none";
+
+        return $"{name}=pc0x{_tmuRegisterLastWriterPc[tmu][register] & 0xffffffffUL:x8}" +
+               $":cmd0x{_tmuRegisterLastWriterCommand[tmu][register]:x8}" +
+               $":pkt0x{_tmuRegisterLastWriterPacketStart[tmu][register] * 4:x8}:n{sequence}";
     }
 
     private void WriteTmuRegisterOrPalette(int tmu, int register, uint value)
@@ -39054,6 +39089,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_traceType3Packets)
             return;
 
+        if (_traceType3PacketCommands.Length != 0 &&
+            !_traceType3PacketCommands.Contains(command))
+        {
+            return;
+        }
+
         if (_traceType3PacketReadIndexes.Length != 0 &&
             !_traceType3PacketReadIndexes.Contains((ulong)_cmdFifoReadIndex) &&
             !_traceType3PacketReadIndexes.Contains((ulong)_cmdFifoReadIndex * 4UL))
@@ -39082,6 +39123,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             $"storage=0x{packetStorage * 4:x5} readStorage=0x{readStorage * 4:x5} " +
             $"validWindow={validWindowWords}/{validWindowLimit} mame={(_fixMameCommandFifoModel ? 1 : 0)} " +
             $"depth={_cmdFifoDepth} holes={_cmdFifoHoles} valid={_cmdFifoValidCount} bulk={bulkPosition} " +
+            $"state={FormatTextureRegisterWriteStatus()} owners={FormatTmuRegisterWriterStatus(0)}:{FormatTmuRegisterWriterStatus(1)} " +
             $"w0={FormatCommandFifoStorageWordDebug(packetStart)} " +
             $"w1={FormatCommandFifoStorageWordDebug(packetStart + 1)} " +
             $"w2={FormatCommandFifoStorageWordDebug(packetStart + 2)} packet=0x{packet}{pcStatus}");

@@ -554,3 +554,45 @@ promotas eller tas bort på visuell gissning. Nästa spårgräns är Type3-state
 identifiera de sista bankade skrivningarna till TMU0 `textureMode`, `tLOD` och
 `texBaseAddr` före den aktiva `pc=0x800c4e5c`-primitiven, och bind dem till
 exakt upload-owner/target innan fler layoutkombinationer testas.
+
+### Type3-stateägaren och MAME-kontraktet
+
+Type3-tracen har nu ett command-filter och bär med senaste writer-PC, FIFO-
+kommando, packet-offset och sekvens för mode/lod/base i båda TMU-bankerna:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_COMMANDS=0180a8cb
+```
+
+Den fokuserade f1050-körningen visar samma deterministiska kedja för varje
+aktiv fullrect:
+
+```text
+TMU0 base <- pc 80106a74, cmd 00059604, packet ...7e74
+TMU0 mode/lod <- pc 80106448, cmd 00019604, packet ...7e94
+TMU1 mode/lod <- pc 80106448, cmd 0001a604, packet ...7ea0
+Type3 0180a8cb <- pc 800c4e5c, packet ...7ebc
+```
+
+Vid Type3 är TMU0 exakt `0c24100f/ff802000/00000000`. State är alltså inte
+stale, och draw-paketet läser inte upload-tjänstens tillfälliga `0000100f`-
+mode. Tracen är observationsren och behåller f1050-oraklet
+`frameHash=0xf4ccc0af`.
+
+En direkt jämförelse med MAMEs `voodoo_1_device::internal_texture_w` visar
+däremot att tre äldre baseline-regler avviker från hårdvarukontraktet:
+
+1. MAME swizzlar endast när `tLOD.tdata_swizzle` är satt; vår Type5-endianregel
+   för-swizzlar dessutom payloaden och ger dubbel transform för `ff802000`.
+2. MAME hämtar `seq_8_downld` från TMU0 bit 31; baseline tvingar den för alla
+   8-bitarsformat trots att `0c24100f` har biten noll.
+3. MAME skriver alla fyra byte; baseline-regeln för sparse8 undertrycker
+   nollbyte.
+
+Alla tre MAME-semantiker tillsammans, utan bank- eller write-pointerprober,
+ger `frameHash=0x638009cc` och PPM-SHA-256
+`07075c0d4b4cb04bdeb2807782d2d2babe0853a8eae69010bf8346bac6f40eb3`.
+Bilden är fortfarande korrupta fullrect-ränder. Reglerna är alltså teknisk
+skuld som senare bör ersättas, men deras MAME-korrekta värden är inte ensamma
+bringup-fixen. Nästa kausala gräns är write_ptr/fetch-layoutens gemensamma
+LOD-offset och adressmask för TMU0, inte registerägare eller payload-endian.
