@@ -32403,6 +32403,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_16BIT_TEXTURE_SAMPLE_REVERSE_LANES"));
     private readonly bool _experimentTextureFilterHalfTexel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_FILTER_HALF_TEXEL"));
+    private readonly bool _experimentTextureCoordinateWrap =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_COORDINATE_WRAP"));
     private readonly bool _fixTextureBilinearFilter =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER")) ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BILINEAR_FILTER"));
@@ -41614,12 +41616,20 @@ sampledTexel:
         IReadOnlyDictionary<TextureSampleWriterKey, int>? sampleWrapped64KWriterBuckets,
         int bufferIndex)
     {
-        if (_texturedTriangleSampleSummaryTraceCount++ >= _traceTexturedTriangleSampleSummaryLimit)
+        if (_texturedTriangleSampleSummaryTraceCount >= _traceTexturedTriangleSampleSummaryLimit)
             return;
 
         uint mode = ReadTextureSampleRegister(RegTextureMode);
         uint lod = ReadTextureSampleRegister(RegTextureLod);
         uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
+        if ((_traceType3TextureModes.Length != 0 && !_traceType3TextureModes.Contains(mode)) ||
+            (_traceType3TextureLods.Length != 0 && !_traceType3TextureLods.Contains(lod)) ||
+            (_traceType3TextureBases.Length != 0 && !_traceType3TextureBases.Contains(registerBase)))
+        {
+            return;
+        }
+
+        _texturedTriangleSampleSummaryTraceCount++;
         int targetLod = GetTextureTargetLod(lod);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = IsTextureFormat16Bit(format);
@@ -41877,8 +41887,10 @@ sampledTexel:
             t24_8 -= 0x80;
         }
 
-        bool clampS = _experimentTextureMameFixedFetch ? (mode & 0x40u) != 0 : _fixTextureCoordinateClamp;
-        bool clampT = _experimentTextureMameFixedFetch ? (mode & 0x80u) != 0 : _fixTextureCoordinateClamp;
+        bool clampS = !_experimentTextureCoordinateWrap &&
+            (_experimentTextureMameFixedFetch ? (mode & 0x40u) != 0 : _fixTextureCoordinateClamp);
+        bool clampT = !_experimentTextureCoordinateWrap &&
+            (_experimentTextureMameFixedFetch ? (mode & 0x80u) != 0 : _fixTextureCoordinateClamp);
         int x = Coordinate24_8ToTexelIndex(s24_8, width, targetLod, clampS);
         int y = Coordinate24_8ToTexelIndex(t24_8, height, targetLod, clampT);
         if (_fixTextureTOriginFlip)
@@ -41975,8 +41987,10 @@ sampledTexel:
             s -= 0.5f;
             t -= 0.5f;
         }
-        bool clampS = !_experimentTextureMameFetchAddressing || (mode & 0x40u) != 0;
-        bool clampT = !_experimentTextureMameFetchAddressing || (mode & 0x80u) != 0;
+        bool clampS = !_experimentTextureCoordinateWrap &&
+            (!_experimentTextureMameFetchAddressing || (mode & 0x40u) != 0);
+        bool clampT = !_experimentTextureCoordinateWrap &&
+            (!_experimentTextureMameFetchAddressing || (mode & 0x80u) != 0);
         int x = TextureCoordinateToIndex(s, width, clampS);
         int y = _fixTextureTOriginFlip
             ? TextureCoordinateToIndex((height - 1) - t, height, clampT)
@@ -43918,8 +43932,10 @@ sampledTexel:
     {
         float u = s - 0.5f;
         float v = t - 0.5f;
-        bool clampS = !_experimentTextureMameFetchAddressing || (mode & 0x40u) != 0;
-        bool clampT = !_experimentTextureMameFetchAddressing || (mode & 0x80u) != 0;
+        bool clampS = !_experimentTextureCoordinateWrap &&
+            (!_experimentTextureMameFetchAddressing || (mode & 0x40u) != 0);
+        bool clampT = !_experimentTextureCoordinateWrap &&
+            (!_experimentTextureMameFetchAddressing || (mode & 0x80u) != 0);
         int x0 = TextureCoordinateToIndex(u, width, clampS);
         int y0 = _fixTextureTOriginFlip
             ? TextureCoordinateToIndex((height - 1) - v, height, clampT)

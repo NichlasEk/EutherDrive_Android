@@ -1308,3 +1308,36 @@ registeravkodning. Nästa gräns är därför att binda record 0:s verkliga
 texturekoordinater och hårdvaru-LOD-val till 256x32-uploaden: avgör om den är
 en avsiktlig staging/atlas-strip som vår sampler adresserar fel, eller om
 övriga strip-runs uteblir tidigare i assetkedjan.
+
+### Record 0:s koordinater bekräftar clamp-banden men inte payloaden
+
+`VOODOO-TEXSUMMARY` återanvänder nu de exakta Type3-statefiltren för mode,
+LOD och base. Det gör att record 0 kan isoleras utan att andra material fyller
+summarygränsen. 32 synliga buffer-1-trianglar visar konsekvent:
+
+```text
+mode=0x8c24100f lod=0x20c6 base=0x1c00
+sample S ungefär 0..511
+sample T ungefär 0..171
+sample byteadresser ungefär 0xe510..0x1900f
+```
+
+Modebitarna `0x40/0x80` begär inte S/T-clamp, men den kanoniska bringup-
+baselinen tvingar clamp. Det förklarar de stora konstanta edge-banden när S
+passerar 255. En ny default-off kontroll kan tvinga faktisk wrap genom både
+nearest-, bilinear- och MAME-fixed-fetch-vägarna:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_COORDINATE_WRAP=1
+```
+
+Den kompletta 256x32-hypotesen testades med LOD-OR `0x00700000`, coordinate
+wrap och sample-bias `0`. Den tog bort de stora horisontella clamp-banden och
+ändrade f1000+5,1M-hashen till `0x3cb672e9`, men framebufferdumpen innehåller
+fortfarande repetitivt texturbrus i stället för en scen. Wrap är alltså en
+verklig presentationseffekt men inte heller en fix.
+
+Nästa kausala gräns ligger nu före samplern: identifiera ursprunget och den
+avsedda layouten för de 32 `base=0x1c00`-paketen som redan ligger i FIFO vid
+f1000. Deras snapshot-proveniens är tom (`source=-`); följ dem från en tidigare
+state eller jämför payloaden mot assetkällan innan fler sample-remaps provas.
