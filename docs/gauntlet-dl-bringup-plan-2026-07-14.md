@@ -1017,3 +1017,43 @@ extent. Nästa ägarskapsgräns är gruppbytet som ska välja record/asset före
 varje serie selector-anrop; först därefter kan `fileOffset + selector` vara en
 giltig source-regel. En global `sel_lr`-extent, oavsett om den börjar vid
 `0x14fe8` eller `0x18f20`, ska inte promoveras.
+
+### Gästkoden materialiserar separata TMU-mål före Type5
+
+Main-RAM-writetracen täcker nu även `sb`, `sh` och den kända byte-move-
+fastpathen. Det stängde ett observationshål där den sparsamma assettabellen såg
+ut att uppstå utan någon producent. Tabellen vid `asset[16]=0x80304220` byggs
+av `0x800aace4/0x800aacf0` som `0x1188` stycken 0x24-byte-entries. Endast
+`entry+0x1d/+0x1e` initieras här, med sekventiella 16-bitars ID:n. Tabellen är
+alltså en gästägd objekt-/record-pool, inte en lista med companion-filoffsetar.
+
+Den senare 0x50-byte-uploadtabellen vid `0x813815a0` har en separat och mer
+direkt betydelse. En write-watch från den rena f1000-staten visar:
+
+```text
+primary   pc=0x800a75c8  record+0x1c = selector/page
+primary   pc=0x800a7620  record+0x0c = 0x80000, 0x82000, 0x84000, ...
+secondary pc=0x800a7710  record+0x1c = selector/page
+secondary pc=0x800a7768  record+0x0c = 0x02000, 0x04000, 0x06000, ...
+source owner in t2 = 0x802e2c68
+```
+
+Primär- och sekundärvägen räknar själv fram olika 8 KiB-steg för de två
+TMU-bankerna innan upload-wrappern anropas. Selectorvärdet är därför en del av
+gästens target-/surface-layout, inte en rå offset in i `sel_lr/textures.rom`.
+Det förklarar varför nästan full texeltäckning med `fileOffset + selector`
+fortfarande gav mosaik.
+
+Körningen behöll den kanoniska f1050-orakeln exakt:
+
+```text
+frameHash=0xf4ccc0af
+swap=1263
+fifoWords=10292873
+texWrites=8788243
+```
+
+Nästa slice ska följa `record+0x0c` från `0x800a7620/0x800a7768` till det
+Type5-targetord som Voodoo-backenden tar emot. Om targetsteget tappas där ska
+det repareras i den generella packet-/download-avkodningen; selectorvärdet ska
+inte längre användas för att välja en ny filkälla.

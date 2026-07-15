@@ -14660,12 +14660,27 @@ internal sealed class MipsR5000Core
         if (backwards)
         {
             for (ulong remaining = count; remaining > 0; remaining--)
-                _memory.Write8(destination + remaining - 1UL, _memory.Read8(source + remaining - 1UL));
+            {
+                ulong offset = remaining - 1UL;
+                ulong target = destination + offset;
+                byte oldValue = _traceMainRamWrites ? _memory.Read8(target) : (byte)0;
+                byte value = _memory.Read8(source + offset);
+                _memory.Write8(target, value);
+                if (_traceMainRamWrites)
+                    TraceMainRamWriteWatch(pc, _memory.Read32(pc), "fast-bytemove", $"src=0x{source + offset:x16}", target, 1, oldValue, value);
+            }
         }
         else
         {
             for (ulong offset = 0; offset < count; offset++)
-                _memory.Write8(destination + offset, _memory.Read8(source + offset));
+            {
+                ulong target = destination + offset;
+                byte oldValue = _traceMainRamWrites ? _memory.Read8(target) : (byte)0;
+                byte value = _memory.Read8(source + offset);
+                _memory.Write8(target, value);
+                if (_traceMainRamWrites)
+                    TraceMainRamWriteWatch(pc, _memory.Read32(pc), "fast-bytemove", $"src=0x{source + offset:x16}", target, 1, oldValue, value);
+            }
         }
 
         _gpr[2] = _gpr[4];
@@ -24465,10 +24480,22 @@ internal sealed class MipsR5000Core
                 _gpr[rt] = _memory.Read32(_gpr[rs] + (ulong)(long)simm);
                 break;
             case 0x28:
-                _memory.Write8(_gpr[rs] + (ulong)(long)simm, (byte)_gpr[rt]);
+                {
+                    ulong address = _gpr[rs] + (ulong)(long)simm;
+                    byte oldValue = IsMainRamRange(address, 1) ? _memory.Read8(address) : (byte)0;
+                    byte value = (byte)_gpr[rt];
+                    _memory.Write8(address, value);
+                    TraceMainRamWriteWatch(pc, op, "sb", $"r{rt}->[r{rs}+0x{simm:x4}]", address, 1, oldValue, value);
+                }
                 break;
             case 0x29:
-                _memory.Write16(_gpr[rs] + (ulong)(long)simm, (ushort)_gpr[rt]);
+                {
+                    ulong address = _gpr[rs] + (ulong)(long)simm;
+                    ushort oldValue = IsMainRamRange(address, 2) ? _memory.Read16(address) : (ushort)0;
+                    ushort value = (ushort)_gpr[rt];
+                    _memory.Write16(address, value);
+                    TraceMainRamWriteWatch(pc, op, "sh", $"r{rt}->[r{rs}+0x{simm:x4}]", address, 2, oldValue, value);
+                }
                 break;
             case 0x2a:
                 StoreWordLeft(pc, op, rs, rt, simm, _gpr[rs] + (ulong)(long)simm, _gpr[rt]);
