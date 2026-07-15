@@ -18397,6 +18397,22 @@ internal sealed class MipsR5000Core
         ulong descriptor = _gpr[18];
         ulong material = _gpr[17];
         ulong owner = _gpr[20];
+        var textureSetOwners = new List<string>();
+        for (int set = 0; set < 16; set++)
+        {
+            uint setBase = ReadTraceWord(0xffffffff802545a0UL + (ulong)set * 4UL);
+            if (setBase == 0)
+                continue;
+
+            ulong canonicalSetBase = SignExtend32(setBase);
+            if (descriptor < canonicalSetBase)
+                continue;
+
+            ulong delta = descriptor - canonicalSetBase;
+            if (delta < 0x10000UL && delta % 0x50UL == 0)
+                textureSetOwners.Add($"{set}:{delta / 0x50UL}");
+        }
+        string textureSetOwner = textureSetOwners.Count == 0 ? "-" : string.Join(',', textureSetOwners);
         var key = (descriptor, material, owner, _gpr[16], _gpr[21], _gpr[2]);
         if (!_runtimeWorldTextureDescriptorTraceKeys.Add(key) ||
             _runtimeWorldTextureDescriptorTraceCount++ >= 64)
@@ -18407,6 +18423,7 @@ internal sealed class MipsR5000Core
         Console.WriteLine(
             $"[GAUNTDL:TRACE] runtime-world-texture-descriptor n={_runtimeWorldTextureDescriptorTraceCount} " +
             $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} descriptor={descriptor:x16} " +
+            $"textureSetRecord={textureSetOwner} " +
             $"words={FormatTraceWords(descriptor, 20)} " +
             $"mode={_gpr[16]:x16} lod={_gpr[21]:x16} base={_gpr[2]:x16} " +
             $"material={material:x16} materialWords={FormatTraceWords(material, 16)} " +

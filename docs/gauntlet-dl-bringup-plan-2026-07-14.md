@@ -1191,3 +1191,29 @@ de ägda låga adresserna kommer från de sena LOD0-paketen, medan högre delar 
 med den korrigerade info-/record-layouten. Nästa ändring ska därför binda den
 uteblivna senare world-uploaden till samplerbasen; `record+0x10`, loopIndex och
 en syntetisk source-ordinal är nu uteslutna.
+
+### Set 0 record 1 publicerar en egen descriptor
+
+En samtidig lookup-/descriptor-trace stänger hypotesen att den senare
+world-descriptorn aldrig publiceras. Set 0/record 0 muteras först från en tidig
+`base=0x12000/lod=0x2000`-form till den faktiskt samplade formen:
+
+```text
+set 0 record 0 -> descriptor 0x802e2158
+mode=0x8c24100f lod=0x20c6 base=0x1c00
+```
+
+Därefter gör gästkoden ett verkligt lookup av grannrecordet och publicerar en
+annan descriptor:
+
+```text
+set 0 record 1 -> descriptor 0x802e21a8
+mode=0x8c241faf lod=0x2cea base=0x2000
+```
+
+Den uteblivna sidägaren beror alltså inte på att record 1 saknas ur settabellen
+eller att dess descriptor-store hoppas över. Descriptor-tracen rapporterar nu
+`textureSetRecord=set:record` genom att matcha descriptoradressen mot de 16
+levande setbaserna. Nästa gräns är smalare: bind record 1:s separata
+`mode/lod/base` till dess Type3-draw och Type5-owner, och avgör varför den inte
+återtar de owner-lösa adresser som record 0 senare samplar.
