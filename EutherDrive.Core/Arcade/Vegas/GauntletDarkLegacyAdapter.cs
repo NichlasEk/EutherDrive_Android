@@ -5514,7 +5514,9 @@ internal sealed class MipsR5000Core
         ulong texturesRomDiskBase =
             ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_DISK_BASE") ??
             0x00fff000UL;
-        const ulong textureFileOffset = 0x00018f20UL;
+        ulong textureFileOffset =
+            ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_FILE_OFFSET") ??
+            0x00018f20UL;
         const ulong scratch = 0xffffffff80400000UL;
         bool selectorByteOffsets =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SELECTOR_BYTE_OFFSETS") == "1";

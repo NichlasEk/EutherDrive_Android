@@ -1004,3 +1004,16 @@ Nästa slice ska länka selector-recordens logiska 64 KiB-surface till den
 fysiska LOD/base-layout som den aktiva Type3-descriptorn (`base=0x1c00`,
 `lod=0x20c6`) samplar. Source-, linear- och TMU-bankflaggorna förblir
 default-off tills den layouten kan uttryckas som en generell Voodoo-regel.
+
+Primärdescriptorns companion-kandidat `0x14fe8` testades därefter via den nya
+default-off-parametern
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_FILE_OFFSET`.
+Med samma selector-, linear- och bankstack gav den f1200
+`frameHash=0x70c9db06`, `zero=4,075,149 / 79,658,746` och samma rand-/mosaikklass.
+Den är alltså inte bättre än record `0x18f20` trots nästan full texeltäckning.
+
+Det visar att de många selector-anropen inte får lösas mot en enda companion-
+extent. Nästa ägarskapsgräns är gruppbytet som ska välja record/asset före
+varje serie selector-anrop; först därefter kan `fileOffset + selector` vara en
+giltig source-regel. En global `sel_lr`-extent, oavsett om den börjar vid
+`0x14fe8` eller `0x18f20`, ska inte promoveras.
