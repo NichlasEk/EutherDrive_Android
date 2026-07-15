@@ -1133,12 +1133,18 @@ a0=3 a1=0x81381640 a3=0      source=0x802e2c68 ordinal=2
 ```
 
 `a0=3` väljer nolloffset i den redan verifierade `0x800a64fc`-tabellen, medan
-`a1` väljer nästa 0x50-byte-outputpost. `info+0x18` är därmed outputordinalen
-för samma `0x1188`-posters katalogrot, inte bevis för ett tappat source-page-
-stride. En generell `source + ordinal * stride`-reparation är falsifierad och
-ska inte implementeras. Nästa kausala gräns ligger efter katalogtolkningen:
-följ hur respektive outputrecord binder den fasta Type5-uppladdningen till den
-Type3-descriptor/LOD/base-layout som samplar den.
+`a1` väljer nästa 0x50-byte-outputpost. Disassembly av hela `0x800a7094`
+stänger dessutom den tidigare strukturmissen: det observerade ordet vid
+`output+0x18` är samma adress som funktionens `sp+0x28`. Det nollställs av
+`afa00028` före loopen och inkrementeras vid `0x800a7834`; det är alltså
+funktionens loopräknare, inte ett texture-info-fält. Den faktiska infon upptar
+sex ord genom `+0x14`. Efter source-store vid `0x800a7344` skickar anropet vid
+`0x800a7354` endast info `+0x00`, `+0x04`, helperresultatet och `+0x0c`.
+
+En generell `source + ordinal * stride`-reparation är därmed definitivt
+falsifierad och ska inte implementeras. Nästa kausala gräns ligger efter
+katalogtolkningen: följ hur respektive outputrecord binder den fasta Type5-
+uppladdningen till den Type3-descriptor/LOD/base-layout som samplar den.
 
 Observationskörningarna behöll f1050-oraklet exakt:
 

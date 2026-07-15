@@ -15336,6 +15336,7 @@ internal sealed class MipsR5000Core
         ulong stack = _gpr[29];
         ulong output = stack + 0x10UL;
         uint source = ReadTraceWord(output + 0x10UL);
+        uint loopIndex = ReadTraceWord(stack + 0x28UL);
         if (_traceTextureUploadRunSource.HasValue &&
             SignExtend32(source) != CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value))
         {
@@ -15353,7 +15354,7 @@ internal sealed class MipsR5000Core
             $"kind={(primary ? "primary" : "secondary")} phase={(returned ? "return" : "call")} selector={selector:x8} " +
             $"a0={_gpr[4]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} record={record:x16} s3={_gpr[19]:x16} " +
-            $"recordWords={FormatTraceWords(record, 16)} output={output:x16}:{FormatTraceWords(output, 8)}");
+            $"recordWords={FormatTraceWords(record, 16)} info={output:x16}:{FormatTraceWords(output, 6)} loopIndex={loopIndex:x8}");
     }
 
     private void WriteAsciiTraceString(ulong address, string text, int maxLength)
