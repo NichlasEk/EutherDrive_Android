@@ -772,6 +772,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEXTURE_SET_LOOKUPS"));
     private readonly int _traceRuntimeTextureSetLookupsLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEXTURE_SET_LOOKUPS_LIMIT", 96);
+    private readonly bool _traceRuntimeWorldTextureSelectorCalls =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_SELECTOR_CALLS"));
+    private readonly int _traceRuntimeWorldTextureSelectorCallsLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_SELECTOR_CALLS_LIMIT", 96);
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
     private readonly bool _experimentRuntimeBgLoadModelHydratedSourceOwner =
@@ -1225,6 +1229,8 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelQioRequestMetadataTraceCount;
     private int _runtimeBgLoadModelStaticTextureContiguousSourceTraceCount;
     private uint _runtimeWorldTextureUploadSourceRepairHitCount;
+    private bool _runtimeWorldTextureUploadSourceScratchHydrated;
+    private uint _runtimeWorldTextureUploadSourceScratchFirstWord;
     private int _runtimeBgLoadModelIndexedTextureQioTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioShortReadTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioBodyReadTraceCount;
@@ -1241,6 +1247,8 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelTextureSetDistinctSourceTraceCount;
     private int _runtimeTextureSetLookupTraceCount;
     private readonly HashSet<(uint PackedIndex, uint SetBase, ulong ReturnAddress)> _runtimeTextureSetLookupTraceKeys = [];
+    private int _runtimeWorldTextureSelectorCallTraceCount;
+    private readonly HashSet<(ulong Pc, uint Selector, ulong Record, uint Source)> _runtimeWorldTextureSelectorCallTraceKeys = [];
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
@@ -1537,6 +1545,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
         ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(pc);
         TraceKnownRuntimeTextureSetLookup(pc);
+        TraceKnownRuntimeWorldTextureSelectorCall(pc);
         ApplyKnownRuntimeBgLoadModelPreserveAssetSource(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
         ApplyKnownRuntimeBgLoadModelHydratedSourceOwnerRepair(pc);
@@ -5507,7 +5516,11 @@ internal sealed class MipsR5000Core
             0x00fff000UL;
         const ulong textureFileOffset = 0x00018f20UL;
         const ulong scratch = 0xffffffff80400000UL;
-        const uint bytes = 0x10000U;
+        bool selectorByteOffsets =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SELECTOR_BYTE_OFFSETS") == "1";
+        const uint surfaceBytes = 0x10000U;
+        const uint selLrBytesAfterRecordOffset = 0x1adee0U;
+        uint bytes = selectorByteOffsets ? selLrBytesAfterRecordOffset : surfaceBytes;
 
         if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SOURCE") != "1" ||
             pc != sourceSelectorPc ||
@@ -5520,26 +5533,42 @@ internal sealed class MipsR5000Core
         if (!IsMainRamRange(sourceSlot, 4UL) || _memory.Read32(sourceSlot) != descriptorSource)
             return;
 
-        if (!_memory.TryReadDiskByteOffsetToMemory(
-            texturesRomDiskBase + textureFileOffset,
-            scratch,
-            bytes,
-            out uint firstWord,
-            out string failure))
+        if (!_runtimeWorldTextureUploadSourceScratchHydrated &&
+            !_memory.TryReadDiskByteOffsetToMemory(
+                texturesRomDiskBase + textureFileOffset,
+                scratch,
+                bytes,
+                out _runtimeWorldTextureUploadSourceScratchFirstWord,
+                out string failure))
         {
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] runtime-world-texture-upload-source-failed pc={pc:x16} " +
                 $"disk={texturesRomDiskBase + textureFileOffset:x8} bytes={bytes:x8} failure={failure}");
             return;
         }
+        _runtimeWorldTextureUploadSourceScratchHydrated = true;
 
         uint hit = _runtimeWorldTextureUploadSourceRepairHitCount++;
         bool sequentialRows =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SEQUENTIAL_ROWS") == "1";
         uint selectorIndex = (uint)((_gpr[5] >> 16) & 0xffUL);
-        ulong selectedScratch = sequentialRows
-            ? scratch + selectorIndex * 0x100UL
-            : scratch;
+        uint selectorByteOffset = (uint)_gpr[5];
+        if (selectorByteOffsets && (ulong)selectorByteOffset + surfaceBytes > bytes)
+        {
+            if (hit < 8U || (hit & 0xffU) == 0xffU)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] runtime-world-texture-upload-source-out-of-range pc={pc:x16} hit={hit} " +
+                    $"selector={selectorByteOffset:x8} bytes={bytes:x8}");
+            }
+            return;
+        }
+
+        ulong selectedScratch = selectorByteOffsets
+            ? scratch + selectorByteOffset
+            : sequentialRows
+                ? scratch + selectorIndex * 0x100UL
+                : scratch;
         _memory.Write32(sourceSlot, unchecked((uint)selectedScratch));
         if (hit < 8U || (hit & 0xffU) == 0xffU)
         {
@@ -5547,7 +5576,8 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:EXPERIMENT] runtime-world-texture-upload-source pc={pc:x16} hit={hit} selectorIndex={selectorIndex} " +
                 $"slot={sourceSlot:x16} source={descriptorSource:x8}->{unchecked((uint)selectedScratch):x8} " +
                 $"fileOffset={textureFileOffset:x8} disk={texturesRomDiskBase + textureFileOffset:x8} " +
-                $"bytes={bytes:x8} first={firstWord:x8} sequentialRows={(sequentialRows ? 1 : 0)}");
+                $"bytes={bytes:x8} first={_runtimeWorldTextureUploadSourceScratchFirstWord:x8} " +
+                $"sequentialRows={(sequentialRows ? 1 : 0)} selectorByteOffsets={(selectorByteOffsets ? 1 : 0)}");
         }
     }
 
@@ -15213,6 +15243,44 @@ internal sealed class MipsR5000Core
             $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} packed={packedIndex:x8} " +
             $"set={setIndex} record={recordIndex} slot={setSlot:x16} base={setBase:x8} " +
             $"result={result:x16} ra={returnAddress:x16}");
+    }
+
+    private void TraceKnownRuntimeWorldTextureSelectorCall(ulong pc)
+    {
+        const ulong primaryCallPc = 0xffffffff800a761cUL;
+        const ulong primaryReturnPc = 0xffffffff800a7624UL;
+        const ulong secondaryCallPc = 0xffffffff800a7764UL;
+        const ulong secondaryReturnPc = 0xffffffff800a776cUL;
+        if (!_traceRuntimeWorldTextureSelectorCalls ||
+            pc is not (primaryCallPc or primaryReturnPc or secondaryCallPc or secondaryReturnPc) ||
+            _runtimeWorldTextureSelectorCallTraceCount >= _traceRuntimeWorldTextureSelectorCallsLimit)
+        {
+            return;
+        }
+
+        uint selector = (uint)_gpr[5];
+        ulong record = CanonicalizeTraceAddress(_gpr[18]);
+        ulong stack = _gpr[29];
+        ulong output = stack + 0x10UL;
+        uint source = ReadTraceWord(output + 0x10UL);
+        if (_traceTextureUploadRunSource.HasValue &&
+            SignExtend32(source) != CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value))
+        {
+            return;
+        }
+        if (!_runtimeWorldTextureSelectorCallTraceKeys.Add((pc, selector, record, source)))
+            return;
+
+        bool primary = pc is primaryCallPc or primaryReturnPc;
+        bool returned = pc is primaryReturnPc or secondaryReturnPc;
+        _runtimeWorldTextureSelectorCallTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] runtime-world-texture-selector-call n={_runtimeWorldTextureSelectorCallTraceCount} " +
+            $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} ra={_gpr[31]:x16} " +
+            $"kind={(primary ? "primary" : "secondary")} phase={(returned ? "return" : "call")} selector={selector:x8} " +
+            $"a0={_gpr[4]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} record={record:x16} s3={_gpr[19]:x16} " +
+            $"recordWords={FormatTraceWords(record, 16)} output={output:x16}:{FormatTraceWords(output, 8)}");
     }
 
     private void WriteAsciiTraceString(ulong address, string text, int maxLength)

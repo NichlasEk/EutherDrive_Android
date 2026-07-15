@@ -965,3 +965,42 @@ verkliga companion-file-offset/LOD-span före de parade TMU-uploadsen. Att ge
 alla selectors samma 64 KiB-bild eller bara flytta den `index * 0x100` är båda
 fel abstraktionsnivå. Det är nu ett selector-till-surface-problem, inte ett
 RGB332-format- eller `static_lr`-filproblem.
+
+### Selector-recorden bevisar 64 KiB surface-steg
+
+En ny observationsren call-trace vid `0x800a761c` och `0x800a7764` binder
+record, selector, output och TMU-anrop i samma rad. Den sena
+`0x802e2c68`-familjen bygger 0x50-byte-record där `record+0x1c` och `a1`
+fortskrider som `0x00000000`, `0x00010000`, `0x00020000`, ... . Varje selector
+körs i ett primärt och ett sekundärt anrop för de två TMU-bankerna. Den äldre
+`SEQUENTIAL_ROWS`-kontrollen använde alltså fel storleksordning när den lade
+till `selectorIndex * 0x100`; selectorn uttrycker ett 64 KiB surface-steg.
+
+Den nya default-off-kontrollen
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SELECTOR_BYTE_OFFSETS`
+hydrerar den kvarvarande `sel_lr/textures.rom`-extenten efter recordoffset
+`0x18f20` en gång och väljer `scratch + a1`, med en strikt extent-/64 KiB-
+range-guard. Från samma rena f1000-state ger den vid f1200:
+
+```text
+baseline              frameHash=0xacaece21  zero=61,264,014 / 79,658,746
+selector byte offsets frameHash=0xc8ffb828  zero=57,623,434 / 79,658,746
+```
+
+Payloaden blir kausalt grön/blå men bilden förblir brus och band. När samma
+source-kontroll kombineras med de redan default-off linjära download- och
+separata TMU-bankkontrollerna blir resultatet:
+
+```text
+frameHash=0xdfc93708
+zero=3,891,897 / 79,658,746
+touched=32,768 words, last=0x187fbf
+swap=1387
+```
+
+Nollsample-andelen sjunker därmed till cirka 4,9 procent utan att en
+igenkännbar scen uppstår. Detta stänger ren payloadtäckning som ensam blockerare.
+Nästa slice ska länka selector-recordens logiska 64 KiB-surface till den
+fysiska LOD/base-layout som den aktiva Type3-descriptorn (`base=0x1c00`,
+`lod=0x20c6`) samplar. Source-, linear- och TMU-bankflaggorna förblir
+default-off tills den layouten kan uttryckas som en generell Voodoo-regel.
