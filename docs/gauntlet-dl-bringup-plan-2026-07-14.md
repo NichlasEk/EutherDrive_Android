@@ -1100,3 +1100,51 @@ ordinalen i `info+0x18`. Målet är att avgöra om pekaren ska materialiseras so
 en page-specifik source eller om den lägre upload-funktionen ska applicera
 ordinalens stride. Fler Type5-target-, bank- eller write-pointer-remaps är nu
 falsifierade för den synliga ytan.
+
+### Source-producenten bekräftar katalogrot, inte sidstride
+
+En generell, default-off värdeövergångsprobe kan nu följa ett valfritt
+main-RAM-ord över både vanliga CPU-instruktioner och direkta fastpaths:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_VALUE_TRANSITION_ADDRESS
+EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_VALUE_TRANSITION_MIN_VALUE
+EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_VALUE_TRANSITION_MAX_VALUE
+EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_VALUE_TRANSITION_LIMIT
+```
+
+Proben rapporterar både föregående och nästa PC, så delay-slot-skrivningar kan
+identifieras utan att varje direkt RAM-väg först måste instrumenteras. Den
+tidiga sekundärserien bekräftar att gästtolkningen kan välja skilda källor:
+
+```text
+writerPc=0x800a7344 source=0x802e1719 record=0x802e2158
+writerPc=0x800a7344 source=0x802f918c record=0x802e21a8
+```
+
+Den fokuserade `0x802e2c68`-familjen går genom exakt samma delay-slot-store,
+`0x800a7344: sw v0,0x20(sp)`. Den kanoniska f1000+1M-körningen visar däremot
+att källan medvetet hålls konstant medan output-recordet fortskrider:
+
+```text
+a0=3 a1=0x813815a0 a3=0x1188 source=0x802e2c68 ordinal=0
+a0=3 a1=0x813815f0 a3=0      source=0x802e2c68 ordinal=1
+a0=3 a1=0x81381640 a3=0      source=0x802e2c68 ordinal=2
+```
+
+`a0=3` väljer nolloffset i den redan verifierade `0x800a64fc`-tabellen, medan
+`a1` väljer nästa 0x50-byte-outputpost. `info+0x18` är därmed outputordinalen
+för samma `0x1188`-posters katalogrot, inte bevis för ett tappat source-page-
+stride. En generell `source + ordinal * stride`-reparation är falsifierad och
+ska inte implementeras. Nästa kausala gräns ligger efter katalogtolkningen:
+följ hur respektive outputrecord binder den fasta Type5-uppladdningen till den
+Type3-descriptor/LOD/base-layout som samplar den.
+
+Observationskörningarna behöll f1050-oraklet exakt:
+
+```text
+frameHash=0xf4ccc0af
+swap=1263
+fifoWords=10292873
+texWrites=8788243
+```

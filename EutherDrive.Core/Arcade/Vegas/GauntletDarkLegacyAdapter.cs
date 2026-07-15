@@ -1087,6 +1087,14 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_END");
     private readonly int _traceMainRamWriteLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES_LIMIT", 160);
+    private readonly ulong? _traceMainRamValueTransitionAddress =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_VALUE_TRANSITION_ADDRESS");
+    private readonly int _traceMainRamValueTransitionLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_VALUE_TRANSITION_LIMIT", 32);
+    private readonly ulong? _traceMainRamValueTransitionMinValue =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_VALUE_TRANSITION_MIN_VALUE");
+    private readonly ulong? _traceMainRamValueTransitionMaxValue =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_VALUE_TRANSITION_MAX_VALUE");
     private readonly ulong? _traceMainRamPointerReferences =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_POINTER_REFERENCES");
     private readonly int _traceMainRamPointerReferenceLimit =
@@ -1319,6 +1327,10 @@ internal sealed class MipsR5000Core
     private int _textureUploadPageSelectionTraceCount;
     private int _textureSourceCallA3ProducerTraceCount;
     private int _mainRamWriteTraceCount;
+    private int _mainRamValueTransitionTraceCount;
+    private bool _mainRamValueTransitionInitialized;
+    private uint _mainRamValueTransitionLastValue;
+    private ulong _mainRamValueTransitionPreviousPc;
     private bool _mainRamPointerReferencesTraced;
     private int _runtimeBgLoadModelSkipHotDescriptorOverwriteTraceCount;
     private int _runtimeFontStoryGebBackingTraceCount;
@@ -1500,6 +1512,7 @@ internal sealed class MipsR5000Core
     private void Step()
     {
         ulong pc = Pc;
+        TraceMainRamValueTransition(pc);
         if (_profileHotPcs)
             CountHotPc(pc);
         _memory.SetTraceCpuPc(pc);
@@ -5782,6 +5795,49 @@ internal sealed class MipsR5000Core
             $"s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
             $"owners={DescribeKnownRuntimeBgLoadModelUploadSourceOwners(address)} " +
             $"context@0x{context:x16}={FormatTraceWords(context, 20)}");
+    }
+
+    private void TraceMainRamValueTransition(ulong pc)
+    {
+        if (!_traceMainRamValueTransitionAddress.HasValue ||
+            _mainRamValueTransitionTraceCount >= _traceMainRamValueTransitionLimit)
+        {
+            return;
+        }
+
+        ulong address = CanonicalizeTraceAddress(_traceMainRamValueTransitionAddress.Value);
+        if (!IsMainRamRange(address, 4))
+            return;
+
+        uint value = _memory.Read32(address);
+        if (!_mainRamValueTransitionInitialized)
+        {
+            _mainRamValueTransitionInitialized = true;
+            _mainRamValueTransitionLastValue = value;
+            _mainRamValueTransitionPreviousPc = pc;
+            return;
+        }
+
+        if (value != _mainRamValueTransitionLastValue)
+        {
+            bool valueMatches =
+                (!_traceMainRamValueTransitionMinValue.HasValue || value >= _traceMainRamValueTransitionMinValue.Value) &&
+                (!_traceMainRamValueTransitionMaxValue.HasValue || value < _traceMainRamValueTransitionMaxValue.Value);
+            if (valueMatches)
+            {
+                _mainRamValueTransitionTraceCount++;
+                Console.WriteLine(
+                    $"[GAUNTDL:MAINRAM-VALUE-TRANSITION] n={_mainRamValueTransitionTraceCount} " +
+                    $"addr=0x{address:x16} old=0x{_mainRamValueTransitionLastValue:x8} new=0x{value:x8} " +
+                    $"writerPc=0x{_mainRamValueTransitionPreviousPc:x16} nextPc=0x{pc:x16} " +
+                    $"ra=0x{_gpr[31]:x16} sp=0x{_gpr[29]:x16} a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} " +
+                    $"a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} " +
+                    $"s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16}");
+            }
+            _mainRamValueTransitionLastValue = value;
+        }
+
+        _mainRamValueTransitionPreviousPc = pc;
     }
 
     private void TraceMainRamPointerReferences()
