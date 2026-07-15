@@ -896,3 +896,53 @@ ska äga samples över `0xffff`. Ändra inte set 1--8, den korrekta
 `0x800a64a0`-offsetberäkningen eller global sampler-wrap. Den första kandidaten
 ska antingen materialisera record 0/1:s companion-page på rätt Type5-target
 eller visa exakt vilken senare upload-trigger som uteblir.
+
+### `sel_lr`-payloaden når den aktiva sena upload-runnen
+
+Den sammanhängande `static_lr`-kontrollen kombinerades först med den befintliga
+default-off 64 KiB-sampler-wrapen. Vid f1200 sjönk nollsamplingen från cirka
+73 % till cirka 5 % (`4 474 325 / 89 848 972`), men bilden förblev brus och
+band (`frameHash=0xbb99f9de`). MAME-korrekta Type5/seq8/sparse-uploadregler
+ändrade innehållet till `0x408bbc43` men gav fortfarande ingen scen. Adress-
+täckning är alltså kausal, men `static_lr` är fel logisk payload för world-
+recordet.
+
+Den äldre extent-kartan pekar i stället ut Hall of Legends-världens
+`sel_lr/textures.rom` vid raw-diskbas `0x01407000`. Source-hooken vid
+`pc=0x800fe228` accepterar nu en default-off matchadress via:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SOURCE_ADDRESS
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SEQUENTIAL_ROWS
+```
+
+Med match `0x802e2c68`, filoffset `0x18f20`, diskadress `0x0141ff20` och den
+redan experimentella linjära download-placeringen träffar hooken den verkliga
+f1000--f1050-runnen. Scratch-bas för varje packet ger 8 167 424 texture-writes,
+32 768 berörda ord och f1200 `frameHash=0xddd5b6b5`; bilden fylls med den
+förväntade grön/blå payloadfamiljen men upprepar samma källa i band.
+
+Selector-tracen visar den saknade rad-ABI:n direkt. `a1 >> 16` är radindex och
+anropen upprepas för samma rad:
+
+```text
+hit 0 -> row 0
+hit 1 -> row 1
+hit 2 -> row 1
+hit 3 -> row 2
+hit 4 -> row 2
+```
+
+En kontroll som felaktigt använde hit-numret som rad gav f1200
+`frameHash=0x45e253b3`. När scratchadressen i stället blir
+`scratch + ((a1 >> 16) & 0xff) * 0x100` blir f1200 `0x3241abcd` och mittfältet
+får tydligare sammanhängande orange/grön struktur. Bilden är fortfarande inte
+en korrekt scen, så både source-remappen, radvalet och den linjära download-
+placeringen förblir default-off.
+
+Det förkastade försöket att skriva payloaden direkt över levande RAM vid
+f1000 togs bort; det förstörde arenaägarskap och stoppade coin/start-
+progressionen. Nästa slice ska följa `a1` vidare till Type5-targeten och
+klassificera vilka återstående packet som tillhör andra record/LOD-sidor. Det
+är nu ett packet-till-surface-problem, inte ett RGB332-format- eller
+`static_lr`-filproblem.
