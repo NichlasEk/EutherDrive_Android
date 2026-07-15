@@ -828,3 +828,71 @@ set 1 ändras från `0x802e2158` till `0x802e4900` via source `0x802e3718` och
 Resultatet är kausalt (`frameHash=0x38072b81` mot baseline `0xd083385f`).
 F700-bildtestet avbröts på användarens begäran innan resultat, så flaggan
 förblir strikt experimentell och default-off vid denna checkpoint.
+
+### F700 avvisar texture-set-indexremappen
+
+Den avbrutna fortsättningen kördes färdigt 15 juli från exakt den sparade
+f300-staten. Set 1-remappen överlever till f700 men är en tydlig regression:
+
+```text
+baseline     frameHash=0xf4ccc0af  swap=779
+set 1 remap  frameHash=0x61974e27  swap=456
+```
+
+Kandidatbilden blir nästan vit med två små brus-/randytor och innehåller ingen
+igenkännbar grafik. Hypotesen att texture-set-index 1--8 motsvarar de syntetiska
+QIO-indexen `gei/snm/stk/...` är därmed avvisad. Proben ligger kvar default-off
+endast som kausalitetskontroll.
+
+En ny observationsren lookup-trace vid `pc=0x800a92a8` följer den faktiska
+packade ABI:n genom hela orakeln. Kall f0--f700 och f700--f1000 använder bara:
+
+```text
+set 0, record 0 -> 0x802e2158
+set 10, record 0 -> 0x80332a00
+```
+
+Efter coin/start tillkommer exakt:
+
+```text
+set 0, record 1 -> 0x802e21a8
+```
+
+Inget lookup av set 1--8 observeras. Tracen behåller f700
+`frameHash=0xf4ccc0af`/swap 779 och f1200
+`frameHash=0xacaece21`/swap 1387 exakt. Den aktiva world-vägen väljer alltså
+avsiktligt de två intilliggande recorden i set 0; aliaseringen av set 1--8 är
+inte dess descriptorfel.
+
+CPU-trace runt `0x800abeb0 -> 0x800a64a0` stänger även den misstänkta
+chunk-offseten. Gästkoden läser recordets `+0x08`, maskar till 0x200-gräns och
+publicerar resultatet i `state+0xf180`. Exemplet `0x18f20 -> 0x18e00` är korrekt
+gästsemantik; nollresultatet för record 0 är inte en tappad filread.
+
+### Sammanhängande static-texture-källa är kausal men otillräcklig
+
+Den sena 256-paketsrunnen läser 64 KiB sammanhängande från
+`0x802e2c68`, men baseline har efter första 8 KiB fyllt samma RAM-arena med
+starten av flera separata indexed assets. En default-off-probe hydrerar därför
+`0x802e3718..0x802f3717` med den byte-exakta fortsättningen av
+`static_lr/textures.rom` från raw-disk-offset `0x0fbb2830`.
+
+Vid f1050 är proben bild-/hashneutral men ökar icke-noll texture-writes från
+cirka 1,55 miljoner till 4,33 miljoner. Vid f1200 är den kausal:
+
+```text
+baseline    frameHash=0xacaece21  swap=1387  zero samples=61,264,014 / 79,658,746
+contiguous  frameHash=0x6813a734  swap=1379  zero samples=65,613,776 / 89,848,972
+```
+
+Den relativa nollsample-andelen sjunker från cirka 77 % till 73 %, men bilden
+är fortfarande oläsbart brus och horisontella band. Proben förblir därför
+default-off. Resultatet visar att source-innehållet påverkar den aktiva ytan,
+men återställer inte den saknade page-livstiden.
+
+Nästa slice ska utgå från de bevisat konsumerade `set 0 / record 0--1` och
+koppla deras deklarerade page-/LOD-intervall till den fysiska upload-sida som
+ska äga samples över `0xffff`. Ändra inte set 1--8, den korrekta
+`0x800a64a0`-offsetberäkningen eller global sampler-wrap. Den första kandidaten
+ska antingen materialisera record 0/1:s companion-page på rätt Type5-target
+eller visa exakt vilken senare upload-trigger som uteblir.

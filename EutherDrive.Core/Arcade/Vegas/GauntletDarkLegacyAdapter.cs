@@ -750,6 +750,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS"));
     private readonly bool _enableRuntimeBgLoadModelQioRequestMetadataExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA"));
+    private readonly bool _experimentRuntimeBgLoadModelStaticTextureContiguousSource =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_CONTIGUOUS_SOURCE"));
     private readonly bool _enableRuntimeBgLoadModelExperimentalSkips =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FASTPATH_RUNTIME_BGLOADMODEL_EXPERIMENTAL"));
     private readonly bool _enableRuntimeBgLoadModelQioPollFastPath =
@@ -766,6 +768,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_STATIC_ALIAS_SOURCE"));
     private readonly bool _experimentRuntimeBgLoadModelTextureSetDistinctSource =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SET_DISTINCT_SOURCE"));
+    private readonly bool _traceRuntimeTextureSetLookups =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEXTURE_SET_LOOKUPS"));
+    private readonly int _traceRuntimeTextureSetLookupsLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEXTURE_SET_LOOKUPS_LIMIT", 96);
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
     private readonly bool _experimentRuntimeBgLoadModelHydratedSourceOwner =
@@ -1217,6 +1223,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelQioCompleteTraceCount;
     private int _runtimeBgLoadModelQioCreateAliasTraceCount;
     private int _runtimeBgLoadModelQioRequestMetadataTraceCount;
+    private int _runtimeBgLoadModelStaticTextureContiguousSourceTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioShortReadTraceCount;
     private int _runtimeBgLoadModelIndexedTextureQioBodyReadTraceCount;
@@ -1231,6 +1238,8 @@ internal sealed class MipsR5000Core
     private readonly HashSet<(ulong Descriptor, ulong Material, ulong Owner, ulong Mode, ulong Lod, ulong Base)>
         _runtimeWorldTextureDescriptorTraceKeys = [];
     private int _runtimeBgLoadModelTextureSetDistinctSourceTraceCount;
+    private int _runtimeTextureSetLookupTraceCount;
+    private readonly HashSet<(uint PackedIndex, uint SetBase, ulong ReturnAddress)> _runtimeTextureSetLookupTraceKeys = [];
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
@@ -1526,6 +1535,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
         ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(pc);
+        TraceKnownRuntimeTextureSetLookup(pc);
         ApplyKnownRuntimeBgLoadModelPreserveAssetSource(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
         ApplyKnownRuntimeBgLoadModelHydratedSourceOwnerRepair(pc);
@@ -15161,6 +15171,37 @@ internal sealed class MipsR5000Core
         }
     }
 
+    private void TraceKnownRuntimeTextureSetLookup(ulong pc)
+    {
+        const ulong textureSetLookupPc = 0xffffffff800a92a8UL;
+        const ulong textureSetTable = 0xffffffff802545a0UL;
+        if (!_traceRuntimeTextureSetLookups ||
+            pc != textureSetLookupPc ||
+            _runtimeTextureSetLookupTraceCount >= _traceRuntimeTextureSetLookupsLimit)
+        {
+            return;
+        }
+
+        uint packedIndex = (uint)_gpr[4];
+        uint setIndex = packedIndex >> 16;
+        uint recordIndex = packedIndex & 0xffffU;
+        ulong setSlot = textureSetTable + setIndex * 4UL;
+        uint setBase = IsMainRamRange(setSlot, 4UL) ? _memory.Read32(setSlot) : 0;
+        ulong result = setBase == 0
+            ? 0
+            : SignExtend32(unchecked(setBase + recordIndex * 0x50U));
+        ulong returnAddress = _gpr[31];
+        if (!_runtimeTextureSetLookupTraceKeys.Add((packedIndex, setBase, returnAddress)))
+            return;
+
+        _runtimeTextureSetLookupTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] runtime-texture-set-lookup n={_runtimeTextureSetLookupTraceCount} " +
+            $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} packed={packedIndex:x8} " +
+            $"set={setIndex} record={recordIndex} slot={setSlot:x16} base={setBase:x8} " +
+            $"result={result:x16} ra={returnAddress:x16}");
+    }
+
     private void WriteAsciiTraceString(ulong address, string text, int maxLength)
     {
         if (!IsMainRamRange(address, (ulong)maxLength))
@@ -17391,6 +17432,7 @@ internal sealed class MipsR5000Core
             TryHydrateKnownRuntimeBgLoadModelQio(qio, qioObject, requestedBytes, out hydrationReason))
         {
             hydrationStatus = $"hydrated:{hydrationReason}";
+            TryHydrateKnownRuntimeBgLoadModelStaticTextureContiguousSource(destination);
         }
         else if (!string.IsNullOrWhiteSpace(hydrationReason))
         {
@@ -17407,6 +17449,44 @@ internal sealed class MipsR5000Core
         }
 
         return true;
+    }
+
+    private void TryHydrateKnownRuntimeBgLoadModelStaticTextureContiguousSource(ulong destination)
+    {
+        const ulong staticTextureDestination = 0xffffffff802e1718UL;
+        const ulong staticTextureDiskByteOffset = 0x0fbb0830UL;
+        const uint initialChunkBytes = 0x2000U;
+        const uint continuationBytes = 0x10000U;
+        if (!_experimentRuntimeBgLoadModelStaticTextureContiguousSource ||
+            destination != staticTextureDestination ||
+            !IsMainRamRange(destination + initialChunkBytes, continuationBytes))
+        {
+            return;
+        }
+
+        if (!_memory.TryReadDiskByteOffsetToMemory(
+                staticTextureDiskByteOffset + initialChunkBytes,
+                destination + initialChunkBytes,
+                continuationBytes,
+                out uint firstWord,
+                out string reason))
+        {
+            if (_runtimeBgLoadModelStaticTextureContiguousSourceTraceCount++ < 8)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] bgloadmodel-static-texture-contiguous-source-fail " +
+                    $"dest={destination:x16} bytes={continuationBytes:x8} reason={reason}");
+            }
+            return;
+        }
+
+        if (_runtimeBgLoadModelStaticTextureContiguousSourceTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-static-texture-contiguous-source " +
+                $"dest={destination + initialChunkBytes:x16} bytes={continuationBytes:x8} " +
+                $"disk={staticTextureDiskByteOffset + initialChunkBytes:x8} first={firstWord:x8}");
+        }
     }
 
     private bool TryApplyKnownRuntimeBgLoadModelIndexedTextureQioMetadataRepair(ulong pc)
