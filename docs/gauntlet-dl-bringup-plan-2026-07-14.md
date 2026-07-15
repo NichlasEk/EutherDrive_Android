@@ -922,27 +922,46 @@ f1000--f1050-runnen. Scratch-bas för varje packet ger 8 167 424 texture-writes,
 32 768 berörda ord och f1200 `frameHash=0xddd5b6b5`; bilden fylls med den
 förväntade grön/blå payloadfamiljen men upprepar samma källa i band.
 
-Selector-tracen visar den saknade rad-ABI:n direkt. `a1 >> 16` är radindex och
-anropen upprepas för samma rad:
+En första kontroll tolkade `a1 >> 16` som radindex. Anropen ser ut så här:
 
 ```text
-hit 0 -> row 0
-hit 1 -> row 1
-hit 2 -> row 1
-hit 3 -> row 2
-hit 4 -> row 2
+hit 0 -> selector 0
+hit 1 -> selector 1
+hit 2 -> selector 1
+hit 3 -> selector 2
+hit 4 -> selector 2
 ```
 
-En kontroll som felaktigt använde hit-numret som rad gav f1200
+Att felaktigt använda hit-numret som 0x100-byte-offset gav f1200
 `frameHash=0x45e253b3`. När scratchadressen i stället blir
 `scratch + ((a1 >> 16) & 0xff) * 0x100` blir f1200 `0x3241abcd` och mittfältet
 får tydligare sammanhängande orange/grön struktur. Bilden är fortfarande inte
-en korrekt scen, så både source-remappen, radvalet och den linjära download-
+en korrekt scen, så både source-remappen, selector-offseten och den linjära download-
 placeringen förblir default-off.
+
+En full payload/link-trace korrigerar dock även denna ABI-tolkning. Varje
+selector-träff startar själv en komplett 256-paketsrun. Inom runnen gör
+låg-nivåkoden redan den riktiga radförflyttningen:
+
+```text
+packet 0  source=scratch+0x0000 targetWord=base+0x0000
+packet 1  source=scratch+0x0100 targetWord=base+0x0080
+packet 2  source=scratch+0x0200 targetWord=base+0x0100
+...
+packet 255
+```
+
+Varje selector-index kör två sådana runs. Den första använder
+`sourceBase=0x00200000` och Type5-targets från `0x00080000`; den andra använder
+`sourceBase=0` och targets från noll. Detta är de två TMU-bankerna, inte två
+texelrader. `a1 >> 16` är därmed ett yttre selector-/surface-index och den
+befintliga `SEQUENTIAL_ROWS`-flaggan är endast en negativ offsetkontroll trots
+sitt äldre namn; den ska inte promoveras.
 
 Det förkastade försöket att skriva payloaden direkt över levande RAM vid
 f1000 togs bort; det förstörde arenaägarskap och stoppade coin/start-
-progressionen. Nästa slice ska följa `a1` vidare till Type5-targeten och
-klassificera vilka återstående packet som tillhör andra record/LOD-sidor. Det
-är nu ett packet-till-surface-problem, inte ett RGB332-format- eller
-`static_lr`-filproblem.
+progressionen. Nästa slice ska koppla varje selector-index till recordets
+verkliga companion-file-offset/LOD-span före de parade TMU-uploadsen. Att ge
+alla selectors samma 64 KiB-bild eller bara flytta den `index * 0x100` är båda
+fel abstraktionsnivå. Det är nu ett selector-till-surface-problem, inte ett
+RGB332-format- eller `static_lr`-filproblem.

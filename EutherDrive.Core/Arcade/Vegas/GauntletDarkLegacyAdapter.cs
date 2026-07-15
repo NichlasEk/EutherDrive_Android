@@ -5536,15 +5536,15 @@ internal sealed class MipsR5000Core
         uint hit = _runtimeWorldTextureUploadSourceRepairHitCount++;
         bool sequentialRows =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SEQUENTIAL_ROWS") == "1";
-        uint row = (uint)((_gpr[5] >> 16) & 0xffUL);
+        uint selectorIndex = (uint)((_gpr[5] >> 16) & 0xffUL);
         ulong selectedScratch = sequentialRows
-            ? scratch + row * 0x100UL
+            ? scratch + selectorIndex * 0x100UL
             : scratch;
         _memory.Write32(sourceSlot, unchecked((uint)selectedScratch));
         if (hit < 8U || (hit & 0xffU) == 0xffU)
         {
             Console.WriteLine(
-                $"[GAUNTDL:EXPERIMENT] runtime-world-texture-upload-source pc={pc:x16} hit={hit} row={row} " +
+                $"[GAUNTDL:EXPERIMENT] runtime-world-texture-upload-source pc={pc:x16} hit={hit} selectorIndex={selectorIndex} " +
                 $"slot={sourceSlot:x16} source={descriptorSource:x8}->{unchecked((uint)selectedScratch):x8} " +
                 $"fileOffset={textureFileOffset:x8} disk={texturesRomDiskBase + textureFileOffset:x8} " +
                 $"bytes={bytes:x8} first={firstWord:x8} sequentialRows={(sequentialRows ? 1 : 0)}");
