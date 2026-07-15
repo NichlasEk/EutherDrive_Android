@@ -801,3 +801,30 @@ ett känt index har ett hydratiserat distinct-source-fönster och det fönstret
 inte är tomt. Nästa A/B ska därför köras kallt med just denna flagga, först till
 f300 för descriptor-diversitet och orakel, därefter till f700 för faktisk
 bild/hash. Ingen sampler-, upload- eller file-offset-probe ska blandas in.
+
+Den kalla A/B:n avvisar denna befintliga repair som lösning på tabellen. Med
+flaggan aktiv repareras endast index 1 från den tillfälliga asset-entry-källan
+`0x802f0e70` till `0x802e3718`, dessutom efter att set 1 redan producerats.
+Set 1--8 når fortfarande `0x800aae64` med `s2=0x802e1718`, alla tabellposter
+förblir `0x802e2158`, och f300 är byte-/hashmässigt neutral
+(`frameHash=0xd083385f`). Att även acceptera den konstanta
+`repeatedStaticSource` i repair-guardet ändrar inte detta; den provändringen är
+borttagen.
+
+Rätt nästa A/B-punkt är därför producentanropet självt. Vid `pc=0x800aae64`
+finns både set-index i `s0` och den felaktiga parser-source i `s2`; de
+hydratiserade distinct-source-fönstren ligger deterministiskt på
+`0x802e1718 + index * 0x2000`. En default-off registerremap precis före den
+guest-helper som beräknar `v0` kan testa denna hypotes utan att mutera den
+globala asset-tabellen eller röra sampler/upload-layout. Först descriptor-
+diversitet vid f300, sedan bildvärde vid f700, får avgöra om spåret lever.
+
+Den nya default-off-proben
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SET_DISTINCT_SOURCE`
+gör exakt denna remap vid descriptor-loaden `pc=0x800aae3c`. I den kalla
+f300-körningen är bara index 1-fönstret hydratiserat vid producentögonblicket:
+set 1 ändras från `0x802e2158` till `0x802e4900` via source `0x802e3718` och
+`tableIndex=0x20`; set 2--8 lämnas oförändrade av range-/empty-guarderna.
+Resultatet är kausalt (`frameHash=0x38072b81` mot baseline `0xd083385f`).
+F700-bildtestet avbröts på användarens begäran innan resultat, så flaggan
+förblir strikt experimentell och default-off vid denna checkpoint.

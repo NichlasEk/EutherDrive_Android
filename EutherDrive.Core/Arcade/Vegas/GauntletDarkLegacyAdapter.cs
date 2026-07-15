@@ -764,6 +764,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
     private readonly bool _enableRuntimeBgLoadModelAssetStaticAliasSourceRepair =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_STATIC_ALIAS_SOURCE"));
+    private readonly bool _experimentRuntimeBgLoadModelTextureSetDistinctSource =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_TEXTURE_SET_DISTINCT_SOURCE"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
     private readonly bool _experimentRuntimeBgLoadModelHydratedSourceOwner =
@@ -1228,6 +1230,7 @@ internal sealed class MipsR5000Core
     private int _runtimeWorldTextureDescriptorTraceCount;
     private readonly HashSet<(ulong Descriptor, ulong Material, ulong Owner, ulong Mode, ulong Lod, ulong Base)>
         _runtimeWorldTextureDescriptorTraceKeys = [];
+    private int _runtimeBgLoadModelTextureSetDistinctSourceTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
@@ -1522,6 +1525,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelQioAliasRepair(pc);
         ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
+        ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(pc);
         ApplyKnownRuntimeBgLoadModelPreserveAssetSource(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
         ApplyKnownRuntimeBgLoadModelHydratedSourceOwnerRepair(pc);
@@ -15120,6 +15124,40 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:FIX] bgloadmodel-asset-name-repair pc={pc:x16} repaired={repaired} " +
                 $"assetTable={TraceKnownRuntimeBgLoadModelAssetTableSummary(0)}");
+        }
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(ulong pc)
+    {
+        const ulong textureSetDescriptorLoadPc = 0xffffffff800aae3cUL;
+        const ulong repeatedStaticSource = 0xffffffff802e1718UL;
+        if (!_experimentRuntimeBgLoadModelTextureSetDistinctSource ||
+            pc != textureSetDescriptorLoadPc ||
+            _gpr[18] != repeatedStaticSource ||
+            _gpr[16] is < 1UL or > 8UL)
+        {
+            return;
+        }
+
+        ulong index = _gpr[16];
+        ulong distinctSource = repeatedStaticSource + index * (ulong)_runtimeBgLoadModelIndexedSourceStride;
+        if (!TryGetKnownRuntimeBgLoadModelTexturePayload(index, out string code, out _, out _) ||
+            !IsMainRamRange(distinctSource, 0x80UL) ||
+            IsKnownRuntimeBgLoadModelSourceWindowEmpty(distinctSource))
+        {
+            return;
+        }
+
+        ulong oldSource = _gpr[18];
+        _gpr[18] = distinctSource;
+        _gpr[0] = 0;
+        if (_runtimeBgLoadModelTextureSetDistinctSourceTraceCount++ < 32)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-texture-set-distinct-source pc={pc:x16} " +
+                $"index={index} code={code} source={oldSource:x16}->{distinctSource:x16} " +
+                $"tableIndex={ReadTraceWord(distinctSource + 0x60UL):x8} " +
+                $"first={FormatTraceWords(distinctSource, 4)}");
         }
     }
 
