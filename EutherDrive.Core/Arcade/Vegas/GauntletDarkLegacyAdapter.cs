@@ -32047,6 +32047,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_WORDS"), 8);
     private readonly ulong? _traceType5TextureUploadSequenceSource =
         ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_RUN_SOURCE"));
+    private readonly ulong? _traceType5TextureUploadSequencePhysicalWordMin =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_PHYSICAL_WORD_MIN"));
+    private readonly ulong? _traceType5TextureUploadSequencePhysicalWordMax =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_PHYSICAL_WORD_MAX"));
     private readonly string _traceType5PayloadTilePrefix =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_PREFIX") ?? "").Trim();
     private readonly int _traceType5PayloadTileLimit =
@@ -32435,6 +32439,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH"));
     private readonly bool _experimentTextureUseLodMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_USE_LOD_MIN"));
+    private readonly ulong? _experimentTextureSampleLodOrMask =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_LOD_OR_MASK"));
     private readonly int _experimentTextureSampleFormatOverride =
         ParseOptionalInt(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_FORMAT_OVERRIDE"),
@@ -37660,9 +37666,12 @@ internal class VoodooBringupBackend : IVoodooBackend
     private uint ReadTextureSampleRegister(int register)
     {
         int tmu = GetTextureSampleTmuIndex();
-        if (tmu >= 0)
-            return ReadTextureRegisterForTmu(tmu, register);
-        return ReadTextureRegister(register);
+        uint value = tmu >= 0
+            ? ReadTextureRegisterForTmu(tmu, register)
+            : ReadTextureRegister(register);
+        if (register == RegTextureLod && _experimentTextureSampleLodOrMask.HasValue)
+            value |= (uint)_experimentTextureSampleLodOrMask.Value;
+        return value;
     }
 
     private int GetTextureSampleTmuIndex()
@@ -39782,6 +39791,17 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_traceType5TextureUploadSequenceSource.HasValue &&
             (!hasBulkSource ||
              !MatchesType5TextureUploadSequenceSource(bulkSource, (uint)_traceType5TextureUploadSequenceSource.Value)))
+        {
+            return;
+        }
+
+        if ((_traceType5TextureUploadSequencePhysicalWordMin.HasValue ||
+             _traceType5TextureUploadSequencePhysicalWordMax.HasValue) &&
+            (_currentType5TextureWritePhysicalMinWord < 0 ||
+             (_traceType5TextureUploadSequencePhysicalWordMin.HasValue &&
+              (ulong)_currentType5TextureWritePhysicalMaxWord < _traceType5TextureUploadSequencePhysicalWordMin.Value) ||
+             (_traceType5TextureUploadSequencePhysicalWordMax.HasValue &&
+              (ulong)_currentType5TextureWritePhysicalMinWord > _traceType5TextureUploadSequencePhysicalWordMax.Value)))
         {
             return;
         }

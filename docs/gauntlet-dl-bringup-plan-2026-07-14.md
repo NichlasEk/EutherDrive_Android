@@ -1245,7 +1245,66 @@ aktuella bursten och ska inte förväntas återta record 0:s samplesidor.
 Returvägen vid `0x800bd764` testar dessutom objektets `byte[3] & 0x10` efter
 descriptorfunktionen; den är en separat objektflagga och inte ett uteblivet
 texture-set-lookup. Nästa bringupgräns flyttas tillbaka till record 0 självt:
-dess descriptor deklarerar bland annat `0xe000`, `0x14fe8`, `0x17a94` och
-`0x17f60`, medan den sena ägartracen huvudsakligen ser LOD0-upload och owner-
-lösa högre sampleadresser. Följ vilka av dessa deklarerade mip/page-intervall
-som faktiskt materialiseras som Type5-runs innan någon record-1-remap testas.
+dess beräknade texture-state innehåller basregistren `0xe000`, `0x14fe8`,
+`0x17a94` och `0x17f60`, medan den sena ägartracen huvudsakligen ser en upload
+vid den första basen och owner-lösa högre sampleadresser. Följ vilka fysiska
+Type5-intervall som faktiskt materialiseras innan någon record-1-remap testas.
+
+### Record 0 laddar endast den första 256x32-stripen
+
+Type5-sekvenstracen kan nu filtrera på det färdigmappade fysiska ordintervallet:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_PHYSICAL_WORD_MIN
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_PHYSICAL_WORD_MAX
+```
+
+Från den rena f1000-staten materialiserar upload-state
+`mode=0/lod=0x00700800/base=0x1c00` exakt 32 paket om 64 ord i
+`phys=0x3800..0x3fff`, alltså byte `0xe000..0xffff`. Den LOD-layouten är
+256x32 och de 32 paketen fyller hela dess 8192 byte. Ett separat filter över
+`phys=0x4000..0x7943` gav noll träffar både efter 1,0 och 5,1 miljoner
+CPU-steg. Den aktiva draw-state som vår sampler ser är samtidigt
+`mode=0x8c24100f/lod=0x20c6/base=0x1c00`; nuvarande LOD-avkodning gör den
+256x256 och kan därför adressera långt ovanför den enda materialiserade
+stripen.
+
+Det sena `base=0`-flödet är en separat överlappande ägare, inte den saknade
+övre delen. Dess 64 KiB-fönster slutar vid byte `0xffff`, så endast de sista
+32 paketen träffar `0xe000..0xffff`; inga av dem kan äga adresser från
+`0x10000` och uppåt. Hela f1000+5,1M-körningen behöll sin kanoniska endpoint:
+
+```text
+frameHash=0x42925e78
+swap=1299
+fifoWords=10323854
+texWrites=8788243
+```
+
+En default-off kausalitetsprobe kan OR:a en mask endast i samplerns LOD-read:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_LOD_OR_MASK
+```
+
+Att testa `0x00700000` tillsammans med sample-bias `0` tvingade samma
+256x32-aspect och ändrade f1050-hashen från `0xf4ccc0af` till `0x13ddbe72`,
+men dumpen blev fortfarande felaktiga vertikala/bandade data. Aspectmasken är
+alltså kausal men inte en fix och förblir default-off.
+
+Bakåtspårningen korrigerar dessutom ordet "descriptor" i tidigare slutsatser.
+`0x802e2158` är den råa 0x50-byte-materialposten, inte ett färdigt block med
+sex Voodoo-register. Gästkoden vid `0x800bd130..0x800bd19c` beräknar bland
+annat:
+
+```text
+textureMode = a2 | ((raw+0x10 & 0x0fe0) | globalModeBits)
+textureLod  = (raw+0x14 & 0xfffc0fff) | owner+0x144
+```
+
+I f300-staten är `raw+0x14=0x000000c6`; ownerfältet bidrar `0x2000`, så
+gästen skapar själv `lod=0x20c6`. Inga aspectbitar tappas i vår
+registeravkodning. Nästa gräns är därför att binda record 0:s verkliga
+texturekoordinater och hårdvaru-LOD-val till 256x32-uploaden: avgör om den är
+en avsiktlig staging/atlas-strip som vår sampler adresserar fel, eller om
+övriga strip-runs uteblir tidigare i assetkedjan.
