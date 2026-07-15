@@ -1057,3 +1057,46 @@ Nästa slice ska följa `record+0x0c` från `0x800a7620/0x800a7768` till det
 Type5-targetord som Voodoo-backenden tar emot. Om targetsteget tappas där ska
 det repareras i den generella packet-/download-avkodningen; selectorvärdet ska
 inte längre användas för att välja en ny filkälla.
+
+### Type5-targeten är frisk men source-ordinariet tappas
+
+En sammanhängande selector-/payload-link-trace korrigerar targethypotesen. Det
+fysiska Type5-fönstret är avsiktligt fast per TMU:
+
+```text
+primary   packetSource=0x00200000 targetWord=0x00080000
+secondary packetSource=0x00000000 targetWord=0x00000000
+```
+
+Före varje payload skriver gästen den selectorberoende startadressen till
+texture-base-registret. `record+0x0c` är returvärdet/nästa lediga adress, inte
+ett Type5-targetord som fastpathen har tappat. Två hårdvarunära A/B-kontroller
+bekräftade detta från ren f1000 till f1200:
+
+```text
+separat 4 MiB texture-RAM per TMU       frameHash=0xacaece21
+separata banker + MAME write-pointer    frameHash=0xacaece21
+zero samples                            61,264,014 / 79,658,746
+swap                                    1387
+```
+
+Bankseparationen ökade antalet icke-nollord från 14 244 till 20 560 men
+ändrade varken den synliga ytan eller samplerresultatet. Den är korrekt som
+hårdvarumodell men inte den aktuella synliga blockeraren och förblir därför
+default-off i denna slice.
+
+Den verkliga brutna kedjan ligger på source-sidan. För selectors
+`0x00000000`, `0x00010000`, `0x00020000`, ... ändras record/base korrekt, men
+varje 256-paketsrun börjar ändå på samma RAM-källa:
+
+```text
+source=0x802e2c68 words=64 packets=256
+```
+
+Texture-info-strukturen vid `a3` har samtidigt ett separat fält vid `+0x18`
+som fortskrider `0,1,2,3,...`, medan `+0x10` förblir `0x802e2c68`. Nästa
+kausalitetsprobe ska därför följa producenten av `info+0x10` tillsammans med
+ordinalen i `info+0x18`. Målet är att avgöra om pekaren ska materialiseras som
+en page-specifik source eller om den lägre upload-funktionen ska applicera
+ordinalens stride. Fler Type5-target-, bank- eller write-pointer-remaps är nu
+falsifierade för den synliga ytan.
