@@ -1154,3 +1154,40 @@ swap=1263
 fifoWords=10292873
 texWrites=8788243
 ```
+
+### Outputrecordets statusfält och den aktiva sampler-ownern
+
+En efterföljande read-watch över `0x813815a0..0x813825a0` visar att tabellen
+inte lämnas över till någon separat sen konsument före uploaden. Efter den
+inledande recordscannen läser byggloopen själv `record+0x0c/+0x10/+0x14/+0x1c`
+och anropar `0x801094f4` inline. Disassembly efter `0x800a7800` stänger även
+tolkningen av `record+0x10`: ordet maskas med `0x0fef`, bitarna `0x0700`
+testas mot `0x0100`, och `record+3` markeras. Det är statusflaggor, inte en
+saknad texture-base eller companion-offset.
+
+Selector-call-tracen namnger därför nu de tre relevanta recordfälten direkt:
+
+```text
+recordNext     = record+0x0c
+recordStatus   = record+0x10
+recordSelector = record+0x1c
+```
+
+En kontinuerlig owner-trace från den rena f1000-staten till nästa Type3-burst
+kopplar samtidigt den synliga drawen till den sena uploadfamiljen utan en
+ordinalhypotes:
+
+```text
+sampler: mode=0x8c24100f lod=0x000020c6 regbase=0x00001c00
+sample:  base=0x00e510, adresser upp till 0x01900f
+writer:  pc=0x800fe5d4 mode=0x0c26100f lod=0xff802000 base=0
+source:  run 0x802e2c68, packet sources 0x802e2f74..0x802f2974
+target:  0x080180..0x087e80
+```
+
+För representativa trianglar är merparten av samples fortfarande `writers=none`;
+de ägda låga adresserna kommer från de sena LOD0-paketen, medan högre delar av
+`0x015000..0x019000` inte återtas. Detta bekräftar page-livstids/layoutgränsen
+med den korrigerade info-/record-layouten. Nästa ändring ska därför binda den
+uteblivna senare world-uploaden till samplerbasen; `record+0x10`, loopIndex och
+en syntetisk source-ordinal är nu uteslutna.
