@@ -1217,3 +1217,35 @@ eller att dess descriptor-store hoppas över. Descriptor-tracen rapporterar nu
 levande setbaserna. Nästa gräns är smalare: bind record 1:s separata
 `mode/lod/base` till dess Type3-draw och Type5-owner, och avgör varför den inte
 återtar de owner-lösa adresser som record 0 senare samplar.
+
+### Record 1 publiceras men når inget Type3-paket
+
+Type3-tracen har nu default-off-filter för det texture-state som är aktivt när
+paketet konsumeras:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_TEXTURE_MODES
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_TEXTURE_LODS
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_TEXTURE_BASES
+```
+
+Från samma rena f1000-state och över 5,1 miljoner CPU-steg fyllde record 0:s
+exakta state tracegränsen med 64 Type3-paket:
+
+```text
+mode=0x8c24100f lod=0x20c6 base=0x1c00
+cmd=0x0180a8cb writer pc=0x800bd19c
+```
+
+En separat körning som endast accepterade record 1:s
+`0x8c241faf/0x2cea/0x2000` gav noll Type3-träffar, trots att samma tidsfönster
+bevisligen publicerar descriptorn. Record 1 är alltså descriptor-only i den
+aktuella bursten och ska inte förväntas återta record 0:s samplesidor.
+
+Returvägen vid `0x800bd764` testar dessutom objektets `byte[3] & 0x10` efter
+descriptorfunktionen; den är en separat objektflagga och inte ett uteblivet
+texture-set-lookup. Nästa bringupgräns flyttas tillbaka till record 0 självt:
+dess descriptor deklarerar bland annat `0xe000`, `0x14fe8`, `0x17a94` och
+`0x17f60`, medan den sena ägartracen huvudsakligen ser LOD0-upload och owner-
+lösa högre sampleadresser. Följ vilka av dessa deklarerade mip/page-intervall
+som faktiskt materialiseras som Type5-runs innan någon record-1-remap testas.

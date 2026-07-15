@@ -32018,6 +32018,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_COMMANDS"));
     private readonly ulong[] _traceType3PacketReadIndexes =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_READS"));
+    private readonly ulong[] _traceType3TextureModes =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_TEXTURE_MODES"));
+    private readonly ulong[] _traceType3TextureLods =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_TEXTURE_LODS"));
+    private readonly ulong[] _traceType3TextureBases =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_TEXTURE_BASES"));
     private readonly bool _traceType3PacketFields =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE3_FIELDS"));
     private readonly bool _traceType3NonFiniteTexture =
@@ -39418,6 +39424,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_traceType3PacketReadIndexes.Length != 0 &&
             !_traceType3PacketReadIndexes.Contains((ulong)_cmdFifoReadIndex) &&
             !_traceType3PacketReadIndexes.Contains((ulong)_cmdFifoReadIndex * 4UL))
+        {
+            return;
+        }
+
+        uint textureMode = ReadTextureSampleRegister(RegTextureMode);
+        uint textureLod = ReadTextureSampleRegister(RegTextureLod);
+        uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
+        if ((_traceType3TextureModes.Length != 0 && !_traceType3TextureModes.Contains(textureMode)) ||
+            (_traceType3TextureLods.Length != 0 && !_traceType3TextureLods.Contains(textureLod)) ||
+            (_traceType3TextureBases.Length != 0 && !_traceType3TextureBases.Contains(textureBase)))
         {
             return;
         }
