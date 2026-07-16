@@ -1439,3 +1439,50 @@ redan visat att maskning till `0x802e1718` ändrar bilden men inte ger riktig
 grafik. Nästa användbara gräns är i stället att följa hur draw-state
 `lod=0x20c6/base=0x1c00` väljer och tolkar just denna bevisade 256x32-asset,
 eller att lokalisera de 30 guestmuterade bytenas writers före uploaden.
+
+### De 30 avvikelserna är arenaöverlapp, men drawen ser senare writers
+
+29 av de 30 byteavvikelserna mot rådisken ligger i sju poster med start
+`0x802e2158`, stride `0x50` och fält vid bland annat `+0x03`, `+0x0c`,
+`+0x10`, `+0x18` och `+0x1c`. Den sista avvikelsen ligger exakt på nästa
+`0x2000`-slotgräns, `0x802e3718`. Det är strukturerad arenaöverlapp, inte
+slumpmässig texturkorruption.
+
+En cold--f300 main-RAM-write-watch fångade de verkliga postkonstruktörerna:
+
+```text
+0x800a7124  sh ...,0x18(s2)
+0x800a7710  sw ...,0x1c(s2)
+0x800a773c/0x800a7744/0x800a7768  writes vid +0x0c
+0x800a780c  write vid +0x10
+0x800a7830  byte-write vid +0x03
+snapshot=/tmp/eutherdrive-gauntlet-probe/gauntdl-record-overlap-watch-f300-20260716.warm
+frameHash=0xd083385f
+```
+
+Det default-off kirurgiska experimentet
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_STATIC_LR_RECORD0_CLEAN_DISK_PAYLOAD=1`
+ersätter endast de verifierade 32 packetens payloadord från root
+`0x802e1719` med motsvarande rådiskord. Det ändrade den kanoniska hashens
+`0x42925e78` till `0x27928536` utan att ändra packet-/swapräknarna, men den
+dumpade bilden förblev oigenkännlig. De muterade orden når alltså renderingen,
+men en ren record0-payload är inte den visuella lösningen.
+
+Triangelsammanfattningen kan nu avgränsas direkt med
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_REGISTER_BASE`.
+En v7-f900--f1000-`+5100000`-körning med värdet `0x1c00` reproducerade åter
+`frameHash=0x42925e78`, `swaps=1299` och fångade 16 aktiva trianglar med:
+
+```text
+mode=0x8c24100f lod=0x000020c6 regbase=0x00001c00
+base=0x00e510 sampled=0x00e510..0x01900f
+record0 writer source=0xffffffff802e1725 packet=0/31 frame=986
+later writers sourceBase=0x00200000 frame=986
+record0 förekommer främst som prev=...src0xffffffff802e... eller wrap64writer
+```
+
+Det flyttar nästa kausala gräns: draw-state väljer den förväntade base-1c-
+regionen, men de lästa writer-generationerna domineras av senare 2 MiB-
+streamuppladdningar och många ord saknar writer. Nästa försök ska därför följa
+varför `srcBase=0x00200000` aliaserar/ersätter base-1c-generationen i
+texturadresskartan, inte göra fler raw-disk-remaps av record0.

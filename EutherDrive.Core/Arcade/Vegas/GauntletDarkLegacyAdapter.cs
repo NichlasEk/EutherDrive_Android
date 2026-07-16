@@ -852,6 +852,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SKIP_STRIDE_ONLY_ZERO_BASE_TEXTURE_PAYLOAD_RUNS"));
     private readonly bool _experimentZeroBaseUploadDiskWords =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORDS"));
+    private readonly bool _experimentStaticLrRecord0CleanDiskPayload =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_STATIC_LR_RECORD0_CLEAN_DISK_PAYLOAD"));
     private readonly string _experimentZeroBaseUploadDiskWordTransform =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ZERO_BASE_UPLOAD_DISK_WORD_TRANSFORM") ?? "")
         .Trim()
@@ -1351,6 +1353,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadPayloadFocusedCallerTraceCount;
     private int _textureUploadPayloadLimitClampTraceCount;
     private int _textureUploadPayloadDiskWordTraceCount;
+    private int _staticLrRecord0CleanDiskPayloadTraceCount;
     private int _textureUploadPayloadDiskWordKeepMemoryTraceCount;
     private int _textureUploadPayloadZeroTargetWordTraceCount;
     private int _textureUploadPayloadPointerTraceCount;
@@ -24577,6 +24580,47 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private uint ApplyStaticLrRecord0CleanDiskPayloadExperiment(ulong pc, uint value)
+    {
+        if (!_experimentStaticLrRecord0CleanDiskPayload ||
+            pc is not (0xffffffff800fe60cUL or 0xffffffff800fe614UL))
+        {
+            return value;
+        }
+
+        const uint sourceBase = 0x802e1719U;
+        const uint sourceEnd = sourceBase + 0x2000U;
+        const ulong diskBase = 0x0fbb0830UL;
+        uint payloadWords = (uint)_gpr[20];
+        uint index = (uint)_gpr[18];
+        ulong stack = _gpr[29];
+        if (payloadWords != 64U || index > 31U || !IsMainRamRange(stack + 0x74UL, 4) ||
+            _memory.Read32(stack + 0x74UL) != 31U)
+        {
+            return value;
+        }
+
+        uint word = (uint)_gpr[5] + (pc == 0xffffffff800fe614UL ? 1U : 0U);
+        uint source = unchecked((uint)_gpr[22] + (pc == 0xffffffff800fe614UL ? 4U : 0U));
+        uint runRoot = unchecked(source - index * payloadWords * 4U - word * 4U);
+        if (runRoot != sourceBase || source < sourceBase || source > sourceEnd - 4U ||
+            !_memory.TryReadDiskByteOffsetWord(diskBase + source - 0x802e1718U, out uint diskWord))
+        {
+            return value;
+        }
+
+        if (value != diskWord && _staticLrRecord0CleanDiskPayloadTraceCount++ < 64)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] static-lr-record0-clean-disk-payload " +
+                $"source=0x{source:x8} offset=0x{source - sourceBase:x4} " +
+                $"packet={index}/31 word={word}/64 " +
+                $"mem=0x{value:x8}->disk=0x{diskWord:x8}");
+        }
+
+        return diskWord;
+    }
+
     private void Execute(ulong pc, uint op)
     {
         if (op == 0)
@@ -24709,6 +24753,7 @@ internal sealed class MipsR5000Core
                     value = ApplyDirectTextureWriterDiskPayloadRemapExperiment(pc, rt, value);
                     value = ApplyDirectTextureWriterDiskWordExperiment(pc, rt, value);
                     value = ApplyDirectTextureWriterZeroWordExperiment(pc, rt, value);
+                    value = ApplyStaticLrRecord0CleanDiskPayloadExperiment(pc, value);
                     TraceTextureUploadDirectWriterStore(pc, op, rs, rt, simm, address, value);
                     if (ShouldSkipRuntimeBgLoadModelSourceTableStore(pc, address, oldValue, value))
                         break;
@@ -32107,6 +32152,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_SKIP"), 0);
     private readonly int[] _traceTexturedTriangleSampleSummaryBuffers =
         ParseOptionalIntList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_BUFFERS"));
+    private readonly ulong? _traceTexturedTriangleSampleSummaryRegisterBase =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_REGISTER_BASE"));
     private readonly bool _traceTextureFetchCompare =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_FETCH_COMPARE"));
     private readonly int _traceTextureFetchCompareLimit =
@@ -41055,9 +41102,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool coveredAny = false;
         int coveredPixels = 0;
         int zeroPixels = 0;
+        uint summaryRegisterBase = _traceTexturedTriangleSampleSummaryRegisterBase.HasValue
+            ? ReadTextureSampleRegister(RegTextureBaseAddr)
+            : 0;
         bool traceSampleSummaryCandidate = _traceTexturedTriangleSampleSummary &&
             _renderFrame >= _traceTextureMinRenderFrame &&
-            ShouldTraceTexturedTriangleSampleSummaryBuffer(bufferIndex);
+            ShouldTraceTexturedTriangleSampleSummaryBuffer(bufferIndex) &&
+            (!_traceTexturedTriangleSampleSummaryRegisterBase.HasValue ||
+             summaryRegisterBase == (uint)_traceTexturedTriangleSampleSummaryRegisterBase.Value);
         bool traceSampleSummary = traceSampleSummaryCandidate &&
             _texturedTriangleSampleSummaryCandidateCount++ >= _traceTexturedTriangleSampleSummarySkip &&
             _texturedTriangleSampleSummaryTraceCount < _traceTexturedTriangleSampleSummaryLimit;
