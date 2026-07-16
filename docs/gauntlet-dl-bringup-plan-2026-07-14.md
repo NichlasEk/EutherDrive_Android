@@ -1486,3 +1486,46 @@ regionen, men de lästa writer-generationerna domineras av senare 2 MiB-
 streamuppladdningar och många ord saknar writer. Nästa försök ska därför följa
 varför `srcBase=0x00200000` aliaserar/ersätter base-1c-generationen i
 texturadresskartan, inte göra fler raw-disk-remaps av record0.
+
+### MAME-LOD-matrisen är kausal men ingen bildfix
+
+MAMEs Voodoo-rasterizer väljer inte ett konstant LOD. Den beräknar först
+`log2(max(ds²+dt²))/2` från 32.32-gradienterna, subtraherar `log2(W)` när
+texture-mode bit 0 begär perspektiv, lägger på bias och klampar till tLOD:s
+8.8-intervall. En ny observationsren trace gör samma beräkning per triangel:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_LOD=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_LOD_LIMIT=16
+```
+
+Tillsammans med register-base-filtret `0x1c00` visar den kanoniska bursten:
+
+```text
+mode=0x8c24100f lod=0x000020c6 base=0x1c00
+bias8p8=128 min8p8=384 max8p8=192
+fullrect: centroidW=1       candidate=245 -> targetLod=1
+world:    centroidW=0.015625 candidate=729..278 -> targetLod=0 eller 1
+```
+
+Min/max är alltså inverterade i det guestproducerade `0x20c6`-värdet.
+Proben följer MAMEs faktiska jämförelseordning även i detta fall i stället för
+att använda `Math.Clamp`, vars kontrakt kräver min <= max.
+
+Det default-off kausalitetsexperimentet
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_TRIANGLE_LOD=1` matar den
+beräknade nivån till den befintliga samplern. Från v7-f900 till den kanoniska
+f1000+5,1M-endpointen gav det:
+
+```text
+baseline       frameHash=0x42925e78 zero=20,908,043
+triangle LOD   frameHash=0xc82dc520 zero=21,908,043
+packets/swaps  oförändrade, swaps=1299
+```
+
+Framebufferdumpen är fortfarande brus/mosaik och tydliga randband. Denna
+triangelnivåapproximation ska därför inte promoveras. Tracen stänger däremot
+det gamla antagandet att LOD0 är den enda nivån som hårdvaruformeln skulle
+välja. Nästa LOD-arbete måste först förklara varför gästen publicerar ett
+inverterat min/max-intervall och därefter implementera MAMEs riktiga
+per-pixel-W/dither-väg; fler fasta `FORCE_LOD`-värden saknar stöd.

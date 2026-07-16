@@ -32154,6 +32154,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalIntList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_BUFFERS"));
     private readonly ulong? _traceTexturedTriangleSampleSummaryRegisterBase =
         ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY_REGISTER_BASE"));
+    private readonly bool _traceTexturedTriangleLod =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_LOD"));
+    private readonly int _traceTexturedTriangleLodLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_LOD_LIMIT"), 32);
+    private readonly bool _experimentTextureMameTriangleLod =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_TRIANGLE_LOD"));
     private readonly bool _traceTextureFetchCompare =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_FETCH_COMPARE"));
     private readonly int _traceTextureFetchCompareLimit =
@@ -32878,6 +32884,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _textureSampleWriterTraceCount;
     private int _texturedTriangleSampleSummaryTraceCount;
     private int _texturedTriangleSampleSummaryCandidateCount;
+    private int _texturedTriangleLodTraceCount;
     private int _textureFetchCompareTraceCount;
     private int _renderBufferChoiceTraceCount;
     private int _textureUploadMameWritePtrTraceCount;
@@ -41142,6 +41149,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         long dTdX = MameSetupCastToInt64(((a.T - b.T) * dx1 - (a.T - c.T) * dx2) * TextureSetupScale * setupDivisor);
         long dSdY = MameSetupCastToInt64(((a.S - c.S) * dy1 - (a.S - b.S) * dy2) * TextureSetupScale * setupDivisor);
         long dTdY = MameSetupCastToInt64(((a.T - c.T) * dy1 - (a.T - b.T) * dy2) * TextureSetupScale * setupDivisor);
+        int triangleTargetLod = ComputeAndTraceTexturedTriangleLod(a, b, c, dSdX, dSdY, dTdX, dTdY, bufferIndex);
         int setupAx = unchecked((short)(int)(a.X * 16.0f)) >> 4;
         int setupAy = unchecked((short)(int)(a.Y * 16.0f)) >> 4;
         uint fbzMode = _registers[RegFbzMode];
@@ -41234,7 +41242,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     sampleMinT = MathF.Min(sampleMinT, t);
                     sampleMaxT = MathF.Max(sampleMaxT, t);
                 }
-                texel = SampleTextureRgb565(s, t);
+                texel = SampleTextureRgb565(s, t, triangleTargetLod);
 sampledTexel:
                 if (traceSampleSummary && _lastTextureSampleValid)
                 {
@@ -41344,6 +41352,80 @@ sampledTexel:
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
         }
         return coveredAny;
+    }
+
+    private int ComputeAndTraceTexturedTriangleLod(
+        SetupVertex a,
+        SetupVertex b,
+        SetupVertex c,
+        long dSdX,
+        long dSdY,
+        long dTdX,
+        long dTdY,
+        int bufferIndex)
+    {
+        bool trace = _traceTexturedTriangleLod &&
+            _texturedTriangleLodTraceCount < _traceTexturedTriangleLodLimit &&
+            ShouldTraceTexturedTriangleSampleSummaryBuffer(bufferIndex);
+        if (!trace && !_experimentTextureMameTriangleLod)
+        {
+            return -1;
+        }
+
+        uint mode = ReadTextureSampleRegister(RegTextureMode);
+        uint lod = ReadTextureSampleRegister(RegTextureLod);
+        uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
+        if (_traceTexturedTriangleSampleSummaryRegisterBase.HasValue &&
+            registerBase != (uint)_traceTexturedTriangleSampleSummaryRegisterBase.Value)
+        {
+            return -1;
+        }
+
+        double texDx = (double)dSdX * dSdX + (double)dTdX * dTdX;
+        double texDy = (double)dSdY * dSdY + (double)dTdY * dTdY;
+        double maxDerivativeSquared = Math.Max(texDx, texDy);
+        int lodBase8p8 = maxDerivativeSquared > 0.0 && double.IsFinite(maxDerivativeSquared)
+            ? (int)Math.Round(((Math.Log2(maxDerivativeSquared) - 64.0) * 0.5) * 256.0)
+            : int.MinValue;
+        float centroidW = (a.Q + b.Q + c.Q) / 3.0f;
+        int perspective8p8 = (mode & 1u) != 0 && float.IsFinite(centroidW) && MathF.Abs(centroidW) > 0.0f
+            ? (int)Math.Round(Math.Log2(Math.Abs(centroidW)) * 256.0)
+            : 0;
+        int bias = (int)((lod >> 12) & 0x3fu);
+        if (bias >= 32)
+            bias -= 64;
+        int bias8p8 = bias << 6;
+        int min8p8 = (int)(lod & 0x3fu) << 6;
+        int max8p8 = (int)((lod >> 6) & 0x3fu) << 6;
+        int candidate8p8 = lodBase8p8 == int.MinValue
+            ? int.MinValue
+            : lodBase8p8 - perspective8p8 + bias8p8;
+        int clamped8p8 = candidate8p8 == int.MinValue
+            ? int.MinValue
+            : candidate8p8 < min8p8
+                ? min8p8
+                : max8p8 < candidate8p8
+                    ? max8p8
+                    : candidate8p8;
+        int targetLod = clamped8p8 == int.MinValue ? 0 : Math.Clamp(clamped8p8 >> 8, 0, 8);
+        uint lodMask = ((lod >> 19) & 1u) != 0
+            ? (((lod >> 18) & 1u) != 0 ? 0x0aau : 0x155u)
+            : 0x1ffu;
+        targetLod += (int)((~lodMask >> targetLod) & 1u);
+        targetLod = Math.Clamp(targetLod, 0, 8);
+
+        if (trace)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:VOODOO-TRILOD] n={++_texturedTriangleLodTraceCount} buf={bufferIndex} " +
+                $"mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} " +
+                $"dstdx={dSdX}/{dTdX} dstdy={dSdY}/{dTdY} " +
+                $"base8p8={lodBase8p8} centroidW={centroidW:F6} perspective8p8={perspective8p8} " +
+                $"bias8p8={bias8p8} min8p8={min8p8} max8p8={max8p8} candidate8p8={candidate8p8} " +
+                $"clamped8p8={clamped8p8} targetLod={targetLod}");
+        }
+
+        return _experimentTextureMameTriangleLod ? targetLod : -1;
     }
 
     private bool ShouldSuppressConstantSFullrectTextureTriangle(
@@ -42132,7 +42214,7 @@ sampledTexel:
             ? Math.Clamp((int)(textureLod & 0x3fu), 0, 8)
             : Math.Clamp(_experimentTextureForceLod, 0, 8);
 
-    private ushort SampleTextureRgb565(float s, float t)
+    private ushort SampleTextureRgb565(float s, float t, int targetLodOverride = -1)
     {
         if (_textureWriteCount == 0 || !float.IsFinite(s) || !float.IsFinite(t))
             return 0;
@@ -42140,7 +42222,9 @@ sampledTexel:
         uint mode = ReadTextureSampleRegister(RegTextureMode);
         uint textureLod = ReadTextureSampleRegister(RegTextureLod);
         uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
-        int targetLod = GetTextureTargetLod(textureLod);
+        int targetLod = targetLodOverride >= 0
+            ? Math.Clamp(targetLodOverride, 0, 8)
+            : GetTextureTargetLod(textureLod);
         int format = _experimentTextureSampleFormatOverride is >= 0 and <= 15
             ? _experimentTextureSampleFormatOverride
             : (int)((mode >> 8) & 0x0fu);
