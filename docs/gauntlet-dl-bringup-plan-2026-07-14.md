@@ -1341,3 +1341,60 @@ Nästa kausala gräns ligger nu före samplern: identifiera ursprunget och den
 avsedda layouten för de 32 `base=0x1c00`-paketen som redan ligger i FIFO vid
 f1000. Deras snapshot-proveniens är tom (`source=-`); följ dem från en tidigare
 state eller jämför payloaden mot assetkällan innan fler sample-remaps provas.
+
+### Base 1c-stripen kommer nästan byte-exakt från static_lr/textures.rom
+
+Bakåtspårningen behöver ta hänsyn till att den optimerade guestloopen kan
+konsumera hela `0x800fe5d4..0x800fe654` utan att den vanliga instruktionstracen
+ser `0x800fe5e8`. En ny default-off run-trace ligger därför inne i den
+validerade fastpathen och rapporterar slutlig RAM-källa, FIFO-bas, Type5-target,
+packetantal och de första källorden:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEADS
+EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEAD_FIFO_MIN
+EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEAD_FIFO_MAX
+EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEAD_SOURCE
+EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEAD_LIMIT
+```
+
+Proben namnger raderna `GAUNTDL:TYPE5-PRODUCER-RUN`; de äldre `HEAD`-namnen
+på miljövariablerna behålls för kompatibilitet med pågående bringup-skript.
+GauntletProbe kan dessutom söka en ordsekvens i hela snapshotens main RAM i
+båda byteordningarna:
+
+```text
+EUTHERDRIVE_GAUNTDL_SCAN_MAIN_RAM_WORDS=02000000,00000000,...
+```
+
+Den fulla payloaden från de 32 kanoniska paketen dumpades via
+`VOODOO-TYPE5-TEXSEQ` med 64 ord per packet. Resultatet är 2048 ord/8192 byte.
+De första 16 orden matchar raw-disken vid `0x0fbb0831`, och en jämförelse av
+hela runnen mot intervallet `0x0fbb0831..0x0fbb2830` visar:
+
+```text
+payload bytes = 8192
+payload sha256 = fcc2e3249bd1137180215a741a960c4c87c6896c38d7afd947a9a99fd5c9b3c3
+equal bytes = 8162 / 8192
+different bytes = 30
+```
+
+Diskintervallet ligger i det redan identifierade
+`static_lr/textures.rom`-blocket som börjar vid `0x0fbb0830`. Avvikelserna är
+inte en generell swizzle eller packetförskjutning: 29 byte ligger i små
+kluster i packet 11--13 och den sista byten av packet 32 avviker. Alla andra
+8162 byte, inklusive packetgränserna, är identiska och i rätt ordning.
+
+Det falsifierar att record 0:s 256x32-strip består av korrupt FIFO-data eller
+fel packetordning. Den är en nästan byte-exakt kopia av en riktig assetkälla;
+de få avvikelserna är förenliga med guestmutation eller arenaöverlapp och ska
+spåras separat. Exakt ordsekvens finns inte längre kvar i main RAM i vare sig
+f700- eller f1000-snapshoten, så snapshotens tomma `source=-` kan inte
+återskapas genom en sen RAM-sökning.
+
+En ny kanonisk mellanstate finns vid
+`/tmp/eutherdrive-gauntlet-probe/gauntdl-ordinary60-f900-20260716.warm` och
+behåller `frameHash=0xf4ccc0af`. Den gör fortsatta producentförsök begränsade
+till f900--f1000. Nästa kausala gräns är nu de 30 muterade bytena och bindningen
+mellan denna bevisat källtrogna 256x32-strip och draw-state
+`lod=0x20c6/base=0x1c00`; fler generella FIFO-/endianness-remaps saknar stöd.

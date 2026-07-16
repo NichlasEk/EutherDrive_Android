@@ -153,6 +153,7 @@ DumpRequestedByteRanges(GetProperty(machine, "MemoryMap"));
 DumpRenderRecords(GetProperty(machine, "MemoryMap"));
 ScanRequestedAscii(GetProperty(machine, "MemoryMap"));
 ScanRequestedPointers(GetProperty(machine, "MemoryMap"));
+ScanRequestedMainRamWords(GetProperty(machine, "MemoryMap"));
 ScanRequestedAddressLoads(GetProperty(machine, "MemoryMap"));
 ScanRequestedMemoryRefs(GetProperty(machine, "MemoryMap"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS") == "1")
@@ -1878,6 +1879,55 @@ static void ScanRequestedPointers(object memory)
     }
 
     Console.WriteLine($"pointerScan matches={matches}");
+}
+
+static void ScanRequestedMainRamWords(object memory)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_MAIN_RAM_WORDS");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    var words = new List<uint>();
+    foreach (string item in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        if (!TryParseHexUlong(item, out ulong parsed) || parsed > uint.MaxValue)
+            throw new ArgumentException($"Invalid main RAM scan word: {item}");
+        words.Add((uint)parsed);
+    }
+
+    if (words.Count == 0)
+        return;
+
+    byte[] littleEndianNeedle = new byte[words.Count * sizeof(uint)];
+    byte[] bigEndianNeedle = new byte[littleEndianNeedle.Length];
+    for (int i = 0; i < words.Count; i++)
+    {
+        BinaryPrimitives.WriteUInt32LittleEndian(littleEndianNeedle.AsSpan(i * sizeof(uint), sizeof(uint)), words[i]);
+        BinaryPrimitives.WriteUInt32BigEndian(bigEndianNeedle.AsSpan(i * sizeof(uint), sizeof(uint)), words[i]);
+    }
+
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    Console.WriteLine(
+        $"mainRamWordScan count={words.Count} first=0x{words[0]:x8} last=0x{words[^1]:x8}");
+    int matches = 0;
+    for (int offset = 0; offset <= mainRam.Length - littleEndianNeedle.Length; offset += sizeof(uint))
+    {
+        bool littleEndian = mainRam.AsSpan(offset, littleEndianNeedle.Length).SequenceEqual(littleEndianNeedle);
+        bool bigEndian = !littleEndian && mainRam.AsSpan(offset, bigEndianNeedle.Length).SequenceEqual(bigEndianNeedle);
+        if (!littleEndian && !bigEndian)
+            continue;
+
+        ulong address = 0xffffffff80000000UL + (uint)offset;
+        Console.WriteLine($" mainRamWords 0x{address:x16} endian={(littleEndian ? "little" : "big")}");
+        matches++;
+        if (matches >= 64)
+        {
+            Console.WriteLine(" mainRamWordScan truncated=64");
+            break;
+        }
+    }
+
+    Console.WriteLine($"mainRamWordScan matches={matches}");
 }
 
 static void ScanRequestedAddressLoads(object memory)

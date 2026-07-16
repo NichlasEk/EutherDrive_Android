@@ -1002,6 +1002,16 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_DESCRIPTOR"));
     private readonly int _traceRuntimeWorldTextureDescriptorMinFrame =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_DESCRIPTOR_MIN_FRAME", 0);
+    private readonly bool _traceType5ProducerHeads =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEADS"));
+    private readonly ulong? _traceType5ProducerHeadFifoMin =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEAD_FIFO_MIN");
+    private readonly ulong? _traceType5ProducerHeadFifoMax =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEAD_FIFO_MAX");
+    private readonly ulong? _traceType5ProducerHeadSource =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEAD_SOURCE");
+    private readonly int _traceType5ProducerHeadLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEAD_LIMIT", 128);
     private readonly bool _traceRuntimeBgLoadModelStateDelta = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STATE_DELTA") == "1";
     private readonly bool _traceRuntimeBgLoadModelQioRequests = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS") == "1";
     private readonly int _traceRuntimeBgLoadModelQioRequestLimit =
@@ -1250,6 +1260,7 @@ internal sealed class MipsR5000Core
     private uint _runtimeBgLoadModelPendingTextureChunkOffset;
     private int _runtimeBgLoadModelIndexedTextureQioStatusStackLimitTraceCount;
     private int _runtimeWorldTextureDescriptorTraceCount;
+    private int _type5ProducerHeadTraceCount;
     private readonly HashSet<(ulong Descriptor, ulong Material, ulong Owner, ulong Mode, ulong Lod, ulong Base)>
         _runtimeWorldTextureDescriptorTraceKeys = [];
     private int _runtimeBgLoadModelTextureSetDistinctSourceTraceCount;
@@ -4609,6 +4620,16 @@ internal sealed class MipsR5000Core
             currentPacketAddress = wtrEntryPacketAddress;
         }
         uint fifoBase = _memory.Read32(state + 0x08UL);
+        TraceType5ProducerRun(
+            pc,
+            fifo,
+            fifoBase,
+            currentPacketAddress,
+            source,
+            sourceBase,
+            payloadWords,
+            index,
+            limit);
         uint fifoRingBase = _memory.Read32(state + 0x378UL);
         uint fifoRingBytes = _memory.Read32(state + 0x380UL);
         if (_fixVoodooMameCommandFifoModel &&
@@ -5594,6 +5615,50 @@ internal sealed class MipsR5000Core
                 $"bytes={bytes:x8} first={_runtimeWorldTextureUploadSourceScratchFirstWord:x8} " +
                 $"sequentialRows={(sequentialRows ? 1 : 0)} selectorByteOffsets={(selectorByteOffsets ? 1 : 0)}");
         }
+    }
+
+    private void TraceType5ProducerRun(
+        ulong pc,
+        uint fifo,
+        uint fifoBase,
+        uint packetAddress,
+        ulong source,
+        uint sourceBase,
+        uint payloadWords,
+        uint index,
+        uint limit)
+    {
+        if (!_traceType5ProducerHeads ||
+            _type5ProducerHeadTraceCount >= _traceType5ProducerHeadLimit)
+        {
+            return;
+        }
+
+        if ((_traceType5ProducerHeadFifoMin.HasValue && fifo < _traceType5ProducerHeadFifoMin.Value) ||
+            (_traceType5ProducerHeadFifoMax.HasValue && fifo > _traceType5ProducerHeadFifoMax.Value))
+        {
+            return;
+        }
+
+        if (_traceType5ProducerHeadSource.HasValue &&
+            (uint)source != (uint)_traceType5ProducerHeadSource.Value)
+        {
+            return;
+        }
+
+        uint command = 0xc0000005U | (payloadWords << 3);
+        uint targetBytes = unchecked(packetAddress - fifoBase) & 0x01ffffffu;
+        uint packets = limit - index + 1U;
+        _type5ProducerHeadTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TYPE5-PRODUCER-RUN] n={_type5ProducerHeadTraceCount} pc=0x{pc:x16} " +
+            $"fifo=0x{fifo:x8} fifoBase=0x{fifoBase:x8} cmd=0x{command:x8} count={payloadWords} packets={packets} " +
+            $"targetBytes=0x{targetBytes:x8} targetWord=0x{targetBytes >> 2:x6} " +
+            $"source=0x{source:x16} sourceBase=0x{sourceBase:x8} sourceWords={FormatTraceWords(source, (int)Math.Min(payloadWords, 8U))} " +
+            $"ra=0x{_gpr[31]:x16} sp=0x{_gpr[29]:x16} " +
+            $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} " +
+            $"s3=0x{_gpr[19]:x16} s4=0x{_gpr[20]:x16} s5=0x{_gpr[21]:x16} " +
+            $"s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16}");
     }
 
     private void TraceTextureUploadSourceProducer(ulong pc, uint op, string phase)
