@@ -24520,6 +24520,63 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
     }
 
+    private bool TrySetKnownGlideFifoGuestWriteSource(ulong pc, ulong destination)
+    {
+        const ulong headerStore = 0xffffffff800fe5e8UL;
+        const ulong targetStore = 0xffffffff800fe5f8UL;
+        const ulong payloadLowStore = 0xffffffff800fe60cUL;
+        const ulong payloadHighStore = 0xffffffff800fe614UL;
+        if (pc is not (headerStore or targetStore or payloadLowStore or payloadHighStore) ||
+            destination is < 0xffffffffa8000000UL or > 0xffffffffa83ffff8UL)
+        {
+            return false;
+        }
+
+        ulong stack = _gpr[29];
+        ulong source = _gpr[22];
+        uint payloadWords = (uint)_gpr[20];
+        uint index = (uint)_gpr[18];
+        if (!IsMainRamRange(stack + 0x1cUL, 4) ||
+            !IsMainRamRange(stack + 0x74UL, 4) ||
+            payloadWords == 0 ||
+            payloadWords > 0x400U)
+        {
+            return false;
+        }
+
+        uint sourceBase = _memory.Read32(stack + 0x1cUL);
+        uint limit = _memory.Read32(stack + 0x74UL);
+        uint packetSourceAddress = (uint)_gpr[17];
+        uint packet = index;
+        uint word;
+        if (pc == headerStore)
+        {
+            word = uint.MaxValue;
+        }
+        else if (pc == targetStore)
+        {
+            word = uint.MaxValue - 1U;
+        }
+        else
+        {
+            uint pairWord = (uint)_gpr[5];
+            word = pc == payloadLowStore ? pairWord : pairWord + 1U;
+            if (pc == payloadHighStore)
+                source += 4UL;
+        }
+
+        _memory.SetVoodooCommandFifoBulkWriteSource(
+            source,
+            sourceBase,
+            packetSourceAddress,
+            packet,
+            index,
+            limit,
+            word,
+            payloadWords);
+        return true;
+    }
+
     private void Execute(ulong pc, uint op)
     {
         if (op == 0)
@@ -24657,7 +24714,16 @@ internal sealed class MipsR5000Core
                         break;
                     if (ShouldSkipRuntimeBgLoadModelHotDescriptorOverwrite(pc, address, oldValue, value))
                         break;
-                    _memory.Write32(address, value);
+                    bool hasGlideFifoSource = TrySetKnownGlideFifoGuestWriteSource(pc, address);
+                    try
+                    {
+                        _memory.Write32(address, value);
+                    }
+                    finally
+                    {
+                        if (hasGlideFifoSource)
+                            _memory.ClearVoodooCommandFifoBulkWriteSource();
+                    }
                     ApplyRuntimeFontStoryGebBacking(pc, address, value);
                     TraceMainRamWriteWatch(pc, op, "sw", $"r{rt}->[r{rs}+0x{simm:x4}]", address, 4, oldValue, value);
                     TraceRuntimeVertexSourceWrite(pc, op, "sw", $"r{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);

@@ -1398,3 +1398,44 @@ behåller `frameHash=0xf4ccc0af`. Den gör fortsatta producentförsök begränsa
 till f900--f1000. Nästa kausala gräns är nu de 30 muterade bytena och bindningen
 mellan denna bevisat källtrogna 256x32-strip och draw-state
 `lod=0x20c6/base=0x1c00`; fler generella FIFO-/endianness-remaps saknar stöd.
+
+### Base 1c-stripens exakta RAM-källa är nu bevarad
+
+Warmup-format 7 serialiserar även standard-FIFO:ns två proveniensmappar. Format
+1--6 kan fortfarande läsas; de saknar bara denna metadata. Ett f700--f900-save
+och f900--f1000-reload bevarade tidigare fastpath-källor, inklusive
+`source/root=0x803129a4`, utan ändrad baselinehash.
+
+Den långsamma gästvägen behövde separat proveniens eftersom den skriver samma
+packetloop instruktion för instruktion i stället för genom bulk-fastpathen.
+Kärnan märker nu endast de fyra verifierade FIFO-store-instruktionerna och
+röjer märkningen direkt efter varje write:
+
+```text
+0x800fe5e8  header
+0x800fe5f8  target
+0x800fe60c  payload word 0,2,...
+0x800fe614  payload word 1,3,...
+```
+
+Den kanoniska baseline-runnern från v7-f900, följd av `+5100000` CPU-steg,
+reproducerar den tidigare referensen exakt:
+
+```text
+packet=0x01eb04d0
+target=0x000000..0x00003f
+phys=0x03800..0x0383f
+tmode=0x00000000 tlod=0x00700800 tbase=0x00001c00
+source=0xffffffff802e1719 root=0x802e1719
+packetSource=0x00000000 packet=0 index=0/31 payloadWords=64
+writer PCs=0x800fe5e8/0x800fe5f8/0x800fe60c
+frameHash=0x42925e78 swaps=1299
+```
+
+Det ersätter den sista manuella gissningen med ett direkt samband: de 32
+paketen kommer från den avsiktligt udda byte-stream-cursorn `0x802e1719`.
+Lågbitshypotesen ska inte öppnas igen som generell fix; tidigare cold-runs har
+redan visat att maskning till `0x802e1718` ändrar bilden men inte ger riktig
+grafik. Nästa användbara gräns är i stället att följa hur draw-state
+`lod=0x20c6/base=0x1c00` väljer och tolkar just denna bevisade 256x32-asset,
+eller att lokalisera de 30 guestmuterade bytenas writers före uploaden.

@@ -794,7 +794,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(6);
+        writer.Write(7);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -827,7 +827,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4 or 5 or 6))
+    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4 or 5 or 6 or 7))
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1122,7 +1122,7 @@ static void LoadVoodoo(BinaryReader reader, object facade, int version)
     if (version >= 5)
         ReadTextureWriterMaps(reader, backend);
     if (version >= 6)
-        ReadStandardFifoGenerationState(reader, backend);
+        ReadStandardFifoGenerationState(reader, backend, version);
 }
 
 static void WriteStandardFifoGenerationState(BinaryWriter writer, object backend)
@@ -1150,9 +1150,12 @@ static void WriteStandardFifoGenerationState(BinaryWriter writer, object backend
         writer.Write((int)GetProperty(state, "PacketEndLogicalIndex"));
         writer.Write((int)GetProperty(state, "HeaderLogicalIndex"));
     }
+
+    WriteCommandFifoBulkWriteSources(writer, GetFieldValue<IDictionary>(backend, "_cmdFifoStorageBulkWriteSources"));
+    WriteCommandFifoBulkWriteSources(writer, GetFieldValue<IDictionary>(backend, "_cmdFifoLogicalPacketBulkWriteSources"));
 }
 
-static void ReadStandardFifoGenerationState(BinaryReader reader, object backend)
+static void ReadStandardFifoGenerationState(BinaryReader reader, object backend, int version)
 {
     ReadIntArrayInto(reader, GetFieldValue<int[]>(backend, "_cmdFifoStorageLogicalIndex"));
     ReadBoolArrayInto(reader, GetFieldValue<bool[]>(backend, "_cmdFifoStoragePacketHeader"));
@@ -1187,6 +1190,65 @@ static void ReadStandardFifoGenerationState(BinaryReader reader, object backend)
             args: [reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32(), reader.ReadInt32()],
             culture: null) ?? throw new InvalidDataException("Could not restore FIFO producer state");
         producers[producer] = state;
+    }
+
+    if (version >= 7)
+    {
+        ReadCommandFifoBulkWriteSources(reader, GetFieldValue<IDictionary>(backend, "_cmdFifoStorageBulkWriteSources"));
+        ReadCommandFifoBulkWriteSources(reader, GetFieldValue<IDictionary>(backend, "_cmdFifoLogicalPacketBulkWriteSources"));
+    }
+}
+
+static void WriteCommandFifoBulkWriteSources(BinaryWriter writer, IDictionary sources)
+{
+    var entries = new List<DictionaryEntry>(sources.Count);
+    IDictionaryEnumerator enumerator = sources.GetEnumerator();
+    while (enumerator.MoveNext())
+        entries.Add(enumerator.Entry);
+
+    writer.Write(entries.Count);
+    foreach (DictionaryEntry entry in entries.OrderBy(entry => (int)entry.Key))
+    {
+        object source = entry.Value!;
+        writer.Write((int)entry.Key);
+        writer.Write((ulong)GetProperty(source, "Source"));
+        writer.Write((uint)GetProperty(source, "SourceBase"));
+        writer.Write((uint)GetProperty(source, "PacketSourceAddress"));
+        writer.Write((uint)GetProperty(source, "Packet"));
+        writer.Write((uint)GetProperty(source, "Index"));
+        writer.Write((uint)GetProperty(source, "Limit"));
+        writer.Write((uint)GetProperty(source, "Word"));
+        writer.Write((uint)GetProperty(source, "PayloadWords"));
+    }
+}
+
+static void ReadCommandFifoBulkWriteSources(BinaryReader reader, IDictionary sources)
+{
+    Type sourceType = sources.GetType().GetGenericArguments()[1];
+    sources.Clear();
+    int count = reader.ReadInt32();
+    if (count < 0 || count > 1_048_576)
+        throw new InvalidDataException($"Invalid FIFO bulk-source count: {count}");
+    for (int i = 0; i < count; i++)
+    {
+        int key = reader.ReadInt32();
+        object source = Activator.CreateInstance(
+            sourceType,
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            args:
+            [
+                reader.ReadUInt64(),
+                reader.ReadUInt32(),
+                reader.ReadUInt32(),
+                reader.ReadUInt32(),
+                reader.ReadUInt32(),
+                reader.ReadUInt32(),
+                reader.ReadUInt32(),
+                reader.ReadUInt32()
+            ],
+            culture: null) ?? throw new InvalidDataException("Could not restore FIFO bulk-source metadata");
+        sources[key] = source;
     }
 }
 
