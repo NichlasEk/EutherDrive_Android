@@ -1579,3 +1579,36 @@ https://www.bitsavers.org/components/3dfx/Voodoo2_Spec_r1.16_199912.pdf
 https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_render.cpp
 https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_regs.h
 ```
+
+### LOD1-regionen saknar direkta writers
+
+Triangelsammanfattningen grupperar nu sample-writers per faktiskt dynamiskt
+vald LOD när pixel-LOD-experimentet är aktivt. `targetLod=dynamic` skiljs från
+`layoutLod=0`, som bara är summaryns bakåtkompatibla nominella layout;
+`lodwriters=lN=...` och det observerade adressintervallet är sanningen för
+varje pixelgrupp.
+
+En kanonisk v7-f900--f1000+5,1M-körning med basefilter `0x1c00`, 16 summaries
+och writer-proveniens behöll experimenthashen `0xc82dc520` samt alla
+packet-/swapräknare. De tre fullrect-trianglarna med `Q=1` och de sena
+world-trianglar som passerar tLOD-tröskeln väljer LOD1:
+
+```text
+LOD1 addrs=0x01e510..0x02250f
+lodwriters=l1=32625[none:32625]
+lodwriters=l1=33277[none:33277]
+råvärde/rgb = 0x00/0x0000 för samtliga observerade samples
+```
+
+LOD0-worldtrianglarna väljer i stället `0x00e510..0x01900f`. Där saknar
+ungefär 71--98 procent av samples en direkt writer beroende på triangeln. De
+få direkta ägarna är konsekvent den sena LOD0-familjen från
+`srcBase=0x00200000`; den tidigare record0-generationen förekommer bara som
+`prev=` eller i 64 KiB-wrapjämförelsen.
+
+Det förklarar LOD-regressionen utan fler samplerantaganden: den korrekta
+LOD1-adressförskjutningen träffar en helt omaterialiserad mipregion, medan
+även LOD0 är glest och delvis övertagen av senare generationer. Nästa kausala
+gräns är därför upload-sidan: bind den guest-upload som ska äga mip 1 för
+`base=0x1c00` till dess Type5 LOD-/targetadress och avgör om packetserien
+saknas eller om vår Type5 target-till-texturadressning placerar den fel.
