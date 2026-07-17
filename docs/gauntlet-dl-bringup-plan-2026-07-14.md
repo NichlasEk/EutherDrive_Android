@@ -1727,3 +1727,63 @@ Framebufferdumpen är fortfarande texturbrus och horisontella band, utan
 igenkännbar scen. En ensam base-1c-till-base-0-remap är därmed också avvisad;
 den saknade producent-/surface-bindningen kan inte ersättas med historiskt
 innehåll från lågsidan.
+
+### Materialposten hydreras och muteras av samma avsiktliga uploadkedja
+
+En stop-run vid den första materialpubliceringen, `0x800bd19c`, visar att
+record 0 börjar som den råa posten `0x802e2158` med bland annat:
+
+```text
+raw+0x0c = 0x00012000
+raw+0x14 = 0x00000000
+ownerbidrag = 0x00002000
+beräknat lod/base = 0x00002000/0x00012000
+```
+
+Två observationsrena main-RAM-writetraces knyter därefter båda relevanta
+fältändringarna till den kända slot-0-kedjan. QIO:s direkta disk-byte-kopia vid
+`pc=0x800c9944` hydratiserar hela `0x2000`-blocket till `0x802e1718`; posten
+ligger `0xa40` byte in i blocket. Samma kopia skriver `raw+0x14` från noll till
+`0x000000c6` och ersätter det ursprungliga `raw+0x0c=0x12000` med noll.
+Uploadallokatorn använder sedan samma post i stället för en fristående
+descriptor och publicerar sekvensen:
+
+```text
+pc=0x800a7768  raw+0x0c: 0 -> 0x0400
+pc=0x800a7768  raw+0x0c: 0 -> 0x0800
+...
+pc=0x800a7768  raw+0x0c: 0 -> 0x1c00
+next pc=0x801094f4  a1/s0=0xe000  s2=0x802e2158  s3=0x10000
+```
+
+Senare läser drawvägen samma in-place-post och kombinerar `raw+0x14=c6` med
+ownerfältets `0x2000`, vilket producerar det redan observerade
+`lod=0x20c6/base=0x1c00`. Detta falsifierar att värdena uppstår genom en
+oavsiktlig descriptoralias eller en tappad postkopia: QIO-hydreringen och
+uploadallokatorn bygger materialet avsiktligt i samma arena.
+
+Den befintliga default-off-kontrollen
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_CONTIGUOUS_SOURCE`
+läser ytterligare `0x10000` byte direkt efter slot-0-blocket. En strikt A/B från
+samma v7-f900-state till f1000+5,1M gav:
+
+```text
+baseline    frameHash=0x42925e78 packets=362333 Type3=31354
+continuation frameHash=0x4a03dffe packets=362531 Type3=31552
+
+continuation trange:
+  00E000-00FFFF:7239/2042/2048
+  010000-011FFF:0/0/0
+  012000-013FFF:0/0/0
+  014000-015FFF:4/1/0
+  016000-017FFF:0/0/0
+  018000-019FFF:0/0/0
+```
+
+De extra RAM-bytena är kausala och stör även valet av senare indexed-QIO-källa,
+men Voodoo får fortfarande inga writes i de fem saknade striparna ovanför
+`0xffff`. Att utöka slot-0-QIO:n eller läsa en blind sammanhängande 64 KiB-yta
+är därmed avvisat. Nästa gräns är den guestberäknade uploadgeometrin vid
+`0x801094f4`: följ hur den avslutande `a1=0xe000`, `s3=0x10000` och postens
+råmetadata blir `lod=0x00700800` och exakt 32 Type5-paket, innan någon ny
+sampler- eller diskextent-remap övervägs.
