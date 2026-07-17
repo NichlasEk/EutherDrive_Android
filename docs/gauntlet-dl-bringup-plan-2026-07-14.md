@@ -1487,7 +1487,7 @@ streamuppladdningar och många ord saknar writer. Nästa försök ska därför f
 varför `srcBase=0x00200000` aliaserar/ersätter base-1c-generationen i
 texturadresskartan, inte göra fler raw-disk-remaps av record0.
 
-### MAME-LOD-matrisen är kausal men ingen bildfix
+### MAME-LOD-proben och den inverterade tLOD-gränsen
 
 MAMEs Voodoo-rasterizer väljer inte ett konstant LOD. Den beräknar först
 `log2(max(ds²+dt²))/2` från 32.32-gradienterna, subtraherar `log2(W)` när
@@ -1504,13 +1504,13 @@ Tillsammans med register-base-filtret `0x1c00` visar den kanoniska bursten:
 ```text
 mode=0x8c24100f lod=0x000020c6 base=0x1c00
 bias8p8=128 min8p8=384 max8p8=192
-fullrect: centroidW=1       candidate=245 -> targetLod=1
-world:    centroidW=0.015625 candidate=729..278 -> targetLod=0 eller 1
+fullrect: centroidW=1       candidate=245
+world:    centroidW=0.015625 candidate=729..278
 ```
 
 Min/max är alltså inverterade i det guestproducerade `0x20c6`-värdet.
-Proben följer MAMEs faktiska jämförelseordning även i detta fall i stället för
-att använda `Math.Clamp`, vars kontrakt kräver min <= max.
+Den första proben modellerade detta med två sekventiella jämförelser och
+rapporterade därför LOD0/LOD1. Det var inte MAME-paritet.
 
 Det default-off kausalitetsexperimentet
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_TRIANGLE_LOD=1` matar den
@@ -1518,59 +1518,55 @@ beräknade nivån till den befintliga samplern. Från v7-f900 till den kanoniska
 f1000+5,1M-endpointen gav det:
 
 ```text
-baseline       frameHash=0x42925e78 zero=20,908,043
-triangle LOD   frameHash=0xc82dc520 zero=21,908,043
-packets/swaps  oförändrade, swaps=1299
+felaktig probe frameHash=0xc82dc520 zero=21,908,043
 ```
 
-Framebufferdumpen är fortfarande brus/mosaik och tydliga randband. Denna
-triangelnivåapproximation ska därför inte promoveras. Tracen stänger däremot
-det gamla antagandet att LOD0 är den enda nivån som hårdvaruformeln skulle
-välja. Nästa LOD-arbete måste först förklara varför gästen publicerar ett
-inverterat min/max-intervall och därefter implementera MAMEs riktiga
-per-pixel-W/dither-väg; fler fasta `FORCE_LOD`-värden saknar stöd.
+Det resultatet är bevarat som negativ historik men ska inte användas som
+hårdvaruevidens eller promoveras.
 
-### Inverterat tLOD är en tröskel; per-pixel-W ger samma regression
+### Faktisk MAME-hostsemantik håller alla samples på LOD0
 
 3dfx Voodoo2-specifikationen bekräftar att `tLOD[5:0]` är unsigned 4.2
 `lodmin`, `[11:6]` är unsigned 4.2 `lodmax` och `[17:12]` är signed 4.2
 `lodbias`. `0x20c6` är alltså verkligen `min=1,5`, `max=0,75`, `bias=+0,5`;
 det är inte ett namn- eller endianfel. Specen beskriver det normala intervallet
-som `[lodmin,min(8,lodmax)]`, men MAMEs faktiska rasterizer använder den
-hårdvarunära valordningen:
+som `[lodmin,min(8,lodmax)]`. Dagens MAME anropar `std::clamp(lod, lodmin,
+lodmax)`; inverterade gränser bryter funktionens formella precondition och kan
+därför inte tolkas som en dokumenterad hårdvarutröskel.
+
+Den MAME-host som är relevant för referenskörningen använder libstdc++, vars
+implementation (utan assertion-build) är:
 
 ```text
-lod < lodmin ? lodmin : lodmax < lod ? lodmax : lod
+min(max(lod, lodmin), lodmax)
 ```
 
-När gränserna är inverterade blir det en tvålägeströskel vid `lodmin`, inte en
-sorterad intervallklamp. Det förklarar varför guestens värde kan vara
-avsiktligt och varför det inte ska normaliseras eller bytas i registervägen.
+För `lodmin=384` och `lodmax=192` blir slutvärdet alltid 192, alltså heltals-
+LOD0. Proben använder nu exakt den ordningen i en egen helper eftersom C#
+`Math.Clamp` korrekt vägrar det inverterade intervallet.
 
 Den default-off proben
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_PIXEL_LOD=1` går ett steg
 längre än föregående triangelapproximation. Den bygger 32.32-W-gradienter från
 samma tre Q-värden som setup-triangeln fångar, använder MAMEs 7-bitars
-`fast_log2`-tabell per pixel, applicerar bias, optional 4x4-LOD-dither och den
-exakta inverterade klampordningen. Debugstatus visar `plod=` endast när
+`fast_log2`-tabell per pixel, applicerar bias, optional 4x4-LOD-dither och
+libstdc++-ordningen ovan. Debugstatus visar `plod=` endast när
 experimentet är aktivt.
 
 Den kanoniska v7-f900--f1000+5,1M-körningen gav:
 
 ```text
-baseline       frameHash=0x42925e78 zero=20,908,043
-pixel LOD      frameHash=0xc82dc520 zero=21,908,043
-pixel nivåer   LOD0=42,575,764 LOD1=5,307,768 LOD2..8=0
+baseline       frameHash=0x42925e78 zero=20,927,120
+pixel LOD      frameHash=0x42925e78 zero=20,927,120
+pixel nivåer   LOD0=47,883,532 LOD1..8=0
 packets/swaps  oförändrade, fifoWords=10,323,854 swaps=1299
 ```
 
-Resultatet är bit-/hashmässigt samma regression som triangel-LOD-proben.
-För de aktiva trianglarna är Q konstant över ytan, och deras texture-mode
-`0x8c24100f` har LOD-dither-biten 4 avstängd. Den riktiga per-pixelvägen väljer
-därför samma nivå per triangel som approximationen och kan inte reparera
-brus-/mosaikbilden. Proben behålls som en bitnära, default-off
-kausalitetskontroll, men nästa gräns flyttas tillbaka till vilka mipnivåer som
-faktiskt är uppladdade/ägda vid de adresser som LOD0 och LOD1 väljer.
+Den korrigerade per-pixelvägen är alltså bit-/hashmässigt neutral mot baseline
+och samstämmig med guestens LOD0-only-upload. Det finns inte längre stöd för
+att jaga en saknad LOD1-mip i den här endpointen. Proben behålls default-off
+som paritetskontroll; den synliga brus-/mosaikbilden ligger kvar i LOD0:s
+upload-, ägar- eller sampleadressrelation.
 
 Primärkällor:
 
@@ -1580,7 +1576,7 @@ https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_render.cpp
 https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_regs.h
 ```
 
-### LOD1-regionen saknar direkta writers
+### Den tidigare LOD1-writertracen var en probe-artefakt
 
 Triangelsammanfattningen grupperar nu sample-writers per faktiskt dynamiskt
 vald LOD när pixel-LOD-experimentet är aktivt. `targetLod=dynamic` skiljs från
@@ -1588,10 +1584,7 @@ vald LOD när pixel-LOD-experimentet är aktivt. `targetLod=dynamic` skiljs frå
 `lodwriters=lN=...` och det observerade adressintervallet är sanningen för
 varje pixelgrupp.
 
-En kanonisk v7-f900--f1000+5,1M-körning med basefilter `0x1c00`, 16 summaries
-och writer-proveniens behöll experimenthashen `0xc82dc520` samt alla
-packet-/swapräknare. De tre fullrect-trianglarna med `Q=1` och de sena
-world-trianglar som passerar tLOD-tröskeln väljer LOD1:
+Den tidigare felaktiga klampordningen skickade vissa samples till LOD1:
 
 ```text
 LOD1 addrs=0x01e510..0x02250f
@@ -1606,12 +1599,9 @@ få direkta ägarna är konsekvent den sena LOD0-familjen från
 `srcBase=0x00200000`; den tidigare record0-generationen förekommer bara som
 `prev=` eller i 64 KiB-wrapjämförelsen.
 
-Det förklarar LOD-regressionen utan fler samplerantaganden: den korrekta
-LOD1-adressförskjutningen träffar en helt omaterialiserad mipregion, medan
-även LOD0 är glest och delvis övertagen av senare generationer. Nästa kausala
-gräns är därför upload-sidan: bind den guest-upload som ska äga mip 1 för
-`base=0x1c00` till dess Type5 LOD-/targetadress och avgör om packetserien
-saknas eller om vår Type5 target-till-texturadressning placerar den fel.
+Det är fortfarande sant att den syntetiska regionen saknar writers, men den
+korrigerade MAME-proben väljer den aldrig. Evidensen ska därför inte användas
+för att motivera en guest-LOD1-upload eller en mip-remap.
 
 ### Uploadströmmen innehåller bara LOD0
 
@@ -1627,18 +1617,13 @@ gav:
 
 ```text
 twlod=l0:3390208/3390208/689992@000000-00FFFC
-plod=42575764/5307768/0/0/0/0/0/0/0
-frameHash=0xc82dc520 fifoWords=10323854 packets=362333 swaps=1299
+plod=47883532/0/0/0/0/0/0/0/0
+frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
 ```
 
-Det finns alltså inte en enda accepterad LOD1--8-write i hela observerade
-Type5-uploadströmmen. Alla 3 390 208 ord kodar LOD0 i targetfältet, och den
-slutliga fysiska spännvidden slutar vid `0x00fffc`. Det är förenligt med den
-separata slutbilden av texture RAM (`last=0x015554` för icke-nollinnehåll) och
-oförenligt med att LOD1-samplerns `0x01e510..0x02250f` skulle ha laddats men
-bara mappats fel av den nuvarande LOD-offsetberäkningen.
-
-Nästa gräns ligger därför före texture-port-skrivningen: hitta varför
-guestens packetproduktion under den här bringup-vägen aldrig emitterar ett
-target med LOD-fält 1. Ändra inte samplerbas, global bias eller mip-layout för
-att kompensera för en mipnivå som bevisligen aldrig finns i uploadströmmen.
+Det finns alltså inte en enda accepterad LOD1--8-write i den observerade
+f900--f1000-strömmen. Alla 3 390 208 ord kodar LOD0 i targetfältet, och den
+korrigerade samplern väljer också LOD0 för samtliga 47 883 532 pixlar. Detta
+är konsistens, inte en saknad packetserie. Nästa gräns är åter den redan
+observerade glesa LOD0-ägningen och relationen mellan Type5-target, fysisk
+texturadress och den samplade `base=0x1c00`-layouten.

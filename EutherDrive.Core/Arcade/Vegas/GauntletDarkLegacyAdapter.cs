@@ -41503,11 +41503,7 @@ sampledTexel:
             : lodBase8p8 - perspective8p8 + bias8p8;
         int clamped8p8 = candidate8p8 == int.MinValue
             ? int.MinValue
-            : candidate8p8 < min8p8
-                ? min8p8
-                : max8p8 < candidate8p8
-                    ? max8p8
-                    : candidate8p8;
+            : MameClampTextureLod(candidate8p8, min8p8, max8p8);
         int targetLod = clamped8p8 == int.MinValue ? 0 : Math.Clamp(clamped8p8 >> 8, 0, 8);
         uint lodMask = ((lod >> 19) & 1u) != 0
             ? (((lod >> 18) & 1u) != 0 ? 0x0aau : 0x155u)
@@ -41560,11 +41556,7 @@ sampledTexel:
 
         int min8p8 = (int)(textureLod & 0x3fu) << 6;
         int max8p8 = (int)((textureLod >> 6) & 0x3fu) << 6;
-        int clamped8p8 = candidate8p8 < min8p8
-            ? min8p8
-            : max8p8 < candidate8p8
-                ? max8p8
-                : candidate8p8;
+        int clamped8p8 = MameClampTextureLod(candidate8p8, min8p8, max8p8);
         int targetLod = Math.Clamp(clamped8p8 >> 8, 0, 8);
         uint lodMask = ((textureLod >> 19) & 1u) != 0
             ? (((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u)
@@ -41572,6 +41564,13 @@ sampledTexel:
         targetLod += (int)((~lodMask >> targetLod) & 1u);
         return Math.Clamp(targetLod, 0, 8);
     }
+
+    // MAME calls std::clamp here. libstdc++ implements that as
+    // min(max(value, low), high), which matters for Gauntlet's inverted
+    // 0x20c6 low/high fields even though that input violates std::clamp's
+    // formal precondition.
+    private static int MameClampTextureLod(int value, int low, int high)
+        => Math.Min(Math.Max(value, low), high);
 
     private static int MameFastLog2(double value, int fractionalBits)
     {
