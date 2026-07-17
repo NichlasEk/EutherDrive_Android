@@ -1713,3 +1713,17 @@ drawen enbart ska tvingas till 256x32.
 Nästa gräns ligger därför före samplern: identifiera den guest-trigger eller
 surface/page-bindning som ska materialisera `0x10000..0x19fff`. Globala
 aspect-, wrap-, owner-preserve- och source-remappar saknar fortfarande stöd.
+
+En direkt negativ kontroll flyttade baseline-samplebiasen exakt `-0xe000`, så
+record 0:s `base=0x1c00` i praktiken läser den redan fyllda låga 64 KiB-sidan.
+FIFO, packet och swaps förblev identiska, medan:
+
+```text
+baseline       frameHash=0x42925e78 zero=20,927,120
+base-0 binding frameHash=0xe2d1a1e4 zero=20,223,316
+```
+
+Framebufferdumpen är fortfarande texturbrus och horisontella band, utan
+igenkännbar scen. En ensam base-1c-till-base-0-remap är därmed också avvisad;
+den saknade producent-/surface-bindningen kan inte ersättas med historiskt
+innehåll från lågsidan.
