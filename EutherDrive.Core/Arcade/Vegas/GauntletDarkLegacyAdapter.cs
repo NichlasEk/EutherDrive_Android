@@ -32009,6 +32009,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private long _texturedRasterPixelCount;
     private long _texturedFallbackPixelCount;
     private long _texturedPixelCount;
+    private readonly long[] _experimentTextureMamePixelLodCounts = new long[9];
     private long _texturedZeroPixelCount;
     private int _texturedRejectNonFiniteCount;
     private int _texturedRejectDegenerateCount;
@@ -32160,6 +32161,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_LOD_LIMIT"), 32);
     private readonly bool _experimentTextureMameTriangleLod =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_TRIANGLE_LOD"));
+    private readonly bool _experimentTextureMamePixelLod =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_PIXEL_LOD"));
     private readonly bool _traceTextureFetchCompare =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_FETCH_COMPARE"));
     private readonly int _traceTextureFetchCompareLimit =
@@ -33016,6 +33019,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            GetBufferCountDebugStatus() +
            GetTmuDebugStatus() +
            $"rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}/{_texturedFallbackPixelCount}/{_texturedTriangleCount}/{_texturedTriangleCoveredCount}/{_texturedTriangleRejectedCount}/{_texturedRejectDegenerateCount}/{_texturedRejectClipCount}/{_texturedRejectEmptyRasterCount}/{_texturedZeroPixelCount} " +
+           GetTexturePixelLodDebugStatus() +
            $"t={_fifoPacketTypeCounts[0]}/{_fifoPacketTypeCounts[1]}/{_fifoPacketTypeCounts[2]}/{_fifoPacketTypeCounts[3]}/{_fifoPacketTypeCounts[4]}/{_fifoPacketTypeCounts[5]} " +
            $"t5={_fifoType5SpaceCounts[0]}:{_fifoType5SpaceWordCounts[0]}/{_fifoType5SpaceCounts[1]}:{_fifoType5SpaceWordCounts[1]}/" +
            $"{_fifoType5SpaceCounts[2]}:{_fifoType5SpaceWordCounts[2]}/{_fifoType5SpaceCounts[3]}:{_fifoType5SpaceWordCounts[3]} " +
@@ -33046,6 +33050,11 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"t1ob={_commandFifoImplausibleType1OutsideBulkWindowGateCount}/{_commandFifoImplausibleType1OutsideBulkWindowDropCount}";
     public string RecentEventStatus => FormatRecentVoodooEvents();
     public string StatusPcProfile => GetStatusPcProfile();
+
+    private string GetTexturePixelLodDebugStatus()
+        => _experimentTextureMamePixelLod
+            ? $"plod={string.Join('/', _experimentTextureMamePixelLodCounts)} "
+            : "";
 
     private uint PeekCommandFifoWord() => ReadCommandFifoWordAt(_cmdFifoReadIndex);
 
@@ -41149,7 +41158,19 @@ internal class VoodooBringupBackend : IVoodooBackend
         long dTdX = MameSetupCastToInt64(((a.T - b.T) * dx1 - (a.T - c.T) * dx2) * TextureSetupScale * setupDivisor);
         long dSdY = MameSetupCastToInt64(((a.S - c.S) * dy1 - (a.S - b.S) * dy2) * TextureSetupScale * setupDivisor);
         long dTdY = MameSetupCastToInt64(((a.T - c.T) * dy1 - (a.T - b.T) * dy2) * TextureSetupScale * setupDivisor);
-        int triangleTargetLod = ComputeAndTraceTexturedTriangleLod(a, b, c, dSdX, dSdY, dTdX, dTdY, bufferIndex);
+        long textureStartW = MameSetupCastToInt64(a.Q * TextureSetupScale);
+        long textureDwDx = MameSetupCastToInt64(((a.Q - b.Q) * dx1 - (a.Q - c.Q) * dx2) * TextureSetupScale * setupDivisor);
+        long textureDwDy = MameSetupCastToInt64(((a.Q - c.Q) * dy1 - (a.Q - b.Q) * dy2) * TextureSetupScale * setupDivisor);
+        int triangleTargetLod = ComputeAndTraceTexturedTriangleLod(
+            a,
+            b,
+            c,
+            dSdX,
+            dSdY,
+            dTdX,
+            dTdY,
+            bufferIndex,
+            out int triangleLodBase8p8);
         int setupAx = unchecked((short)(int)(a.X * 16.0f)) >> 4;
         int setupAy = unchecked((short)(int)(a.Y * 16.0f)) >> 4;
         uint fbzMode = _registers[RegFbzMode];
@@ -41242,7 +41263,22 @@ internal class VoodooBringupBackend : IVoodooBackend
                     sampleMinT = MathF.Min(sampleMinT, t);
                     sampleMaxT = MathF.Max(sampleMaxT, t);
                 }
-                texel = SampleTextureRgb565(s, t, triangleTargetLod);
+                int targetLod = triangleTargetLod;
+                if (_experimentTextureMamePixelLod)
+                {
+                    int dx = x - setupAx;
+                    int dy = y - setupAy;
+                    long iterW = unchecked(textureStartW + dy * textureDwDy + dx * textureDwDx);
+                    targetLod = ComputeMameTexturePixelLod(
+                        triangleLodBase8p8,
+                        iterW,
+                        x,
+                        y,
+                        ReadTextureSampleRegister(RegTextureMode),
+                        ReadTextureSampleRegister(RegTextureLod));
+                    _experimentTextureMamePixelLodCounts[targetLod]++;
+                }
+                texel = SampleTextureRgb565(s, t, targetLod);
 sampledTexel:
                 if (traceSampleSummary && _lastTextureSampleValid)
                 {
@@ -41362,12 +41398,14 @@ sampledTexel:
         long dSdY,
         long dTdX,
         long dTdY,
-        int bufferIndex)
+        int bufferIndex,
+        out int lodBase8p8)
     {
+        lodBase8p8 = int.MinValue;
         bool trace = _traceTexturedTriangleLod &&
             _texturedTriangleLodTraceCount < _traceTexturedTriangleLodLimit &&
             ShouldTraceTexturedTriangleSampleSummaryBuffer(bufferIndex);
-        if (!trace && !_experimentTextureMameTriangleLod)
+        if (!trace && !_experimentTextureMameTriangleLod && !_experimentTextureMamePixelLod)
         {
             return -1;
         }
@@ -41384,7 +41422,7 @@ sampledTexel:
         double texDx = (double)dSdX * dSdX + (double)dTdX * dTdX;
         double texDy = (double)dSdY * dSdY + (double)dTdY * dTdY;
         double maxDerivativeSquared = Math.Max(texDx, texDy);
-        int lodBase8p8 = maxDerivativeSquared > 0.0 && double.IsFinite(maxDerivativeSquared)
+        lodBase8p8 = maxDerivativeSquared > 0.0 && double.IsFinite(maxDerivativeSquared)
             ? (int)Math.Round(((Math.Log2(maxDerivativeSquared) - 64.0) * 0.5) * 256.0)
             : int.MinValue;
         float centroidW = (a.Q + b.Q + c.Q) / 3.0f;
@@ -41426,6 +41464,72 @@ sampledTexel:
         }
 
         return _experimentTextureMameTriangleLod ? targetLod : -1;
+    }
+
+    private static int ComputeMameTexturePixelLod(
+        int lodBase8p8,
+        long iterW,
+        int x,
+        int y,
+        uint textureMode,
+        uint textureLod)
+    {
+        int candidate8p8 = lodBase8p8;
+        if ((textureMode & 1u) != 0)
+            candidate8p8 -= MameFastLog2(iterW, 32);
+
+        int bias = (int)((textureLod >> 12) & 0x3fu);
+        if (bias >= 32)
+            bias -= 64;
+        candidate8p8 += bias << 6;
+
+        if ((textureMode & 0x10u) != 0)
+        {
+            ReadOnlySpan<byte> dither4x4 =
+            [
+                 0,  8,  2, 10,
+                12,  4, 14,  6,
+                 3, 11,  1,  9,
+                15,  7, 13,  5
+            ];
+            candidate8p8 += dither4x4[((y & 3) << 2) | (x & 3)] << 4;
+        }
+
+        int min8p8 = (int)(textureLod & 0x3fu) << 6;
+        int max8p8 = (int)((textureLod >> 6) & 0x3fu) << 6;
+        int clamped8p8 = candidate8p8 < min8p8
+            ? min8p8
+            : max8p8 < candidate8p8
+                ? max8p8
+                : candidate8p8;
+        int targetLod = Math.Clamp(clamped8p8 >> 8, 0, 8);
+        uint lodMask = ((textureLod >> 19) & 1u) != 0
+            ? (((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u)
+            : 0x1ffu;
+        targetLod += (int)((~lodMask >> targetLod) & 1u);
+        return Math.Clamp(targetLod, 0, 8);
+    }
+
+    private static int MameFastLog2(double value, int fractionalBits)
+    {
+        if (value < 0.0)
+            return 0;
+
+        ReadOnlySpan<byte> fractionalLog2 =
+        [
+              0,   2,   5,   8,  11,  14,  16,  19,  22,  25,  27,  30,  33,  35,  38,  40,
+             43,  46,  48,  51,  53,  56,  58,  61,  63,  65,  68,  70,  73,  75,  77,  80,
+             82,  84,  87,  89,  91,  93,  96,  98, 100, 102, 104, 106, 109, 111, 113, 115,
+            117, 119, 121, 123, 125, 127, 129, 132, 134, 136, 138, 140, 141, 143, 145, 147,
+            149, 151, 153, 155, 157, 159, 161, 162, 164, 166, 168, 170, 172, 173, 175, 177,
+            179, 181, 182, 184, 186, 188, 189, 191, 193, 194, 196, 198, 200, 201, 203, 205,
+            206, 208, 209, 211, 213, 214, 216, 218, 219, 221, 222, 224, 225, 227, 229, 230,
+            232, 233, 235, 236, 238, 239, 241, 242, 244, 245, 247, 248, 250, 251, 253, 254
+        ];
+        ulong bits = (ulong)BitConverter.DoubleToInt64Bits(value);
+        uint exponentAndMantissa = (uint)(bits >> 45);
+        int exponent = (int)(exponentAndMantissa >> 7) - 1023 - fractionalBits;
+        return (exponent << 8) | fractionalLog2[(int)(exponentAndMantissa & 127u)];
     }
 
     private bool ShouldSuppressConstantSFullrectTextureTriangle(

@@ -1529,3 +1529,53 @@ det gamla antagandet att LOD0 är den enda nivån som hårdvaruformeln skulle
 välja. Nästa LOD-arbete måste först förklara varför gästen publicerar ett
 inverterat min/max-intervall och därefter implementera MAMEs riktiga
 per-pixel-W/dither-väg; fler fasta `FORCE_LOD`-värden saknar stöd.
+
+### Inverterat tLOD är en tröskel; per-pixel-W ger samma regression
+
+3dfx Voodoo2-specifikationen bekräftar att `tLOD[5:0]` är unsigned 4.2
+`lodmin`, `[11:6]` är unsigned 4.2 `lodmax` och `[17:12]` är signed 4.2
+`lodbias`. `0x20c6` är alltså verkligen `min=1,5`, `max=0,75`, `bias=+0,5`;
+det är inte ett namn- eller endianfel. Specen beskriver det normala intervallet
+som `[lodmin,min(8,lodmax)]`, men MAMEs faktiska rasterizer använder den
+hårdvarunära valordningen:
+
+```text
+lod < lodmin ? lodmin : lodmax < lod ? lodmax : lod
+```
+
+När gränserna är inverterade blir det en tvålägeströskel vid `lodmin`, inte en
+sorterad intervallklamp. Det förklarar varför guestens värde kan vara
+avsiktligt och varför det inte ska normaliseras eller bytas i registervägen.
+
+Den default-off proben
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_PIXEL_LOD=1` går ett steg
+längre än föregående triangelapproximation. Den bygger 32.32-W-gradienter från
+samma tre Q-värden som setup-triangeln fångar, använder MAMEs 7-bitars
+`fast_log2`-tabell per pixel, applicerar bias, optional 4x4-LOD-dither och den
+exakta inverterade klampordningen. Debugstatus visar `plod=` endast när
+experimentet är aktivt.
+
+Den kanoniska v7-f900--f1000+5,1M-körningen gav:
+
+```text
+baseline       frameHash=0x42925e78 zero=20,908,043
+pixel LOD      frameHash=0xc82dc520 zero=21,908,043
+pixel nivåer   LOD0=42,575,764 LOD1=5,307,768 LOD2..8=0
+packets/swaps  oförändrade, fifoWords=10,323,854 swaps=1299
+```
+
+Resultatet är bit-/hashmässigt samma regression som triangel-LOD-proben.
+För de aktiva trianglarna är Q konstant över ytan, och deras texture-mode
+`0x8c24100f` har LOD-dither-biten 4 avstängd. Den riktiga per-pixelvägen väljer
+därför samma nivå per triangel som approximationen och kan inte reparera
+brus-/mosaikbilden. Proben behålls som en bitnära, default-off
+kausalitetskontroll, men nästa gräns flyttas tillbaka till vilka mipnivåer som
+faktiskt är uppladdade/ägda vid de adresser som LOD0 och LOD1 väljer.
+
+Primärkällor:
+
+```text
+https://www.bitsavers.org/components/3dfx/Voodoo2_Spec_r1.16_199912.pdf
+https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_render.cpp
+https://github.com/mamedev/mame/blob/master/src/devices/video/voodoo_regs.h
+```
