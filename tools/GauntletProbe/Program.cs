@@ -2414,6 +2414,7 @@ static void DumpVoodooTextureSurfaces(object voodoo)
     int maxCandidates = ParsePositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_COUNT"), 10);
     var formats = new[]
     {
+        new ByteSurfaceFormat(256, 32, 256),
         new ByteSurfaceFormat(128, 128, 128),
         new ByteSurfaceFormat(256, 128, 256),
         new ByteSurfaceFormat(256, 256, 256),
@@ -2459,6 +2460,8 @@ static void DumpVoodooTextureSurfaces(object voodoo)
         Console.WriteLine($"voodooTextureDump={grayPath}");
     }
 
+    DumpRequestedVoodooTextureByteSurfaces(textureBytes, prefix);
+
     var rgb565Formats = new[]
     {
         new RamSurfaceFormat(32, 32, 64),
@@ -2501,6 +2504,42 @@ static void DumpVoodooTextureSurfaces(object voodoo)
         string path = $"{prefix}_{i}_0x{candidate.Offset:x6}_{candidate.Format.Width}x{candidate.Format.Height}_rgb565.ppm";
         DumpRgb565Surface(textureBytes, candidate.Offset, candidate.Format, path);
         Console.WriteLine($"voodooTextureDump={path}");
+    }
+}
+
+static void DumpRequestedVoodooTextureByteSurfaces(byte[] textureBytes, string prefix)
+{
+    string? specs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_BYTE_SURFACE_SPECS");
+    if (string.IsNullOrWhiteSpace(specs))
+        return;
+
+    int index = 0;
+    foreach (string item in specs.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        string[] parts = item.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 4 ||
+            !TryParseHexUlong(parts[0], out ulong rawOffset) ||
+            !int.TryParse(parts[1], out int width) ||
+            !int.TryParse(parts[2], out int height) ||
+            !int.TryParse(parts[3], out int stride) ||
+            rawOffset > int.MaxValue ||
+            width <= 0 || height <= 0 || stride < width)
+        {
+            continue;
+        }
+
+        int offset = (int)rawOffset;
+        int bytes = stride * height;
+        if (offset < 0 || offset + bytes > textureBytes.Length)
+            continue;
+
+        var format = new ByteSurfaceFormat(width, height, stride);
+        ByteSurfaceScore score = ScoreByteSurface(textureBytes, offset, format);
+        string path = $"{prefix}_spec{index}_0x{offset:x6}_{width}x{height}_s{stride}_rgb332.ppm";
+        DumpByteSurface(textureBytes, offset, format, path, rgb332: true);
+        Console.WriteLine(
+            $"voodooTextureSpecDump={path} nz={score.NonZero} unique={score.UniqueBytes} transitions={score.Transitions}");
+        index++;
     }
 }
 

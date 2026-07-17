@@ -32177,6 +32177,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS"));
     private readonly bool _debugTextureUploadLods =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_UPLOAD_LODS"));
+    private readonly ulong? _debugTextureRangeMin =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_RANGE_MIN"));
+    private readonly ulong? _debugTextureRangeMax =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_RANGE_MAX"));
+    private readonly ulong? _debugTextureRangeBlockBytes =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_RANGE_BLOCK_BYTES"));
     private readonly int _traceTextureWriteBucketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT"), 240);
     private readonly int _traceTextureWriteBucketsPerBucketLimit =
@@ -33026,6 +33032,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            GetTextureZeroSampleBucketDebugStatus() +
            GetTextureSampleDebugStatus() +
            GetTextureUploadLodDebugStatus() +
+           GetTextureRangeDebugStatus() +
            GetTextureOverwriteDebugStatus() +
            GetBufferCountDebugStatus() +
            GetTmuDebugStatus() +
@@ -33082,6 +33089,52 @@ internal class VoodooBringupBackend : IVoodooBackend
                 return $"l{lod}:{_textureUploadLodWriteCounts[lod]}/{_textureUploadLodType5WriteCounts[lod]}/{_textureUploadLodNonZeroWriteCounts[lod]}@{span}";
             });
         return $"twlod={string.Join(',', lods)} ";
+    }
+
+    private string GetTextureRangeDebugStatus()
+    {
+        if (!_debugTextureRangeMin.HasValue || !_debugTextureRangeMax.HasValue)
+            return "";
+
+        uint start = (uint)Math.Min(_debugTextureRangeMin.Value, TextureBytes);
+        uint end = (uint)Math.Min(_debugTextureRangeMax.Value, TextureBytes);
+        uint blockBytes = (uint)Math.Clamp(
+            _debugTextureRangeBlockBytes.GetValueOrDefault(0x2000),
+            4,
+            TextureBytes);
+        blockBytes = (blockBytes + 3u) & ~3u;
+        if (start >= end)
+            return "trange=empty ";
+
+        var blocks = new List<string>();
+        for (uint blockStart = start & ~3u; blockStart < end; blockStart += blockBytes)
+        {
+            uint blockEnd = Math.Min(end, blockStart + blockBytes);
+            int nonZeroBytes = 0;
+            int nonZeroWords = 0;
+            int writerWords = 0;
+            for (uint byteAddress = blockStart; byteAddress < blockEnd; byteAddress += 4)
+            {
+                int wordIndex = (int)(byteAddress >> 2);
+                uint word = _textureMemory[wordIndex];
+                if (word != 0)
+                    nonZeroWords++;
+                if ((word & 0x000000ffu) != 0)
+                    nonZeroBytes++;
+                if ((word & 0x0000ff00u) != 0)
+                    nonZeroBytes++;
+                if ((word & 0x00ff0000u) != 0)
+                    nonZeroBytes++;
+                if ((word & 0xff000000u) != 0)
+                    nonZeroBytes++;
+                if (_textureWordLastWriters.ContainsKey(wordIndex))
+                    writerWords++;
+            }
+
+            blocks.Add($"{blockStart:X6}-{blockEnd - 1:X6}:{nonZeroBytes}/{nonZeroWords}/{writerWords}");
+        }
+
+        return $"trange={string.Join(',', blocks)} ";
     }
 
     private string GetTextureOverwriteDebugStatus()
@@ -35228,6 +35281,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             !_traceTextureSampleWriters &&
             !_traceTexturedTriangleSampleSummaryRequireWriter &&
             !_experimentFullrectSampleWriterLayout &&
+            !_debugTextureRangeMin.HasValue &&
             !_traceTextureOverwriteRangeMin.HasValue)
         {
             return;
@@ -35249,6 +35303,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             !_traceTextureSampleWriters &&
             !_traceTexturedTriangleSampleSummaryRequireWriter &&
             !_experimentFullrectSampleWriterLayout &&
+            !_debugTextureRangeMin.HasValue &&
             !_traceTextureOverwriteRangeMin.HasValue)
         {
             return;
@@ -35632,6 +35687,7 @@ internal class VoodooBringupBackend : IVoodooBackend
              !_traceTextureSampleWriters &&
              !_traceTexturedTriangleSampleSummaryRequireWriter &&
              !_experimentFullrectSampleWriterLayout &&
+             !_debugTextureRangeMin.HasValue &&
              !_traceTextureOverwriteRangeMin.HasValue) ||
             !_currentTextureWriteActive)
         {

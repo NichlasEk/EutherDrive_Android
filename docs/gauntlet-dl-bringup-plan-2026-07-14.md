@@ -1667,3 +1667,49 @@ Den ligger i varför den bevisat stabila 256x32-stripen tolkas som den aktiva
 samplar skulle materialiseras. Den ensamma byteändringen är för liten för att
 förklara mosaikbilden och ska endast följas om en senare sample-korrelation
 träffar exakt `0x00e248`.
+
+### Den aktiva drawens övre fem stripar materialiseras aldrig
+
+En ny default-off range-summary räknar per valfri fysisk texture-RAM-strip
+antalet icke-nollbyte, icke-nollord och ord med observerad writer:
+
+```text
+EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_RANGE_MIN=0xe000
+EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_RANGE_MAX=0x1a000
+EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_RANGE_BLOCK_BYTES=0x2000
+```
+
+Fältet `trange=` använder formen `start-slut:nonZeroBytes/nonZeroWords/writerWords`.
+Den korrigerade kanoniska körningen satte explicit `WARMUP_FRAMES=900`, laddade
+v7-f900-snapshoten, körde till f1000 och därefter ytterligare 5,1 miljoner
+CPU-steg. Den reproducerade oraklet exakt:
+
+```text
+frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
+trange=
+  00E000-00FFFF:3434/1723/2048
+  010000-011FFF:0/0/0
+  012000-013FFF:0/0/0
+  014000-015FFF:4/1/0
+  016000-017FFF:0/0/0
+  018000-019FFF:0/0/0
+textureMap touched=16384 words, first=0x000000, last=0x00fffc
+```
+
+Det finns alltså inte bara ett hål i writer-proveniensen. Ingen observerad
+texture-write lämnar den låga 64 KiB-sidan, och av hela området som record 0:s
+draw samplar ovanför `0xffff` finns endast ett gammalt fyrbytesord vid
+`0x15554`. Den enda verkligt materialiserade delen är 256x32-stripen
+`0xe000..0xffff`.
+
+`GauntletProbe` kan nu också dumpa en explicit RGB332-yta med
+`EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_BYTE_SURFACE_SPECS`; specifikationen
+`0xe000:256:32:256` gav `nz=2429`, `unique=156`, `transitions=3487`. Den direkta
+bilden är en tät högentropisk mosaik, inte en fristående igenkännbar 256x32-
+textur. Tillsammans med de tidigare negativa aspect/wrap-proverna talar detta
+för att stripen är en sida eller staging-del av en större layout, inte att
+drawen enbart ska tvingas till 256x32.
+
+Nästa gräns ligger därför före samplern: identifiera den guest-trigger eller
+surface/page-bindning som ska materialisera `0x10000..0x19fff`. Globala
+aspect-, wrap-, owner-preserve- och source-remappar saknar fortfarande stöd.
