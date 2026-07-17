@@ -1627,3 +1627,43 @@ korrigerade samplern väljer också LOD0 för samtliga 47 883 532 pixlar. Detta
 är konsistens, inte en saknad packetserie. Nästa gräns är åter den redan
 observerade glesa LOD0-ägningen och relationen mellan Type5-target, fysisk
 texturadress och den samplade `base=0x1c00`-layouten.
+
+### Den sena LOD0-runnen återpublicerar nästan hela record0 byteidentiskt
+
+Den befintliga overwrite-proben seedades med record0:s 32 Type5-paket
+(`targetStart=0x000000..0x000f80`) och avgränsades till den fysiska delen av
+den aktiva base-1c-stripen, `0x00e000..0x00ffff`. Proben räknar nu unika ord
+som senare återpubliceras byteidentiskt respektive faktiskt ändras. Debugfältet
+är:
+
+```text
+tovr=seeded/reasserted/changed/stillSeeded
+```
+
+Den kanoniska v7-f900--f1000+5,1M-körningen gav:
+
+```text
+tovr=2048/1989/1/2047
+frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
+```
+
+Endast ett ord ändras, vid byteadress `0x00e248`:
+
+```text
+old=0x10010064 new=0x10010001 mask=0x000000ff
+previous target=0x000100 mode=0 lod=0x00700800 base=0x1c00
+current  target=0x087100 mode=0x0c26100f lod=0xff802000 base=0
+```
+
+Av de 2 048 seedade orden återbesöks alltså 1 990 av den sena runnen: 1 989
+med exakt samma ordvärde och ett med en enda ändrad byte. De återstående 58
+orden berörs inte senare. Detta falsifierar att den sena
+`sourceBase=0x00200000`-familjen generellt korrumperar record0-stripen.
+`lastWriter` byts nästan överallt, men texeldata gör det inte.
+
+Nästa gräns ska därför inte vara en owner-preserve- eller overwrite-skip-fix.
+Den ligger i varför den bevisat stabila 256x32-stripen tolkas som den aktiva
+256x256/base-1c-ytan, samt var de återstående fysiska adresserna som drawen
+samplar skulle materialiseras. Den ensamma byteändringen är för liten för att
+förklara mosaikbilden och ska endast följas om en senare sample-korrelation
+träffar exakt `0x00e248`.

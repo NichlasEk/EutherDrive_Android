@@ -31924,6 +31924,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly Dictionary<int, TextureWordPreviousWriter> _textureWordPreviousWriters = [];
     private readonly Dictionary<FullrectTargetIndexKey, int> _textureTargetIndexWords = [];
     private readonly HashSet<int> _textureOverwriteSeededWords = [];
+    private readonly HashSet<int> _textureOverwriteReassertedWords = [];
+    private readonly HashSet<int> _textureOverwriteChangedWords = [];
     private readonly List<TextureWordLastWriter> _fullrectPreferredSeedOwners = [];
     private int _textureWordLastWriterVersion;
     private int _fullrectPreferredSeedOwnersVersion = -1;
@@ -33024,6 +33026,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            GetTextureZeroSampleBucketDebugStatus() +
            GetTextureSampleDebugStatus() +
            GetTextureUploadLodDebugStatus() +
+           GetTextureOverwriteDebugStatus() +
            GetBufferCountDebugStatus() +
            GetTmuDebugStatus() +
            $"rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}/{_texturedFallbackPixelCount}/{_texturedTriangleCount}/{_texturedTriangleCoveredCount}/{_texturedTriangleRejectedCount}/{_texturedRejectDegenerateCount}/{_texturedRejectClipCount}/{_texturedRejectEmptyRasterCount}/{_texturedZeroPixelCount} " +
@@ -33080,6 +33083,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             });
         return $"twlod={string.Join(',', lods)} ";
     }
+
+    private string GetTextureOverwriteDebugStatus()
+        => _traceTextureOverwriteRangeMin.HasValue
+            ? $"tovr={_textureOverwriteSeedCount}/{_textureOverwriteReassertedWords.Count}/{_textureOverwriteChangedWords.Count}/{_textureOverwriteSeededWords.Count} "
+            : "";
 
     private uint PeekCommandFifoWord() => ReadCommandFifoWordAt(_cmdFifoReadIndex);
 
@@ -35735,26 +35743,41 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
         }
 
-        if (!_textureOverwriteSeededWords.Contains(wordOffset) ||
-            oldValue == newValue ||
-            _textureOverwriteTraceCount >= _traceTextureOverwriteLimit)
+        if (!_textureOverwriteSeededWords.Contains(wordOffset))
+            return;
+
+        if (oldValue == newValue)
         {
+            _textureOverwriteReassertedWords.Add(wordOffset);
             return;
         }
 
         _textureOverwriteSeededWords.Remove(wordOffset);
+        _textureOverwriteChangedWords.Add(wordOffset);
+        if (_textureOverwriteTraceCount >= _traceTextureOverwriteLimit)
+            return;
+
         _textureOverwriteTraceCount++;
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string previous = _textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter writer)
             ? FormatTextureWordWriterStatus(writer)
             : "none";
+        string previousSource = _textureWordSourceProvenance.TryGetValue(wordOffset, out TextureWordSourceProvenance source)
+            ? $"0x{source.Source:x16}/base0x{source.SourceBase:x8}/packet{source.Packet}/index{source.Index}-{source.Limit}/frame{source.RenderFrame}"
+            : "-";
+        string currentSource = _cmdFifoLogicalPacketBulkWriteSources.TryGetValue(
+            _currentCommandFifoPacketStart,
+            out CommandFifoStorageBulkWriteSource bulkSource)
+            ? $"0x{bulkSource.Source:x16}/root0x{GetType5TextureUploadSequenceSourceRoot(bulkSource):x8}/base0x{bulkSource.SourceBase:x8}/packet{bulkSource.Packet}/index{bulkSource.Index}-{bulkSource.Limit}"
+            : "-";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TEXOVERWRITE] n={_textureOverwriteTraceCount} seeded={_textureOverwriteSeedCount} " +
             $"addr=0x{address:X6} word=0x{wordOffset:X6} mask=0x{mask:X8} old=0x{oldValue:X8} new=0x{newValue:X8} " +
             $"current=pc0x{pc & 0xffffffffUL:x8}/mode0x{_currentTextureWriteMode:X8}/lod0x{_currentTextureWriteTexLod:X8}/" +
             $"base0x{_currentTextureWriteBase:X8}/l{_currentTextureWriteLod}/bpp{_currentTextureWriteBytesPerTexel}/" +
             $"cmd0x{_currentType5TextureWriteCommand:X8}@0x{_currentType5TextureWriteTargetStart:X6}:0x{_currentType5TextureWriteTargetWord:X6}/" +
-            $"ph0x{_currentType5TextureWritePayloadHash:X8}/i{_currentType5TextureWriteIndex}-{_currentType5TextureWriteCount} previous={previous}");
+            $"ph0x{_currentType5TextureWritePayloadHash:X8}/i{_currentType5TextureWriteIndex}-{_currentType5TextureWriteCount}/source={currentSource} " +
+            $"previous={previous}/source={previousSource}");
     }
 
     private void TrackTextureMappedWrite(int wordOffset, uint value)
