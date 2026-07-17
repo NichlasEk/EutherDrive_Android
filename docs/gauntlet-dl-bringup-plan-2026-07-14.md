@@ -1612,3 +1612,33 @@ LOD1-adressförskjutningen träffar en helt omaterialiserad mipregion, medan
 gräns är därför upload-sidan: bind den guest-upload som ska äga mip 1 för
 `base=0x1c00` till dess Type5 LOD-/targetadress och avgör om packetserien
 saknas eller om vår Type5 target-till-texturadressning placerar den fel.
+
+### Uploadströmmen innehåller bara LOD0
+
+Den default-off diagnostiken
+`EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_UPLOAD_LODS=1` räknar accepterade
+texture-port-writes per LOD-fält, hur många som kommer från Type5, hur många
+payloadord som är icke-noll samt slutlig fysisk byteadress min--max. Den
+ändrar inte upload- eller renderingsvägen och visar `twlod=` endast när den är
+aktiverad.
+
+Samma kanoniska v7-f900--f1000+5,1M-körning, tillsammans med pixel-LOD-proben,
+gav:
+
+```text
+twlod=l0:3390208/3390208/689992@000000-00FFFC
+plod=42575764/5307768/0/0/0/0/0/0/0
+frameHash=0xc82dc520 fifoWords=10323854 packets=362333 swaps=1299
+```
+
+Det finns alltså inte en enda accepterad LOD1--8-write i hela observerade
+Type5-uploadströmmen. Alla 3 390 208 ord kodar LOD0 i targetfältet, och den
+slutliga fysiska spännvidden slutar vid `0x00fffc`. Det är förenligt med den
+separata slutbilden av texture RAM (`last=0x015554` för icke-nollinnehåll) och
+oförenligt med att LOD1-samplerns `0x01e510..0x02250f` skulle ha laddats men
+bara mappats fel av den nuvarande LOD-offsetberäkningen.
+
+Nästa gräns ligger därför före texture-port-skrivningen: hitta varför
+guestens packetproduktion under den här bringup-vägen aldrig emitterar ett
+target med LOD-fält 1. Ändra inte samplerbas, global bias eller mip-layout för
+att kompensera för en mipnivå som bevisligen aldrig finns i uploadströmmen.

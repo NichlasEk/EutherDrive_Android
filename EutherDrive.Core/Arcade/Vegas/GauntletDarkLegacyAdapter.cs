@@ -32173,6 +32173,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_SAMPLES"));
     private readonly ulong[] _traceTextureWriteBuckets =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS"));
+    private readonly bool _debugTextureUploadLods =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_UPLOAD_LODS"));
     private readonly int _traceTextureWriteBucketsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS_LIMIT"), 240);
     private readonly int _traceTextureWriteBucketsPerBucketLimit =
@@ -32892,6 +32894,11 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _renderBufferChoiceTraceCount;
     private int _textureUploadMameWritePtrTraceCount;
     private int _textureWriteBucketTraceCount;
+    private readonly long[] _textureUploadLodWriteCounts = new long[9];
+    private readonly long[] _textureUploadLodType5WriteCounts = new long[9];
+    private readonly long[] _textureUploadLodNonZeroWriteCounts = new long[9];
+    private readonly uint[] _textureUploadLodPhysicalMin = Enumerable.Repeat(uint.MaxValue, 9).ToArray();
+    private readonly uint[] _textureUploadLodPhysicalMax = new uint[9];
     private int _textureOverwriteSeedCount;
     private int _textureOverwriteTraceCount;
     private readonly int[] _textureWriteBucketTraceCounts = new int[TextureZeroSampleBucketCount];
@@ -33016,6 +33023,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"texw={_textureMappedWriteCount}/{_textureMappedNonZeroWriteCount}/{_textureMappedZeroWriteCount}/{_textureTouchedWordCount}/0x{_textureTouchedFirstWord:X}/0x{_textureTouchedLastWord:X} " +
            GetTextureZeroSampleBucketDebugStatus() +
            GetTextureSampleDebugStatus() +
+           GetTextureUploadLodDebugStatus() +
            GetBufferCountDebugStatus() +
            GetTmuDebugStatus() +
            $"rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}/{_texturedFallbackPixelCount}/{_texturedTriangleCount}/{_texturedTriangleCoveredCount}/{_texturedTriangleRejectedCount}/{_texturedRejectDegenerateCount}/{_texturedRejectClipCount}/{_texturedRejectEmptyRasterCount}/{_texturedZeroPixelCount} " +
@@ -33055,6 +33063,23 @@ internal class VoodooBringupBackend : IVoodooBackend
         => _experimentTextureMamePixelLod
             ? $"plod={string.Join('/', _experimentTextureMamePixelLodCounts)} "
             : "";
+
+    private string GetTextureUploadLodDebugStatus()
+    {
+        if (!_debugTextureUploadLods)
+            return "";
+
+        IEnumerable<string> lods = Enumerable.Range(0, _textureUploadLodWriteCounts.Length)
+            .Where(lod => _textureUploadLodWriteCounts[lod] != 0)
+            .Select(lod =>
+            {
+                string span = _textureUploadLodPhysicalMin[lod] == uint.MaxValue
+                    ? "-"
+                    : $"{_textureUploadLodPhysicalMin[lod]:X6}-{_textureUploadLodPhysicalMax[lod]:X6}";
+                return $"l{lod}:{_textureUploadLodWriteCounts[lod]}/{_textureUploadLodType5WriteCounts[lod]}/{_textureUploadLodNonZeroWriteCounts[lod]}@{span}";
+            });
+        return $"twlod={string.Join(',', lods)} ";
+    }
 
     private uint PeekCommandFifoWord() => ReadCommandFifoWordAt(_cmdFifoReadIndex);
 
@@ -35052,6 +35077,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (lod > 8)
             return;
 
+        int lodIndex = (int)lod;
+        if (_debugTextureUploadLods)
+        {
+            _textureUploadLodWriteCounts[lodIndex]++;
+            if (_currentType5TextureWriteActive)
+                _textureUploadLodType5WriteCounts[lodIndex]++;
+            if (value != 0)
+                _textureUploadLodNonZeroWriteCounts[lodIndex]++;
+        }
+
         int tmu = (int)((wordOffset >> 19) & 0x03u);
         uint mode = ReadTextureUploadRegister(tmu, RegTextureMode);
         uint texLod = ReadTextureUploadRegister(tmu, RegTextureLod);
@@ -35071,6 +35106,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             if (_fixLinearTextureDownloadAddressing)
             {
+                TrackTextureUploadLodPhysicalSpan(lodIndex, MapTextureBankByteAddress(tmu, wordOffset << 2));
                 WriteTextureLinear32(wordOffset, value, bytesPerTexel, tmu);
                 _textureWriteCount++;
                 return;
@@ -35118,6 +35154,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 byteOffset = packetBlockByteOffset;
             }
             byteOffset = MapTextureBankByteAddress(tmu, byteOffset);
+            TrackTextureUploadLodPhysicalSpan(lodIndex, byteOffset);
             if (_currentType5TextureWriteActive)
             {
                 int physicalWord = (int)((byteOffset & (TextureBytes - 1u)) >> 2);
@@ -35156,6 +35193,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             EndTextureWriteContext();
         }
+    }
+
+    private void TrackTextureUploadLodPhysicalSpan(int lod, uint byteOffset)
+    {
+        if (!_debugTextureUploadLods)
+            return;
+
+        uint physicalAddress = byteOffset & (TextureBytes - 1u);
+        if (physicalAddress < _textureUploadLodPhysicalMin[lod])
+            _textureUploadLodPhysicalMin[lod] = physicalAddress;
+        if (physicalAddress > _textureUploadLodPhysicalMax[lod])
+            _textureUploadLodPhysicalMax[lod] = physicalAddress;
     }
 
     private void BeginTextureWriteContext(
