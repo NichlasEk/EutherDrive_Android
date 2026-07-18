@@ -2596,3 +2596,31 @@ Verifieringsloggar:
 - `/tmp/eutherdrive-gauntlet-probe/promoted-runtime-interrupt-render-plus5m-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/type3-fields-correct-from-render-f132-plus15m-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-owner-f100-f132-plus10m-20260718.log`
+
+### Static-object companion-offseten är förkastad
+
+Den befintliga default-off companion-ownern har körts ovanpå static-object-
+och size-owner-kombinationen. Den hydratiserar `0x11de4` byte från diskoffset
+`0x0fb95e00` till `0x80349264` och flyttar record `0x802ecb6c` från
+`0x802e1718` till den nya källan. Källans första ord är upprepade
+`0xf0f0f0f0`, och A/B-resultatet visar att detta inte är rätt companion-body:
+
+```text
+variant                    Type3  texture writes  sampled pixels  colored pixels  hash
+static + size +5M             976            5177           35904              61  ad79a01f
+static + size + companion    2160            1093           78336               0  f29eb67c
+```
+
+Samtliga 78 336 rasteriserade texturpixlar samplar noll. Den exporterade
+bilden är svart bortsett från den gamla vita hörntriangeln. Companion-ownern
+ska därför förbli default-off och offseten `0x0fb95e00` ska inte användas som
+modell-body utan ny proveniens från guestens index/descriptor. Nästa sond ska
+följa skrivaren av record `0x802ecb6c` och dess source-fält, eller härleda
+body-offseten från den hydratiserade objekttabellen i stället för att gissa en
+angränsande diskregion.
+
+Regressionsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-f132-plus5m-20260718.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-f132-plus5m-20260718.ppm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-f132-plus5m-20260718.png`
