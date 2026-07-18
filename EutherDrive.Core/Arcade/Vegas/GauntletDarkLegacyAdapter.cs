@@ -778,6 +778,8 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_SELECTOR_CALLS_LIMIT", 96);
     private readonly bool _traceRuntimeWorldTextureUploadBounds =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_UPLOAD_BOUNDS"));
+    private readonly bool _experimentRuntimeWorldTextureUploadSquareAspect =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SQUARE_ASPECT"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
     private readonly bool _experimentRuntimeBgLoadModelHydratedSourceOwner =
@@ -1274,6 +1276,7 @@ internal sealed class MipsR5000Core
     private readonly HashSet<(ulong Pc, uint Selector, ulong Record, uint Source)> _runtimeWorldTextureSelectorCallTraceKeys = [];
     private int _runtimeWorldTextureUploadBoundsTraceCount;
     private int _runtimeWorldTextureUploadLowLevelTraceCount;
+    private int _runtimeWorldTextureUploadSquareAspectTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
@@ -1577,6 +1580,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(pc);
         TraceKnownRuntimeTextureSetLookup(pc);
         TraceKnownRuntimeWorldTextureSelectorCall(pc);
+        ApplyKnownRuntimeWorldTextureUploadSquareAspect(pc);
         TraceKnownRuntimeWorldTextureUploadBounds(pc);
         ApplyKnownRuntimeBgLoadModelPreserveAssetSource(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
@@ -15431,12 +15435,37 @@ internal sealed class MipsR5000Core
             $"a0={_gpr[4]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} record={record:x16} s3={_gpr[19]:x16} " +
             $"recordNext={recordNext:x8} recordStatus={recordStatus:x8} recordSelector={recordSelector:x8} " +
-            $"recordWords={FormatTraceWords(record, 16)} info={output:x16}:{FormatTraceWords(output, 6)} loopIndex={loopIndex:x8}");
+                $"recordWords={FormatTraceWords(record, 16)} info={output:x16}:{FormatTraceWords(output, 6)} loopIndex={loopIndex:x8}");
+    }
+
+    private void ApplyKnownRuntimeWorldTextureUploadSquareAspect(ulong pc)
+    {
+        const ulong uploadEntryPc = 0xffffffff801094f4UL;
+        const uint record0Source = 0x802e1719U;
+        if (!_experimentRuntimeWorldTextureUploadSquareAspect || pc != uploadEntryPc)
+            return;
+
+        ulong info = CanonicalizeTraceAddress(_gpr[7]);
+        if (!IsMainRamRange(info, 0x14UL) ||
+            ReadTraceWord(info + 0x10UL) != record0Source ||
+            ReadTraceWord(info + 0x08UL) != 0)
+        {
+            return;
+        }
+
+        _memory.Write32(info + 0x08UL, 3U);
+        if (_runtimeWorldTextureUploadSquareAspectTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] runtime-world-texture-upload-square-aspect pc={pc:x16} " +
+                $"info={info:x16} source={record0Source:x8} aspect=0->3 " +
+                $"words={FormatTraceWords(info, 5)} ra={_gpr[31]:x16}");
+        }
     }
 
     private void TraceKnownRuntimeWorldTextureUploadBounds(ulong pc)
     {
-        const ulong aspectBuilderPc = 0xffffffff800a675cUL;
+        const ulong aspectBuilderPc = 0xffffffff800a731cUL;
         const ulong entryPc = 0xffffffff801094f4UL;
         const ulong preparedPc = 0xffffffff8010953cUL;
         const ulong emitterPc = 0xffffffff801096acUL;
@@ -15456,14 +15485,13 @@ internal sealed class MipsR5000Core
             if (_runtimeWorldTextureUploadBoundsTraceCount >= 64)
                 return;
 
-            ulong aspectInfo = CanonicalizeTraceAddress(_gpr[4]);
-            ulong record = CanonicalizeTraceAddress(_gpr[5]);
+            ulong aspectInfo = CanonicalizeTraceAddress(_gpr[29] + 0x10UL);
+            ulong record = CanonicalizeTraceAddress(_gpr[18]);
             if (!IsMainRamRange(aspectInfo, 0x14UL) || !IsMainRamRange(record, 0x0cUL))
                 return;
 
             uint aspectSource = ReadTraceWord(record + 0x08UL);
-            if (_traceTextureUploadRunSource.HasValue &&
-                SignExtend32(aspectSource) != CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value))
+            if (_traceTextureUploadRunSource.HasValue && record != 0xffffffff802e2158UL)
             {
                 return;
             }

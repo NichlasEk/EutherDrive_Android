@@ -1945,3 +1945,72 @@ eller från konverterarens no-match-fallthrough. Bounds-tracen fångar därför 
 skriver recordets packade dimensioner samt de fem producerade infoorden.
 Detta är nästa dynamiska beslutspunkt; en aspect- eller samplerpatch innan den
 träffen skulle blanda ihop producentfel och korrekt 8:1-metadata.
+
+### Record 0 faller bevisligen genom aspect-konverteraren
+
+En kanonisk f900--f1000+5,1M-körning via baseline-wrappern fångade recordet
+precis vid selectoranropet på render-frame 984:
+
+```text
+record=802e2158
+recordWords=00000000/40e560da/00000001/00000000/0000000d/000000c6/...
+info=00000000/00000000/00000000/00000000/802e1719/00000000
+```
+
+Guestens två `lhu` vid `raw+0x04/+0x06` ser alltså `0x60da` och `0x40e5`.
+De är varken lika eller ett exakt 2x-, 4x- eller 8x-förhållande. Funktionen
+`0x800a66e8` når därför no-match-utgången utan att skriva `info+0x08`.
+Det kvarvarande nollvärdet blir sedan Glide-aspect 0 (8:1) och väljer
+`0x80158050: 0x100/0x20`. 256x32-geometrin är därmed inte deklarerad av en
+giltig aspectpost; den är en följd av ogiltiga packade dimensioner och ett
+oskrivet stackfält.
+
+`phase=aspect-builder` flyttas till caller-returen `0x800a731c`, där både
+recordpekaren och stack-info fortfarande är stabila. En ny strikt default-off
+kausalitetsprobe kan dessutom ändra endast record-0-uploadens aspect efter
+producenten:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SQUARE_ASPECT=1
+```
+
+Den skriver `info+0x08: 0 -> 3` endast när source är `0x802e1719`. Proben
+ändrar varken draw-LOD eller samplern. Nästa A/B avgör om en square-upload ger
+den väntade 256x256-geometrin och om de 64 KiB som följer source faktiskt är
+en sammanhängande textur; resultatet ska fortfarande behandlas som diagnostik,
+inte som fix, tills ursprunget till `0x40e560da` är känt.
+
+### Square-upload är kausal men läser inte en sammanhängande 256x256-asset
+
+Den default-off-proben kördes från samma f900-state genom f1000+5,1M. Den
+träffade varje selectoranrop och byggde `info=0/0/3/0/802e1719`, alltså den
+avsedda 1:1-tabellposten. Jämfört med kanoniska endpointen divergerade både
+geometri och exekvering tydligt:
+
+```text
+baseline frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
+square   frameHash=0x3fc1f918 fifoWords=10489288 packets=370117 swaps=1265
+
+baseline texture touched words=16384  last=0x00fffc
+square   texture touched words=45184  last=0x415f04
+```
+
+Square-dumpen ersätter delar av de långa horisontella banden med tätt
+upprepade diagonala och horisontella mönster, men visar fortfarande ingen
+igenkännbar scen. De 64 KiB som emittern konsumerar från `0x802e1719` är
+alltså inte en sammanhängande square-textur. Proben är en negativ kontroll och
+ska förbli default-off.
+
+En direkt kontroll mot `gauntd24.raw` vid `0x0fbb1270` visar dessutom samma
+ord `00000000/40e560da/01000000/...`; `0x40e560da` introduceras inte av
+QIO-kopian eller RAM-endianness. Nästa kausala gräns är därför varför guestens
+materialpekare `0x802e2158` skickas till en helper som tolkar `+0x04/+0x06`
+som aspectdimensioner, trots att diskposten inte innehåller ett giltigt
+power-of-two-förhållande där. Följ callerns val av record/subrecord-offset före
+`0x800a66e8`; fler syntetiska aspect- eller packetförlängningar saknar stöd.
+
+Kod-dumpen av den omgivande funktionen visar dessutom `move s2,a0` vid
+`0x800a7110`; ingen intern `+0x10/+0x30`-justering görs innan
+aspect-buildern får `s2`. Om fel strukturdel används måste den därför komma
+från callerns argumentval eller den tidigare record-lookupen, inte från en
+tappad offset inne i selectorloopen.
