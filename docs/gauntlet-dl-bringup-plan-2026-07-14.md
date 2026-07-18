@@ -1621,6 +1621,31 @@ plod=47883532/0/0/0/0/0/0/0/0
 frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
 ```
 
+### Emittern använder default-sentinel, inte en materialstorlek
+
+Bounds-tracen omfattar nu även entry `0x801096ac` och avkodar dess verkliga
+ABI. Wrappern väljer tabellpost enligt
+`0x80168050 + 4 * (9 * stackArg0 + a2)` och läser postens andra ord innan
+låg-nivåanropet `0x800fe1fc`. Alla filtrerade record-0-anrop gav:
+
+```text
+a2=0
+stackArgs=00000000/00000000/00000003/802e1719
+table=80168050:00000000/00000000
+selectors a1=0000,2000,4000,6000,8000,a000,c000,e000
+```
+
+Wrappern dekrementerar tabellens andra nollord och skickar därmed
+`0xffffffff` som default-sentinel, inte ett explicit packetantal. Varken
+materialposten, upload-info eller runtime-tabellen begär alltså 32 paket eller
+en 256x32-yta. Den geometrin uppstår helt i `0x800fe1fc` och dess nedströms
+Glide/FIFO-väg utifrån selector, format `3`, källpekare och sentinelvärdet.
+
+Nästa gräns flyttas därför exakt till `0x800fe1fc`: följ sentinelgrenen till
+de 64-ords Type5-paketen och bind dess beräknade packet-/radslut till
+selectorserien. Ingen tabellpatch eller syntetisk materialstorlek har stöd.
+Den observationsrena kontrollen behöll åter `frameHash=0x42925e78`.
+
 Det finns alltså inte en enda accepterad LOD1--8-write i den observerade
 f900--f1000-strömmen. Alla 3 390 208 ord kodar LOD0 i targetfältet, och den
 korrigerade samplern väljer också LOD0 för samtliga 47 883 532 pixlar. Detta

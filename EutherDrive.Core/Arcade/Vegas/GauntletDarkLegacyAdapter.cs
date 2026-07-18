@@ -15437,10 +15437,39 @@ internal sealed class MipsR5000Core
     {
         const ulong entryPc = 0xffffffff801094f4UL;
         const ulong preparedPc = 0xffffffff8010953cUL;
+        const ulong emitterPc = 0xffffffff801096acUL;
         if (!_traceRuntimeWorldTextureUploadBounds ||
-            pc is not (entryPc or preparedPc) ||
-            _runtimeWorldTextureUploadBoundsTraceCount >= 32)
+            pc is not (entryPc or preparedPc or emitterPc) ||
+            _runtimeWorldTextureUploadBoundsTraceCount >= 64)
         {
+            return;
+        }
+
+        if (pc == emitterPc)
+        {
+            ulong stack = CanonicalizeTraceAddress(_gpr[29]);
+            if (!IsMainRamRange(stack + 0x1cUL, 4UL))
+                return;
+
+            uint stackArg0 = ReadTraceWord(stack + 0x10UL);
+            uint stackArg1 = ReadTraceWord(stack + 0x14UL);
+            uint stackArg2 = ReadTraceWord(stack + 0x18UL);
+            uint emitterSource = ReadTraceWord(stack + 0x1cUL);
+            if (_traceTextureUploadRunSource.HasValue &&
+                SignExtend32(emitterSource) != CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value))
+            {
+                return;
+            }
+
+            ulong tableEntry = 0xffffffff80168050UL +
+                4UL * (9UL * stackArg0 + (uint)_gpr[6]);
+            _runtimeWorldTextureUploadBoundsTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] runtime-world-texture-upload-bounds n={_runtimeWorldTextureUploadBoundsTraceCount} " +
+                $"frame={_memory.VoodooRenderFrameCount} phase=emitter pc={pc:x16} " +
+                $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+                $"stack={stack:x16}:{stackArg0:x8}/{stackArg1:x8}/{stackArg2:x8}/{emitterSource:x8} " +
+                $"table={tableEntry:x16}:{FormatTraceWords(tableEntry, 2)} ra={_gpr[31]:x16}");
             return;
         }
 
