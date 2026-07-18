@@ -5927,6 +5927,9 @@ internal sealed class MipsR5000Core
             _mainRamValueTransitionInitialized = true;
             _mainRamValueTransitionLastValue = value;
             _mainRamValueTransitionPreviousPc = pc;
+            Console.WriteLine(
+                $"[GAUNTDL:MAINRAM-VALUE-TRANSITION] initial addr=0x{address:x16} " +
+                $"value=0x{value:x8} pc=0x{pc:x16}");
             return;
         }
 
@@ -15463,7 +15466,8 @@ internal sealed class MipsR5000Core
         uint dumpCount = Math.Min(recordCount, 16U);
         Console.WriteLine(
             $"[GAUNTDL:TRACE] record-list-state pc={pc:x16} count={recordCount} dump={dumpCount} " +
-            $"head={_gpr[16]:x16} ra={_gpr[31]:x16}");
+            $"head={_gpr[16]:x16} ra={_gpr[31]:x16} " +
+            $"allocator={TraceKnownRuntimeBgLoadModelLookupGlobals()}");
         for (uint index = 0; index < dumpCount; index++)
         {
             ulong record = tableBase + index * recordStride;
@@ -19422,7 +19426,7 @@ internal sealed class MipsR5000Core
 
     private string TraceKnownRuntimeBgLoadModelLookupGlobals()
     {
-        const ulong baseAddress = 0xffffffff802380f0UL;
+        const ulong baseAddress = 0xffffffff802280f0UL;
         if (!IsMainRamRange(baseAddress, 0x20))
             return "";
 

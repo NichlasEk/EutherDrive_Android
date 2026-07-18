@@ -2754,3 +2754,53 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/companion-f300-tmu-state-producer-plus1m-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/companion-f300-record-list-state-plus200k-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/static-size-no-companion-record-list-plus200k-20260718.log`
+
+### Arena-reservationen är äkta men inte en saknad initiering
+
+Den första allocator-tracen rapporterade felaktigt fem nollor eftersom
+diagnostikhjälparen läste `0x802380f4..0x80238104`, medan guestkoden använder
+`0x802280f4..0x80228104`. Efter korrigering visar samma object-load-loop en
+fullt initierad arena:
+
+```text
+reserved  0x802280f8 = 00000001
+cursor    0x802280fc = 000062d8
+limit     0x80228100 = 0051aac0
+base      0x80228104 = 802db440
+```
+
+`GetMemBase() called while mem reserved` och `AllocMem() called while mem
+reserved` är alltså riktiga, men de betyder inte att arena-base/cursor saknas.
+En write-watch på reservationsflaggan stänger dessutom livscykeln exakt:
+
+```text
+800c9220  0 -> 1  ra=800ac10c
+800c9248  1 -> 0  ra=800abe8c
+800c9220  0 -> 1  ra=800abc80
+800c9220  1 -> 1  ra=800abc80 (följande record)
+```
+
+Den andra reservationen kommer från record-publiceraren kring `0x800abc78`.
+Den reserverar hela den återstående arenan, binder den nya recordtabellen vid
+`0x80252da0` och returnerar utan lokal release. En canonical frame-1000-state
+har fortfarande flaggan `1`, medan frame-100-snapshoten startar med `0`; den
+långlivade reservationen är därför reproducerbar guest-state och ska inte
+nollas syntetiskt. Allokeringarna fortsätter dessutom att flytta cursor trots
+diagnostikvarningarna.
+
+Slutsatsen är att allocator-varningarna inte förklarar den frysta
+loading-texturen. Fortsätt vid world-load completion/publicering och leta efter
+statusen som ska växla materialkonsumenten bort från set 0 / record 0.
+
+Default-off diagnostiken skriver nu initialvärdet för
+`EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_VALUE_TRANSITION_ADDRESS`, visar rätt
+allocator-globals och inkluderar dem i record-list-headern.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/companion-reservation-lifecycle-corrected-f100-f132-plus1m-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f100-reservation-flag-writer-plus1m-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f100-reservation-helper-cputrace-plus1m-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f100-reservation-owner-cputrace-plus1m-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f100-reservation-flag-initial-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f1000-reservation-flag-initial-20260718.log`
