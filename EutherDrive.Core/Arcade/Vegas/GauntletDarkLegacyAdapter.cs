@@ -19191,12 +19191,33 @@ internal sealed class MipsR5000Core
     private bool TryApplyKnownRuntimeBgLoadModelStaticObjectPathOwner(ulong pc)
     {
         const ulong callsite = 0xffffffff800c886cUL;
+        const ulong openEntry = 0xffffffff800ec748UL;
         const ulong destination = 0xffffffff80218530UL;
         const ulong format = 0xffffffff8013d8d4UL;
         const ulong emptyDirectory = 0xffffffff80166370UL;
         const ulong objectsRom = 0xffffffff8013b024UL;
         const ulong source = 0xffffffff802e1718UL;
         const string ownedPath = "/d0/static_lr/objects.rom";
+
+        if (_experimentRuntimeBgLoadModelStaticObjectPathOwner &&
+            pc == openEntry &&
+            _memory.Read32(openEntry) == 0x27bdffd0U &&
+            _memory.Read32(openEntry + 0x0cUL) == 0xafb40020U &&
+            _gpr[31] == 0xffffffff800c88f8UL &&
+            _gpr[4] == 0xffffffff80295750UL &&
+            _gpr[5] == destination &&
+            _gpr[6] == 0 &&
+            ReadAsciiTraceString(destination, 2).Length == 0 &&
+            IsMainRamRange(destination, (ulong)ownedPath.Length + 1UL))
+        {
+            for (int i = 0; i < ownedPath.Length; i++)
+                _memory.Write8(destination + (uint)i, (byte)ownedPath[i]);
+            _memory.Write8(destination + (uint)ownedPath.Length, 0);
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-static-object-path-owner-open-entry pc={pc:x16} " +
+                $"path=\"{ReadAsciiTraceString(destination, 96)}\"");
+            return false;
+        }
 
         ulong frame = _gpr[30];
         if (!_experimentRuntimeBgLoadModelStaticObjectPathOwner ||
@@ -19250,6 +19271,18 @@ internal sealed class MipsR5000Core
             0xffffffff800c8928UL => "file-stat-return",
             0xffffffff800c8938UL => "file-stat-status",
             0xffffffff800c893cUL => "file-size-result-load",
+            0xffffffff800ec748UL => "file-open-dispatch-entry",
+            0xffffffff800ec7a0UL => "file-open-path-lookup-call",
+            0xffffffff800ec7a8UL => "file-open-path-lookup-return",
+            0xffffffff800ec7b4UL => "file-open-fallback-lookup-call",
+            0xffffffff800ec7bcUL => "file-open-fallback-lookup-return",
+            0xffffffff800ec800UL => "file-open-request-alloc-call",
+            0xffffffff800ec808UL => "file-open-request-alloc-return",
+            0xffffffff800ec81cUL => "file-open-request-enqueue-call",
+            0xffffffff800ec824UL => "file-open-request-enqueue-return",
+            0xffffffff800ec82cUL => "file-open-request-status-clear",
+            0xffffffff800ec834UL => "file-open-callback-call",
+            0xffffffff800ec83cUL => "file-open-callback-return",
             0xffffffff800c9088UL => "lookup-entry",
             0xffffffff800c909cUL => "lookup-global-check",
             0xffffffff800c90b4UL => "lookup-index-fold",
@@ -19275,6 +19308,15 @@ internal sealed class MipsR5000Core
             if (!IsMainRamRange(frame + 0x73UL, 1) ||
                 ReadTraceWord(frame + 0x64UL) != 0x8013b024U ||
                 ReadTraceWord(frame + 0x70UL) != 0x802e1718U)
+            {
+                return;
+            }
+        }
+        if (pc is >= 0xffffffff800ec748UL and <= 0xffffffff800ec83cUL)
+        {
+            ulong qioObject = pc == 0xffffffff800ec748UL ? _gpr[4] : _gpr[18];
+            if ((pc == 0xffffffff800ec748UL && _gpr[31] != 0xffffffff800c88f8UL) ||
+                (pc != 0xffffffff800ec748UL && qioObject != 0xffffffff80295750UL))
             {
                 return;
             }
@@ -19314,8 +19356,9 @@ internal sealed class MipsR5000Core
             $"a1={_gpr[5]:x16}({ReadAsciiTraceString(_gpr[5], 48)}) " +
             $"a2={_gpr[6]:x16}({ReadAsciiTraceString(_gpr[6], 48)}) " +
             $"a3={_gpr[7]:x16}({ReadAsciiTraceString(_gpr[7], 48)}) " +
-            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s5={_gpr[21]:x16} " +
+            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s4={_gpr[20]:x16} s5={_gpr[21]:x16} " +
             $"filePath=\"{ReadAsciiTraceString(0xffffffff80218530UL, 96)}\" " +
+            $"openObject={TraceKnownRuntimeBgLoadModelQioOneLine(0xffffffff80295750UL)} " +
             $"pathSlot={TraceKnownRuntimeBgLoadModelPathSlot(_gpr[16])} " +
             $"lookupGlobals={TraceKnownRuntimeBgLoadModelLookupGlobals()}");
     }

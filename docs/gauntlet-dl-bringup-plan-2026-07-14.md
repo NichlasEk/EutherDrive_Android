@@ -2426,3 +2426,50 @@ Verifieringsloggar:
 - `/tmp/eutherdrive-gauntlet-probe/static-object-path-owner-final-f100-f150-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/static-object-open-qio-bytes-f100-f150-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/default-off-after-static-object-path-owner-f100-f150-20260718.log`
+
+### Open-workern är enqueuad men dispatchas aldrig
+
+En andra entry-trace stänger ytterligare en klobbergräns. Path-ownern har
+fortfarande `/d0/static_lr/objects.rom` vid `0x800c88ec`, men vid första
+instruktionen i callee `0x800ec748` är `a1=0x80218530` åter tom. Det är alltså
+inte resolveraren som tömmer sökvägen; bufferten klobbras i övergången mellan
+`jal` och callee, precis som formatterarens varargs tidigare gjorde.
+
+Samma default-off path-owner har därför en andra exakt guard vid
+`0x800ec748`, matchad på `ra=0x800c88f8`, QIO-objekt `0x80295750`, den tomma
+fasta path-bufferten och open-prologens kodsignatur. När sökvägen återställs
+där accepterar guestens riktiga resolver filen:
+
+```text
+resolved node       0x80154c68
+fallback used       no
+request id          6
+request record      0x8021dd78
+open callback       0x800f0af8
+```
+
+Callbacken får korrekt relativ sökväg `a1=0x80218533`, alltså
+`/static_lr/objects.rom`. Den hittar request-id 6, allokerar deskriptorn
+`0x802ac5a0`, länkar worker `0x800f087c` och enqueue-anropet vid
+`0x800f0c14` returnerar `v0=0` (success). Därefter händer inget:
+
+- objektstatus `0x80295750+0x14` förblir noll;
+- `0x800c893c` nås inte;
+- en exakt PC-sond ser inga träffar på worker `0x800f087c`, inte heller efter
+  ytterligare en miljon instruktioner.
+
+Den nya exakta gränsen är därmed scheduler-dispatchen för kön som matas av
+`0x800ed4ac`. Nästa sond ska följa dess queue-node/list-head och jämföra med
+den fungerande mount-completionen. Promota inte en syntetisk filstorlek eller
+direktanropa workern innan dess ABI och köägarskap är verifierade.
+
+Verifieringsloggar:
+
+- `/tmp/eutherdrive-gauntlet-probe/static-object-open-dispatch-args-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-open-entry-owner-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-open-callback-entry-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-open-callback-request-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-open-callback-alloc-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-open-callback-enqueue-return-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-open-worker-hit-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/default-off-after-static-object-open-worker-trace-f100-f150-20260718.log`
