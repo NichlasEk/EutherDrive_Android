@@ -2473,3 +2473,56 @@ Verifieringsloggar:
 - `/tmp/eutherdrive-gauntlet-probe/static-object-open-callback-enqueue-return-f100-f150-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/static-object-open-worker-hit-f100-f150-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/default-off-after-static-object-open-worker-trace-f100-f150-20260718.log`
+
+### Runtime-interrupt bridge öppnar schedulergränsen
+
+Queue-watch på `0x800ed4ac` verifierar att enqueue-resultatet är strukturellt
+korrekt. Queue-head `0x8021e97c` går från noll till `0x80295780`, alltså den
+intrusiva noden vid QIO-objektets `+0x30`. Noden innehåller därefter:
+
+```text
+object              0x80295750
+queue node          0x80295780
+node + 0x04         0x80262ae0
+node + 0x08 worker  0x800f087c
+node + 0x0c context 0x80295750
+```
+
+Anropet från enqueue till `0x800de4fc` gör den riktiga runtime-signaleringen
+för tråd 0 och returnerar success. Under den gamla baseline-konfigurationen
+lästes queue-head aldrig igen efter skrivningen; `WaitForQIO` pollade i stället
+objektstatus `+0x14` tills timeout. Orsaken var inte en trasig nod eller ABI utan
+att `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS`, indirekt aktiverad av
+`BRINGUP_FAST`, stoppade samtliga runtime-interrupts innan guestens handler och
+context switch kunde köras.
+
+Den isolerade kombinationen
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS=0
+```
+
+låter device-interrupts gå genom guestens riktiga exception/restore-väg medan
+bridge-koden fortfarande filtrerar den ofärdiga timer-sidan. Utan static-path-
+experimentet går samma warm snapshot vid frame 132 nu från `Initializing Disk`
+till `Loading Game`, väljer `castle`, allokerar åtta model-records och når
+`pc=0x800ebf40`. Med path-ownern aktiv når den dessutom 1 825 texture writes,
+707 touched texture words, 12 swaps och 61 färgade framebuffer-pixlar
+(`frameHash=0xad79a01f`) i stället för timeoutens tre texture writes och noll
+färgade pixlar.
+
+Interrupt-kombinationen är därför promoterad till både adapter-baseline och
+probe-runnern. Static-object path-ownern är fortfarande default-off: den nya
+interruptordningen flyttar dess första open senare och nästa sond ska följa den
+från `Loading Game` samt reda ut diagnostiken `GetMemBase()/AllocMem called
+while mem reserved` innan path-reparationen promoteras.
+
+Verifieringsloggar:
+
+- `/tmp/eutherdrive-gauntlet-probe/static-object-worker-queue-watch-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-worker-node-watch-f100-f132-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-worker-kernel-enqueue-code-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-worker-runtime-interrupt-bridge-f100-f132-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-worker-runtime-interrupt-bridge-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/runtime-interrupt-bridge-no-static-path-owner-f100-f132-20260718.log`
