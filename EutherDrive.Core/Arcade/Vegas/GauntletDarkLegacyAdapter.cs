@@ -776,6 +776,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_SELECTOR_CALLS"));
     private readonly int _traceRuntimeWorldTextureSelectorCallsLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_SELECTOR_CALLS_LIMIT", 96);
+    private readonly bool _traceRuntimeWorldTextureUploadBounds =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_UPLOAD_BOUNDS"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCES"));
     private readonly bool _experimentRuntimeBgLoadModelHydratedSourceOwner =
@@ -1270,6 +1272,7 @@ internal sealed class MipsR5000Core
     private readonly HashSet<(uint PackedIndex, uint SetBase, ulong ReturnAddress)> _runtimeTextureSetLookupTraceKeys = [];
     private int _runtimeWorldTextureSelectorCallTraceCount;
     private readonly HashSet<(ulong Pc, uint Selector, ulong Record, uint Source)> _runtimeWorldTextureSelectorCallTraceKeys = [];
+    private int _runtimeWorldTextureUploadBoundsTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
@@ -1573,6 +1576,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(pc);
         TraceKnownRuntimeTextureSetLookup(pc);
         TraceKnownRuntimeWorldTextureSelectorCall(pc);
+        TraceKnownRuntimeWorldTextureUploadBounds(pc);
         ApplyKnownRuntimeBgLoadModelPreserveAssetSource(pc);
         ApplyKnownRuntimeBgLoadModelDistinctSourcesRepair(pc);
         ApplyKnownRuntimeBgLoadModelHydratedSourceOwnerRepair(pc);
@@ -15427,6 +15431,37 @@ internal sealed class MipsR5000Core
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} record={record:x16} s3={_gpr[19]:x16} " +
             $"recordNext={recordNext:x8} recordStatus={recordStatus:x8} recordSelector={recordSelector:x8} " +
             $"recordWords={FormatTraceWords(record, 16)} info={output:x16}:{FormatTraceWords(output, 6)} loopIndex={loopIndex:x8}");
+    }
+
+    private void TraceKnownRuntimeWorldTextureUploadBounds(ulong pc)
+    {
+        const ulong entryPc = 0xffffffff801094f4UL;
+        const ulong preparedPc = 0xffffffff8010953cUL;
+        if (!_traceRuntimeWorldTextureUploadBounds ||
+            pc is not (entryPc or preparedPc) ||
+            _runtimeWorldTextureUploadBoundsTraceCount >= 32)
+        {
+            return;
+        }
+
+        ulong info = CanonicalizeTraceAddress(pc == entryPc ? _gpr[7] : _gpr[19]);
+        if (!IsMainRamRange(info, 0x18UL))
+            return;
+
+        uint source = ReadTraceWord(info + 0x10UL);
+        if (_traceTextureUploadRunSource.HasValue &&
+            SignExtend32(source) != CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value))
+        {
+            return;
+        }
+
+        _runtimeWorldTextureUploadBoundsTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] runtime-world-texture-upload-bounds n={_runtimeWorldTextureUploadBoundsTraceCount} " +
+            $"frame={_memory.VoodooRenderFrameCount} phase={(pc == entryPc ? "entry" : "prepared")} " +
+            $"pc={pc:x16} info={info:x16}:{FormatTraceWords(info, 6)} " +
+            $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} ra={_gpr[31]:x16}");
     }
 
     private void WriteAsciiTraceString(ulong address, string text, int maxLength)

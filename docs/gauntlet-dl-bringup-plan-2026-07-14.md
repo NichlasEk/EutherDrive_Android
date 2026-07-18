@@ -1787,3 +1787,32 @@ men Voodoo får fortfarande inga writes i de fem saknade striparna ovanför
 `0x801094f4`: följ hur den avslutande `a1=0xe000`, `s3=0x10000` och postens
 råmetadata blir `lod=0x00700800` och exakt 32 Type5-paket, innan någon ny
 sampler- eller diskextent-remap övervägs.
+
+### Uploadhjälparens bounds är noll; geometrin väljs en nivå längre ned
+
+Den nya observationsrena tracen
+`EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_UPLOAD_BOUNDS=1` fångar
+upload-info både vid `0x801094f4` och direkt efter dess prepare-anrop vid
+`0x8010953c`. Filtrerad på record-0-källan `0x802e1719` visar varje träff:
+
+```text
+entry    info=00000000/00000000/00000000/00000000/802e1719/00000000
+prepared info=00000000/00000000/00000000/00000000/802e1719/00000000
+```
+
+Bounds-/countorden skapas alltså inte av prepare-funktionen. Samma record
+anropas i stället upprepade gånger med `a1/s0` i 8 KiB-steg från `0x0000` till
+`0xe000`; vissa selectorvärden förekommer för båda `s1`-grenarna. Funktionen
+går därefter vidare till den underliggande emittern vid `0x801096ac`, med
+tabellval från `0x80157f34/0x80157f50` och stackmetadata.
+
+Det korrigerar den föregående arbetsformuleringen: de 32 Type5-paketen kommer
+inte från ett enkelt `info[0]-info[1]`-count som kan repareras vid
+`0x801094f4`. Nästa kausala gräns är `0x801096ac`: bind dess tabellindex,
+stackparametrar och packetantal per selectoranrop till de slutliga 32 paketen,
+och avgör där varför endast `0xe000..0xffff` materialiseras. Den kanoniska
+körningen förblev exakt observationsren:
+
+```text
+frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
+```
