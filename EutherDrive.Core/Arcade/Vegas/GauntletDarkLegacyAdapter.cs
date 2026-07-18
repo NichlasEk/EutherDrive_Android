@@ -994,8 +994,6 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE_PARTIAL"));
     private readonly int _runtimeBgLoadModelIndexedTextureQioStreamLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", 0);
-    private readonly bool _experimentRuntimeBgLoadModelIndexedTextureQioStreamBoundaryHydrate =
-        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_BOUNDARY_HYDRATE"));
     private readonly bool _traceRuntimeBgLoadModelIndexedStatusHelper =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_STATUS_HELPER"));
     private readonly int _traceRuntimeBgLoadModelIndexedStatusHelperLimit =
@@ -18675,30 +18673,6 @@ internal sealed class MipsR5000Core
             return;
 
         ulong loadedSource = loadedSourceBase + streamIndex * sourceStride;
-        bool hydratedAtBoundary = false;
-        if (_experimentRuntimeBgLoadModelIndexedTextureQioStreamBoundaryHydrate &&
-            streamIndex <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex &&
-            IsMainRamRange(loadedSource, sourceStride) &&
-            IsKnownRuntimeBgLoadModelSourceWindowEmpty(loadedSource) &&
-            TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(
-                streamIndex,
-                loadedSource,
-                (uint)Math.Min(sourceStride, uint.MaxValue),
-                out string boundaryCode,
-                out ulong boundaryDiskOffset,
-                out uint boundaryFirstWord))
-        {
-            hydratedAtBoundary = true;
-            TryAssignKnownRuntimeBgLoadModelHydratedSourceOwner(streamIndex, loadedSource, out _, out _, out _);
-            if (_runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount++ < 16)
-            {
-                Console.WriteLine(
-                    $"[GAUNTDL:FIX] bgloadmodel-indexed-texture-qio-stream-boundary-hydrate pc={pc:x16} " +
-                    $"streamIndex={streamIndex} currentLimit={_gpr[20]} code={boundaryCode} " +
-                    $"loadedSource={loadedSource:x16} bytes={sourceStride:x} " +
-                    $"disk={boundaryDiskOffset:x8} first={boundaryFirstWord:x8}");
-            }
-        }
         bool knownLoadedSource =
             streamIndex <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex &&
             IsMainRamRange(loadedSource, 0x80UL) &&
@@ -18730,7 +18704,7 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio-stream-limit pc={pc:x16} " +
                 $"streamIndex={streamIndex} sourceCursor={sourceCursor} limit={oldLimit}->{_gpr[20]} " +
-                $"loadedSource={loadedSource:x16} hydratedAtBoundary={hydratedAtBoundary}");
+                $"loadedSource={loadedSource:x16}");
 
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_BGLOADMODEL_SOURCE_RECORD_TABLE") == "1")
                 TraceKnownRuntimeBgLoadModelSourceRecordTable(streamIndex, loadedSource, sourceOwnedLimit);

@@ -2837,9 +2837,8 @@ Den tidiga f100->f132-livscykeln lokaliserar ordningsfelet mer precist. Vid
 `0x800abe78` når record-loopen stream index 2 med limit 2 medan
 `0x802e5718` ännu är tom. Guardens source-owned limit kan då inte läsas och
 loopen avslutas. Den befintliga QIO-fixen hydratiserar `snm` först senare, utan
-att loopen återbesöker gränsen. En default-off kontroll,
-`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_BOUNDARY_HYDRATE=1`,
-hydratiserar endast det bevisat tomma fönstret när gränsen träffas. Då sker:
+att loopen återbesöker gränsen. En default-off kontroll hydrerade endast det
+bevisat tomma fönstret när gränsen träffades. Då skedde:
 
 ```text
 index 2  snm  limit 2 -> 13
@@ -2847,13 +2846,18 @@ index 3  stk  short-read, limit 2 -> 9
 index 7  nin  hydreras, men count 19 avvisas av configuredMax 13
 ```
 
-Kontrollen är strukturellt kausal men visuellt neutral vid f132
-(`frameHash=0xf29eb67c`) och förblir default-off. Den viktiga nya slutsatsen är
-att stream 4..8 inte saknas på grund av source-tabellens slutpekare: QIO-
-hydreringen kommer efter den enda loopgräns som kunde publicera deras
-livslängd. Nästa A/B ska fortsätta från en experimentfri state och pröva den
-ordningsfixen över en längre frame-sträcka utan att höja max-count till 27;
-index 7/count 19 är sedan tidigare ett separat diagnostiskt spår.
+Kontrollen är neutral vid f132 men en rättvis f100->f200 A/B avfärdar den
+tydligt. Baseline når den färgade `frameHash=0xd083385f` med `62984` texture
+writes och `11649` berörda ord. Tidig boundary-hydrering faller tillbaka till
+den svarta `0xf29eb67c`-bilden, producerar `1004872` texture writes och berör
+bara `2049` ord. Kandidaten är därför borttagen, inte bara default-off.
+
+Den viktiga nya slutsatsen är att stream 4..8 inte kan lagas genom att fylla
+det första tomma source-fönstret före request completion. Den riktiga gränsen
+är fortfarande per-entry-QIO: guestvalt filnamn, logical offset, destination
+och completion-ordning måste bevaras innan source ownership publiceras. Höj
+inte max-count till 27; index 7/count 19 är sedan tidigare ett separat
+diagnostiskt spår.
 
 Verifieringsartefakter:
 
@@ -2864,3 +2868,5 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/f100-f132-plus1m-qio-lifetime-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/f100-f132-plus1m-stream-source-state-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/f100-f132-plus1m-stream-boundary-hydrate-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/stream-boundary-control-f100-f200-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/stream-boundary-experiment-f100-f200-20260718.log`
