@@ -2314,3 +2314,62 @@ allokeringsstorleken som idag blir noll före `0x800c9088`.
 Verifieringslogg:
 
 - `/tmp/eutherdrive-gauntlet-probe/slot0-static-object-companion-f100-f150-20260718.log`
+
+### `objects.rom`-storleken stänger arenareservationens nollkedja
+
+Den fokuserade entrytracen visar att `0x800c8f70` är den generella
+arenaallokatorn. Den tar emot storleken i `a0`, sparar den i sitt frame och
+adderar den till arena-cursorn; den producerar alltså inte nollan själv.
+Slot-0-anropet kommer från `ra=0x800aae84`, där `a0` väljs från returvärdet
+hos filstorleksvägen `0x800c8a5c -> 0x800c8828`.
+
+En default-off result-struct-trace vid `0x800c893c` stänger kedjan:
+
+```text
+file                  objects.rom
+directory pointer     0x80166370 -> ""
+fifth/source argument 0x802e1718
+result words          alla noll
+returned bytes        0
+AllocMem a0           0
+```
+
+Den tidigare `ra=0x800c8fa4` var endast den interna diagnostikutskriften
+`AllocMem() called while mem reserved`; den riktiga allokeringscallern är
+`0x800aae84`.
+
+En separat default-off size-owner,
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_SIZE_OWNER=1`,
+matchar endast `objects.rom`, femte argumentet `0x802e1718` och
+objektsignaturen `f00b0001`. Den returnerar den diskbevisade payloadstorleken
+`0x67b4c` från `0x800c8828`. Guestens egen allocator tar därefter emot exakt
+`a0=0x67b4c`; basen är fortfarande `0x802e1718`, så nästa arenaadress blir
+det förväntade `0x80349264`.
+
+F100--f150 A/B med table-owner visar att reservationen är kausal men ännu
+inte en bildfix:
+
+```text
+                                  table only    table + size owner
+frameHash                         0xad79a01f    0xad79a01f
+fifoPackets                       9,192         24,491
+Type3 packets                     0             1
+Type5 packets                     315           874
+texture writes                    1,841         5,167
+CPU endpoint                      0x800fe7d0    0x800fe31c
+```
+
+Med companion-owner samtidigt återkommer companionprofilen
+`frameHash=0xf29eb67c`, `fifoPackets=3,042`, `Type5=185`,
+`texture writes=1,093` och `swaps=18`, men CPU-endpointen är fortfarande den
+nya `0x800fe31c`. Size-owner ska därför förbli diagnostisk. Nästa gräns är
+varför den riktiga filstorleksvägen vid `0x800c8828` lämnar ett helt tomt
+resultat trots korrekt `objects.rom`-namn och source-argument; promota varken
+size-owner eller companion-remappen innan den vägen ägs av guest/QIO.
+
+Verifieringsloggar:
+
+- `/tmp/eutherdrive-gauntlet-probe/static-object-file-size-result-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-size-owner-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-size-owner-alloc-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-size-companion-owner-f100-f150-20260718.log`
