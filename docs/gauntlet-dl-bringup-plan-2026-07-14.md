@@ -2526,3 +2526,73 @@ Verifieringsloggar:
 - `/tmp/eutherdrive-gauntlet-probe/static-object-worker-runtime-interrupt-bridge-f100-f132-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/static-object-worker-runtime-interrupt-bridge-f100-f150-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/runtime-interrupt-bridge-no-static-path-owner-f100-f132-20260718.log`
+
+### Lång interrupt-baseline och static-object A/B
+
+Den promoterade interrupt-konfigurationen har nu körts vidare från frame 100
+till frame 132 plus tio miljoner instruktioner utan static-object-experiment.
+Guestkoden fortsätter genom `Loading Game`, genererar 5 730 Type3-paket och
+764 texturerade trianglar samt skriver 15 747 texturord. Den exporterade bilden
+har 5 979 färgade pixlar, men de ligger fortfarande huvudsakligen som ett tunt
+brusigt band längs bildens ovankant:
+
+```text
+frameHash             0xd083385f
+Type3 packets         5730
+texture writes        15747
+textured triangles    764
+framebuffer colored   5979
+```
+
+Frontbuffer 1 är nästan helt vit med två smala duplicerade band, buffer 0
+innehåller det mindre felaktiga toppbandet och buffer 2 är svart.
+`ChooseRenderBufferIndex()` väljer därför avsiktligt buffer 0; detta är inte
+en enkel fel-buffer-regression. Efter ytterligare fem miljoner instruktioner
+genererar guesten credit-strängar men frame-hashen och buffertinnehållet är
+oförändrade. Den upprepade Type3-signaturen `0x0180a8cb` med de råa
+koordinaterna `x=49076`/`y=-16614` är den redan dokumenterade loading-
+fullrecten, inte en ny packet-decoder-regression.
+
+Path-ownern ovanpå samma interrupt-baseline är en tydlig negativ A/B. Vid
++10M ligger den kvar i `WaitForQIO`, har noll Type3-paket och endast 61 färgade
+pixlar:
+
+```text
+variant                    Type3  texture writes  colored pixels  hash
+promoted baseline +10M       5730           15747            5979  d083385f
+static path owner +10M           0            1825              61  ad79a01f
+```
+
+En PC-sond runt `0x800f087c` och en queue-head-sond på `0x8021e97c` visar
+fortfarande ingen worker-dispatch eller senare queue-head-läsning. Device-IRQ
+når alltså guestens handler, men just async file-open-kön saknar fortfarande
+en konsument. Path-ownern ska förbli default-off.
+
+Den separata, exakt guardade size-ownern
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_SIZE_OWNER=1`
+isolerar denna schedulergräns genom att returnera den verifierade storleken
+`0x67b4c` för den redan hydratiserade `objects.rom`-källan. Den går vidare till
+`castle`, allokerar åtta model-records och producerar vid +5M 976 Type3-paket
+och 5 177 texture writes. Den är ändå inte redo att promoteras: samtliga
+35 904 rasteriserade texturpixlar samplar noll, framebuffer-hashen stannar på
+`0xad79a01f`, och guesten rapporterar fortfarande `GetMemBase()/AllocMem called
+while mem reserved`. Nästa gräns är därför den saknade body/companion-källan
+efter statiska objekttabellen, inte fler display-buffer- eller Type3-ändringar.
+
+Återanvändbara snapshots och bilder:
+
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-bridge-render-f132-plus10m-20260718.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-bridge-render-f132-plus15m-20260718.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-bridge-render-f132-plus10m-20260718.png`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-owner-f132-plus10m-20260718.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-owner-f132-plus10m-20260718.ppm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-owner-f132-plus5m-20260718.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-owner-f132-plus5m-20260718.ppm`
+
+Verifieringsloggar:
+
+- `/tmp/eutherdrive-gauntlet-probe/promoted-runtime-interrupt-long-f100-f132-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/promoted-runtime-interrupt-render-snapshot-f100-f132-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/promoted-runtime-interrupt-render-plus5m-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/type3-fields-correct-from-render-f132-plus15m-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-owner-f100-f132-plus10m-20260718.log`
