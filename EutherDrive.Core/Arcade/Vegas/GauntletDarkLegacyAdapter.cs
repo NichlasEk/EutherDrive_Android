@@ -994,6 +994,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE_PARTIAL"));
     private readonly int _runtimeBgLoadModelIndexedTextureQioStreamLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", 0);
+    private readonly bool _experimentRuntimeBgLoadModelIndexedTextureQioStreamBoundaryHydrate =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_BOUNDARY_HYDRATE"));
     private readonly bool _traceRuntimeBgLoadModelIndexedStatusHelper =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_STATUS_HELPER"));
     private readonly int _traceRuntimeBgLoadModelIndexedStatusHelperLimit =
@@ -18673,6 +18675,30 @@ internal sealed class MipsR5000Core
             return;
 
         ulong loadedSource = loadedSourceBase + streamIndex * sourceStride;
+        bool hydratedAtBoundary = false;
+        if (_experimentRuntimeBgLoadModelIndexedTextureQioStreamBoundaryHydrate &&
+            streamIndex <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex &&
+            IsMainRamRange(loadedSource, sourceStride) &&
+            IsKnownRuntimeBgLoadModelSourceWindowEmpty(loadedSource) &&
+            TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(
+                streamIndex,
+                loadedSource,
+                (uint)Math.Min(sourceStride, uint.MaxValue),
+                out string boundaryCode,
+                out ulong boundaryDiskOffset,
+                out uint boundaryFirstWord))
+        {
+            hydratedAtBoundary = true;
+            TryAssignKnownRuntimeBgLoadModelHydratedSourceOwner(streamIndex, loadedSource, out _, out _, out _);
+            if (_runtimeBgLoadModelIndexedTextureQioStreamLimitTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:FIX] bgloadmodel-indexed-texture-qio-stream-boundary-hydrate pc={pc:x16} " +
+                    $"streamIndex={streamIndex} currentLimit={_gpr[20]} code={boundaryCode} " +
+                    $"loadedSource={loadedSource:x16} bytes={sourceStride:x} " +
+                    $"disk={boundaryDiskOffset:x8} first={boundaryFirstWord:x8}");
+            }
+        }
         bool knownLoadedSource =
             streamIndex <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex &&
             IsMainRamRange(loadedSource, 0x80UL) &&
@@ -18704,7 +18730,7 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-indexed-texture-qio-stream-limit pc={pc:x16} " +
                 $"streamIndex={streamIndex} sourceCursor={sourceCursor} limit={oldLimit}->{_gpr[20]} " +
-                $"loadedSource={loadedSource:x16}");
+                $"loadedSource={loadedSource:x16} hydratedAtBoundary={hydratedAtBoundary}");
 
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_BGLOADMODEL_SOURCE_RECORD_TABLE") == "1")
                 TraceKnownRuntimeBgLoadModelSourceRecordTable(streamIndex, loadedSource, sourceOwnedLimit);
@@ -19576,12 +19602,17 @@ internal sealed class MipsR5000Core
             return;
         }
 
-        if (phase == "step" &&
+        bool initialSnapshot =
+            phase == "step" &&
+            _traceRuntimeBgLoadModelIndexedSourceStateIndex.HasValue &&
+            _runtimeBgLoadModelIndexedSourceStateTraceCount == 0;
+        if (phase == "step" && !initialSnapshot &&
             pc is not (0xffffffff800aac18UL or 0xffffffff800aac24UL or
                        0xffffffff800aacb4UL or
                        0xffffffff800aadb8UL or 0xffffffff800aaddcUL or
                        0xffffffff800aadf0UL or 0xffffffff800aae60UL or
                        0xffffffff800aae98UL or
+                       0xffffffff800abe78UL or
                        0xffffffff800b72fcUL or
                        0xffffffff800c9088UL or 0xffffffff800c909cUL or
                        0xffffffff800c90d4UL))
@@ -19592,14 +19623,18 @@ internal sealed class MipsR5000Core
         ulong activeS0Index = _gpr[16] & 0xffffffffUL;
         ulong activeA3Index = _gpr[7] & 0xffffffffUL;
         ulong writerIndex = _gpr[2] & 0xffffffffUL;
-        ulong index = (_traceRuntimeBgLoadModelIndexedSourceStateIndex ?? activeS0Index) & 0xffffffffUL;
+        ulong streamIndex = _gpr[3] & 0xffffffffUL;
+        ulong inferredIndex = pc == 0xffffffff800abe78UL ? streamIndex : activeS0Index;
+        ulong index = (_traceRuntimeBgLoadModelIndexedSourceStateIndex ?? inferredIndex) & 0xffffffffUL;
         if (index >= 0x40UL)
             return;
         if (_traceRuntimeBgLoadModelIndexedSourceStateIndex.HasValue &&
+            !initialSnapshot &&
             phase == "step" &&
             activeS0Index != index &&
             activeA3Index != index &&
-            writerIndex != index)
+            writerIndex != index &&
+            (pc != 0xffffffff800abe78UL || streamIndex != index))
         {
             return;
         }
@@ -19609,6 +19644,10 @@ internal sealed class MipsR5000Core
         const ulong destinationBase = 0xffffffff802e1718UL;
         const ulong assetTableBase = 0xffffffff8024f9a0UL;
         const ulong assetTableStride = 0x30UL;
+        const ulong recordBase = 0xffffffff80252da0UL;
+        const ulong recordStride = 0x18UL;
+        const ulong qioBase = 0xffffffff80217c58UL;
+        const ulong qioStride = 0x118UL;
 
         ulong sourceTableSlot = sourceTable + index * 4UL;
         ulong sideTableSlot = sideTable + index * 4UL;
@@ -19618,12 +19657,18 @@ internal sealed class MipsR5000Core
         uint sourceWord = ReadTraceWord(sourceTableSlot);
         ulong source = SignExtend32(sourceWord);
         ulong assetEntry = assetTableBase + index * assetTableStride;
+        ulong record = recordBase + index * recordStride;
+        ulong recordQio = SignExtend32(ReadTraceWord(record + 0x08UL));
+        ulong expectedQio = qioBase + index * qioStride;
+        ulong qio = recordQio != 0 && IsMainRamRange(recordQio + 0x18UL, 4) ? recordQio : expectedQio;
+        ulong qioObject = SignExtend32(ReadTraceWord(qio));
 
         _runtimeBgLoadModelIndexedSourceStateTraceCount++;
         Console.WriteLine(
-            $"[GAUNTDL:TRACE] bgloadmodel-indexed-source-state phase={phase} index={index:x8} " +
+            $"[GAUNTDL:TRACE] bgloadmodel-indexed-source-state phase={(initialSnapshot ? "initial" : phase)} index={index:x8} " +
             $"pc={pc:x16} op={ReadTraceWord(pc):x8} ra={_gpr[31]:x16} sp={_gpr[29]:x16} " +
             $"activeS0={activeS0Index:x8} activeA3={activeA3Index:x8} writer={writerIndex:x8} " +
+            $"streamIndex={streamIndex:x8} streamLimit={_gpr[20] & 0xffffffffUL:x8} " +
             $"regs s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
             $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
             $"slot={sourceTableSlot:x16}:{sourceWord:x8}->{source:x16} " +
@@ -19637,6 +19682,12 @@ internal sealed class MipsR5000Core
             $"assetEntry={assetEntry:x16}:{ReadTraceWord(assetEntry):x8}/" +
             $"{ReadTraceWord(assetEntry + 0x04UL):x8}/{ReadTraceWord(assetEntry + 0x08UL):x8}/" +
             $"\"{ReadAsciiTraceString(assetEntry + 0x10UL, 24)}\" " +
+            $"record={record:x16}:{ReadTraceWord(record):x8}/{ReadTraceWord(record + 0x04UL):x8}/" +
+            $"{ReadTraceWord(record + 0x08UL):x8}/{ReadTraceWord(record + 0x0cUL):x8}/" +
+            $"{ReadTraceWord(record + 0x10UL):x8}/{ReadTraceWord(record + 0x14UL):x8} " +
+            $"recordQio={recordQio:x16} expectedQio={expectedQio:x16} " +
+            $"qio={TraceKnownRuntimeBgLoadModelQioOneLine(qio)} " +
+            $"qioFile={TraceKnownRuntimeBgLoadModelQioFileState(qioObject)} " +
             $"asset={TraceKnownRuntimeBgLoadModelAssetTableSummary((long)index)}");
     }
 

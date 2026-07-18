@@ -2804,3 +2804,63 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/f100-reservation-owner-cputrace-plus1m-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/f100-reservation-flag-initial-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/f1000-reservation-flag-initial-20260718.log`
+
+### Companion-spåret avfärdat; första saknade streamheadern är index 4
+
+En riktig frame-körning av static-size/companion-grenen från f300 till f500
+fortsätter exekvera Type3-paket (`5429 -> 12899`), men texture writes stannar
+på `1093`, swaps på `196` och bilden förblir svart förutom den lilla vita
+triangeln. Hashen är fortsatt `0xf29eb67c`. Den experimentfria f132-orakeln
+har däremot `15747` texture writes, `363` swaps och hash `0xd083385f`.
+Companion-grenen är därför en regression och ska inte vara grund för nästa
+fix.
+
+En ny initial snapshot i den default-off indexerade source-tracen gör det
+möjligt att läsa en sen state utan att först behöva träffa en historisk
+writer-PC. Experimentfri f900 visar följande gräns:
+
+- index 2 har en separat `snm`-header vid `0x802e5718`, offset `0x9144`, count
+  `13`;
+- index 3 har en separat `stk`-header vid `0x802e7718`, offset `0xa3a4`, count
+  `9`;
+- index 4..8 pekar fortfarande på source 0 (`0x802e1718`), har tomma egna
+  `0x2000`-fönster, nollade side slots och tomma assetnamn;
+- index 9 är ett separat `font_story`-specialfall och inte del av samma
+  object-stream.
+
+Record- och QIO-fälten i samma trace visar att posterna 2..4 är återställda
+till noll och att deras förväntade QIO-objekt är färdigställda/fria vid f900.
+Den sena snapshoten kan alltså bevisa slutresultatet men inte ensam återskapa
+filnamn och destination efter completion.
+
+Den tidiga f100->f132-livscykeln lokaliserar ordningsfelet mer precist. Vid
+`0x800abe78` når record-loopen stream index 2 med limit 2 medan
+`0x802e5718` ännu är tom. Guardens source-owned limit kan då inte läsas och
+loopen avslutas. Den befintliga QIO-fixen hydratiserar `snm` först senare, utan
+att loopen återbesöker gränsen. En default-off kontroll,
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_BOUNDARY_HYDRATE=1`,
+hydratiserar endast det bevisat tomma fönstret när gränsen träffas. Då sker:
+
+```text
+index 2  snm  limit 2 -> 13
+index 3  stk  short-read, limit 2 -> 9
+index 7  nin  hydreras, men count 19 avvisas av configuredMax 13
+```
+
+Kontrollen är strukturellt kausal men visuellt neutral vid f132
+(`frameHash=0xf29eb67c`) och förblir default-off. Den viktiga nya slutsatsen är
+att stream 4..8 inte saknas på grund av source-tabellens slutpekare: QIO-
+hydreringen kommer efter den enda loopgräns som kunde publicera deras
+livslängd. Nästa A/B ska fortsätta från en experimentfri state och pröva den
+ordningsfixen över en längre frame-sträcka utan att höja max-count till 27;
+index 7/count 19 är sedan tidigare ett separat diagnostiskt spår.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/companion-realframes-f300-f500-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f900-indexed-source-4-initial-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f900-indexed-source-2-qio-initial-v2-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f100-f132-plus1m-index4-source-state-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f100-f132-plus1m-qio-lifetime-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f100-f132-plus1m-stream-source-state-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/f100-f132-plus1m-stream-boundary-hydrate-20260718.log`
