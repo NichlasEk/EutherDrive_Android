@@ -1919,3 +1919,29 @@ varför samma guestflöde avsiktligt replikerar en explicit 256x32-källa över
 Nästa spårning ska binda postens byte 0/2 och `raw+0x14` till tabellindexet vid
 `0x8016200c` och den senare draw-state-byggaren; ingen backendremap ska göras
 innan den relationen är förklarad.
+
+### Upload-aspect byggs separat och förklarar 256x32-tabellvalet
+
+Kodvägen före selectorloopen visar att stack-info inte är en opak struktur.
+`0x800a66e8` bygger den från materialposten: byte 1 blir min-LOD, byte 0 blir
+max-LOD, byte 2 blir format, `raw+0x08` blir source och halvorden vid
+`raw+0x04/+0x06` översätts till Glide-aspect `0..6`. Lika halvord ger aspect
+`3` (1:1); exakta 2x/4x/8x-förhållanden ger de övriga enumvärdena. Om inget
+sådant förhållande matchar skrivs aspectfältet inte i denna funktion.
+
+Detta binder de tidigare nollorna i upload-info till geometrin. Emittern
+indexerar `0x80158050` som `9 * aspect + lod`. För LOD 0 visar tabellen:
+
+```text
+aspect 0 (8:1) -> 0x100 / 0x020 = 256x32
+aspect 3 (1:1) -> 0x100 / 0x100 = 256x256
+```
+
+Drawens square-LOD och uploadens 256x32 är alltså exakt skillnaden mellan
+aspect 3 och det observerade nollvärdet; packetloopen återger tabellvalet
+korrekt. Det är ännu inte bevisat om nollan kommer från en avsiktlig 8:1-post
+eller från konverterarens no-match-fallthrough. Bounds-tracen fångar därför nu
+även `phase=aspect-builder` vid `0x800a675c`, filtrerad på samma source, och
+skriver recordets packade dimensioner samt de fem producerade infoorden.
+Detta är nästa dynamiska beslutspunkt; en aspect- eller samplerpatch innan den
+träffen skulle blanda ihop producentfel och korrekt 8:1-metadata.

@@ -15436,6 +15436,7 @@ internal sealed class MipsR5000Core
 
     private void TraceKnownRuntimeWorldTextureUploadBounds(ulong pc)
     {
+        const ulong aspectBuilderPc = 0xffffffff800a675cUL;
         const ulong entryPc = 0xffffffff801094f4UL;
         const ulong preparedPc = 0xffffffff8010953cUL;
         const ulong emitterPc = 0xffffffff801096acUL;
@@ -15445,8 +15446,36 @@ internal sealed class MipsR5000Core
         const ulong lowLevelGeometryPc = 0xffffffff800fe460UL;
         const ulong lowLevelPacketPc = 0xffffffff800fe5e8UL;
         if (!_traceRuntimeWorldTextureUploadBounds ||
-            pc is not (entryPc or preparedPc or emitterPc or emitterTablePc or lowLevelEntryPc or lowLevelTablePc or lowLevelGeometryPc or lowLevelPacketPc))
+            pc is not (aspectBuilderPc or entryPc or preparedPc or emitterPc or emitterTablePc or lowLevelEntryPc or lowLevelTablePc or lowLevelGeometryPc or lowLevelPacketPc))
         {
+            return;
+        }
+
+        if (pc == aspectBuilderPc)
+        {
+            if (_runtimeWorldTextureUploadBoundsTraceCount >= 64)
+                return;
+
+            ulong aspectInfo = CanonicalizeTraceAddress(_gpr[4]);
+            ulong record = CanonicalizeTraceAddress(_gpr[5]);
+            if (!IsMainRamRange(aspectInfo, 0x14UL) || !IsMainRamRange(record, 0x0cUL))
+                return;
+
+            uint aspectSource = ReadTraceWord(record + 0x08UL);
+            if (_traceTextureUploadRunSource.HasValue &&
+                SignExtend32(aspectSource) != CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value))
+            {
+                return;
+            }
+
+            _runtimeWorldTextureUploadBoundsTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] runtime-world-texture-upload-bounds n={_runtimeWorldTextureUploadBoundsTraceCount} " +
+                $"frame={_memory.VoodooRenderFrameCount} phase=aspect-builder pc={pc:x16} " +
+                $"record={record:x16}:{FormatTraceWords(record, 5)} " +
+                $"packedDimensions={ReadTraceWord(record + 0x04UL):x8} source={aspectSource:x8} " +
+                $"info={aspectInfo:x16}:{FormatTraceWords(aspectInfo, 5)} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
+                $"a2={_gpr[6]:x16} ra={_gpr[31]:x16}");
             return;
         }
 
