@@ -1273,6 +1273,7 @@ internal sealed class MipsR5000Core
     private int _runtimeWorldTextureSelectorCallTraceCount;
     private readonly HashSet<(ulong Pc, uint Selector, ulong Record, uint Source)> _runtimeWorldTextureSelectorCallTraceKeys = [];
     private int _runtimeWorldTextureUploadBoundsTraceCount;
+    private int _runtimeWorldTextureUploadLowLevelTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareHelperTraceCount;
@@ -15438,10 +15439,89 @@ internal sealed class MipsR5000Core
         const ulong entryPc = 0xffffffff801094f4UL;
         const ulong preparedPc = 0xffffffff8010953cUL;
         const ulong emitterPc = 0xffffffff801096acUL;
+        const ulong emitterTablePc = 0xffffffff801096f4UL;
+        const ulong lowLevelEntryPc = 0xffffffff800fe1fcUL;
+        const ulong lowLevelTablePc = 0xffffffff800fe30cUL;
+        const ulong lowLevelGeometryPc = 0xffffffff800fe460UL;
+        const ulong lowLevelPacketPc = 0xffffffff800fe5e8UL;
         if (!_traceRuntimeWorldTextureUploadBounds ||
-            pc is not (entryPc or preparedPc or emitterPc) ||
-            _runtimeWorldTextureUploadBoundsTraceCount >= 64)
+            pc is not (entryPc or preparedPc or emitterPc or emitterTablePc or lowLevelEntryPc or lowLevelTablePc or lowLevelGeometryPc or lowLevelPacketPc))
         {
+            return;
+        }
+
+        if (pc is lowLevelEntryPc or lowLevelTablePc or lowLevelGeometryPc or lowLevelPacketPc)
+        {
+            if (_runtimeWorldTextureUploadLowLevelTraceCount >= 128)
+                return;
+
+            ulong stack = CanonicalizeTraceAddress(_gpr[29]);
+            ulong sourceAddress = stack + (pc == lowLevelEntryPc ? 0x1cUL : 0x6cUL);
+            ulong limitAddress = stack + (pc == lowLevelEntryPc ? 0x24UL : 0x74UL);
+            if (!IsMainRamRange(sourceAddress, 4UL) || !IsMainRamRange(limitAddress, 4UL))
+                return;
+
+            uint lowLevelSource = ReadTraceWord(sourceAddress);
+            uint limit = ReadTraceWord(limitAddress);
+            if (_traceTextureUploadRunSource.HasValue &&
+                SignExtend32(lowLevelSource) != CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value))
+            {
+                return;
+            }
+
+            if (pc == lowLevelPacketPc &&
+                (uint)_gpr[18] != limit &&
+                ((uint)_gpr[18] & 0x1fU) != 0)
+            {
+                return;
+            }
+
+            string phase = pc switch
+            {
+                lowLevelEntryPc => "low-entry",
+                lowLevelTablePc => "low-table",
+                lowLevelGeometryPc => "low-geometry",
+                _ => "low-packet"
+            };
+            _runtimeWorldTextureUploadLowLevelTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] runtime-world-texture-upload-bounds-low n={_runtimeWorldTextureUploadLowLevelTraceCount} " +
+                $"frame={_memory.VoodooRenderFrameCount} phase={phase} pc={pc:x16} " +
+                $"source={lowLevelSource:x8} limit={limit:x8} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
+                $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} " +
+                $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} s4={_gpr[20]:x16} s5={_gpr[21]:x16} " +
+                $"s6={_gpr[22]:x16} s7={_gpr[23]:x16} t0={_gpr[8]:x16} t1={_gpr[9]:x16} " +
+                $"t2={_gpr[10]:x16} t3={_gpr[11]:x16} sp={stack:x16} ra={_gpr[31]:x16}");
+            return;
+        }
+
+        if (_runtimeWorldTextureUploadBoundsTraceCount >= 64)
+            return;
+
+        if (pc == emitterTablePc)
+        {
+            ulong stack = CanonicalizeTraceAddress(_gpr[29]);
+            if (!IsMainRamRange(stack + 0x4cUL, 4UL))
+                return;
+
+            uint stackArg0 = ReadTraceWord(stack + 0x40UL);
+            uint emitterSource = ReadTraceWord(stack + 0x1cUL);
+            if (_traceTextureUploadRunSource.HasValue &&
+                SignExtend32(emitterSource) != CanonicalizeTraceAddress(_traceTextureUploadRunSource.Value))
+            {
+                return;
+            }
+
+            ulong tableEntry = 0xffffffff80168050UL +
+                4UL * (9UL * stackArg0 + (uint)_gpr[6]);
+            _runtimeWorldTextureUploadBoundsTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] runtime-world-texture-upload-bounds n={_runtimeWorldTextureUploadBoundsTraceCount} " +
+                $"frame={_memory.VoodooRenderFrameCount} phase=emitter-table pc={pc:x16} " +
+                $"source={emitterSource:x8} table={tableEntry:x16}:{FormatTraceWords(tableEntry, 2)} " +
+                $"loadedSecond={_gpr[2]:x16} limit={unchecked((uint)_gpr[2] - 1U):x8} " +
+                $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+                $"sp={stack:x16} ra={_gpr[31]:x16}");
             return;
         }
 

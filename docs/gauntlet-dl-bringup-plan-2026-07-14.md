@@ -1841,3 +1841,44 @@ körningen förblev exakt observationsren:
 ```text
 frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
 ```
+
+### Lågnivåtracen korrigerar sentineltesen: gränsen är explicit 31
+
+Bounds-tracen följer nu samma filtrerade source vidare genom `0x800fe1fc` vid
+entry, tabellval, FIFO-geometriberäkning och första/sista Type5-paket. Den
+återbyggda f900-staten och den kanoniska f1000+5,1M-körningen behöll oraklet
+exakt, men visade att den tidigare slutsatsen från wrapper-entryn var fel:
+
+```text
+low-entry    source=802e1719 limit=0000001f
+low-table    s5=00000100
+low-geometry s4=00000040 t0=00000800
+low-packet   s2=00000000 sourceCursor=802e1719
+low-packet   s2=0000001f sourceCursor=802e3619
+```
+
+`0x1f` är alltså ett explicit inklusivt rad-/packet-slut, inte
+`0xffffffff`. `s5=0x100`, `s4=0x40` och FIFO-reservationen `t0=0x800`
+beskriver exakt 32 paket gånger 64 ord: 2048 ord eller 8192 byte. Den nya
+`emitter-table`-fasen fångar därför även det faktiskt laddade andra tabellordet
+direkt före `addiu -1`; en tabellavläsning vid wrapper-entry räcker inte för
+att klassificera det vidarebefordrade limitvärdet.
+
+Selectorserien ändrar den beräknade targetbasen i lågnivåvägen från `0x0000`
+till `0x1c00`, men varken source, bredd eller packetantal. Det förklarar den
+observerade låga 64 KiB-publiceringen som åtta avsiktliga 8 KiB-sidor; den är
+inte en enda upload som kapas efter första stripen. Det finns därför inget
+stöd för att förlänga packetloopen eller ersätta limitvärdet syntetiskt.
+
+Nästa kausala gräns flyttas tillbaka till bindningen mellan dessa åtta
+publicerade sidor och draw-state `lod=0x20c6/base=0x1c00`: avgör varför drawen
+tolkar den sista sidans bas som en 256x256-yta och samplar vidare till
+`0x1900f`, trots att uploadkedjan uttryckligen publicerar separata
+256x32-sidor. De tidigare negativa globala aspect-, wrap- och base-remapparna
+ska förbli kontroller, inte promoveras till fixar.
+
+Den observationsrena endpointen var oförändrad:
+
+```text
+frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
+```
