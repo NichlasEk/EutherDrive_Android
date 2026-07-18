@@ -1625,25 +1625,24 @@ frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
 
 Bounds-tracen omfattar nu även entry `0x801096ac` och avkodar dess verkliga
 ABI. Wrappern väljer tabellpost enligt
-`0x80168050 + 4 * (9 * stackArg0 + a2)` och läser postens andra ord innan
+`0x80158050 + 4 * (9 * stackArg0 + a2)` och läser postens andra ord innan
 låg-nivåanropet `0x800fe1fc`. Alla filtrerade record-0-anrop gav:
 
 ```text
 a2=0
 stackArgs=00000000/00000000/00000003/802e1719
-table=80168050:00000000/00000000
+table=80158050:00000100/00000020
 selectors a1=0000,2000,4000,6000,8000,a000,c000,e000
 ```
 
-Wrappern dekrementerar tabellens andra nollord och skickar därmed
-`0xffffffff` som default-sentinel, inte ett explicit packetantal. Varken
-materialposten, upload-info eller runtime-tabellen begär alltså 32 paket eller
-en 256x32-yta. Den geometrin uppstår helt i `0x800fe1fc` och dess nedströms
-Glide/FIFO-väg utifrån selector, format `3`, källpekare och sentinelvärdet.
+Wrappern dekrementerar tabellens andra ord `0x20` och skickar därmed ett
+explicit inklusivt slut `0x1f`. Den tidigare `0x80168050`-adressen kom från
+att diagnosticen behandlade instruktionens `addiu ... 0x8050` som unsigned;
+MIPS signextendar immediaten och väljer `0x80158050`.
 
-Nästa gräns flyttas därför exakt till `0x800fe1fc`: följ sentinelgrenen till
-de 64-ords Type5-paketen och bind dess beräknade packet-/radslut till
-selectorserien. Ingen tabellpatch eller syntetisk materialstorlek har stöd.
+Nästa gräns flyttas därför exakt till `0x800fe1fc`: bind det explicita
+packet-/radslutet till selectorserien och de 64-ords Type5-paketen. Ingen
+tabellpatch eller syntetisk materialstorlek har stöd.
 Den observationsrena kontrollen behöll åter `frameHash=0x42925e78`.
 
 Det finns alltså inte en enda accepterad LOD1--8-write i den observerade
@@ -1858,11 +1857,11 @@ low-packet   s2=0000001f sourceCursor=802e3619
 ```
 
 `0x1f` är alltså ett explicit inklusivt rad-/packet-slut, inte
-`0xffffffff`. `s5=0x100`, `s4=0x40` och FIFO-reservationen `t0=0x800`
+`0xffffffff`. Den nya `emitter-table`-fasen bekräftar att guestens signerade
+`addiu` väljer `0x80158050: 0x100/0x20`, varefter `0x20 - 1` blir `0x1f`.
+`s5=0x100`, `s4=0x40` och FIFO-reservationen `t0=0x800`
 beskriver exakt 32 paket gånger 64 ord: 2048 ord eller 8192 byte. Den nya
-`emitter-table`-fasen fångar därför även det faktiskt laddade andra tabellordet
-direkt före `addiu -1`; en tabellavläsning vid wrapper-entry räcker inte för
-att klassificera det vidarebefordrade limitvärdet.
+fasen fångar det faktiskt laddade andra tabellordet direkt före `addiu -1`.
 
 Selectorserien ändrar den beräknade targetbasen i lågnivåvägen från `0x0000`
 till `0x1c00`, men varken source, bredd eller packetantal. Det förklarar den
@@ -1882,3 +1881,41 @@ Den observationsrena endpointen var oförändrad:
 ```text
 frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
 ```
+
+### Selectorbasen är guestberäknad, inte ett oavsiktligt restvärde
+
+En write-watch över record 0 följd av en kod-dump av `0x800a76c0` visar den
+exakta produktionen av de två muterade adressfälten. För varje selectoranrop
+gör guestkoden i huvudsak:
+
+```text
+0x800a770c  record+0x1c = selector + allocatorReturn
+0x800a7734  record+0x0c = tableBase
+0x800a7740  record+0x0c = tableBase >> 1  (för byte 2 < 8)
+0x800a7750  v0 = selector >> 3
+0x800a775c  v0 -= record+0x0c
+0x800a7764  delay slot: record+0x0c = v0
+0x800a7760  call 0x801094f4
+```
+
+För den aktuella posten väljer `raw+0x14=0xc6` tabellpost noll vid
+`0x8016200c`; dess värde är noll. Selectorserien
+`0x0000,0x2000,...,0xe000` blir därför avsiktligt Voodoo-baserna
+`0x0000,0x0400,...,0x1c00`. `record+0x1c` behåller samtidigt den bytebaserade
+selectoradressen. Slutvärdet `base=0x1c00` är alltså visserligen sista sidans
+värde i den muterbara posten, men det är explicit beräknat av guestens
+Glide-liknande adressformel. Att syntetiskt bevara första sidans nollbas har
+inte stöd och den tidigare globala base-0-kontrollen förblir avvisad.
+
+Även ownerfältet vid `owner+0x144` kan avgränsas: writern vid `0x800a4d1c`
+skiftar ett beräknat värde 12 steg och maskar det med `0x3f000` innan store.
+Fältet kan därmed endast bidra med LOD-biasbitar; det kan inte återställa de
+aspectbitar som drawens `lod=0x20c6` saknar. `raw+0x14=0xc6` finns dessutom
+redan i den råa diskposten och är inte en senare runtime-korruption.
+
+Den smalaste kvarvarande frågan är därför inte hur första basen bevaras, utan
+varför samma guestflöde avsiktligt replikerar en explicit 256x32-källa över
+åtta 8 KiB-sidor och därefter binder sista sidan med en square-256 draw-LOD.
+Nästa spårning ska binda postens byte 0/2 och `raw+0x14` till tabellindexet vid
+`0x8016200c` och den senare draw-state-byggaren; ingen backendremap ska göras
+innan den relationen är förklarad.

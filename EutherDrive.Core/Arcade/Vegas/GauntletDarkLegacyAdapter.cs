@@ -15512,7 +15512,7 @@ internal sealed class MipsR5000Core
                 return;
             }
 
-            ulong tableEntry = 0xffffffff80168050UL +
+            ulong tableEntry = 0xffffffff80158050UL +
                 4UL * (9UL * stackArg0 + (uint)_gpr[6]);
             _runtimeWorldTextureUploadBoundsTraceCount++;
             Console.WriteLine(
@@ -15541,7 +15541,7 @@ internal sealed class MipsR5000Core
                 return;
             }
 
-            ulong tableEntry = 0xffffffff80168050UL +
+            ulong tableEntry = 0xffffffff80158050UL +
                 4UL * (9UL * stackArg0 + (uint)_gpr[6]);
             _runtimeWorldTextureUploadBoundsTraceCount++;
             Console.WriteLine(
