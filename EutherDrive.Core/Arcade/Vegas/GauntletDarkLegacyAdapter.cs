@@ -746,6 +746,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
     private readonly bool _enableRuntimeBgLoadModelQioHydration =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_HYDRATE");
+    private readonly bool _experimentRuntimeBgLoadModelStaticObjectOwner =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_OWNER"));
+    private readonly ulong _experimentRuntimeBgLoadModelStaticObjectDiskBase =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_DISK_BASE") ?? 0x0fb2e000UL;
     private readonly bool _enableRuntimeBgLoadModelQioCreateAliasExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS"));
     private readonly bool _enableRuntimeBgLoadModelQioRequestMetadataExperiment =
@@ -19451,7 +19455,7 @@ internal sealed class MipsR5000Core
             uint tableIndex = ReadTraceWord(outer + 0x60UL);
             uint recordCount = ReadTraceWord(outer + 0x64UL);
             ulong computedTable = outer + 0x68UL + (ulong)tableIndex * 0x8cUL;
-            if (computedTable != 0xffffffff802e2158UL)
+            if (computedTable is not (0xffffffff802e2158UL or 0xffffffff802ecb6cUL))
                 return;
 
             _runtimeWorldTextureRecordSelectionTraceCount++;
@@ -19465,11 +19469,11 @@ internal sealed class MipsR5000Core
         }
 
         ulong table = CanonicalizeTraceAddress(_gpr[30]);
-        if (table != 0xffffffff802e2158UL)
+        if (table is not (0xffffffff802e2158UL or 0xffffffff802ecb6cUL))
             return;
 
         ulong record = CanonicalizeTraceAddress(_gpr[16]);
-        string phase = pc == 0xffffffff800ab32cUL ? "record0-return" : "record1-return";
+        string phase = pc == 0xffffffff800ab32cUL ? "record0-return" : "scan-return";
         _runtimeWorldTextureRecordSelectionTraceCount++;
         Console.WriteLine(
             $"[GAUNTDL:TRACE] world-texture-record-selection n={_runtimeWorldTextureRecordSelectionTraceCount} " +
@@ -20334,9 +20338,47 @@ internal sealed class MipsR5000Core
             return true;
         }
 
-        ulong diskByteOffset = fileBaseLba * 512UL + readOffset;
+        bool useStaticObjectOwner =
+            _experimentRuntimeBgLoadModelStaticObjectOwner &&
+            qioIndex == 0 &&
+            string.IsNullOrEmpty(path) &&
+            requestedByteCount == 0x2000U &&
+            callback == 0x800ab4e4U;
+        ulong diskByteOffset = useStaticObjectOwner
+            ? _experimentRuntimeBgLoadModelStaticObjectDiskBase
+            : fileBaseLba * 512UL + readOffset;
         if (!_memory.TryReadDiskByteOffsetToMemory(diskByteOffset, destination, requestedByteCount, out uint firstWord, out reason))
             return false;
+
+        string objectTableStatus = "";
+        if (useStaticObjectOwner)
+        {
+            uint signature = ReadTraceWord(destination + 0x40UL);
+            uint tableIndex = ReadTraceWord(destination + 0x60UL);
+            uint recordCount = ReadTraceWord(destination + 0x64UL);
+            ulong tableOffset = 0x68UL + (ulong)tableIndex * 0x8cUL;
+            ulong tableBytes = (ulong)recordCount * 0x50UL;
+            uint tableFirstWord = 0;
+            string tableFailure = "";
+            bool validTable =
+                signature == 0xf00b0001U &&
+                recordCount is > 0 and <= 0x100U &&
+                tableOffset <= 0x100000UL && tableBytes <= 0x10000UL &&
+                IsMainRamRange(destination + tableOffset, tableBytes) &&
+                _memory.TryReadDiskByteOffsetToMemory(
+                    diskByteOffset + tableOffset,
+                    destination + tableOffset,
+                    (uint)tableBytes,
+                    out tableFirstWord,
+                    out tableFailure);
+            if (!validTable)
+            {
+                reason = $"static-object-table:{signature:x8}/{tableIndex:x8}/{recordCount:x8}/{tableOffset:x8}/{tableBytes:x8}/{tableFailure}";
+                return false;
+            }
+
+            objectTableStatus = $"/static-object/table={tableOffset:x8}+{tableBytes:x8}/first={tableFirstWord:x8}";
+        }
 
         TraceRuntimeBgLoadModelHydrationRange(
             "qio-mapped",
@@ -20344,7 +20386,9 @@ internal sealed class MipsR5000Core
             requestedByteCount,
             diskByteOffset,
             $"path={path}/readOffset={readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}");
-        reason = $"{path}@{readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}";
+        reason = useStaticObjectOwner
+            ? $"static-objects@{diskByteOffset:x8}/first={firstWord:x8}{objectTableStatus}"
+            : $"{path}@{readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}";
         return true;
     }
 

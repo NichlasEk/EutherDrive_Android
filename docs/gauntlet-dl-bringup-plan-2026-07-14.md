@@ -2185,3 +2185,69 @@ eller publicera requestens verkliga parsed output; den får inte klona hela
 Observationsloggen för tidsordningen är
 `/tmp/eutherdrive-gauntlet-probe/outer-write-order-f100-f150-20260718.log` och
 behåller åter `frameHash=0xf29eb67c`.
+
+### Slot 0 pekar på static_lr-objektet, inte på texture-payloaden
+
+En write-watch på source-tabellens slot 0 (`0x802529a0`) stänger vem som
+publicerar descriptor-ownern. Guestinstruktionen `sw s1,0(v0)` vid
+`0x800ac208` skriver `s1=0x802e1718` till tabellen innan QIO-hydreringen.
+Senare byter assetposten till `0x802f0e70`, men source-tabellen behåller
+scratchadressen. Koden runt `0x800ac160` allokerar och publicerar alltså ett
+objekt på denna adress; den förväntar sig inte att en rå texture-chunk ska
+ersätta objektet där.
+
+Raw-disken innehåller den matchande `static_lr/objects.rom`-extentheadern vid
+`0x0fb2de00`. Samma bevisade FSYS-headerlayout som för `gei` anger:
+
+```text
+payload disk base = 0x0fb2e000
+payload bytes     = 0x00067b4c
+payload LBA       = 0x0007d970
+object signature  = source+0x40 = 0xf00b0001
+table index/count = 0x149 / 0x2e
+record table      = source+0xb454, 0xe60 bytes
+```
+
+Recordtabellen ligger helt inom den ägda objektextenten och dess 46 poster
+har rimliga 0x50-byteformer. Storlekshjälparen returnerar exempelvis `0x50`,
+`0x150`, `0x28`, `0x550` och `0xaa0`, i stället för den falska
+`0x188d2302`-arean från texture-bytes. Nästa FSYS-grupp visar också den exakta
+companiongränsen: extentheadern vid `0x0fbb0400` äger en `0x0c3674` byte
+texture-payload från `0x0fbb0600`. Den tidigare källan `0x0fbb0830` är
+alltså `textures.rom + 0x230`, inte ett objekt med descriptorposter.
+
+Två default-off A/B-försök bekräftar kausaliteten. Att bara rikta slot 0:s
+0x2000-byte-QIO till `0x0fb2e000` ger rätt objekthuvud men lämnar tabellen vid
+`+0xb454` tom. Hashen stannar på `0xf29eb67c`, medan gästen skannar 46
+nollposter och FIFO-aktiviteten exploderar. Experimentet
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_OWNER=1`
+hydrerar därför diagnostiskt endast huvudet och den headerhärledda tabellen.
+F100--f150 ger då:
+
+```text
+                        baseline     object + record table
+frameHash               0xf29eb67c   0xad79a01f
+fifoWords                29,805       68,038
+fifoPackets              1,395        9,192
+texture writes           3            1,841
+swaps                    206          24
+```
+
+Den ändrade hashen, de giltiga mipstorlekarna och den stora ökningen av
+texture-/FIFO-arbete bevisar object/texture-separationen även för den
+statiska slot-0-källan. Men tabellkopian ligger utanför den aktuella
+0x2000-byte-requesten och swapparna stannar nästan; experimentet är därför
+en diagnostisk sond och får inte bli standardfix.
+
+Nästa gräns är requestägd streaming av resten av object-body samt den
+separata texture-companionen. Spåra vilka QIO-requests som materialiserar
+`objects.rom + 0x2000..0x67b4b` och vilka recordoffsetar som därefter läser
+`textures.rom + 0x230...`; utöka inte den första requesten syntetiskt och
+promota inte table-only-sonden.
+
+Verifieringsloggar:
+
+- `/tmp/eutherdrive-gauntlet-probe/source-owner-slot0-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/source-owner-publisher-code-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/slot0-static-objects-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/slot0-static-object-table-f100-f150-20260718.log`
