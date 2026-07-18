@@ -1035,6 +1035,10 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_RECORD_CALL"));
     private readonly int _traceRuntimeBgLoadModelTextureRecordCallLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_RECORD_CALL_LIMIT", 96);
+    private readonly bool _traceRuntimeWorldTextureRecordSelection =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_RECORD_SELECTION"));
+    private readonly int _traceRuntimeWorldTextureRecordSelectionLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_RECORD_SELECTION_LIMIT", 32);
     private readonly bool _traceRuntimeBgLoadModelTextureSourceOffsets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_SOURCE_OFFSETS"));
     private readonly int _traceRuntimeBgLoadModelTextureSourceOffsetsLimit =
@@ -1319,6 +1323,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelGebSourceTraceCount;
     private int _runtimeBgLoadModelIndexedSourceStateTraceCount;
     private int _runtimeBgLoadModelTextureRecordCallTraceCount;
+    private int _runtimeWorldTextureRecordSelectionTraceCount;
     private int _runtimeBgLoadModelTextureSourceOffsetsTraceCount;
     private int _runtimeBgLoadModelLookupHelperTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
@@ -1599,6 +1604,7 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeBgLoadModelGebSourceState(pc, "step");
         TraceKnownRuntimeBgLoadModelIndexedSourceState(pc, "step");
         TraceKnownRuntimeBgLoadModelTextureRecordCall(pc);
+        TraceKnownRuntimeWorldTextureRecordSelection(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "post-alias");
         TraceKnownRuntimeBgLoadModelLoop(pc);
         TraceKnownRuntimeBgLoadModelRecords(pc);
@@ -19428,6 +19434,31 @@ internal sealed class MipsR5000Core
             $"recordWords={FormatTraceWords(record, 20)} " +
             $"tableEntryWords={FormatTraceWords(tableEntry, 8)} " +
             $"sourceWords={FormatTraceWords(source, 20)}");
+    }
+
+    private void TraceKnownRuntimeWorldTextureRecordSelection(ulong pc)
+    {
+        if (!_traceRuntimeWorldTextureRecordSelection ||
+            pc is not (0xffffffff800ab32cUL or 0xffffffff800ab35cUL) ||
+            _runtimeWorldTextureRecordSelectionTraceCount >= _traceRuntimeWorldTextureRecordSelectionLimit)
+        {
+            return;
+        }
+
+        ulong table = CanonicalizeTraceAddress(_gpr[30]);
+        if (table != 0xffffffff802e2158UL)
+            return;
+
+        ulong record = CanonicalizeTraceAddress(_gpr[16]);
+        string phase = pc == 0xffffffff800ab32cUL ? "record0-return" : "record1-return";
+        _runtimeWorldTextureRecordSelectionTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] world-texture-record-selection n={_runtimeWorldTextureRecordSelectionTraceCount} " +
+            $"phase={phase} pc={pc:x16} ra={_gpr[31]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
+            $"table={table:x16} record={record:x16} " +
+            $"selectedIndex={_gpr[20]:x16} cursor={_gpr[17]:x16} recordOffset={_gpr[18]:x16} " +
+            $"candidate={_gpr[19]:x16} limit={_gpr[21]:x16} phaseReg={_gpr[22]:x16} " +
+            $"recordWords={FormatTraceWords(record, 20)}");
     }
 
     private void TraceKnownRuntimeBgLoadModelQioRequests(ulong pc, string phase)

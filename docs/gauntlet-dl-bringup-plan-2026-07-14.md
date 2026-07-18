@@ -2092,3 +2092,57 @@ medan draw-buildern helt förlitar sig på det separata råfältet `raw+0x14`.
 Avgör om QIO-/parserflödet ska konvertera dimensionsmetadata innan posten
 publiceras; ändra inte Voodoo-samplern eller tvinga square-aspect innan den
 producentgränsen är stängd.
+
+### Record-selector bekräftar ett producentkontraktsfel
+
+En byte-dump av den orörda f150-staten visar att `0x40e560da` inte är en
+isolerad felpost. Från `0x802e2158` syns en återkommande form med 0x90 bytes
+mellan de floatlika orden:
+
+```text
+0x802e2158: 08000000 40e560da 00000001 ...
+0x802e21e8: 40dbc0e0 00000001 00000000 ...
+0x802e2278: 40d99c6f 00000001 00000000 ...
+0x802e2308: 40e12b7c 00000001 00000000 ...
+0x802e2398: 40eab70f 00000001 00000000 ...
+```
+
+Orden följs av count ett och flera 0x20-byteformer med de återkommande fälten
+`0x0d`, `0xc6`, tre offsets, storlek och `0x0b`. Den tidigare neighbor-
+tolkningen var därför för stark: `0x802e21a8` ligger 0x50 byte in i detta
+synliga mönster, men den statiska 0x90-recurrensen ensam bevisar inte ett
+containerstride.
+
+Den nya default-off-tracen
+`EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_RECORD_SELECTION=1` stänger
+den dynamiska delen. Guestkoden använder uttryckligen `fp=0x802e2158`,
+`count=2`, anropar storlekshjälparen `0x800a64a0` på exakt två poster med
+0x50 stride och skickar därefter vald post till upload-helpern:
+
+```text
+record 0 @ 0x802e2158 -> size 0x188d2302
+record 1 @ 0x802e21a8 -> size 0x00000000
+selected index 0      -> upload a0=0x802e2158
+```
+
+Hjälparen är den redan dekodade mip-storleksfunktionen. För record 0 läser
+den `width=0x40e5`, `height=0x60da`, en mipnivå och beräknar bokstavligen
+`0x40e5 * 0x60da = 0x188d2302`. Record 1 har en nolldimension och ger noll.
+Callern initierar sin maxkandidat från record 0 utan en cap-kontroll och byter
+bara kandidat om en senare giltig post har större end-offset. Den enorma
+förstaposten vinner därför deterministiskt över record 1; detta är inte ett
+fel i vår descriptorindexering eller aspectfallback.
+
+`fp` är också guest-byggd, inte en adaptergissning: `0x800ab2b0..0x800ab2d0`
+beräknar den från outer-objektets `+0x68 + 0x8c * field60`, medan `field64=2`
+anger antalet 0x50-poster. Samma råbytes finns på disk vid
+`static_lr/textures.rom + 0xa40`, så QIO-kopian och endianhanteringen har inte
+skapat dem. Den återstående smala gränsen är parser-/callbackpubliceringen
+före detta outer-objekt: avgör var råa containerformer ska materialiseras som
+runtimeposter med giltiga dimensioner innan `+0x68`, `field60` och `field64`
+blir synliga. Ändra inte selector-algoritmen, Voodoo-samplern, stride eller
+aspect syntetiskt innan den producentgränsen är stängd.
+
+Den verifierade observationsloggen är
+`/tmp/eutherdrive-gauntlet-probe/record-selection-release-f100-f150-20260718.log`.
+Runnen förblev exakt `frameHash=0xf29eb67c`; tracen är alltså observationsren.
