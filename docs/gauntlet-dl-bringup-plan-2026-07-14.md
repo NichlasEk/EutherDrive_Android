@@ -2624,3 +2624,27 @@ Regressionsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-f132-plus5m-20260718.warm`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-f132-plus5m-20260718.ppm`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-f132-plus5m-20260718.png`
+
+En efterföljande source-proveniens visar en fyrabytes headergräns som den
+första companion-sonden missade. Efter att alla 46 poster skannats anropar
+guesten `0x800a7094` med:
+
+```text
+arena cursor          0x80349264
+guest body source     0x80349268
+record payload span   0x00011de4
+```
+
+Det default-off experimentet hydrerar och binder nu companionen vid
+`object base + 0x67b4c + 4`, exakt samma `0x80349268` som guesten själv
+producerar. En explicit rebuild och ny +5M A/B verifierar att korrigeringen är
+aktiv, men slutresultatet är fortfarande pixelneutralt: 2 160 Type3-paket,
+1 093 texture writes, 78 336 nollsamplade pixlar, noll färgade pixlar och
+`frameHash=0xf29eb67c`. Den tidigare RAM-adressen var alltså fyra byte fel,
+men det är inte den kvarvarande bildgränsen. Companion-ownern ska fortfarande
+vara default-off medan payloadformat/upload-proveniens spåras vidare.
+
+Korrigerad regressionssnapshot:
+
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-plus4-rebuilt-f132-plus5m-20260718.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-plus4-rebuilt-f132-plus5m-20260718.ppm`

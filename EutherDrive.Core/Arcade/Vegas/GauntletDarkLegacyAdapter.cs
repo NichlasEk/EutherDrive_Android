@@ -19630,6 +19630,7 @@ internal sealed class MipsR5000Core
         const ulong initializeReturn = 0xffffffff800abe54UL;
         const ulong repeatReturn = 0xffffffff800ab3b8UL;
         const ulong source = 0xffffffff802e1718UL;
+        const ulong companionHeaderBytes = 4UL;
         const ulong recordTableOffset = 0xb454UL;
         const ulong recordTableBytes = 0xe60UL;
         if (!_experimentRuntimeBgLoadModelStaticObjectOwner ||
@@ -19645,7 +19646,7 @@ internal sealed class MipsR5000Core
         if (record < source + recordTableOffset || record >= source + recordTableOffset + recordTableBytes)
             return;
 
-        ulong companion = source + _experimentRuntimeBgLoadModelStaticObjectByteLength;
+        ulong companion = source + _experimentRuntimeBgLoadModelStaticObjectByteLength + companionHeaderBytes;
         if (!IsMainRamRange(companion, _experimentRuntimeBgLoadModelStaticObjectCompanionByteLength))
             return;
 
@@ -20602,7 +20603,9 @@ internal sealed class MipsR5000Core
 
             if (_experimentRuntimeBgLoadModelStaticObjectCompanionOwner)
             {
-                ulong companionDestination = destination + _experimentRuntimeBgLoadModelStaticObjectByteLength;
+                const ulong companionHeaderBytes = 4UL;
+                ulong companionDestination =
+                    destination + _experimentRuntimeBgLoadModelStaticObjectByteLength + companionHeaderBytes;
                 uint companionFirstWord = 0;
                 string companionFailure = "range";
                 if (!IsMainRamRange(companionDestination, _experimentRuntimeBgLoadModelStaticObjectCompanionByteLength) ||
