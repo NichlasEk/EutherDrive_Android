@@ -750,6 +750,14 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_OWNER"));
     private readonly ulong _experimentRuntimeBgLoadModelStaticObjectDiskBase =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_DISK_BASE") ?? 0x0fb2e000UL;
+    private readonly bool _experimentRuntimeBgLoadModelStaticObjectCompanionOwner =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_COMPANION_OWNER"));
+    private readonly uint _experimentRuntimeBgLoadModelStaticObjectByteLength =
+        unchecked((uint)(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_BYTE_LENGTH") ?? 0x00067b4cUL));
+    private readonly ulong _experimentRuntimeBgLoadModelStaticObjectCompanionDiskBase =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_COMPANION_DISK_BASE") ?? 0x0fb95e00UL;
+    private readonly uint _experimentRuntimeBgLoadModelStaticObjectCompanionByteLength =
+        unchecked((uint)(ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_COMPANION_BYTE_LENGTH") ?? 0x00011de4UL));
     private readonly bool _enableRuntimeBgLoadModelQioCreateAliasExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS"));
     private readonly bool _enableRuntimeBgLoadModelQioRequestMetadataExperiment =
@@ -1328,6 +1336,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelIndexedSourceStateTraceCount;
     private int _runtimeBgLoadModelTextureRecordCallTraceCount;
     private int _runtimeWorldTextureRecordSelectionTraceCount;
+    private int _runtimeBgLoadModelStaticObjectCompanionOwnerTraceCount;
     private int _runtimeBgLoadModelTextureSourceOffsetsTraceCount;
     private int _runtimeBgLoadModelLookupHelperTraceCount;
     private int _runtimeBgLoadModelFastPathRejectTraceCount;
@@ -1600,6 +1609,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelTextureSourceCallA3Remap(pc);
         ApplyKnownRuntimeBgLoadModelTextureSourceGlobalRemap(pc);
         ApplyKnownRuntimeTextureUploadGlobalSourceRemap(pc);
+        ApplyKnownRuntimeBgLoadModelStaticObjectCompanionOwner(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelTextureChunkReturn(pc);
         TraceKnownRuntimeWorldTextureDescriptor(pc);
@@ -19440,6 +19450,43 @@ internal sealed class MipsR5000Core
             $"sourceWords={FormatTraceWords(source, 20)}");
     }
 
+    private void ApplyKnownRuntimeBgLoadModelStaticObjectCompanionOwner(ulong pc)
+    {
+        const ulong calleePc = 0xffffffff800a7094UL;
+        const ulong initializeReturn = 0xffffffff800abe54UL;
+        const ulong repeatReturn = 0xffffffff800ab3b8UL;
+        const ulong source = 0xffffffff802e1718UL;
+        const ulong recordTableOffset = 0xb454UL;
+        const ulong recordTableBytes = 0xe60UL;
+        if (!_experimentRuntimeBgLoadModelStaticObjectOwner ||
+            !_experimentRuntimeBgLoadModelStaticObjectCompanionOwner ||
+            pc != calleePc ||
+            _gpr[31] is not (initializeReturn or repeatReturn) ||
+            CanonicalizeTraceAddress(_gpr[5]) != source)
+        {
+            return;
+        }
+
+        ulong record = CanonicalizeTraceAddress(_gpr[4]);
+        if (record < source + recordTableOffset || record >= source + recordTableOffset + recordTableBytes)
+            return;
+
+        ulong companion = source + _experimentRuntimeBgLoadModelStaticObjectByteLength;
+        if (!IsMainRamRange(companion, _experimentRuntimeBgLoadModelStaticObjectCompanionByteLength))
+            return;
+
+        ulong original = _gpr[5];
+        _gpr[5] = companion;
+        if (_runtimeBgLoadModelStaticObjectCompanionOwnerTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-static-object-companion-owner pc={pc:x16} " +
+                $"record={record:x16} source={original:x16}->{companion:x16} " +
+                $"bytes={_experimentRuntimeBgLoadModelStaticObjectCompanionByteLength:x8} " +
+                $"first={FormatTraceWords(companion, 4)}");
+        }
+    }
+
     private void TraceKnownRuntimeWorldTextureRecordSelection(ulong pc)
     {
         if (!_traceRuntimeWorldTextureRecordSelection ||
@@ -20378,6 +20425,29 @@ internal sealed class MipsR5000Core
             }
 
             objectTableStatus = $"/static-object/table={tableOffset:x8}+{tableBytes:x8}/first={tableFirstWord:x8}";
+
+            if (_experimentRuntimeBgLoadModelStaticObjectCompanionOwner)
+            {
+                ulong companionDestination = destination + _experimentRuntimeBgLoadModelStaticObjectByteLength;
+                uint companionFirstWord = 0;
+                string companionFailure = "range";
+                if (!IsMainRamRange(companionDestination, _experimentRuntimeBgLoadModelStaticObjectCompanionByteLength) ||
+                    !_memory.TryReadDiskByteOffsetToMemory(
+                        _experimentRuntimeBgLoadModelStaticObjectCompanionDiskBase,
+                        companionDestination,
+                        _experimentRuntimeBgLoadModelStaticObjectCompanionByteLength,
+                        out companionFirstWord,
+                        out companionFailure))
+                {
+                    reason = $"static-object-companion:{companionDestination:x8}/{_experimentRuntimeBgLoadModelStaticObjectCompanionByteLength:x8}/{companionFailure}";
+                    return false;
+                }
+
+                objectTableStatus +=
+                    $"/companion={_experimentRuntimeBgLoadModelStaticObjectCompanionDiskBase:x8}" +
+                    $"->{companionDestination:x8}+{_experimentRuntimeBgLoadModelStaticObjectCompanionByteLength:x8}" +
+                    $"/first={companionFirstWord:x8}";
+            }
         }
 
         TraceRuntimeBgLoadModelHydrationRange(

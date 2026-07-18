@@ -2251,3 +2251,66 @@ Verifieringsloggar:
 - `/tmp/eutherdrive-gauntlet-probe/source-owner-publisher-code-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/slot0-static-objects-f100-f150-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/slot0-static-object-table-f100-f150-20260718.log`
+
+### Recordspanet identifierar slot 0:s exakta companion-extent
+
+Recordtabellens offsetar stänger vilket av de efterföljande FSYS-blocken som
+är texture-companionen. Den sista posten bör `offset=0x11b3c` och ger
+mipstorlek `0x2a8`; dess slut är alltså exakt `0x11de4`. Extentheadern direkt
+efter `objects.rom` ligger vid `0x0fb95c00` och deklarerar exakt samma
+payloadstorlek, med data från `0x0fb95e00`:
+
+```text
+last record offset + size = 0x11b3c + 0x2a8 = 0x11de4
+companion payload bytes   = 0x11de4
+companion disk base       = 0x0fb95e00
+```
+
+Companionen börjar med `f0`-padding och därefter packade texture-liknande
+bytes. Den senare extenten från `0x0fbb0600`, som den gamla slot-0-repairen
+träffade vid `+0x230`, är därmed definitivt inte companionen till just denna
+46-posters objekttabell.
+
+En separat default-off sond,
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_COMPANION_OWNER=1`,
+hydrerar den exakta companionen till den första adressen efter objektpayloaden:
+
+```text
+object RAM base       = 0x802e1718
+object payload bytes  = 0x00067b4c
+companion RAM base    = 0x80349264
+```
+
+Vid entryn `0x800a7094` ersätter sonden endast `a1` för callsites
+`ra=0x800abe54/0x800ab3b8`, medan `a0` fortfarande pekar på den giltiga
+objekttabellen. Source-offset-tracen visar sedan att gästen själv räknar
+`0x80349264 + recordOffset`; exempelvis `0`, `0x50`, `0x1a0` och `0x11b3c`.
+Det är den saknade object/companion-bindningen, inte en adaptergissad stride.
+
+F100--f150-resultatet är kausalt men fortfarande diagnostiskt:
+
+```text
+                                  table only    table + companion
+frameHash                         0xad79a01f    0xf29eb67c
+fifoWords                         68,038        68,038
+fifoPackets                       9,192         3,042
+Type5 packets                     0             185
+texture writes                    1,841         1,093
+texture-map writes/touched words  -             4,368 / 41
+swaps                             24            18
+```
+
+Att hashen råkar återgå till den vita baselinebildens `0xf29eb67c` är inte
+en visuell fix: CPU:n står nu i upload-loopen vid `0x800fe7d0`, Type5-trafik
+har uppstått och swapparna är fortfarande nästan stoppade. Resultatet bevisar
+däremot både companionens diskextent och dess roll som `a1`-källa.
+
+Nästa produktionsgräns är guestens uteblivna arenareservation. Den riktiga
+vägen ska låta `objects.rom`-parsen reservera `0x67b4c`, behålla/publicera
+recordtabellen och därefter låta QIO fylla `0x11de4` companion-bytes vid den
+nya arena-cursorn. Promota inte callee-remappen; spåra i stället
+allokeringsstorleken som idag blir noll före `0x800c9088`.
+
+Verifieringslogg:
+
+- `/tmp/eutherdrive-gauntlet-probe/slot0-static-object-companion-f100-f150-20260718.log`
