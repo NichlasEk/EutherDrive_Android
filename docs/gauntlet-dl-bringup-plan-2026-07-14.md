@@ -2373,3 +2373,56 @@ Verifieringsloggar:
 - `/tmp/eutherdrive-gauntlet-probe/static-object-size-owner-f100-f150-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/static-object-size-owner-alloc-f100-f150-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/static-object-size-companion-owner-f100-f150-20260718.log`
+
+### `objects.rom`-sökvägen når QIO men saknar open-completion
+
+En default-off callsite-trace runt `0x800c8828` visar att formatteringsanropet
+vid `0x800c886c` har rätt destination, format och synliga argument:
+
+```text
+destination  0x80218530
+format       /d0/%s/%s
+directory    0x80166370 -> ""
+filename     objects.rom
+```
+
+Efter retur från `0x8011f3c0` är destinationen fortfarande tom. CPU-tracen
+visar samtidigt att wrapperns varargs inte längre motsvarar callsite-registren,
+och den diagnostiska format-buffer-fastpathen returnerar noll samt NUL-terminerar
+destinationen. Felet uppstår alltså före FSYS-uppslaget.
+
+Den smala default-off path-ownern
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_PATH_OWNER=1`
+matchar endast detta `objects.rom`-anrop, femte argumentet `0x802e1718` och den
+tomma katalogpekaren. Den skriver den rå-FSYS-bevisade sökvägen
+`/d0/static_lr/objects.rom` och fortsätter i guestens ordinarie kod.
+
+Det flyttar gränsen framåt men ger ännu ingen filstorlek:
+
+```text
+0x800c88ec  open-call    object=0x80295750 path=/d0/static_lr/objects.rom
+0x800c88fc  open-return  v0=0
+0x800c890c  status-wait  object+0x14=0
+```
+
+Efter ytterligare en miljon instruktioner är tråden fortfarande i
+`0x800c86b4..0x800c8728`-pollningen och `0x800c893c` har inte nåtts. Samma
+resultat fås med rotvarianten `/d0/objects.rom`; den giltiga katalogen ensam
+skapar alltså inte completion. QIO-objektet har den väntade runtime-signaturen
+(`+0x00=0x8021e88c`, `+0x20=0x80218518`, `+0x38=0x800f087c`,
+`+0x3c=0x80295750`) men status `+0x14` förblir noll.
+
+Nästa gräns är därför open/callback-ägarskapet bakom `0x800ec748`, inte fler
+sökvägsgissningar och inte filstorleksresultatet. Spåra vilken request/callback
+som skapas för `0x80295750` och varför den befintliga QIO-completion-bridgen
+bara avslutar mount/modellrequests men inte denna filöppning. Path-ownern ska
+förbli default-off.
+
+Verifieringsloggar:
+
+- `/tmp/eutherdrive-gauntlet-probe/static-object-file-path-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-path-stages-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-static-lr-path-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-path-owner-final-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-object-open-qio-bytes-f100-f150-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/default-off-after-static-object-path-owner-f100-f150-20260718.log`

@@ -750,6 +750,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_OWNER"));
     private readonly bool _experimentRuntimeBgLoadModelStaticObjectSizeOwner =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_SIZE_OWNER"));
+    private readonly bool _experimentRuntimeBgLoadModelStaticObjectPathOwner =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_PATH_OWNER"));
     private readonly ulong _experimentRuntimeBgLoadModelStaticObjectDiskBase =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_DISK_BASE") ?? 0x0fb2e000UL;
     private readonly bool _experimentRuntimeBgLoadModelStaticObjectCompanionOwner =
@@ -1616,6 +1618,8 @@ internal sealed class MipsR5000Core
         TraceKnownRuntimeBgLoadModelTextureChunkReturn(pc);
         TraceKnownRuntimeWorldTextureDescriptor(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
+        if (TryApplyKnownRuntimeBgLoadModelStaticObjectPathOwner(pc))
+            return;
         if (TryApplyKnownRuntimeBgLoadModelStaticObjectSizeOwner(pc))
             return;
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
@@ -19184,6 +19188,48 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryApplyKnownRuntimeBgLoadModelStaticObjectPathOwner(ulong pc)
+    {
+        const ulong callsite = 0xffffffff800c886cUL;
+        const ulong destination = 0xffffffff80218530UL;
+        const ulong format = 0xffffffff8013d8d4UL;
+        const ulong emptyDirectory = 0xffffffff80166370UL;
+        const ulong objectsRom = 0xffffffff8013b024UL;
+        const ulong source = 0xffffffff802e1718UL;
+        const string ownedPath = "/d0/static_lr/objects.rom";
+
+        ulong frame = _gpr[30];
+        if (!_experimentRuntimeBgLoadModelStaticObjectPathOwner ||
+            pc != callsite ||
+            _memory.Read32(callsite) != 0x0c047cf0U ||
+            _memory.Read32(callsite + 0x04UL) != 0U ||
+            _gpr[4] != destination ||
+            _gpr[5] != format ||
+            _gpr[6] != emptyDirectory ||
+            _gpr[7] != objectsRom ||
+            !IsMainRamRange(frame + 0x73UL, 1UL) ||
+            ReadTraceWord(frame + 0x64UL) != unchecked((uint)objectsRom) ||
+            ReadTraceWord(frame + 0x70UL) != unchecked((uint)source) ||
+            ReadAsciiTraceString(emptyDirectory, 2).Length != 0 ||
+            ReadAsciiTraceString(objectsRom, 16) != "objects.rom" ||
+            !IsMainRamRange(destination, (ulong)ownedPath.Length + 1UL))
+        {
+            return false;
+        }
+
+        for (int i = 0; i < ownedPath.Length; i++)
+            _memory.Write8(destination + (uint)i, (byte)ownedPath[i]);
+        _memory.Write8(destination + (uint)ownedPath.Length, 0);
+
+        _gpr[2] = SignExtend32((uint)ownedPath.Length);
+        Pc = callsite + 0x08UL;
+        CompleteFastPathStep();
+        Console.WriteLine(
+            $"[GAUNTDL:EXPERIMENT] bgloadmodel-static-object-path-owner pc={pc:x16} " +
+            $"path=\"{ReadAsciiTraceString(destination, 96)}\" next={Pc:x16}");
+        return true;
+    }
+
     private void TraceKnownRuntimeBgLoadModelLookupHelpers(ulong pc)
     {
         if (!_traceRuntimeBgLoadModelAssetParser || _runtimeBgLoadModelLookupHelperTraceCount >= 128)
@@ -19194,6 +19240,15 @@ internal sealed class MipsR5000Core
             0xffffffff800b72fcUL => "size-alloc-entry",
             0xffffffff800b7338UL => "size-alloc-return",
             0xffffffff800c8828UL => "file-size-entry",
+            0xffffffff800c886cUL => "file-path-format-call",
+            0xffffffff800c8874UL => "file-path-format-return",
+            0xffffffff800c8898UL => "file-open-setup",
+            0xffffffff800c88ecUL => "file-open-call",
+            0xffffffff800c88fcUL => "file-open-return",
+            0xffffffff800c890cUL => "file-open-status",
+            0xffffffff800c8918UL => "file-stat-call",
+            0xffffffff800c8928UL => "file-stat-return",
+            0xffffffff800c8938UL => "file-stat-status",
             0xffffffff800c893cUL => "file-size-result-load",
             0xffffffff800c9088UL => "lookup-entry",
             0xffffffff800c909cUL => "lookup-global-check",
@@ -19213,6 +19268,16 @@ internal sealed class MipsR5000Core
              ReadTraceWord(_gpr[29] + 0x10UL) != 0x802e1718U))
         {
             return;
+        }
+        if (pc is >= 0xffffffff800c886cUL and <= 0xffffffff800c8938UL)
+        {
+            ulong frame = _gpr[30];
+            if (!IsMainRamRange(frame + 0x73UL, 1) ||
+                ReadTraceWord(frame + 0x64UL) != 0x8013b024U ||
+                ReadTraceWord(frame + 0x70UL) != 0x802e1718U)
+            {
+                return;
+            }
         }
         if (pc is >= 0xffffffff800c9088UL and <= 0xffffffff800c90d4UL &&
             _gpr[31] != 0xffffffff800aade4UL)
@@ -19250,6 +19315,7 @@ internal sealed class MipsR5000Core
             $"a2={_gpr[6]:x16}({ReadAsciiTraceString(_gpr[6], 48)}) " +
             $"a3={_gpr[7]:x16}({ReadAsciiTraceString(_gpr[7], 48)}) " +
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s5={_gpr[21]:x16} " +
+            $"filePath=\"{ReadAsciiTraceString(0xffffffff80218530UL, 96)}\" " +
             $"pathSlot={TraceKnownRuntimeBgLoadModelPathSlot(_gpr[16])} " +
             $"lookupGlobals={TraceKnownRuntimeBgLoadModelLookupGlobals()}");
     }
