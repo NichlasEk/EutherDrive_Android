@@ -1296,6 +1296,7 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelTextureSetDistinctSourceTraceCount;
     private int _runtimeTextureSetLookupTraceCount;
     private readonly HashSet<(uint PackedIndex, uint SetBase, ulong ReturnAddress)> _runtimeTextureSetLookupTraceKeys = [];
+    private bool _runtimeRecordListStateTraced;
     private int _runtimeWorldTextureSelectorCallTraceCount;
     private readonly HashSet<(ulong Pc, uint Selector, ulong Record, uint Source)> _runtimeWorldTextureSelectorCallTraceKeys = [];
     private int _runtimeWorldTextureUploadBoundsTraceCount;
@@ -1606,6 +1607,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
         ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(pc);
         TraceKnownRuntimeTextureSetLookup(pc);
+        TraceKnownRuntimeRecordListState(pc);
         TraceKnownRuntimeWorldTextureSelectorCall(pc);
         ApplyKnownRuntimeWorldTextureUploadSquareAspect(pc);
         TraceKnownRuntimeWorldTextureUploadBounds(pc);
@@ -15400,11 +15402,29 @@ internal sealed class MipsR5000Core
     private void TraceKnownRuntimeTextureSetLookup(ulong pc)
     {
         const ulong textureSetLookupPc = 0xffffffff800a92a8UL;
+        const ulong renderLookupReturnPc = 0xffffffff800b0800UL;
+        const ulong sizeLookupReturnPc = 0xffffffff800a648cUL;
         const ulong textureSetTable = 0xffffffff802545a0UL;
         if (!_traceRuntimeTextureSetLookups ||
-            pc != textureSetLookupPc ||
+            pc is not (textureSetLookupPc or renderLookupReturnPc or sizeLookupReturnPc) ||
             _runtimeTextureSetLookupTraceCount >= _traceRuntimeTextureSetLookupsLimit)
         {
+            return;
+        }
+
+        if (pc != textureSetLookupPc)
+        {
+            ulong returnedResult = CanonicalizeTraceAddress(_gpr[2]);
+            ulong lookupCaller = _gpr[31];
+            if (!_runtimeTextureSetLookupTraceKeys.Add((0xffffffffU, unchecked((uint)returnedResult), pc)))
+                return;
+
+            _runtimeTextureSetLookupTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] runtime-texture-set-lookup n={_runtimeTextureSetLookupTraceCount} " +
+                $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} phase=return " +
+                $"result={returnedResult:x16} words={(IsMainRamRange(returnedResult, 0x50UL) ? FormatTraceWords(returnedResult, 20) : "-")} " +
+                $"v1={_gpr[3]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} ra={lookupCaller:x16}");
             return;
         }
 
@@ -15425,7 +15445,32 @@ internal sealed class MipsR5000Core
             $"[GAUNTDL:TRACE] runtime-texture-set-lookup n={_runtimeTextureSetLookupTraceCount} " +
             $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} packed={packedIndex:x8} " +
             $"set={setIndex} record={recordIndex} slot={setSlot:x16} base={setBase:x8} " +
-            $"result={result:x16} ra={returnAddress:x16}");
+            $"result={result:x16} words={(IsMainRamRange(result, 0x50UL) ? FormatTraceWords(result, 20) : "-")} " +
+            $"ra={returnAddress:x16}");
+    }
+
+    private void TraceKnownRuntimeRecordListState(ulong pc)
+    {
+        const ulong listAdvancePc = 0xffffffff800b11d4UL;
+        const ulong countAddress = 0xffffffff80228088UL;
+        const ulong tableBase = 0xffffffff80255f20UL;
+        const ulong recordStride = 0x50UL;
+        if (!_traceRuntimeRecordScanAllocate || _runtimeRecordListStateTraced || pc != listAdvancePc)
+            return;
+
+        _runtimeRecordListStateTraced = true;
+        uint recordCount = _memory.Read32(countAddress);
+        uint dumpCount = Math.Min(recordCount, 16U);
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] record-list-state pc={pc:x16} count={recordCount} dump={dumpCount} " +
+            $"head={_gpr[16]:x16} ra={_gpr[31]:x16}");
+        for (uint index = 0; index < dumpCount; index++)
+        {
+            ulong record = tableBase + index * recordStride;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] record-list-state index={index} record={record:x16} " +
+                $"words={FormatTraceWords(record, 20)}");
+        }
     }
 
     private void TraceKnownRuntimeWorldTextureSelectorCall(ulong pc)

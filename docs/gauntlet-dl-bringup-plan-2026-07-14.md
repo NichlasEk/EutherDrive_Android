@@ -2692,3 +2692,65 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/companion-mameptr-f100-f132-plus5m-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-companion-mameptr-f132-plus5m-20260718.warm`
 - `/tmp/eutherdrive-gauntlet-probe/companion-mameptr-sampletrace-plus1m-20260718.log`
+
+### Riktiga frames stänger loading-/scene-publiceringsgränsen
+
+Companion-kombinationen har nu körts från frame 100 till 300 med riktiga
+frames i stället för en fryst frame 132 och extra CPU-instruktioner. Den
+fortsätter att exekvera och ökar Type3-trafiken, men lämnar aldrig loading-
+familjen:
+
+```text
+frame                     132 +5M       300
+Type3 packets                 2160      5429
+texture writes                1093      1093
+sampled pixels               78336    196928
+zero samples                 78336    196928
+swaps                          196       196
+frameHash                 f29eb67c  f29eb67c
+```
+
+Detta avfärdar att den tidigare extra-instruction-metoden ensam höll loaden
+vid liv. Den guardade S-from-X-fixen är också neutral ovanpå f300: ytterligare
+22 848 samples förblir noll och inga nya swaps sker.
+
+Den utökade texture-set-tracen visar samtidigt att publiceringen fram till
+lookup är korrekt. Set-tabellen `0x802545a0` innehåller bas `0x802ecb6c`, och
+både `0x800b0800`- och storlekshjälparens retur får samma giltiga record:
+
+```text
+record words  0d010605/00080008/00000000/fffff91d/
+              000001cf/0003d614/00000000/00011de8/
+              33221100/77665544/bbaa9988/ffeeddcc
+```
+
+TMU-stateproducenten efter f300 är däremot uteslutande den återkommande
+loading-/blit-vägen `0x80106a74/0x80106448`. Den växlar mode
+`0x0000100f/0x0c24100f`, behåller LOD `0xff802000` och base noll. Model-
+uploadens producent `0x800fe5d4` återkommer inte, och inga andra texture-set-
+index än set 0 / record 0 observeras.
+
+En record-list-dump vid `0x800b11d4` visar att listan är levande och länkad;
+de första posterna är aktiva och delar body `0x80349498`. Samma bodyadress
+finns redan i size-owner-staten utan companion, så companion-remappen har inte
+kollapsat separata bodypekare. Den fyller en adress som guesten redan hade
+publicerat.
+
+Nästa gräns är därför world-loadens completion/publicering före scene-
+materialkonsumenten. Spåra vilket status/resultat som ska göra att renderaren
+slutar slå upp endast set 0 / record 0 och börjar publicera castle-material;
+ändra inte sampleradress, bodypekare eller frame-pumpning syntetiskt.
+
+Den default-off diagnostiken har utökats så att
+`EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEXTURE_SET_LOOKUPS=1` även visar recordord
+vid entry/retur, och `EUTHERDRIVE_GAUNTDL_TRACE_RECORD_SCAN_ALLOCATE=1` gör en
+engångsdump av de första 16 länkade recordsen vid konsumentloopen.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/companion-realframes-f100-f300-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-companion-realframes-f300-20260718.warm`
+- `/tmp/eutherdrive-gauntlet-probe/companion-f300-texture-record-return-plus200k-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/companion-f300-tmu-state-producer-plus1m-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/companion-f300-record-list-state-plus200k-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-size-no-companion-record-list-plus200k-20260718.log`
