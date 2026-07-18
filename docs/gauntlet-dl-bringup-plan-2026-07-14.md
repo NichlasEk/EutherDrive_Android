@@ -2648,3 +2648,47 @@ Korrigerad regressionssnapshot:
 
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-plus4-rebuilt-f132-plus5m-20260718.warm`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-interrupt-static-size-companion-plus4-rebuilt-f132-plus5m-20260718.ppm`
+
+### Companion-uploaden når Voodoo men äger inte den samplade ytan
+
+En payload-/upload-proveniens från den korrigerade companion-adressen visar
+att varierande, icke-noll payloadord når guestens Type5-loop. Källan ligger i
+den hydrerade companion-arenan kring `0x8034d2b0`, och Type5-paketen behåller
+både target och payload fram till `WriteTexturePort32()`. Den kvarvarande
+nollbilden orsakas alltså inte av tom companiondata eller en byte-order-klobber
+före Voodoo.
+
+Två rena upload-address-A/B har därefter körts på samma frame 132 +5M-gräns:
+
+```text
+variant             Type3  Type5  tex writes  touched words  sampled zero  hash
+companion baseline    2160    185        1093             41         78336  f29eb67c
+SEQ8 download off     2160    185        1093             26         78336  f29eb67c
+MAME write pointer    2160    185        1093            257         78336  f29eb67c
+```
+
+Att stänga av den av `BRINGUP_FAST` aktiverade sekventiella 8-bitarsmodellen
+minskar det fysiska touched-spannet och är därmed en regression. MAME-
+write-pointermodellen sprider däremot samma 4 368 map-writes från 41 till 257
+unika ord, men är pixelneutral och ska ännu inte promoteras.
+
+En efterföljande sample/writer-trace förklarar neutraliteten. Uploadpaketen
+har format 6, LOD 3 och storlek 256x32, med de första MAME-adresserna kring
+`0x000890`. De 2 160 texturerade dragen är i stället den redan kända loading-
+fullrecten `0x0180a8cb`; den samplar format 15, LOD 0, storlek 256x256 och
+adresser kring `0x007c17..0x00fc17`. Samtliga saknar writer. Upload och draw
+beskriver alltså två olika ytor; en sampler-rebase vore bara en visuell gissning.
+
+Nästa gräns ligger ovanför Voodoo: körningen rapporterar åtta
+`render-record-null-body`-poster och de återkommande runtime-strängkopiorna
+har längd noll. Spåra varför scene-/render-recordens body eller namn aldrig
+publiceras efter model-uploaden och varför loading-fullrecten fortsätter vara
+enda Type3-familjen. Behåll både companion-ownern och MAME-pekaren default-off.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/static-companion-plus4-upload-provenance-f100-f132-plus1m-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-companion-seq8off-f132-plus5m-20260718.warm`
+- `/tmp/eutherdrive-gauntlet-probe/companion-mameptr-f100-f132-plus5m-20260718.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-companion-mameptr-f132-plus5m-20260718.warm`
+- `/tmp/eutherdrive-gauntlet-probe/companion-mameptr-sampletrace-plus1m-20260718.log`
