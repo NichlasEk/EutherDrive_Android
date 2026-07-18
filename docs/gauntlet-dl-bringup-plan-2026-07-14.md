@@ -2052,3 +2052,43 @@ vara en negativ kontroll. Nästa dynamiska gräns är nu den separata
 upload-till-draw-propagationen: bind den valda postens fallback-aspect noll till
 den senare draw-state-byggaren och avgör varför `textureLod=0x20c6` saknar
 aspectbitar trots att upload-tabellen väljer 256x32.
+
+### Upload-aspect når aldrig draw-state-byggaren
+
+En separat default-off probe följer nu övergången vid `0x800bd180`, efter
+att guestkoden har byggt både texture mode och texture LOD:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_UPLOAD_TO_DRAW=1
+```
+
+En kall baseline till f150 träffade den primära posten 16 gånger vid f133 med
+identiska värden:
+
+```text
+record=0x802e2158 raw+0x0c=0x1c00 raw+0x14=0x000000c6 raw+0x1c=0x0000e000
+owner=0x80213618 owner+0x144=0x00002000 globalMode=0x00000006
+inputMode=0x8c241009 inputBaseShift=0
+builtMode=0x8c24100f builtLod=0x000020c6 stateOwner=0x80262d64
+```
+
+Detta binder den tidigare statiska formeln dynamiskt: draw-buildern gör
+`(raw+0x14 & 0xfffc0fff) | owner+0x144` och producerar själv `0x20c6`.
+Upload-helperns fallback-aspect noll finns inte bland dess inputs. Callern vid
+`0x800bd750` skickar endast materialposten, global mode-state och
+`raw+0x1c & 1`; det finns ingen separat aspectparameter som vår implementation
+kan ha tappat.
+
+Den nya återanvändbara observationsstaten är
+`/tmp/eutherdrive-gauntlet-probe/gauntdl-upload-to-draw-f150-20260718.warm`
+och cold-runnen slutade på `frameHash=0xf29eb67c`. Den fulla kanoniska
+f900--f1000+5,1M-kedjan verifierades separat och är fortfarande exakt
+`frameHash=0x42925e78`, `fifoWords=10323854`, `packets=362333`, `swaps=1299`.
+
+Nästa kausala gräns flyttas därför före båda konsumenterna: följ producenten
+av materialpostens `raw+0x04/+0x06 = 0x40e5/0x60da`. Upload-helpern tolkar
+halvorden som dimensioner men de matchar inget giltigt power-of-two-aspect,
+medan draw-buildern helt förlitar sig på det separata råfältet `raw+0x14`.
+Avgör om QIO-/parserflödet ska konvertera dimensionsmetadata innan posten
+publiceras; ändra inte Voodoo-samplern eller tvinga square-aspect innan den
+producentgränsen är stängd.

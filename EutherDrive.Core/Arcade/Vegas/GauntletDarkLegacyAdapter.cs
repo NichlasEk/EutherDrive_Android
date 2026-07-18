@@ -778,6 +778,8 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_SELECTOR_CALLS_LIMIT", 96);
     private readonly bool _traceRuntimeWorldTextureUploadBounds =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_UPLOAD_BOUNDS"));
+    private readonly bool _traceRuntimeWorldTextureUploadToDraw =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_UPLOAD_TO_DRAW"));
     private readonly bool _experimentRuntimeWorldTextureUploadSquareAspect =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WORLD_TEXTURE_UPLOAD_SQUARE_ASPECT"));
     private readonly bool _enableRuntimeBgLoadModelDistinctSourcesExperiment =
@@ -1276,6 +1278,7 @@ internal sealed class MipsR5000Core
     private readonly HashSet<(ulong Pc, uint Selector, ulong Record, uint Source)> _runtimeWorldTextureSelectorCallTraceKeys = [];
     private int _runtimeWorldTextureUploadBoundsTraceCount;
     private int _runtimeWorldTextureUploadLowLevelTraceCount;
+    private int _runtimeWorldTextureDrawStateTraceCount;
     private int _runtimeWorldTextureUploadSquareAspectTraceCount;
     private int _runtimeBgLoadModelIndexedPrepareDetailPreserveTraceCount;
     private int _runtimeBgLoadModelIndexedStatusHelperTraceCount;
@@ -15467,6 +15470,7 @@ internal sealed class MipsR5000Core
     {
         const ulong outerEntryPc = 0xffffffff800a7110UL;
         const ulong aspectBuilderPc = 0xffffffff800a731cUL;
+        const ulong drawStateBuiltPc = 0xffffffff800bd180UL;
         const ulong entryPc = 0xffffffff801094f4UL;
         const ulong preparedPc = 0xffffffff8010953cUL;
         const ulong emitterPc = 0xffffffff801096acUL;
@@ -15475,9 +15479,29 @@ internal sealed class MipsR5000Core
         const ulong lowLevelTablePc = 0xffffffff800fe30cUL;
         const ulong lowLevelGeometryPc = 0xffffffff800fe460UL;
         const ulong lowLevelPacketPc = 0xffffffff800fe5e8UL;
-        if (!_traceRuntimeWorldTextureUploadBounds ||
-            pc is not (outerEntryPc or aspectBuilderPc or entryPc or preparedPc or emitterPc or emitterTablePc or lowLevelEntryPc or lowLevelTablePc or lowLevelGeometryPc or lowLevelPacketPc))
+        bool traceDrawState = _traceRuntimeWorldTextureUploadToDraw && pc == drawStateBuiltPc;
+        bool traceUploadBounds = _traceRuntimeWorldTextureUploadBounds &&
+            pc is (outerEntryPc or aspectBuilderPc or entryPc or preparedPc or emitterPc or emitterTablePc or lowLevelEntryPc or lowLevelTablePc or lowLevelGeometryPc or lowLevelPacketPc);
+        if (!traceDrawState && !traceUploadBounds)
         {
+            return;
+        }
+
+        if (pc == drawStateBuiltPc)
+        {
+            ulong record = CanonicalizeTraceAddress(_gpr[18]);
+            if (record != 0xffffffff802e2158UL || _runtimeWorldTextureDrawStateTraceCount >= 32)
+                return;
+
+            ulong owner = CanonicalizeTraceAddress(_gpr[20]);
+            _runtimeWorldTextureDrawStateTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] runtime-world-texture-upload-to-draw n={_runtimeWorldTextureDrawStateTraceCount} " +
+                $"frame={_memory.VoodooRenderFrameCount} pc={pc:x16} ra={_gpr[31]:x16} " +
+                $"record={record:x16}:{FormatTraceWords(record, 8)} owner={owner:x16} " +
+                $"ownerLodBias={ReadTraceWord(owner + 0x144UL):x8} globalMode={ReadTraceWord(0xffffffff80162cb4UL):x8} " +
+                $"inputMode={_gpr[6]:x16} inputBaseShift={_gpr[7]:x16} " +
+                $"builtMode={_gpr[16]:x16} builtLod={_gpr[21]:x16} stateOwner={_gpr[17]:x16}");
             return;
         }
 
