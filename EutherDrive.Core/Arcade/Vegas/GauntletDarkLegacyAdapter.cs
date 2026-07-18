@@ -15487,14 +15487,16 @@ internal sealed class MipsR5000Core
             if (record != 0xffffffff802e2158UL || _runtimeWorldTextureUploadBoundsTraceCount >= 64)
                 return;
 
+            ulong stack = CanonicalizeTraceAddress(_gpr[29]);
             _runtimeWorldTextureUploadBoundsTraceCount++;
             Console.WriteLine(
                 $"[GAUNTDL:TRACE] runtime-world-texture-upload-bounds n={_runtimeWorldTextureUploadBoundsTraceCount} " +
                 $"frame={_memory.VoodooRenderFrameCount} phase=outer-entry pc={pc:x16} ra={_gpr[31]:x16} " +
                 $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
                 $"record={record:x16}:{FormatTraceWords(record, 16)} " +
-                $"callerS1={_gpr[17]:x16} callerS3={_gpr[19]:x16} callerS4={_gpr[20]:x16} " +
-                $"callerFp={_gpr[30]:x16} callerV0={_gpr[2]:x16} sp={_gpr[29]:x16}");
+                $"callerS1={ReadTraceWord(stack + 0x44UL):x8} callerS3={ReadTraceWord(stack + 0x4cUL):x8} " +
+                $"callerS4={ReadTraceWord(stack + 0x50UL):x8} callerFp={ReadTraceWord(stack + 0x60UL):x8} " +
+                $"sp={stack:x16}");
             return;
         }
 

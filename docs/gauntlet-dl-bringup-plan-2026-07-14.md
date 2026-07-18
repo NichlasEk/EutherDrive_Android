@@ -2028,16 +2028,27 @@ frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
 ```
 
 Kod-dumparna visar att båda callsitesen anropar den verkliga entryn
-`0x800a7094` och räknar `a0` med 0x50-byte stride. Den upprepade vägen vid
-`0x800ab3b4` bygger uttryckligen `a0 = s8 + s4 * 0x50`, medan `a1` redan
-pekar på arena-basen `0x802e1718`. Record 0 skickas alltså inte till
-aspect-buildern genom ett tappat internt subrecord-offset; den är en medvetet
-vald descriptorpost i callerns tabell.
+`0x800a7094` och räknar `a0` med 0x50-byte stride. En andra observationsren
+körning läste callerns sparade register från callee-stacken och stängde även
+frågan om stride-basen:
+
+```text
+initial:  callerS1=80210000 callerS3=802e2158 callerS4=00000002 callerFp=80252da0
+repeat:   callerS1=00000002 callerS3=188d2303 callerS4=00000000 callerFp=802e2158
+```
+
+Den upprepade vägen vid `0x800ab3b4` bygger alltså uttryckligen
+`a0 = fp + s4 * 0x50 = 0x802e2158 + 0 * 0x50`. Initvägen bär samma
+descriptorpekare direkt i `s3`. `a1=0x802e1718` är separat source/arena-data,
+inte basen för descriptorindexeringen. Record 0 skickas därför inte till
+aspect-buildern genom ett tappat internt subrecord-offset eller ett felaktigt
+index; den är en medvetet vald descriptorpost i båda callerflödena.
 
 En dump av de omgivande 0x50-byteposterna stänger också den enkla
 off-by-one-kontrollen. Nästa post `0x802e21a8` är den redan kända sekundära
 draw-descriptorn och innehåller inte heller en vanlig power-of-two
 width/height-header vid `+0x04/+0x06`. Square-uploaden ska därför fortsätta
-vara en negativ kontroll. Nästa dynamiska gräns är callerns indexproduktion:
-logga `s8/s4/s1` (och motsvarande `s3/v0` på initvägen), bind indexet till den
-tidigare lookupen och följ därefter hur samma val blir draw-state-aspect.
+vara en negativ kontroll. Nästa dynamiska gräns är nu den separata
+upload-till-draw-propagationen: bind den valda postens fallback-aspect noll till
+den senare draw-state-byggaren och avgör varför `textureLod=0x20c6` saknar
+aspectbitar trots att upload-tabellen väljer 256x32.
