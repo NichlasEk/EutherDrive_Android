@@ -2146,3 +2146,42 @@ aspect syntetiskt innan den producentgränsen är stängd.
 Den verifierade observationsloggen är
 `/tmp/eutherdrive-gauntlet-probe/record-selection-release-f100-f150-20260718.log`.
 Runnen förblev exakt `frameHash=0xf29eb67c`; tracen är alltså observationsren.
+
+### Selector-outer är den återanvända QIO-scratchen
+
+Outer-fasen i samma trace stänger den återstående pekarberäkningen. Vid varje
+observerat selector-anrop är outer inte ett separat publicerat runtimeobjekt
+utan slot-0-scratchens råa QIO-destination:
+
+```text
+outer=0x802e1718
+outer+0x60=0x00000012
+outer+0x64=0x00000002
+table=outer+0x68+0x12*0x8c=0x802e2158
+```
+
+De första outer-orden är samtidigt den kända texture-payloadformen
+`12/2/0/a/2b/.../f798`, inte en header byggd av adaptern. Slot-0-repairen har
+precis före detta kopierat den requestägda 0x2000-byteblocket från
+`static_lr/textures.rom` till samma `0x802e1718`. En CPU-write-watch över
+`0x802e1718..0x802e1780` ser därefter endast guestens bevarade store av värdet
+två till `outer+0x44` vid `0x800aad0c`; ingen parser konverterar `+0x60/+0x64`
+eller recordtabellen före selectorn.
+
+Adressen har dessutom bevisat mer än en livstid. Den sparade kalla f150-staten
+`gauntdl-upload-to-draw-f150-20260718.warm` innehåller på samma adress en
+runtime-lik `1/4`-header med interna pekare och `1.0`-floats, medan den
+requestdrivna f100--f150-kedjan visar den råa texture-chunken under
+selector-anropen. De tidigare set 9/10-adresserna är inte ett giltigt
+format-orakel; den aktuella snapshoten innehåller MIPS-kod där.
+
+Den smalaste kvarvarande gränsen är därför scratch-/source-tabellens livstid,
+inte width/height-halvorden isolerat. Följ varför `0x802e1718` fortsätter vara
+descriptor-owner när QIO-refillen har ersatt dess tidigare innehåll med en rå
+texture-chunk. En fix måste behålla den guestägda descriptor/header-instansen
+eller publicera requestens verkliga parsed output; den får inte klona hela
+0x2000-byte-scratchen, gissa ett inner-offset eller skriva om selectorn.
+
+Observationsloggen för tidsordningen är
+`/tmp/eutherdrive-gauntlet-probe/outer-write-order-f100-f150-20260718.log` och
+behåller åter `frameHash=0xf29eb67c`.

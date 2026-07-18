@@ -19439,9 +19439,28 @@ internal sealed class MipsR5000Core
     private void TraceKnownRuntimeWorldTextureRecordSelection(ulong pc)
     {
         if (!_traceRuntimeWorldTextureRecordSelection ||
-            pc is not (0xffffffff800ab32cUL or 0xffffffff800ab35cUL) ||
+            pc is not (0xffffffff800ab2b0UL or 0xffffffff800ab32cUL or 0xffffffff800ab35cUL) ||
             _runtimeWorldTextureRecordSelectionTraceCount >= _traceRuntimeWorldTextureRecordSelectionLimit)
         {
+            return;
+        }
+
+        if (pc == 0xffffffff800ab2b0UL)
+        {
+            ulong outer = CanonicalizeTraceAddress(_gpr[16]);
+            uint tableIndex = ReadTraceWord(outer + 0x60UL);
+            uint recordCount = ReadTraceWord(outer + 0x64UL);
+            ulong computedTable = outer + 0x68UL + (ulong)tableIndex * 0x8cUL;
+            if (computedTable != 0xffffffff802e2158UL)
+                return;
+
+            _runtimeWorldTextureRecordSelectionTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] world-texture-record-selection n={_runtimeWorldTextureRecordSelectionTraceCount} " +
+                $"phase=outer-setup pc={pc:x16} ra={_gpr[31]:x16} outer={outer:x16} " +
+                $"tableIndex={tableIndex:x8} recordCount={recordCount:x8} table={computedTable:x16} " +
+                $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+                $"outerWords={FormatTraceWords(outer, 28)}");
             return;
         }
 
