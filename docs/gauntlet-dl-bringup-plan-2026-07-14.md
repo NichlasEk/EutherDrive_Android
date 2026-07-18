@@ -2014,3 +2014,30 @@ Kod-dumpen av den omgivande funktionen visar dessutom `move s2,a0` vid
 aspect-buildern får `s2`. Om fel strukturdel används måste den därför komma
 från callerns argumentval eller den tidigare record-lookupen, inte från en
 tappad offset inne i selectorloopen.
+
+### Callern väljer descriptorposten explicit med 0x50-byte stride
+
+Bounds-tracen följer nu record 0 ett steg längre ut och fångar
+`0x800a7110`, precis innan `move s2,a0`. Den kanoniska
+f900--f1000+5,1M-körningen gav två callsites men behöll oraklet exakt:
+
+```text
+ra=0x800abe54 a0=0x802e2158 a1=0x802e1718 a2=0 a3=2
+ra=0x800ab3b8 a0=0x802e2158 a1=0x802e1718 a2=0 a3=2
+frameHash=0x42925e78 fifoWords=10323854 packets=362333 swaps=1299
+```
+
+Kod-dumparna visar att båda callsitesen anropar den verkliga entryn
+`0x800a7094` och räknar `a0` med 0x50-byte stride. Den upprepade vägen vid
+`0x800ab3b4` bygger uttryckligen `a0 = s8 + s4 * 0x50`, medan `a1` redan
+pekar på arena-basen `0x802e1718`. Record 0 skickas alltså inte till
+aspect-buildern genom ett tappat internt subrecord-offset; den är en medvetet
+vald descriptorpost i callerns tabell.
+
+En dump av de omgivande 0x50-byteposterna stänger också den enkla
+off-by-one-kontrollen. Nästa post `0x802e21a8` är den redan kända sekundära
+draw-descriptorn och innehåller inte heller en vanlig power-of-two
+width/height-header vid `+0x04/+0x06`. Square-uploaden ska därför fortsätta
+vara en negativ kontroll. Nästa dynamiska gräns är callerns indexproduktion:
+logga `s8/s4/s1` (och motsvarande `s3/v0` på initvägen), bind indexet till den
+tidigare lookupen och följ därefter hur samma val blir draw-state-aspect.

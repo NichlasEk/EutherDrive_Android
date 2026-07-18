@@ -15465,6 +15465,7 @@ internal sealed class MipsR5000Core
 
     private void TraceKnownRuntimeWorldTextureUploadBounds(ulong pc)
     {
+        const ulong outerEntryPc = 0xffffffff800a7110UL;
         const ulong aspectBuilderPc = 0xffffffff800a731cUL;
         const ulong entryPc = 0xffffffff801094f4UL;
         const ulong preparedPc = 0xffffffff8010953cUL;
@@ -15475,8 +15476,25 @@ internal sealed class MipsR5000Core
         const ulong lowLevelGeometryPc = 0xffffffff800fe460UL;
         const ulong lowLevelPacketPc = 0xffffffff800fe5e8UL;
         if (!_traceRuntimeWorldTextureUploadBounds ||
-            pc is not (aspectBuilderPc or entryPc or preparedPc or emitterPc or emitterTablePc or lowLevelEntryPc or lowLevelTablePc or lowLevelGeometryPc or lowLevelPacketPc))
+            pc is not (outerEntryPc or aspectBuilderPc or entryPc or preparedPc or emitterPc or emitterTablePc or lowLevelEntryPc or lowLevelTablePc or lowLevelGeometryPc or lowLevelPacketPc))
         {
+            return;
+        }
+
+        if (pc == outerEntryPc)
+        {
+            ulong record = CanonicalizeTraceAddress(_gpr[4]);
+            if (record != 0xffffffff802e2158UL || _runtimeWorldTextureUploadBoundsTraceCount >= 64)
+                return;
+
+            _runtimeWorldTextureUploadBoundsTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] runtime-world-texture-upload-bounds n={_runtimeWorldTextureUploadBoundsTraceCount} " +
+                $"frame={_memory.VoodooRenderFrameCount} phase=outer-entry pc={pc:x16} ra={_gpr[31]:x16} " +
+                $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+                $"record={record:x16}:{FormatTraceWords(record, 16)} " +
+                $"callerS1={_gpr[17]:x16} callerS3={_gpr[19]:x16} callerS4={_gpr[20]:x16} " +
+                $"callerFp={_gpr[30]:x16} callerV0={_gpr[2]:x16} sp={_gpr[29]:x16}");
             return;
         }
 
