@@ -19516,7 +19516,7 @@ internal sealed class MipsR5000Core
 
     private void TraceKnownRuntimeBgLoadModelLookupHelpers(ulong pc)
     {
-        if (!_traceRuntimeBgLoadModelAssetParser || _runtimeBgLoadModelLookupHelperTraceCount >= 128)
+        if (!_traceRuntimeBgLoadModelAssetParser || _runtimeBgLoadModelLookupHelperTraceCount >= 512)
             return;
 
         string label = pc switch
@@ -19560,8 +19560,7 @@ internal sealed class MipsR5000Core
             return;
         }
         if (pc == 0xffffffff800c8828UL &&
-            ((uint)_gpr[5] != 0x8013b024U ||
-             ReadTraceWord(_gpr[29] + 0x10UL) != 0x802e1718U))
+            (uint)_gpr[5] != 0x8013b024U)
         {
             return;
         }
@@ -19569,8 +19568,7 @@ internal sealed class MipsR5000Core
         {
             ulong frame = _gpr[30];
             if (!IsMainRamRange(frame + 0x73UL, 1) ||
-                ReadTraceWord(frame + 0x64UL) != 0x8013b024U ||
-                ReadTraceWord(frame + 0x70UL) != 0x802e1718U)
+                ReadTraceWord(frame + 0x64UL) != 0x8013b024U)
             {
                 return;
             }
@@ -19578,8 +19576,10 @@ internal sealed class MipsR5000Core
         if (pc is >= 0xffffffff800ec748UL and <= 0xffffffff800ec83cUL)
         {
             ulong qioObject = pc == 0xffffffff800ec748UL ? _gpr[4] : _gpr[18];
+            string activePath = ReadAsciiTraceString(0xffffffff80218530UL, 96);
             if ((pc == 0xffffffff800ec748UL && _gpr[31] != 0xffffffff800c88f8UL) ||
-                (pc != 0xffffffff800ec748UL && qioObject != 0xffffffff80295750UL))
+                !activePath.StartsWith("/d0/", StringComparison.Ordinal) ||
+                !IsMainRamRange(qioObject, 0x40UL))
             {
                 return;
             }
@@ -19593,8 +19593,7 @@ internal sealed class MipsR5000Core
         {
             ulong frame = _gpr[30];
             if (!IsMainRamRange(frame + 0x73UL, 1) ||
-                ReadTraceWord(frame + 0x64UL) != 0x8013b024U ||
-                ReadTraceWord(frame + 0x70UL) != 0x802e1718U)
+                ReadTraceWord(frame + 0x64UL) != 0x8013b024U)
             {
                 return;
             }
@@ -19612,6 +19611,9 @@ internal sealed class MipsR5000Core
         }
 
         _runtimeBgLoadModelLookupHelperTraceCount++;
+        ulong tracedOpenObject = pc is >= 0xffffffff800ec748UL and <= 0xffffffff800ec83cUL
+            ? (pc == 0xffffffff800ec748UL ? _gpr[4] : _gpr[18])
+            : 0xffffffff80295750UL;
         Console.WriteLine(
             $"[GAUNTDL:TRACE] bgloadmodel-lookup-helper {label} pc={pc:x16} op={_memory.Read32(pc):x8} " +
             $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
@@ -19621,7 +19623,7 @@ internal sealed class MipsR5000Core
             $"a3={_gpr[7]:x16}({ReadAsciiTraceString(_gpr[7], 48)}) " +
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s4={_gpr[20]:x16} s5={_gpr[21]:x16} " +
             $"filePath=\"{ReadAsciiTraceString(0xffffffff80218530UL, 96)}\" " +
-            $"openObject={TraceKnownRuntimeBgLoadModelQioOneLine(0xffffffff80295750UL)} " +
+            $"openObject={TraceKnownRuntimeBgLoadModelQioOneLine(tracedOpenObject)} " +
             $"pathSlot={TraceKnownRuntimeBgLoadModelPathSlot(_gpr[16])} " +
             $"lookupGlobals={TraceKnownRuntimeBgLoadModelLookupGlobals()}");
     }
