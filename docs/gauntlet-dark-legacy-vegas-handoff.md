@@ -12199,3 +12199,26 @@ allocator result, and the missing heap reservation was the collision.
 /tmp/eutherdrive-gauntlet-probe/static-path-reserve-heap-f100-f300-20260719.log
 /tmp/eutherdrive-gauntlet-probe/gauntdl-static-path-reserve-heap-f300-20260719.ppm
 ```
+
+The post-reservation framebuffer set exposed a small independent export bug.
+Front buffer 1 was a full white clear, buffer 0 had 707 non-zero pixels, and
+buffer 2 had only 2. The display fallback loop selected buffer 0 first but then
+replaced it with buffer 2 merely because both candidates had a low unique-color
+count. Fallback ranking now compares low-detail-fill class first, then active
+pixels, unique colors, and non-white pixels.
+
+At the standard f205 checkpoint this changes the exported buffer from 2 to 0:
+
+```text
+before: frameHash=0x935bde80 framebuffer nonBlack=2 colored=2
+after:  frameHash=0x308a2ac6 framebuffer nonBlack=707 colored=4
+```
+
+The resulting image is still effectively black. Buffer selection is now
+consistent; continue with why the restored 1920+ setup triangles and 4.49M LFB
+writes leave only the boot-corner remnants in the color buffers.
+
+```text
+/tmp/eutherdrive-gauntlet-probe/display-fallback-ranking-f100-f205-20260719.log
+/tmp/eutherdrive-gauntlet-probe/gauntdl-display-fallback-ranking-f205-20260719.ppm
+```

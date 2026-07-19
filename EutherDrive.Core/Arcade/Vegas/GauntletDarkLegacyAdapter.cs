@@ -37047,6 +37047,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         int fallbackActiveCount = 0;
         int fallbackNonWhiteCount = 0;
         int fallbackUniqueCount = 0;
+        bool fallbackIsLowDetailFill = true;
         int count = _colorBuffers.Length;
         for (int i = 0; i < count; i++)
         {
@@ -37062,15 +37063,16 @@ internal class VoodooBringupBackend : IVoodooBackend
             if (IsPendingClearBuffer(i) && candidateActiveCount <= 1024)
                 continue;
 
-            if ((!candidateIsLowDetailFill && fallbackUniqueCount <= 8) ||
-                candidateActiveCount > fallbackActiveCount && (candidateUniqueCount >= fallbackUniqueCount || fallbackUniqueCount <= 8) ||
-                candidateActiveCount == fallbackActiveCount && candidateUniqueCount > fallbackUniqueCount ||
-                candidateActiveCount == fallbackActiveCount && candidateUniqueCount == fallbackUniqueCount && candidateNonWhiteCount > fallbackNonWhiteCount)
+            if ((fallbackIsLowDetailFill && !candidateIsLowDetailFill) ||
+                candidateIsLowDetailFill == fallbackIsLowDetailFill && candidateActiveCount > fallbackActiveCount ||
+                candidateIsLowDetailFill == fallbackIsLowDetailFill && candidateActiveCount == fallbackActiveCount && candidateUniqueCount > fallbackUniqueCount ||
+                candidateIsLowDetailFill == fallbackIsLowDetailFill && candidateActiveCount == fallbackActiveCount && candidateUniqueCount == fallbackUniqueCount && candidateNonWhiteCount > fallbackNonWhiteCount)
             {
                 fallbackIndex = i;
                 fallbackActiveCount = candidateActiveCount;
                 fallbackNonWhiteCount = candidateNonWhiteCount;
                 fallbackUniqueCount = candidateUniqueCount;
+                fallbackIsLowDetailFill = candidateIsLowDetailFill;
             }
 
             if (candidateCount > 1024 &&
