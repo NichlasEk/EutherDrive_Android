@@ -12222,3 +12222,70 @@ writes leave only the boot-corner remnants in the color buffers.
 /tmp/eutherdrive-gauntlet-probe/display-fallback-ranking-f100-f205-20260719.log
 /tmp/eutherdrive-gauntlet-probe/gauntdl-display-fallback-ranking-f205-20260719.ppm
 ```
+
+## 2026-07-19: post-heap texture address isolation
+
+The restored f205 setup burst is rendering covered textured triangles, but the
+promoted Voodoo texture-base shift resolves their TMU0 base outside every
+uploaded word. The dominant state is:
+
+```text
+mode=0x8c24100f lod=0x000020bb raw base=0x00013b01
+shifted sample base + 0x510 bias=0x09dd18
+sample range=0x09dd18..0x0a2c17
+uploaded range=0x000050..0x015554
+```
+
+At f205 all 15,985,920 covered samples are therefore zero. A clean f100 ->
+f205 run with `EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT=0`
+keeps upload and sampling in the same byte-address model. It proves that the
+zero result is an address miss rather than absent raster work:
+
+```text
+shifted: frameHash=0x308a2ac6 textured pixels=0 zero=15985920
+unshifted: frameHash=0x4a916e91 textured pixels=3585456 zero=12150684
+unshifted buffer 1: white=254238 active/colored pixels=52906
+```
+
+The unshifted framebuffer is not correct art. It contains stable repeated
+RGB332 noise/stripes through f300, so do not remove the hardware `<< 3` base
+interpretation globally. Removing the older fixed `0x510` sample bias from the
+unshifted f205 snapshot improves one-frame nonzero sampling from 56,912 to
+74,734, but preserves the same corrupt layout. A 64K sample-page wrap on the
+shifted snapshot is an even stronger false positive (231,221 nonzero samples
+out of 249,780) and produces denser versions of the same noise. Keep both as
+diagnostics only.
+
+The raw base is legitimate state rather than leaked payload. Focused TMU
+tracing shows repeated type-4 writes of `0x00013b01` to TMU0 register `0xc3`
+from command `0x00059604`, beginning at FIFO packet `0x000242c4`; mode/lod are
+already `0x8c24100f/0x000020bb`. Texture uploads immediately before it use the
+expected Glide negative-base sequence (`0x1fffad00`, `0x1fffda5d`,
+`0x1fffdb5b`, and neighbors), but the resolved writes never extend beyond
+`0x015554`.
+
+Two clean controls are neutral and should remain experimental:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR=1
+```
+
+Both retain `frameHash=0x308a2ac6`, zero textured pixels, and the same maximum
+upload address. This rules out selecting global instead of banked TMU upload
+state and rules out the simplified download LOD/write-pointer formula as the
+cause of this particular miss.
+
+Next target: trace the Glide/type-5 producer boundary that should populate the
+atlas selected by `0x13b01` and determine whether the upload is missing or its
+type-5 target address is truncated before `WriteTexturePort32`. Do not promote
+the unshifted-base, zero-bias, or 64K-wrap visual shortcuts; they only sample
+unrelated bytes already present at low texture addresses.
+
+```text
+/tmp/eutherdrive-gauntlet-probe/texture-base-shift-off-clean-f100-f205-20260719.log
+/tmp/eutherdrive-gauntlet-probe/shift0-bias0-f205-f300-20260719.log
+/tmp/eutherdrive-gauntlet-probe/tmu-base-13b01-writer-clean-f100-f205-20260719.log
+/tmp/eutherdrive-gauntlet-probe/upload-tmu-banks-clean-f100-f205-20260719.log
+/tmp/eutherdrive-gauntlet-probe/mame-writeptr-clean-f100-f205-20260719.log
+```
