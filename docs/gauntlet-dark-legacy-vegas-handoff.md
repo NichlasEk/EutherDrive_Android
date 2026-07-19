@@ -12425,3 +12425,66 @@ semantics.
 /tmp/eutherdrive-gauntlet-probe/texture-set-upload-coverage-f300-20260719.log
 /tmp/eutherdrive-gauntlet-probe/gauntdl-static-heap-current-f300-20260719.warm
 ```
+
+## 2026-07-19: indexed texture-set allocation-size checkpoint
+
+The follow-up QIO/entry-builder trace corrects the previous checkpoint's final
+inference. The guest does not create one QIO request per texture-set slot in
+this phase. Across the complete f100 -> f115 build, the request chain at
+`0x800ac350`, `0x800c9678`, and `0x800c9944` runs only for record 0. No
+indexed QIO object-state transition occurs for records 1 and later.
+
+The entry builder at `0x800aad34` constructs slots 1-9 in two passes. A caller
+argument of `-1` selects the next index and sets `s5=1`, which creates the
+entry; a later positive index sets `s5=0` and reuses the published source
+slot. This is intentional guest control flow, not a skipped branch or a QIO
+alias bug.
+
+The create pass closes the actual alias chain:
+
+```text
+0x800c9088                          returns arena base + current cursor
+0x800c8a5c -> s3                   returns resource byte length 0
+0x800aae7c -> 0x800c8f70           calls AllocMem(0)
+arena cursor 0x802280fc             remains 0x000c994c
+slots 1-8                           all receive 0x803a4d8c
+```
+
+The zero size is not limited to entries whose directory string starts empty.
+At the allocation boundary, all of these paths still return `s3=0`:
+
+```text
+players/war/sfxyel
+players/war/sfxblu
+players/war/sfxred
+players/war/sfxgre
+credits
+```
+
+Odd selection entries first create with an empty `0x80166370` string and only
+receive `players/sel_lr/...` during their reuse pass. Even entries already have
+their `players/war/...` path during creation, but their size lookup also
+returns zero. Therefore copying a later name into the odd entries alone cannot
+repair ownership.
+
+The existing indexed-source trace now includes the relevant size/allocation
+sites, `s5`, the `s6` path text, and the four arena words. It remains
+observational and is enabled with:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE=1
+```
+
+The next causal boundary is the generic `0x800c8a5c` resource-size/open path
+for the guest-generated directories, before `AllocMem`. Determine why valid
+non-static paths return zero and restore their real file extent/completion.
+Do not synthesize per-index QIO objects, force distinct descriptor pointers,
+or advance the arena by guessed sizes; all three would bypass the now-proven
+guest allocation contract.
+
+```text
+/tmp/eutherdrive-gauntlet-probe/indexed-qio-ownership-f100-f115-20260719.log
+/tmp/eutherdrive-gauntlet-probe/bgloadmodel-entry-builder-cpu-f100-f115-20260719.log
+/tmp/eutherdrive-gauntlet-probe/bgloadmodel-resource-helper-cpu-f100-f115-20260719.log
+/tmp/eutherdrive-gauntlet-probe/indexed-allocation-size-f100-f115-20260719.log
+```

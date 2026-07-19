@@ -19796,7 +19796,10 @@ internal sealed class MipsR5000Core
             pc is not (0xffffffff800aac18UL or 0xffffffff800aac24UL or
                        0xffffffff800aacb4UL or
                        0xffffffff800aadb8UL or 0xffffffff800aaddcUL or
-                       0xffffffff800aadf0UL or 0xffffffff800aae60UL or
+                       0xffffffff800aadf0UL or 0xffffffff800aae0cUL or
+                       0xffffffff800aae14UL or 0xffffffff800aae68UL or
+                       0xffffffff800aae7cUL or 0xffffffff800aae84UL or
+                       0xffffffff800aae60UL or
                        0xffffffff800aae98UL or
                        0xffffffff800abe78UL or
                        0xffffffff800b72fcUL or
@@ -19856,7 +19859,12 @@ internal sealed class MipsR5000Core
             $"activeS0={activeS0Index:x8} activeA3={activeA3Index:x8} writer={writerIndex:x8} " +
             $"streamIndex={streamIndex:x8} streamLimit={_gpr[20] & 0xffffffffUL:x8} " +
             $"regs s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+            $"s5={_gpr[21]:x16} s6={_gpr[22]:x16}/\"{ReadAsciiTraceString(_gpr[22], 48)}\" " +
             $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"arena={ReadTraceWord(0xffffffff802280f8UL):x8}/" +
+            $"{ReadTraceWord(0xffffffff802280fcUL):x8}/" +
+            $"{ReadTraceWord(0xffffffff80228100UL):x8}/" +
+            $"{ReadTraceWord(0xffffffff80228104UL):x8} " +
             $"slot={sourceTableSlot:x16}:{sourceWord:x8}->{source:x16} " +
             $"side={sideTableSlot:x16}:{ReadTraceWord(sideTableSlot):x8} " +
             $"header={header:x16} bodyOffset={bodyOffset:x8} body={body:x16} " +
