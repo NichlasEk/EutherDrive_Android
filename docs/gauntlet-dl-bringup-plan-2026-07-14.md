@@ -3229,3 +3229,38 @@ Verifieringsartefakter:
 - `/tmp/gaunt-qio-scheduler-map-20260719.log`
 - `/tmp/gaunt-open-worker-map-20260719.log`
 - `/tmp/gaunt-qio-direct-dispatch-f106-f109-20260719.log`
+
+### Prematur WaitForQio-completion äger descriptorläckan
+
+En full write-watch över `0x80295670..0x802956ff` från f106 visar den
+repeterade resource-size-livslängden. `0x800ec828` publicerar handle 5, 6, 7
+och vidare, `0x800ed590` länkar callbacknoden, men hostreparationen
+`TryCompleteKnownRuntimeMountWaitForQio` skriver omedelbart `0x0800` för
+handle 5 och `0x3000` för alla handle över 5. `WaitForQio` lämnar därför
+loopen medan noden fortfarande är länkad. Nästa operation vid `0x800ec304`
+och close vid `0x800ecdc8` skriver båda `0x3007`; därefter nollställer
+`0x800d1470` hela QIO-objektet och nästa försök allokerar en ny poolpost.
+
+En strikt linked-node-spärr på den syntetiska completionen bekräftar kausalitet:
+vid f107 är callbackkön dränerad, free-head `0x8021dd18` och poolräknaren 4;
+vid f109 är free-head fortfarande giltig och räknaren 6 i stället för 64.
+Spärren är ändå inte en komplett reparation. En senare request stannar i den
+riktiga wait-loopen, eftersom ingen filesystem-service-signal genereras; till
+f112 har swapräknaren nått 1576 utan att noden konsumerats.
+
+Varken software-interrupt `0x0100` eller `0x0200` är rätt wakeup: båda ger en
+okvitterad interruptstorm och lämnar target-noden länkad. Stackdumpen vid f112
+visar dessutom att waitern inte är reentrant under `0x800de3fc` och att
+scheduler-level `0x80228160` är `-1`. Köhuvudet `0x8021e97c` ägs av en tidigare
+filesystem-service-post med callback `0x800f7060`; nästa gräns är att följa den
+servicens normala pump/kvittering före `0x800f087c`, inte att forcera target-
+workern eller syntetisera fler statusar. Alla beteendeexperiment är återtagna.
+
+Verifieringsartefakter:
+
+- `/tmp/gaunt-qio-object-lifetime-f106-f109-20260719.log`
+- `/tmp/gaunt-qio-real-completion-f106-f109-20260719.log`
+- `/tmp/gaunt-qio-real-completion-f109-f112-20260719.log`
+- `/tmp/gaunt-qio-reentrant-stack-f112-20260719.log`
+- `/tmp/gaunt-qio-targeted-wake-f109-f110-20260719.log`
+- `/tmp/gaunt-qio-targeted-wake-sw0-f109-f110-20260719.log`

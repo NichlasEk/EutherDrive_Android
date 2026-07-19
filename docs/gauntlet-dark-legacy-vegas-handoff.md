@@ -12591,3 +12591,26 @@ list-headern loopar. Manuell avlänkning plus direkt worker-anrop gav i stället
 /tmp/gaunt-open-worker-map-20260719.log
 /tmp/gaunt-qio-direct-dispatch-f106-f109-20260719.log
 ```
+
+## 2026-07-19: WaitForQio-läckans kausala ägare
+
+`TryCompleteKnownRuntimeMountWaitForQio` avslutar resource-size-requester för
+tidigt: den skriver syntetiskt `0x0800` för handle 5 och `0x3000` för senare
+handles medan callbacknoden ännu är länkad. Stat och close får då `0x3007`,
+varefter QIO-objektet nollställs och nästa försök läcker ännu en descriptor.
+
+Att blockera syntetisk completion medan noden är länkad håller poolen frisk
+(räknare 4 vid f107 och 6 vid f109, giltig free-head), men en senare request
+stannar eftersom filesystem-service-pumpen uteblir. Software-interrupt 0x0100
+och 0x0200 stormar utan att dränera kön och är återtagna. Vid den fastnade
+f112-checkpointen är scheduler-level `0x80228160 = -1`; köägaren före target-
+jobbet har callback `0x800f7060`. Fortsätt där och återställ dess normala
+wakeup/kvittering före `0x800f087c`. Inga beteendeexperiment från denna
+checkpoint finns kvar i koden.
+
+```text
+/tmp/gaunt-qio-object-lifetime-f106-f109-20260719.log
+/tmp/gaunt-qio-real-completion-f106-f109-20260719.log
+/tmp/gaunt-qio-real-completion-f109-f112-20260719.log
+/tmp/gaunt-qio-reentrant-stack-f112-20260719.log
+```
