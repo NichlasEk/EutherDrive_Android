@@ -2994,9 +2994,10 @@ Verifieringsartefakter:
 #### Asset-callbacken aktiverar inte `kjh`
 
 En statisk scan av alla direkta referenser till `0x8024f9a0` hittade tolv
-guest-kodställen. Två kandidater kunde avfärdas direkt: validatorn vid
-`0x800b2830` anropas varken under f700--f1100 eller efter f1100, och gettern
-vid `0x800ab410` har inga direkta `jal`-callers i den laddade koden.
+guest-kodställen. Gettern vid `0x800ab410` har inga direkta `jal`-callers i
+den laddade koden. Den äldre slutsatsen om validatorn vid `0x800b2830` ska
+däremot inte användas: dess PC-filter var inte kanoniskt och den grenen är
+därför fortfarande öppen.
 
 Callbacken vid `0x800aa898` är en riktig asset-table-consumer. Den läser
 `assetEntry[index]+8` vid `0x800aaa14` och använder nollvärdet för att hoppa
@@ -3029,3 +3030,74 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/index4-asset-consumer-filtered-f700-f1100-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/asset-table-static-code-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-index4-owner-f1100-20260719.png`
+
+### Formatterarens frame-cursor öppnar den riktiga static_lr-livscykeln
+
+Formatter-wrappern `0x8011f3c0` bygger sin interna frame vid `sp+0x10` och
+anropar `0x80120204`. Disassemblyn och wrapperns terminator visar att aktuell
+output-cursor ligger i `frame+0x00`, inte i `frame+0x54`. De tidigare
+format-fastpatharna skrev därför till fel adress och lämnade den riktiga
+pathbufferten tom.
+
+Den korrigerade, guardade wrapperacceleratorn läser destinationen från
+`frame+0x00`, stöder literal, `%%` och `%s`, tar 32-bitars varargspekare från
+`a2`-listan, uppdaterar frame-cursorn och returnerar producerad längd. De
+granulära formatteracceleratorerna och den osäkra in-flight-fallbacken kan nu
+isoleras med:
+
+```text
+EUTHERDRIVE_GAUNTDL_FASTPATH_FORMAT_ACCELERATORS
+EUTHERDRIVE_GAUNTDL_FASTPATH_FORMAT_BUFFER_INFLIGHT
+```
+
+Med baselinepreseten aktiv materialiseras därefter bland annat:
+
+```text
+/d0/hstable/hstable_e.rom
+/d0/hstable/hstable_j.rom
+/d0/audio/aud_data.rom
+/d0/static_lr/objects.rom
+/d0/static_lr/textures.rom
+```
+
+Den guestproducerade `objects.rom`-pathen ger nu en exakt QIO-guard. Slot 0:s
+första `0x2000` byte mappas därför till den redan FSYS-bevisade payload-LBA:n
+`0x7d970`, med logical offset noll. F132 verifierar utan path-owner- eller
+size-owner-experiment:
+
+```text
+source+0x40 = 0xf00b0001
+source+0x5c = 0x00067a98
+source+0x60 = 0x00000149
+source+0x64 = 0x0000002e
+```
+
+Det flyttar den aktiva selectorn från de felaktiga texture-bytarna vid
+`0x802e2158` till objekttabellen vid `0x802ecb6c`. Tabellen ligger dock vid
+`source+0xb454`, utanför den färdigmarkerade `0x2000`-requesten, och innehåller
+därför ännu stale RAM i standardvägen. F300 avslutar rent med
+`frameHash=0xf29eb67c`; detta är framsteg i fil- och parserproveniensen, inte
+ännu en bildfix.
+
+En kontrollerad bulk-body-sond laddade hela den verifierade `0x67b4c`-extenten.
+Då gav alla 46 poster rimliga mipstorlekar (`0x50`, `0x150`, `0xaa0` och sista
+`0x2a8`), sista end-offset blev exakt `0x11de4`, och f150 ändrades till
+`frameHash=0x784f3e66`. När den bevisade companionextenten vid `0x0fb95e00`
+också publicerades blev texturorden icke-noll men bilden återgick till svarta
+`0xf29eb67c`. Bulk-body/companion-sonden är därför inte promoterad.
+
+Nästa gräns är exakt: bevara requestägd destination och completion för den
+guestformaterade `/d0/static_lr/textures.rom`-requesten. Standardvägen får
+inte markera den återanvända slot-0-QIO:n klar med tomma fält eller fortsätta
+använda objectbasen `0x802e1718` som texture-source efter att recordtabellen
+har skannats.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/format-frame-destination-f100-f132-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-objects-path-map-f100-f132-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-objects-path-map-f100-f300-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-objects-record-selection-f100-f300-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-objects-qio-lifecycle-f100-f150-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-objects-full-body-f100-f150-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/static-objects-real-path-companion-f100-f150-20260719.log`

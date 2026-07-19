@@ -708,6 +708,10 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeInterruptSuppress =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS");
     private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
+    private readonly bool _enableRuntimeFormatBufferInFlightFastPath =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_FORMAT_BUFFER_INFLIGHT");
+    private readonly bool _enableRuntimeFormatAccelerators =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_FORMAT_ACCELERATORS");
     private readonly bool _enableRuntimeStackRecordCopyFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STACK_RECORD_COPY");
     private readonly bool _enableRuntimeRenderRecordSkipFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP");
     private readonly bool _enableRuntimeByteMoveFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE");
@@ -1794,11 +1798,13 @@ internal sealed class MipsR5000Core
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeTextDrawEntry(pc))
             return;
-        if (TryFastPathKnownRuntimeFormatLiteralWrapper(pc))
+        if (_enableRuntimeFormatAccelerators && TryFastPathKnownRuntimeFormatLiteralWrapper(pc))
             return;
         if (_enableDiagnosticRuntimeFastPaths && TryFastPathKnownRuntimeFormatBufferEntry(pc))
             return;
-        if (TryFastPathKnownRuntimeFormatBufferInFlight(pc))
+        if (_enableRuntimeFormatAccelerators &&
+            _enableRuntimeFormatBufferInFlightFastPath &&
+            TryFastPathKnownRuntimeFormatBufferInFlight(pc))
             return;
         if (TryFastPathKnownRuntimeSchedulerCallbackEnqueue(pc))
             return;
@@ -1806,17 +1812,17 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownGauntletGlideStateEmitCallerEpilogue(pc))
             return;
-        if (TryFastPathKnownRuntimeFormatWidthDigitCase(pc))
+        if (_enableRuntimeFormatAccelerators && TryFastPathKnownRuntimeFormatWidthDigitCase(pc))
             return;
-        if (TryFastPathKnownRuntimeFormatSpacePaddingLoop(pc))
+        if (_enableRuntimeFormatAccelerators && TryFastPathKnownRuntimeFormatSpacePaddingLoop(pc))
             return;
-        if (TryFastPathKnownRuntimeFormatLiteralCopyLoop(pc))
+        if (_enableRuntimeFormatAccelerators && TryFastPathKnownRuntimeFormatLiteralCopyLoop(pc))
             return;
-        if (TryFastPathKnownRuntimeFormatPercentTransition(pc))
+        if (_enableRuntimeFormatAccelerators && TryFastPathKnownRuntimeFormatPercentTransition(pc))
             return;
-        if (TryFastPathKnownRuntimeFormatFlagParser(pc))
+        if (_enableRuntimeFormatAccelerators && TryFastPathKnownRuntimeFormatFlagParser(pc))
             return;
-        if (TryFastPathKnownRuntimeFormatFunctionEpilogue(pc))
+        if (_enableRuntimeFormatAccelerators && TryFastPathKnownRuntimeFormatFunctionEpilogue(pc))
             return;
         if (TryFastPathKnownRuntimeLinkedListAppendTail(pc))
             return;
@@ -17101,39 +17107,75 @@ internal sealed class MipsR5000Core
 
         ulong frame = _gpr[4];
         ulong format = _gpr[5];
-        if (!IsMainRamRange(frame + 0x54UL, 4UL) ||
+        if (!IsMainRamRange(frame, 4UL) ||
             !IsMainRamRange(format, 1UL))
         {
             return false;
         }
 
-        ulong destination = SignExtend32(_memory.Read32(frame + 0x54UL));
+        ulong destination = SignExtend32(_memory.Read32(frame));
         if (!IsMainRamRange(destination, 1UL))
             return false;
 
-        uint length = 0;
-        while (length < 0x100U && IsMainRamRange(format + length, 1UL))
+        ulong arguments = _gpr[6];
+        List<byte> output = new(0x100);
+        uint formatOffset = 0;
+        while (output.Count < 0x200 && IsMainRamRange(format + formatOffset, 1UL))
         {
-            uint value = _memory.Read8(format + length);
-            if (value == (uint)'%')
-                return false;
+            byte value = _memory.Read8(format + formatOffset++);
             if (value == 0)
                 break;
-            length++;
+
+            if (value != (byte)'%')
+            {
+                output.Add(value);
+                continue;
+            }
+
+            if (!IsMainRamRange(format + formatOffset, 1UL))
+                return false;
+
+            byte conversion = _memory.Read8(format + formatOffset++);
+            if (conversion == (byte)'%')
+            {
+                output.Add((byte)'%');
+                continue;
+            }
+
+            if (conversion != (byte)'s' || !IsMainRamRange(arguments, 4UL))
+                return false;
+
+            ulong source = SignExtend32(_memory.Read32(arguments));
+            arguments += 4UL;
+            if (!IsMainRamRange(source, 1UL))
+                return false;
+
+            uint sourceOffset = 0;
+            while (output.Count < 0x200 && IsMainRamRange(source + sourceOffset, 1UL))
+            {
+                byte sourceValue = _memory.Read8(source + sourceOffset++);
+                if (sourceValue == 0)
+                    break;
+                output.Add(sourceValue);
+            }
+
+            if (output.Count == 0x200 || !IsMainRamRange(source + sourceOffset - 1UL, 1UL))
+                return false;
         }
 
-        if (length == 0x100U ||
-            !IsMainRamRange(format + length, 1UL) ||
-            !IsMainRamRange(destination, length + 1UL))
+        if (output.Count == 0x200 ||
+            !IsMainRamRange(format + formatOffset - 1UL, 1UL) ||
+            !IsMainRamRange(destination, (ulong)output.Count + 1UL))
         {
             return false;
         }
 
-        for (uint offset = 0; offset < length; offset++)
-            _memory.Write8(destination + offset, _memory.Read8(format + offset));
-        _memory.Write8(destination + length, 0);
+        for (int offset = 0; offset < output.Count; offset++)
+            _memory.Write8(destination + (ulong)offset, output[offset]);
+        _memory.Write8(destination + (ulong)output.Count, 0);
+        _memory.Write32(frame, unchecked((uint)(destination + (ulong)output.Count)));
 
-        _gpr[2] = SignExtend32(length);
+        _gpr[2] = SignExtend32((uint)output.Count);
         if (pc == afterStackAdjust)
             _gpr[29] += 0x18UL;
         _gpr[0] = 0;
@@ -17146,7 +17188,7 @@ internal sealed class MipsR5000Core
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] format-literal-wrapper pc={pc:x16} " +
-                $"dst={destination:x16} fmt={format:x16} len={length} " +
+                $"dst={destination:x16} fmt={format:x16} len={output.Count} " +
                 $"ra={_gpr[31]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
                 $"text=\"{ReadAsciiTraceString(format, 96)}\"");
         }
@@ -20664,6 +20706,7 @@ internal sealed class MipsR5000Core
         ulong mappedFileBaseLba = path switch
         {
             "/d0/static_lr/textures.rom" => 0x0007d000UL,
+            "/d0/static_lr/objects.rom" => 0x0007d970UL,
             _ => requestedByteCount == 0x2000U && callback == 0x800ab4e4U && !hasKnownIndexedTexturePayload ? 0x0007d000UL : 0
         };
         ulong fileState = IsMainRamRange(qioObject, 4) ? SignExtend32(_memory.Read32(qioObject)) : 0;
@@ -20692,7 +20735,14 @@ internal sealed class MipsR5000Core
                 ? currentOffset - requestedByteCount
                 : 0UL;
         string offsetMode = useCurrentOffset ? "current" : "previous";
-        if (path == "/d0/static_lr/textures.rom" &&
+        if (path == "/d0/static_lr/objects.rom" &&
+            requestedByteCount == 0x2000U &&
+            callback == 0x800ab4e4U)
+        {
+            readOffset = 0;
+            offsetMode = "static-lr-objects";
+        }
+        else if (path == "/d0/static_lr/textures.rom" &&
             requestedByteCount == 0x2000U &&
             currentOffset is >= 0x00440000U and <= 0x00446000U)
         {
