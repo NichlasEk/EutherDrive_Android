@@ -2870,3 +2870,47 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/f100-f132-plus1m-stream-boundary-hydrate-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/stream-boundary-control-f100-f200-20260718.log`
 - `/tmp/eutherdrive-gauntlet-probe/stream-boundary-experiment-f100-f200-20260718.log`
+
+### Streamgränsen är descriptorbygge, inte per-entry-QIO
+
+En observationsren sond över `0x800a7094 -> 0x800abe54` binder nu ihop den
+tidigare CPU-tracen med record 0 och dess QIO-slot. Den aktiveras med
+`EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STREAM_DESCRIPTOR_BUILDER=1` och visar
+att hjälparen får descriptor `0x802e2158`, source `0x802e1718`, offset `0` och
+count `2`. Den ändrar descriptorordet vid `+0x18` från `0x00017ab4` till
+`0x00010000` och returnerar `-1`; callern ökar därefter cursor/count från noll
+till två och lämnar loopen.
+
+QIO:n vid samma gräns är redan färdig: slot `record+4` pekar på `0x80217c58`
+med callback `0x800ab4e4`, destination `0x802e3718`, request/read `0x2000` och
+status `2`. Det betyder att `0x800a7094` konsumerar och transformerar
+descriptor-state; den väljer inte fil, offset eller destination för en ny
+request.
+
+En ombyggd f100--f132-körning med bara denna trace aktiverad behåller den
+tidiga kontrollens `frameHash=0xf29eb67c`; sonden muterar inte guest-state.
+
+Den tidigare QIO-tracen gör proveniensen ännu tydligare. Guestens enda request
+före denna gräns är generisk:
+
+```text
+file=textures.rom  offset=0  bytes=0x2000  destination=0x802e1718
+```
+
+Först vid return-PC `0x800c9944` mappar det befintliga adapterexperimentet om
+den till den fördefinierade index-1-payloaden `gei`, disk `0x14a6f600`, och
+destination `0x802e3718`. `gei` är alltså inte ett guestvalt per-entry-QIO i
+den observerade livscykeln. Den föregående slutsatsen att nästa fix bara skulle
+bevara guestens per-entry-filnamn/offset var för stark.
+
+Nästa kausala gräns är i stället descriptor-/cursor-publiceringen före
+`0x800abe20`: härled vad de två godkända posterna representerar, varför count
+stannar på två och vilken guest-state som ska publicera nästa riktiga source
+innan `textures.rom`-requesten byggs. Behåll stream max 13 och återinför inte
+tidig source-hydrering eller bulk-fill.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/stream-loop-cpu-qio-f100-f200-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/stream-helper-cpu-f100-f200-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/stream-descriptor-builder-f100-f132-20260719.log`

@@ -1042,6 +1042,10 @@ internal sealed class MipsR5000Core
     private readonly bool _traceRuntimeBgLoadModelQioRequests = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUESTS") == "1";
     private readonly int _traceRuntimeBgLoadModelQioRequestLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_QIO_REQUEST_LIMIT", 96);
+    private readonly bool _traceRuntimeBgLoadModelStreamDescriptorBuilder =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STREAM_DESCRIPTOR_BUILDER"));
+    private readonly int _traceRuntimeBgLoadModelStreamDescriptorBuilderLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STREAM_DESCRIPTOR_BUILDER_LIMIT", 16);
     private readonly bool _traceRuntimeBgLoadModelAssetParser = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER") == "1";
     private readonly bool _traceRuntimeBgLoadModelIndexedSourceState =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE"));
@@ -1338,6 +1342,13 @@ internal sealed class MipsR5000Core
     private int _runtimeBgLoadModelRecordTraceCount;
     private int _runtimeBgLoadModelStateDeltaTraceCount;
     private int _runtimeBgLoadModelQioRequestTraceCount;
+    private int _runtimeBgLoadModelStreamDescriptorBuilderTraceCount;
+    private bool _runtimeBgLoadModelStreamDescriptorBuilderActive;
+    private ulong _runtimeBgLoadModelStreamDescriptorBuilderDescriptor;
+    private ulong _runtimeBgLoadModelStreamDescriptorBuilderSource;
+    private ulong _runtimeBgLoadModelStreamDescriptorBuilderOffset;
+    private ulong _runtimeBgLoadModelStreamDescriptorBuilderCount;
+    private ulong _runtimeBgLoadModelStreamDescriptorBuilderRecord;
     private int _runtimeBgLoadModelAssetParserTraceCount;
     private int _runtimeBgLoadModelGebSourceTraceCount;
     private int _runtimeBgLoadModelIndexedSourceStateTraceCount;
@@ -1588,6 +1599,7 @@ internal sealed class MipsR5000Core
             return;
         ApplyKnownRuntimeBgLoadModelQioRequestMetadataRepair(pc);
         ApplyKnownRuntimeBgLoadModelQioCreateAliasRepair(pc);
+        TraceKnownRuntimeBgLoadModelStreamDescriptorBuilder(pc);
         TraceKnownRuntimeBgLoadModelQioRequests(pc, "pre-qio-complete");
         ApplyKnownRuntimeBgLoadModelQioCompletion(pc);
         TraceKnownRuntimeBgLoadModelStateDelta(pc, "post-qio-complete");
@@ -19858,6 +19870,64 @@ internal sealed class MipsR5000Core
             $"retSlot={TraceKnownRuntimeBgLoadModelReturnSlot(returnSlot)} " +
             $"pathTable={TraceKnownRuntimeBgLoadModelPathTableSummary(recordIndex)} " +
             $"assetTable={TraceKnownRuntimeBgLoadModelAssetTableSummary(assetIndex)}");
+    }
+
+    private void TraceKnownRuntimeBgLoadModelStreamDescriptorBuilder(ulong pc)
+    {
+        const ulong entryPc = 0xffffffff800a7094UL;
+        const ulong callerReturnPc = 0xffffffff800abe54UL;
+        if (!_traceRuntimeBgLoadModelStreamDescriptorBuilder ||
+            _runtimeBgLoadModelStreamDescriptorBuilderTraceCount >= _traceRuntimeBgLoadModelStreamDescriptorBuilderLimit)
+        {
+            return;
+        }
+
+        if (pc == entryPc && _gpr[31] == callerReturnPc)
+        {
+            _runtimeBgLoadModelStreamDescriptorBuilderActive = true;
+            _runtimeBgLoadModelStreamDescriptorBuilderDescriptor = CanonicalizeTraceAddress(_gpr[4]);
+            _runtimeBgLoadModelStreamDescriptorBuilderSource = CanonicalizeTraceAddress(_gpr[5]);
+            _runtimeBgLoadModelStreamDescriptorBuilderOffset = _gpr[6];
+            _runtimeBgLoadModelStreamDescriptorBuilderCount = _gpr[7];
+            _runtimeBgLoadModelStreamDescriptorBuilderRecord = CanonicalizeTraceAddress(_gpr[30]);
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] bgloadmodel-stream-descriptor-builder phase=entry " +
+                $"pc={pc:x16} descriptor={_runtimeBgLoadModelStreamDescriptorBuilderDescriptor:x16}:" +
+                $"{FormatTraceWords(_runtimeBgLoadModelStreamDescriptorBuilderDescriptor, 20)} " +
+                $"source={_runtimeBgLoadModelStreamDescriptorBuilderSource:x16}:" +
+                $"{FormatTraceWords(_runtimeBgLoadModelStreamDescriptorBuilderSource, 20)} " +
+                $"offset={_runtimeBgLoadModelStreamDescriptorBuilderOffset:x16} " +
+                $"count={_runtimeBgLoadModelStreamDescriptorBuilderCount:x16} " +
+                $"record={TraceKnownRuntimeBgLoadModelRecordOneLine(_runtimeBgLoadModelStreamDescriptorBuilderRecord)} " +
+                $"recordQioSlot={TraceKnownRuntimeBgLoadModelReturnSlot(_runtimeBgLoadModelStreamDescriptorBuilderRecord + 0x04UL)} " +
+                $"globals={TraceKnownRuntimeBgLoadModelQioGlobals()} sp={_gpr[29]:x16}");
+            return;
+        }
+
+        if (pc != callerReturnPc || !_runtimeBgLoadModelStreamDescriptorBuilderActive)
+            return;
+
+        _runtimeBgLoadModelStreamDescriptorBuilderActive = false;
+        _runtimeBgLoadModelStreamDescriptorBuilderTraceCount++;
+        ulong qioSlot = _runtimeBgLoadModelStreamDescriptorBuilderRecord + 0x04UL;
+        ulong qio = IsMainRamRange(qioSlot, 4) ? SignExtend32(ReadTraceWord(qioSlot)) : 0;
+        ulong qioObject = IsMainRamRange(qio, 4) ? SignExtend32(ReadTraceWord(qio)) : 0;
+        ulong destination = IsMainRamRange(qio + 0x08UL, 4) ? SignExtend32(ReadTraceWord(qio + 0x08UL)) : 0;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-stream-descriptor-builder phase=return " +
+            $"n={_runtimeBgLoadModelStreamDescriptorBuilderTraceCount} pc={pc:x16} v0={_gpr[2]:x16} " +
+            $"descriptor={_runtimeBgLoadModelStreamDescriptorBuilderDescriptor:x16}:" +
+            $"{FormatTraceWords(_runtimeBgLoadModelStreamDescriptorBuilderDescriptor, 20)} " +
+            $"source={_runtimeBgLoadModelStreamDescriptorBuilderSource:x16}:" +
+            $"{FormatTraceWords(_runtimeBgLoadModelStreamDescriptorBuilderSource, 20)} " +
+            $"offset={_runtimeBgLoadModelStreamDescriptorBuilderOffset:x16} " +
+            $"count={_runtimeBgLoadModelStreamDescriptorBuilderCount:x16} " +
+            $"record={TraceKnownRuntimeBgLoadModelRecordOneLine(_runtimeBgLoadModelStreamDescriptorBuilderRecord)} " +
+            $"qioSlot={qioSlot:x16}:{ReadTraceWord(qioSlot):x8} " +
+            $"qio={TraceKnownRuntimeBgLoadModelQioOneLine(qio)} " +
+            $"file={TraceKnownRuntimeBgLoadModelQioFileState(qioObject)} " +
+            $"destination={destination:x16}:{FormatTraceWords(destination, 8)} " +
+            $"globals={TraceKnownRuntimeBgLoadModelQioGlobals()} sp={_gpr[29]:x16} fp={_gpr[30]:x16}");
     }
 
     private string TraceKnownRuntimeBgLoadModelQioStack()
