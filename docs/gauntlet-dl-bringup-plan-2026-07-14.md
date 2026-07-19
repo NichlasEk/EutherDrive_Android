@@ -2878,8 +2878,16 @@ tidigare CPU-tracen med record 0 och dess QIO-slot. Den aktiveras med
 `EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STREAM_DESCRIPTOR_BUILDER=1` och visar
 att hjälparen får descriptor `0x802e2158`, source `0x802e1718`, offset `0` och
 count `2`. Den ändrar descriptorordet vid `+0x18` från `0x00017ab4` till
-`0x00010000` och returnerar `-1`; callern ökar därefter cursor/count från noll
-till två och lämnar loopen.
+`0x00010000` och returnerar `-1`; callern flyttar därefter sin descriptorcursor
+två poster och lämnar loopen.
+
+Den tidigare record-selector-tracen identifierar de två posterna exakt. De är
+de två 0x50-byte-materialposterna vid `0x802e2158` och `0x802e21a8`, inte
+asset/source-index 0 och 1. Post 0 ger den redan kända felstora
+`0x188d2302`-extentberäkningen från råhalvorden `0x40e5/0x60da`; post 1 har
+nolldimension och ger extent noll. Två är därmed det korrekta tabellantalet
+för just denna source. De äldre tracefälten `streamIndex` och `streamLimit`
+ska läsas som descriptorcursor och descriptorantal vid denna callsite.
 
 QIO:n vid samma gräns är redan färdig: slot `record+4` pekar på `0x80217c58`
 med callback `0x800ab4e4`, destination `0x802e3718`, request/read `0x2000` och
@@ -2903,11 +2911,12 @@ destination `0x802e3718`. `gei` är alltså inte ett guestvalt per-entry-QIO i
 den observerade livscykeln. Den föregående slutsatsen att nästa fix bara skulle
 bevara guestens per-entry-filnamn/offset var för stark.
 
-Nästa kausala gräns är i stället descriptor-/cursor-publiceringen före
-`0x800abe20`: härled vad de två godkända posterna representerar, varför count
-stannar på två och vilken guest-state som ska publicera nästa riktiga source
-innan `textures.rom`-requesten byggs. Behåll stream max 13 och återinför inte
-tidig source-hydrering eller bulk-fill.
+Nästa kausala gräns är därför inte att höja denna tvåpoststabell. Gå tillbaka
+till parser-/callbackpubliceringen som skapar post 0:s orimliga
+`0x40e5/0x60da`-dimensioner och som ska materialisera/upload:a ytorna i den
+senare state-7-descriptorn. Behåll den separata source-owned maxgränsen 13 för
+`snm`-kontrollen, men återinför inte tidig source-hydrering eller bulk-fill och
+tolka inte descriptorcursorn som ett globalt asset-index.
 
 Verifieringsartefakter:
 
