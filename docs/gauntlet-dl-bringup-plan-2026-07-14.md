@@ -3155,3 +3155,50 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/worker-state-machine-f100-f105-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/worker-progress-f100-f110-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/passport-worker-entry-f100-f115-20260719.log`
+
+### Passport-QIO:n konsumeras synkront efter status `0x080c`
+
+Den saknade exakta entryn för `0x800f087c` är inte längre den primära
+schedulergränsen. En per-instruktion transition-watch visar att QIO-nodens
+länkfält `0x802956a4` alltid skrivs till `0x8021e980` av en lyckad enqueue vid
+`0x800ed590`, men därefter nollas av den accelererade guest-loopen vid
+`0x800d1470`. Den requeststorleksberoende loopen börjar vid `0x802956a0`,
+nollställer bland annat båda callback-qworden och återgår till QIO-koden med
+`ra=0x800ebd28`; därför syntes nollningen inte i den tidigare store-baserade
+write-watch-tracen.
+
+Statusproveniensen förklarar ordningen. Guestkoden vid `0x800f1de4` skriver
+själv `0x080c` till `0x80295684`, eftersom objektet som hämtas via
+`0x800ec184` har state 2 i `0x8021e990`. Den befintliga
+`TryRepairKnownRuntimeMountQioStatus` maskerar sedan `0x080c` till `0x0800` vid
+`0x800f5b44`. Waitern fortsätter synkront och återinitialiserar QIO-objektet,
+vilket konsumerar/nollställer den inbäddade callbacknoden innan schedulerloopen
+kan göra en separat `0x800f087c`-entry. Ett försök att blockera host-completion
+medan noden var länkad ändrade inte förloppet och har återtagits: statusen
+produceras av guestkoden före hostmaskningen.
+
+State 2 har en separat verifierad proveniens: `0x800f124c` flyttar
+`0x8021e990` från 0 till 1 och `0x800f1544` flyttar den från 1 till 2 under den
+redan observerade `0x800f10e0`-workerprogressen. Nästa felsökning ska därför
+inte forcera `0x800f087c` eller återvinna descriptorpoolen. Den ska avgöra om
+`0x080c` är den förväntade "redan monterad"-status som synkronwaitern
+konsumerar, och därefter återgå till den kvarvarande texture/body-proveniensen.
+
+Den default-off write-watch-tracen täcker nu även
+`TryFastPathKnownRuntimeZeroQwordFillTail`, så framtida hostaccelererade
+qword-nollningar rapporteras med kind `fast-zero-qword`.
+
+Den tidigare ofullständiga f130-noteringen är också ersatt av den verifierade
+fortsättningen från f115: `frameHash=0x308a2ac6`, 1 730 packet-3-draws och
+113 344 texture-map-writes, men den valda framebufferexporten är fortfarande
+nästan svart (`nonBlack=707`, bara fyra färgade pixlar utöver den kända vita
+triangeln). Descriptorpoolens räknare når 64 och free-head blir noll, men detta
+är ännu inte bevisat som orsak till den svarta bilden.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/passport-node-transition-owner-f100-f110-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/passport-status-transition-f100-f110-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/passport-status-producer-trace-f100-f110-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/passport-mount-state-transition-f100-f110-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/worker-progress-f115-f130-20260719.log`

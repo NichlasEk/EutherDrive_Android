@@ -14397,7 +14397,12 @@ internal sealed class MipsR5000Core
             return false;
 
         for (ulong offset = 0; offset < bytes; offset += 8UL)
-            _memory.Write64(destination + offset, 0);
+        {
+            ulong target = destination + offset;
+            ulong oldValue = _traceMainRamWrites ? _memory.Read64(target) : 0;
+            _memory.Write64(target, 0);
+            TraceMainRamWriteWatch(pc, _memory.Read32(pc), "fast-zero-qword", "value=0", target, 8, oldValue, 0);
+        }
 
         _gpr[4] = destination + bytes;
         _gpr[8] = 0;
