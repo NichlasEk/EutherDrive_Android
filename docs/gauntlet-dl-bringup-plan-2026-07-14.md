@@ -2990,3 +2990,42 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/index4-body-consumer-f700-f1100-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/index4-asset-read-f1100-f1120-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/index4-body-read-f1100-f1120-20260719.log`
+
+#### Asset-callbacken aktiverar inte `kjh`
+
+En statisk scan av alla direkta referenser till `0x8024f9a0` hittade tolv
+guest-kodställen. Två kandidater kunde avfärdas direkt: validatorn vid
+`0x800b2830` anropas varken under f700--f1100 eller efter f1100, och gettern
+vid `0x800ab410` har inga direkta `jal`-callers i den laddade koden.
+
+Callbacken vid `0x800aa898` är en riktig asset-table-consumer. Den läser
+`assetEntry[index]+8` vid `0x800aaa14` och använder nollvärdet för att hoppa
+över hjälparen vid `0x800ab0ec`. En ny default-off trace kan filtrera detta
+ställe per index:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_CONSUMER=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_CONSUMER_INDEX=4
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_CONSUMER_LIMIT=128
+```
+
+Den filtrerade f700--f1100-körningen ger inga index-4-träffar. En kanonisk
+CPU-trace visar varför: den observerade callback-begäran löser index 0 och
+stannar där; den itererar inte vidare till entry 4. `kjh` är därför
+förladdad assetmetadata för ett annat objekt, inte den aktiva scenens saknade
+texture-upload. Att fabricera word8 för entry 4 saknar kausalt stöd och ska
+inte provas.
+
+En exporterad f1100-frame med owner-publiceringen har fortsatt
+`frameHash=0xb86ea0ec` och `197112` färgade pixlar, men bilden är visuellt
+kraftigt korrupt: flerfärgat brus, horisontella band och en stor vit
+bottenyta. Nästa visuella mål går därför tillbaka till den aktiva set-0,
+record-0-vägen (`0x802e2158`) och dess felstora `0x40e5/0x60da`-descriptor,
+inte till fler index-4-metadataexperiment.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/index4-asset-callback-canonical-f700-f1100-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/index4-asset-consumer-filtered-f700-f1100-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/asset-table-static-code-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-index4-owner-f1100-20260719.png`

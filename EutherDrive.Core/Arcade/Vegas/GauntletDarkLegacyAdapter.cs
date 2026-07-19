@@ -1047,6 +1047,12 @@ internal sealed class MipsR5000Core
     private readonly int _traceRuntimeBgLoadModelStreamDescriptorBuilderLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_STREAM_DESCRIPTOR_BUILDER_LIMIT", 16);
     private readonly bool _traceRuntimeBgLoadModelAssetParser = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER") == "1";
+    private readonly bool _traceRuntimeBgLoadModelAssetConsumer =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_CONSUMER"));
+    private readonly ulong? _traceRuntimeBgLoadModelAssetConsumerIndex =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_CONSUMER_INDEX");
+    private readonly int _traceRuntimeBgLoadModelAssetConsumerLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_CONSUMER_LIMIT", 96);
     private readonly bool _traceRuntimeBgLoadModelIndexedSourceState =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_INDEXED_SOURCE_STATE"));
     private readonly ulong? _traceRuntimeBgLoadModelIndexedSourceStateIndex =
@@ -1350,6 +1356,7 @@ internal sealed class MipsR5000Core
     private ulong _runtimeBgLoadModelStreamDescriptorBuilderCount;
     private ulong _runtimeBgLoadModelStreamDescriptorBuilderRecord;
     private int _runtimeBgLoadModelAssetParserTraceCount;
+    private int _runtimeBgLoadModelAssetConsumerTraceCount;
     private int _runtimeBgLoadModelGebSourceTraceCount;
     private int _runtimeBgLoadModelIndexedSourceStateTraceCount;
     private int _runtimeBgLoadModelTextureRecordCallTraceCount;
@@ -1639,6 +1646,7 @@ internal sealed class MipsR5000Core
         if (TryApplyKnownRuntimeBgLoadModelStaticObjectSizeOwner(pc))
             return;
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
+        TraceKnownRuntimeBgLoadModelAssetConsumer(pc);
         TraceKnownRuntimeBgLoadModelGebSourceState(pc, "step");
         TraceKnownRuntimeBgLoadModelIndexedSourceState(pc, "step");
         TraceKnownRuntimeBgLoadModelTextureRecordCall(pc);
@@ -19219,6 +19227,40 @@ internal sealed class MipsR5000Core
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s5={_gpr[21]:x16} " +
             $"assetEntry={assetEntry:x16} selector={selectorWords} sourceWords={sourceWords} sourceText=\"{ReadAsciiTraceString(source, 48)}\" " +
             $"asset={assetSummary} source={callerSourceState} select={callerSelectState} writer={writerState} caller={callerState}");
+    }
+
+    private void TraceKnownRuntimeBgLoadModelAssetConsumer(ulong pc)
+    {
+        const ulong word8BranchPc = 0xffffffff800aaa18UL;
+        const ulong assetTableBase = 0xffffffff8024f9a0UL;
+        const ulong assetTableStride = 0x30UL;
+        if (!_traceRuntimeBgLoadModelAssetConsumer ||
+            pc != word8BranchPc ||
+            _runtimeBgLoadModelAssetConsumerTraceCount >= _traceRuntimeBgLoadModelAssetConsumerLimit)
+        {
+            return;
+        }
+
+        ulong index = _gpr[17] & 0xffffffffUL;
+        if (_traceRuntimeBgLoadModelAssetConsumerIndex.HasValue &&
+            index != (_traceRuntimeBgLoadModelAssetConsumerIndex.Value & 0xffffffffUL))
+        {
+            return;
+        }
+
+        ulong assetEntry = assetTableBase + index * assetTableStride;
+        if (!IsMainRamRange(assetEntry, assetTableStride))
+            return;
+
+        _runtimeBgLoadModelAssetConsumerTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] bgloadmodel-asset-consumer n={_runtimeBgLoadModelAssetConsumerTraceCount} " +
+            $"pc={pc:x16} index={index} mode={_gpr[20] & 0xffffffffUL} word8={_gpr[2] & 0xffffffffUL:x8} " +
+            $"branch={(unchecked((uint)_gpr[2]) == 0 ? "skip" : "activate")} " +
+            $"entry={assetEntry:x16}:{ReadTraceWord(assetEntry):x8}/{ReadTraceWord(assetEntry + 0x04UL):x8}/" +
+            $"{ReadTraceWord(assetEntry + 0x08UL):x8}/\"{ReadAsciiTraceString(assetEntry + 0x10UL, 24)}\" " +
+            $"sourceRecord={_gpr[18]:x16} sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(_gpr[18])} " +
+            $"ra={_gpr[31]:x16} sp={_gpr[29]:x16}");
     }
 
     private bool TryApplyKnownRuntimeBgLoadModelStaticObjectSizeOwner(ulong pc)
