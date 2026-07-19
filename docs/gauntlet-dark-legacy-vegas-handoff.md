@@ -12119,3 +12119,40 @@ offset. Evidence logs:
 /tmp/eutherdrive-gauntlet-probe/static-textures-full-container-f100-f300-20260719.log
 /tmp/eutherdrive-gauntlet-probe/gauntdl-static-textures-full-container-f300-20260719.ppm
 ```
+
+The first post-container blocker is now isolated. From f300 through f500 the
+runtime is not waiting: it is trapped in the descriptor-copy loop at
+`0x800aacdc..0x800aad04`. Asset index 9 selects source `0x80312a08`, which is
+inside texture data rather than at a valid outer descriptor header. Its
+`source+0x64` word is `0x0300f600`, so the guest attempts roughly 48 MiB worth
+of descriptor iterations and writes beyond valid main RAM.
+
+A default-off diagnostic guard was added:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH=1
+```
+
+It only acts at the exact `slt v0,a0,v0` instruction at `0x800aacfc`, with the
+expected opcode, main-RAM source/asset ranges, matching source length, and a
+descriptor count above `0x10000`. It forces the comparison to terminate; it
+does not invent a replacement pointer or length.
+
+Clean warm A/B from f100 confirms both the blocker and the limitation of this
+bypass:
+
+```text
+default f300: frameHash=0x143d98e1, writes=1092032, colored=4, stuck at 800aacfc
+reject  f300: frameHash=0x44595df3, writes=1608176, colored=9531, pc=800fe604
+```
+
+The reject run resumes Voodoo/FIFO activity but renders a corrupt horizontal
+texture strip. Keep it experimental. The root fix is to find who places
+`0x80312a08` in the index-9 source path and restore a real descriptor/header
+source before `0x800aac48`, not to promote the length reject.
+
+```text
+/tmp/eutherdrive-gauntlet-probe/static-texture-postload-loop-cpu-f500-f501-20260719.log
+/tmp/eutherdrive-gauntlet-probe/reject-implausible-descriptor-clean-f100-f300-20260719.log
+/tmp/eutherdrive-gauntlet-probe/gauntdl-reject-implausible-descriptor-clean-f300-20260719.ppm
+```

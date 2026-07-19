@@ -761,6 +761,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeBgLoadModelStaticPathLifecycle =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE") ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE"));
+    private readonly bool _experimentRuntimeBgLoadModelRejectImplausibleDescriptorLength =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH"));
     private readonly ulong _experimentRuntimeBgLoadModelStaticObjectDiskBase =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_DISK_BASE") ?? 0x0fb2e000UL;
     private readonly bool _experimentRuntimeBgLoadModelStaticObjectCompanionOwner =
@@ -1363,6 +1365,7 @@ internal sealed class MipsR5000Core
     private ulong _runtimeBgLoadModelStreamDescriptorBuilderCount;
     private ulong _runtimeBgLoadModelStreamDescriptorBuilderRecord;
     private int _runtimeBgLoadModelAssetParserTraceCount;
+    private int _runtimeBgLoadModelImplausibleDescriptorLengthTraceCount;
     private int _runtimeBgLoadModelAssetConsumerTraceCount;
     private int _runtimeBgLoadModelGebSourceTraceCount;
     private int _runtimeBgLoadModelIndexedSourceStateTraceCount;
@@ -1652,6 +1655,7 @@ internal sealed class MipsR5000Core
             return;
         if (TryApplyKnownRuntimeBgLoadModelStaticObjectSizeOwner(pc))
             return;
+        ApplyKnownRuntimeBgLoadModelImplausibleDescriptorLengthReject(pc);
         TraceKnownRuntimeBgLoadModelAssetParser(pc);
         TraceKnownRuntimeBgLoadModelAssetConsumer(pc);
         TraceKnownRuntimeBgLoadModelGebSourceState(pc, "step");
@@ -19338,6 +19342,45 @@ internal sealed class MipsR5000Core
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} s5={_gpr[21]:x16} " +
             $"assetEntry={assetEntry:x16} selector={selectorWords} sourceWords={sourceWords} sourceText=\"{ReadAsciiTraceString(source, 48)}\" " +
             $"asset={assetSummary} source={callerSourceState} select={callerSelectState} writer={writerState} caller={callerState}");
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelImplausibleDescriptorLengthReject(ulong pc)
+    {
+        const ulong lengthComparePc = 0xffffffff800aacfcUL;
+        const uint expectedInstruction = 0x0082102aU;
+        const uint maximumDescriptorCount = 0x10000U;
+
+        if (!_experimentRuntimeBgLoadModelRejectImplausibleDescriptorLength ||
+            pc != lengthComparePc ||
+            _memory.Read32(pc) != expectedInstruction)
+        {
+            return;
+        }
+
+        ulong source = _gpr[5];
+        ulong assetEntry = _gpr[6];
+        uint descriptorCount = (uint)_gpr[2];
+        uint sourceDescriptorCount = IsMainRamRange(source + 0x64UL, 4UL)
+            ? _memory.Read32(source + 0x64UL)
+            : 0;
+        if (descriptorCount != sourceDescriptorCount ||
+            descriptorCount <= maximumDescriptorCount ||
+            !IsMainRamRange(source, 0x68UL) ||
+            !IsMainRamRange(assetEntry, 0x30UL))
+        {
+            return;
+        }
+
+        uint completedDescriptors = (uint)_gpr[4];
+        _gpr[2] = completedDescriptors;
+        if (_runtimeBgLoadModelImplausibleDescriptorLengthTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] bgloadmodel-reject-implausible-descriptor-length pc={pc:x16} " +
+                $"index={_gpr[16] & 0xffffffffUL:x8} source={source:x16} asset={assetEntry:x16} " +
+                $"count={descriptorCount:x8}->{completedDescriptors:x8} " +
+                $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
+        }
     }
 
     private void TraceKnownRuntimeBgLoadModelAssetConsumer(ulong pc)
