@@ -17162,11 +17162,22 @@ internal sealed class MipsR5000Core
                 continue;
             }
 
-            if (conversion != (byte)'s' || !IsMainRamRange(arguments, 4UL))
+            if (!IsMainRamRange(arguments, 4UL))
                 return false;
 
-            ulong source = SignExtend32(_memory.Read32(arguments));
+            uint argument = _memory.Read32(arguments);
             arguments += 4UL;
+
+            if (conversion == (byte)'c')
+            {
+                output.Add(unchecked((byte)argument));
+                continue;
+            }
+
+            if (conversion != (byte)'s')
+                return false;
+
+            ulong source = SignExtend32(argument);
             if (!IsMainRamRange(source, 1UL))
                 return false;
 

@@ -3202,3 +3202,30 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/passport-status-producer-trace-f100-f110-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/passport-mount-state-transition-f100-f110-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/worker-progress-f115-f130-20260719.log`
+
+### QIO-dispatchförsöket är avgränsat och återtaget
+
+Den generiska runtime-formateraren hanterar nu även `%c`, vilket återställer
+de faktiska gästnamnen `indexA.rom` och `/d0/passport/indexA.rom` i stället
+för att lämna formatsekvensen oformaterad.
+
+En instruktionsexakt stop vid första `0x800ecda4` från f106 visar att
+`0x80295670+0x30` då är en giltigt länkad intrusiv nod: callback
+`0x800f087c`, context `0x80295670` och `pprev=0x8021e980`. Close returnerar
+`0x3007` medan länken fortfarande är aktiv.
+
+Det är däremot fel att anropa `0x800de3fc` med list-headern `0x8021e97c`.
+Den enda riktiga call siten vid `0x800de5d8` bygger en sexfälts
+dispatcher-deskriptor på stacken; ett direkt köargument fastnar därför i
+schedulerns interna loop. Ett smalare försök att avlänka noden och anropa
+`0x800f087c` direkt nådde close-returen men gav `0x300b`, lämnade free-head
+noll och ökade poolräknaren till 65 vid f109. Båda dispatchförsöken är
+återtagna. Detta stämmer med den tidigare bevisade synkrona konsumtionen efter
+`0x080c`: nästa steg ska följa den verkliga status-/close-livslängden, inte
+forcera workern.
+
+Verifieringsartefakter:
+
+- `/tmp/gaunt-qio-scheduler-map-20260719.log`
+- `/tmp/gaunt-open-worker-map-20260719.log`
+- `/tmp/gaunt-qio-direct-dispatch-f106-f109-20260719.log`

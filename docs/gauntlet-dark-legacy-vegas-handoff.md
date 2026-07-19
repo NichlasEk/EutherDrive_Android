@@ -12571,3 +12571,23 @@ resource sizes or recycle live records at allocation time.
 /tmp/eutherdrive-gauntlet-probe/passport-open-worker-hit-f100-f115-20260719.log
 /tmp/eutherdrive-gauntlet-probe/passport-worker-queue-head-f100-f105-20260719.log
 ```
+
+## 2026-07-19: QIO-dispatch negative checkpoint och `%c`-fix
+
+Runtime-formateraren stöder nu `%c`, så `index%c.rom` blir `indexA.rom` och
+den fulla sökvägen blir `/d0/passport/indexA.rom`.
+
+Första close från f106 har en verifierad länkad nod på
+`0x80295670+0x30`, med callback `0x800f087c`, context `0x80295670` och
+`pprev=0x8021e980`; därför returnerar close `0x3007` medan jobbet är aktivt.
+`0x800de3fc` kan inte pumpas med `0x8021e97c`: call siten `0x800de5d8`
+bygger en separat sexfälts dispatcher-deskriptor på stacken. Direkt anrop med
+list-headern loopar. Manuell avlänkning plus direkt worker-anrop gav i stället
+`0x300b`, poolräknare 65 och fortsatt tom free-list vid f109. Experimenten är
+återtagna; fortsätt på den synkrona `0x080c`-status-/close-livslängden.
+
+```text
+/tmp/gaunt-qio-scheduler-map-20260719.log
+/tmp/gaunt-open-worker-map-20260719.log
+/tmp/gaunt-qio-direct-dispatch-f106-f109-20260719.log
+```
