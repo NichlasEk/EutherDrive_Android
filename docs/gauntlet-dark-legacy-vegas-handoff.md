@@ -12651,3 +12651,35 @@ checkpoint-låsningar.
 ```text
 /tmp/eutherdrive-gauntlet-probe/qio-linked-guard-continuous-v8-f112-200k.warm
 ```
+
+### Exakt timerlist-gräns
+
+Entry vid `0x800f6ee0` visar de konkreta objekten:
+
+```text
+s0 = 0x8021f3f8   timerrecord som skickas till 0x800ccc5c
+s1 = 0x8021f3e0   filesystem channel/service state
+s2 = 0x802a0780   state-maskin
+s3 = 0x8021e8a8   callback-context
+```
+
+Efter registreringen innehåller recordet callback `0x800f7000`, context
+`0x8021e8a8` och remaining/deadline `0x0002acff`. Det är fortfarande länkat
+mot timerroten `0x80262a60` vid f112, och remaining är fortfarande exakt
+`0x0002acff`. Ingen timerlist-tick har alltså konsumerats efter registreringen.
+
+Kodreferenserna gör tickkedjan entydig: `0x800ccbb0` är enda konsumenten av
+timerroten, och runtime-tickhandlern `0x800de06c` anropar den vid `0x800de0fc`.
+En tidig fungerande träff passerar exakt `a0=1000` till `0x800ccbb0`.
+`RecordRuntimeVblankTick()` ökar däremot bara frame-tick-orden och kör inte
+timerlistan, vilket lämnar den senare filesystem-timern orörd.
+
+Ett engångstest som anropade den redan registrerade guest-callbacken
+`0x800f7000` från den fastnade väntan ökade service-eventräknaren, väckte annan
+runtime-kod och återarmerade recordets deadline. Det bekräftar att callback-
+kedjan är levande när den väl anropas, men testet är återtaget eftersom ett
+godtyckligt funktionsanrop från en avbruten CPU-kontext inte bevarar alla
+volatile register. Nästa implementation ska driva den riktiga
+`0x800de06c -> 0x800ccbb0`-vägen med korrekt interrupt/context-semantik, eller
+modellera timerlistan och callback-dispatchen med motsvarande bevarande. Den
+ska inte direkt anropa `0x800f7000` från `WaitForQio`.
