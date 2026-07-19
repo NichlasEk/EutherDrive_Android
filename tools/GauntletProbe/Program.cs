@@ -60,6 +60,8 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
     Console.Error.WriteLine($"warmupSnapshotLoaded={warmupSnapshotPath}");
 }
 
+ApplyRequestedGuestTextureMemoryCopy(adapter);
+
 long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
 var runStopwatch = Stopwatch.StartNew();
 if (!loadedWarmupSnapshot)
@@ -162,6 +164,7 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS")
 object voodoo = GetProperty(machine, "Voodoo");
 DumpVoodoo(voodoo);
 DumpRequestedTextureWordOwners(voodoo);
+DumpTextureOwnerTargets(voodoo);
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_BEFORE_FRAME") == "1")
     DumpVoodooColorBuffers(voodoo);
 DumpFrame(adapter);
@@ -205,6 +208,48 @@ static Action GetStepAction(object cpu)
     MethodInfo method = cpu.GetType().GetMethod("Step", BindingFlags.Instance | BindingFlags.NonPublic)
         ?? throw new MissingMethodException(cpu.GetType().FullName, "Step");
     return (Action)method.CreateDelegate(typeof(Action), cpu);
+}
+
+static void ApplyRequestedGuestTextureMemoryCopy(GauntletDarkLegacyAdapter adapter)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_GUEST_TEXTURE_COPY");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    string[] parts = raw.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (parts.Length != 3 ||
+        !TryParseHexUlong(parts[0], out ulong guestAddress) ||
+        !TryParseHexUlong(parts[1], out ulong textureAddress) ||
+        !TryParseHexUlong(parts[2], out ulong byteLength) ||
+        byteLength == 0 ||
+        byteLength > int.MaxValue)
+    {
+        throw new InvalidDataException(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_GUEST_TEXTURE_COPY must be guest:texture:length in hex");
+    }
+
+    object machine = GetField(adapter, "_machine");
+    object memory = GetProperty(machine, "MemoryMap");
+    object voodoo = GetProperty(machine, "Voodoo");
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    uint[] textureMemory = GetFieldValue<uint[]>(GetField(voodoo, "_backend"), "_textureMemory");
+    ulong guestOffset = guestAddress & (ulong)(mainRam.Length - 1);
+    ulong textureBytes = (ulong)textureMemory.Length * 4UL;
+    if (guestOffset + byteLength > (ulong)mainRam.Length || textureAddress + byteLength > textureBytes)
+        throw new InvalidDataException("Guest texture copy range is outside RAM or texture memory");
+
+    for (ulong i = 0; i < byteLength; i++)
+    {
+        byte value = mainRam[(int)(guestOffset + i)];
+        ulong destination = textureAddress + i;
+        int word = (int)(destination >> 2);
+        int shift = (int)(destination & 3UL) * 8;
+        textureMemory[word] = (textureMemory[word] & ~(0xffu << shift)) | ((uint)value << shift);
+    }
+
+    Console.WriteLine(
+        $"guestTextureCopy guest=0x{guestAddress:x16}/off=0x{guestOffset:x8} " +
+        $"texture=0x{textureAddress:x8} bytes=0x{byteLength:x}");
 }
 
 static int StepCpu(Action step, int count, object? cpu = null, ulong? stopPc = null)
@@ -3014,6 +3059,89 @@ static void DumpRequestedTextureWordOwners(object voodoo)
             $"targetStart=0x{GetProperty(owner, "Type5TargetStart"):x6} target=0x{GetProperty(owner, "Type5TargetWord"):x6} " +
             $"index={GetProperty(owner, "Type5Index")}/{GetProperty(owner, "Type5Count")} " +
             $"packet=0x{(int)GetProperty(owner, "PacketStart") * 4:x8} read=0x{(int)GetProperty(owner, "ReadIndex") * 4:x8}");
+    }
+}
+
+static void DumpTextureOwnerTargets(object voodoo)
+{
+    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_TEXTURE_OWNER_TARGETS") != "1")
+        return;
+
+    int limit = ParsePositiveInt(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_TEXTURE_OWNER_TARGETS_LIMIT"),
+        256);
+    object backend = GetField(voodoo, "_backend");
+    IDictionary owners = GetFieldValue<IDictionary>(backend, "_textureWordLastWriters");
+    var groups = new Dictionary<(uint TargetStart, uint TextureBase, uint Lod, int BytesPerTexel, bool Seq8), List<int>>();
+    IDictionaryEnumerator enumerator = owners.GetEnumerator();
+    while (enumerator.MoveNext())
+    {
+        object owner = enumerator.Value!;
+        if (!(bool)GetProperty(owner, "Type5"))
+            continue;
+
+        var key = (
+            (uint)GetProperty(owner, "Type5TargetStart"),
+            (uint)GetProperty(owner, "TextureBase"),
+            (uint)GetProperty(owner, "Lod"),
+            (int)GetProperty(owner, "BytesPerTexel"),
+            (bool)GetProperty(owner, "Seq8Downld"));
+        if (!groups.TryGetValue(key, out List<int>? words))
+        {
+            words = [];
+            groups.Add(key, words);
+        }
+        words.Add((int)enumerator.Key);
+    }
+
+    Console.WriteLine($"textureOwnerTargets groups={groups.Count} owners={owners.Count}");
+    foreach (var lodGroup in groups
+        .GroupBy(entry => entry.Key.Lod)
+        .OrderBy(entry => entry.Key))
+    {
+        int ownerCount = lodGroup.Sum(entry => entry.Value.Count);
+        int minWord = lodGroup.Min(entry => entry.Value.Min());
+        int maxWord = lodGroup.Max(entry => entry.Value.Max());
+        uint minTarget = lodGroup.Min(entry => entry.Key.TargetStart);
+        uint maxTarget = lodGroup.Max(entry => entry.Key.TargetStart);
+        Console.WriteLine(
+            $" textureOwnerLod lod={lodGroup.Key} groups={lodGroup.Count()} owners={ownerCount} " +
+            $"targets=0x{minTarget:x6}-0x{maxTarget:x6} physical=0x{minWord * 4:x6}-0x{maxWord * 4 + 3:x6}");
+    }
+    foreach (var tmuGroup in groups
+        .GroupBy(entry => (entry.Key.TargetStart >> 19) & 0x03u)
+        .OrderBy(entry => entry.Key))
+    {
+        int ownerCount = tmuGroup.Sum(entry => entry.Value.Count);
+        int minWord = tmuGroup.Min(entry => entry.Value.Min());
+        int maxWord = tmuGroup.Max(entry => entry.Value.Max());
+        uint minTarget = tmuGroup.Min(entry => entry.Key.TargetStart);
+        uint maxTarget = tmuGroup.Max(entry => entry.Key.TargetStart);
+        Console.WriteLine(
+            $" textureOwnerTmu tmu={tmuGroup.Key} groups={tmuGroup.Count()} owners={ownerCount} " +
+            $"targets=0x{minTarget:x6}-0x{maxTarget:x6} physical=0x{minWord * 4:x6}-0x{maxWord * 4 + 3:x6}");
+        foreach (var lodGroup in tmuGroup
+            .GroupBy(entry => entry.Key.Lod)
+            .OrderBy(entry => entry.Key))
+        {
+            Console.WriteLine(
+                $"  textureOwnerTmuLod tmu={tmuGroup.Key} lod={lodGroup.Key} groups={lodGroup.Count()} " +
+                $"owners={lodGroup.Sum(entry => entry.Value.Count)} " +
+                $"targets=0x{lodGroup.Min(entry => entry.Key.TargetStart):x6}-0x{lodGroup.Max(entry => entry.Key.TargetStart):x6}");
+        }
+    }
+    foreach (var group in groups
+        .OrderByDescending(entry => entry.Value.Count)
+        .ThenBy(entry => entry.Key.TargetStart)
+        .ThenBy(entry => entry.Key.TextureBase)
+        .Take(limit))
+    {
+        int minWord = group.Value.Min();
+        int maxWord = group.Value.Max();
+        Console.WriteLine(
+            $" textureOwnerTarget target=0x{group.Key.TargetStart:x6} base=0x{group.Key.TextureBase:x8} " +
+            $"lod={group.Key.Lod} bpp={group.Key.BytesPerTexel} seq8={(group.Key.Seq8 ? 1 : 0)} " +
+            $"owners={group.Value.Count} physical=0x{minWord * 4:x6}-0x{maxWord * 4 + 3:x6}");
     }
 }
 

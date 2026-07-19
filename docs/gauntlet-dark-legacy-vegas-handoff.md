@@ -12289,3 +12289,76 @@ unrelated bytes already present at low texture addresses.
 /tmp/eutherdrive-gauntlet-probe/upload-tmu-banks-clean-f100-f205-20260719.log
 /tmp/eutherdrive-gauntlet-probe/mame-writeptr-clean-f100-f205-20260719.log
 ```
+
+## 2026-07-19: TMU ownership and static atlas descriptor
+
+Official MAME Voodoo2 behavior rules out the apparent dual-TMU shortcut. Vegas
+configures Gauntlet with two 4 MB TMUs, and MAME runs TMU1 first, then TMU0.
+For the observed modes `0x8c24100f` and `0x0c24100f`, the texture-combine
+fields are both local-texel identity. TMU0 therefore replaces the downstream
+TMU1 result; forcing the bringup sampler to TMU1 merely exposes unrelated low
+texture data and is not a pipeline fix.
+
+The probe's texture-owner summary now separates Type-5 target bit 19-20 as the
+TMU number. A guarded f100 -> f205 replay found:
+
+```text
+TMU0: 484 groups, 7368 owners, targets 0x008000..0x030180, LOD 1..6
+TMU1:   8 groups,   32 owners, targets 0x098c00..0x098f80, LOD 3 only
+```
+
+The dominant uploads and the `0x13b01` draw state are therefore both TMU0.
+The Type-3 packets also contain only Wb and S0/T0 for these draws. MAME copies
+Wb to both texture units and S0/T0 to both units in that case, matching the
+current parsed vertices. Prefer-TMU0 S/T and a MAME triangle-LOD experiment are
+neutral; do not promote either.
+
+FIFO storage provenance closes the state-source chain. The four state words
+are written by the guest at `800bd18c`, `800bd190`, `800bd194`, and
+`800bd19c`. At the final store:
+
+```text
+s2=0x802ecb6c
+mode=0x8c24100f
+lod=0x000020bb
+[s2+0x0c]=0x00013b01
+```
+
+`0x802ecb6c` is exactly the hydrated static texture destination
+`0x802e1718 + 0xb454`. Its first descriptor contains:
+
+```text
+08000000 40ecd199 00000001 00013b01
+0000000d 000000bb 0009d388 0009d808
+0009703c 0000454e 0000000b 00000000
+```
+
+Thus the selected base is not invented by FIFO corruption:
+`0x13b01 << 3 == 0x9d808`, and it comes directly from the hydrated container's
+descriptor. The corresponding container offsets are populated, while Voodoo
+RAM at the selected atlas remains empty.
+
+`GauntletProbe` now has a probe-only
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_GUEST_TEXTURE_COPY=guest:texture:length` A/B.
+Copying the entire `0xc3674`-byte hydrated container to texture RAM reduces
+zero samples from `912180` to `38022`, proving that populated guest data can
+reach the missing range, but the result is still RGB332 noise. Targeted copies
+from descriptor candidates `0x9d388` and `0x9703c` to `0x9d808` are likewise
+non-coherent. This rules out a simple identity/scatter copy and keeps the
+experiment off by default.
+
+Next target: trace the real static texture loader's Type-5 source ranges and
+descriptor residency transition. The likely missing phase is the container
+loader/upload operation that should populate the descriptor-declared TMU heap,
+not render-time TMU selection, Type-3 field parsing, or a direct file-offset
+copy.
+
+```text
+/tmp/eutherdrive-gauntlet-probe/texture-owner-targets-by-tmu-f100-f205-20260719.log
+/tmp/eutherdrive-gauntlet-probe/tmu-base-13b01-storage-source-f205-f206-20260719.log
+/tmp/eutherdrive-gauntlet-probe/cpu-800bd180-tmu-state-f205-f206-20260719.log
+/tmp/eutherdrive-gauntlet-probe/type3-covered-fields-f205-f206-20260719.log
+/tmp/eutherdrive-gauntlet-probe/guest-texture-copy-f205-f206-20260719.log
+/tmp/eutherdrive-gauntlet-probe/descriptor-copy-9d388-f205-f206-20260719.log
+/tmp/eutherdrive-gauntlet-probe/descriptor-copy-9703c-f205-f206-20260719.log
+```

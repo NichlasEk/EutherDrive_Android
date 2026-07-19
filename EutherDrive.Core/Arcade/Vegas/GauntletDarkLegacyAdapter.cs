@@ -38902,11 +38902,17 @@ internal class VoodooBringupBackend : IVoodooBackend
         _tmuRegisterWriteTraceCount++;
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
+        string storageStatus = _currentCommandFifoPacketStart >= 0
+            ? $" storage=hdr[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart)}]" +
+              $" w1[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 1)}]" +
+              $" w2[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 2)}]" +
+              $" w3[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 3)}]"
+            : "";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TMU] n={_tmuRegisterWriteTraceCount} target=0x{target:x3} chip=0x{DecodeChipmask(target):x1} " +
             $"reg=0x{register:x2} value=0x{value:x8} banked={(banked ? 1 : 0)} " +
             $"cmd=0x{_currentCommandFifoCommand:x8} packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} " +
-            $"before={before} after={FormatTextureRegisterWriteStatus()}{pcStatus}");
+            $"before={before} after={FormatTextureRegisterWriteStatus()}{storageStatus}{pcStatus}");
     }
 
     private string FormatTextureRegisterWriteStatus()
