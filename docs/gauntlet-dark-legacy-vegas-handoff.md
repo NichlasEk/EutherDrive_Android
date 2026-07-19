@@ -12614,3 +12614,40 @@ checkpoint finns kvar i koden.
 /tmp/gaunt-qio-real-completion-f109-f112-20260719.log
 /tmp/gaunt-qio-reentrant-stack-f112-20260719.log
 ```
+
+## 2026-07-19: filesystem state 12 och warm-state IDE-fix
+
+`0x800f7060` är samma filesystem-servicecallback både när systemet går framåt
+och när QIO:n sitter fast. Vid normal entry är `a0=0x8021e8a8`; callbacken läser
+service-state från `0x802a0780+0x34` och dispatchar state 0-12 via tabellen på
+`0x80156c70`. Den fastnade f112-staten är exakt state 12.
+
+State 12 är inte en väntande IDE-transfer. Vägen genom `0x800f6ed0` registrerar
+callback `0x800f7000`, sparar föregående state och sätter state 12.
+`0x800f7000` ökar räknaren på `0x8021f3e0+0x2c`; state-12-grenen vid
+`0x800f7238` väntar tills den räknaren når 1000 innan den återgår till det
+sparade state-värdet. I den fastnade checkpointen är räknaren fortfarande noll.
+
+En obruten f100 -> f112-körning med linked-node-guarden bekräftar att detta
+inte bara orsakas av snapshot-reload: diskinit når `Initializing Disk... Done.`,
+descriptor-poolen förblir frisk, men service-state stannar ändå på 12 med den
+länkade `0x800f087c`-noden kvar. Device-dumpen visar samtidigt IDE
+`status=0x50`, tom transfer och ingen IDE-IRQ.
+
+Två smala preemptionstest är negativa och återtagna. Att släppa igenom CP0-
+timern enbart i `WaitForQio` aktiverar gästens timeout-räkning men kör inte
+`0x800f7000`. Att även släppa igenom den routade Nile timer 0 ger en
+okvitterad `cause=0x0800`-storm i exception-handlern och lämnar state/counter
+oförändrade. Nästa gräns är därför registreringen/driften av den periodiska
+callbacken via `0x800ccc5c`, inte fler syntetiska interrupt eller QIO-status.
+
+GauntletProbe warm-state-formatet är uppgraderat till version 8. Tidigare
+versioner sparade IDE-buffer och status men tappade `_deviceControl` och
+`_interruptPending` vid reload; version 8 bevarar båda. Version 1-7 kan
+fortfarande läsas. `EUTHERDRIVE_GAUNTDL_DUMP_DEVICE_STATE=1` skriver nu ut
+IDE-transferstate och Nile IRQ-routing för att avslöja sådana falska
+checkpoint-låsningar.
+
+```text
+/tmp/eutherdrive-gauntlet-probe/qio-linked-guard-continuous-v8-f112-200k.warm
+```

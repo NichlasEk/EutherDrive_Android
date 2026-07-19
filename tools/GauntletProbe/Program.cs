@@ -144,6 +144,16 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_GPRS") == "1")
 
 object disk = GetProperty(machine, "Disk");
 Console.WriteLine($"attached={GetProperty(disk, "Attached")}");
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_DEVICE_STATE") == "1")
+{
+    object memory = GetProperty(machine, "MemoryMap");
+    string nile = (string)(memory.GetType().GetMethod("GetNileInterruptDebugStatus")?.Invoke(memory, null) ?? "unavailable");
+    Console.WriteLine(
+        $"diskState status=0x{GetFieldValue<byte>(disk, "_status"):x2} " +
+        $"deviceControl=0x{GetFieldValue<byte>(disk, "_deviceControl"):x2} " +
+        $"interruptPending={(GetFieldValue<bool>(disk, "_interruptPending") ? 1 : 0)} " +
+        $"transfer={GetFieldValue<int>(disk, "_transferOffset")}/{GetFieldValue<byte[]>(disk, "_transferBuffer").Length} {nile}");
+}
 
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_CMD_STATE") == "1")
     DumpCommandState(GetProperty(machine, "MemoryMap"));
@@ -840,7 +850,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(7);
+        writer.Write(8);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -873,7 +883,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4 or 5 or 6 or 7))
+    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8))
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -894,7 +904,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     object machine = GetField(adapter, "_machine");
     LoadCpu(reader, GetProperty(machine, "Cpu"));
     LoadMemoryMap(reader, GetProperty(machine, "MemoryMap"), version);
-    LoadDisk(reader, GetProperty(machine, "Disk"));
+    LoadDisk(reader, GetProperty(machine, "Disk"), version);
     LoadSio(reader, GetProperty(machine, "Sio"));
     LoadVoodoo(reader, GetProperty(machine, "Voodoo"), version);
 
@@ -1053,9 +1063,11 @@ static void SaveDisk(BinaryWriter writer, object disk)
     writer.Write(GetFieldValue<byte>(disk, "_cylinderHigh"));
     writer.Write(GetFieldValue<byte>(disk, "_driveHead"));
     writer.Write(GetFieldValue<byte>(disk, "_status"));
+    writer.Write(GetFieldValue<byte>(disk, "_deviceControl"));
+    writer.Write(GetFieldValue<bool>(disk, "_interruptPending"));
 }
 
-static void LoadDisk(BinaryReader reader, object disk)
+static void LoadDisk(BinaryReader reader, object disk, int version)
 {
     ReadByteArrayInto(reader, GetFieldValue<byte[]>(disk, "_transferBuffer"));
     SetField(disk, "_transferOffset", reader.ReadInt32());
@@ -1067,6 +1079,11 @@ static void LoadDisk(BinaryReader reader, object disk)
     SetField(disk, "_cylinderHigh", reader.ReadByte());
     SetField(disk, "_driveHead", reader.ReadByte());
     SetField(disk, "_status", reader.ReadByte());
+    if (version >= 8)
+    {
+        SetField(disk, "_deviceControl", reader.ReadByte());
+        SetField(disk, "_interruptPending", reader.ReadBoolean());
+    }
 }
 
 static void SaveSio(BinaryWriter writer, object sio)
