@@ -12506,8 +12506,8 @@ entry `0x80154c68`. The later resource opens fail before worker enqueue because
 the descriptor allocator at `0x800ebed4` returns zero.
 
 The allocator itself is healthy until its pool is exhausted. It pops 0x30-byte
-records from the free-list head at `0x8022e858`, starting at `0x8021dc58`, and
-increments the allocation counter at `0x8022e85c`. In the f100 -> f115 replay,
+records from the free-list head at `0x8021e858`, starting at `0x8021dc58`, and
+increments the allocation counter at `0x8021e85c`. In the f100 -> f115 replay,
 it successfully returns 64 sequential records and then returns zero for every
 later open. The immediate precursor is a repeated directory open:
 
@@ -12522,9 +12522,22 @@ post-exhaustion result      0x00000000
 Each `/d0/passport/` attempt resolves, receives a distinct pool record, encodes
 that record into a handle through `0x800ebb24`, clears the QIO status, and calls
 the filesystem open callback `0x800f0af8`. The callback returns, but the record
-is not back on the free list before the next identical attempt. Once the 64
-records are consumed, the later `objects.rom` opens cannot create a descriptor,
-so `0x800c8a5c` reports size zero and the indexed texture-set arena aliases.
+is not completed before the next identical attempt. Once the 64 records are
+consumed, the later `objects.rom` opens cannot create a descriptor, so
+`0x800c8a5c` reports size zero and the indexed texture-set arena aliases.
+
+A corrected write watch over `0x8021e858..0x8021e85f` sees the one-time pool
+link at `0x800ec0d0`, followed by exactly 64 head pops at `0x800ebf0c` and 64
+counter increments at `0x800ebf10`. No runtime code pushes a record back. A
+code-reference scan agrees: the loaded image references these globals only in
+the pool initializer, allocator, statistics accessors, and an overlay copy of
+the same code. The pool is therefore a fixed 64-descriptor budget, not a
+normal alloc/free list; recycling a record would be the wrong repair.
+
+An exact PC trace over the promoted interrupt baseline records zero entries at
+filesystem open worker `0x800f087c` through f115, while the passport callback
+keeps allocating descriptors. The immediate next boundary is consequently the
+worker queue/scheduler dispatch, not descriptor release.
 
 The opt-in asset-parser trace now follows the dynamic open object, covers all
 `/d0/` paths, and retains up to 512 lines so the pre-exhaustion lifetime is
@@ -12534,15 +12547,17 @@ visible. It remains observational:
 EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_ASSET_PARSER=1
 ```
 
-The next boundary is the `/d0/passport/` callback/worker completion and the
-descriptor release path. Determine whether the queued open is never dispatched,
-completes with the wrong directory semantics, or fails to call the normal
-`0x800ebed4` counterpart that pushes the record back to `0x8022e858`. Do not
-fabricate resource sizes or recycle live records at allocation time.
+The next boundary is the `/d0/passport/` callback/worker queue. Determine why
+the queued open is never dispatched despite the runtime interrupt bridge, then
+restore completion so the caller stops issuing new opens. Do not fabricate
+resource sizes or recycle live records at allocation time.
 
 ```text
 /tmp/eutherdrive-gauntlet-probe/resource-object-open-owner-f100-f115-20260719.log
 /tmp/eutherdrive-gauntlet-probe/request-pool-allocator-f100-f115-20260719.log
 /tmp/eutherdrive-gauntlet-probe/resource-open-pool-lifetime-f100-f115-20260719.log
 /tmp/eutherdrive-gauntlet-probe/request-open-code-20260719.log
+/tmp/eutherdrive-gauntlet-probe/descriptor-free-list-writes-corrected-f100-f115-20260719.log
+/tmp/eutherdrive-gauntlet-probe/descriptor-pool-memrefs-20260719.log
+/tmp/eutherdrive-gauntlet-probe/passport-open-worker-hit-f100-f115-20260719.log
 ```
