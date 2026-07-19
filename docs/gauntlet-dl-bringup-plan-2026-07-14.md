@@ -2967,3 +2967,26 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/index4-lifecycle-f700-f1100-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/index4-owner-mask10-f700-f1100-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-index4-lifecycle-f1100-20260719.warm`
+
+#### `kjh` stannar i asset-tabellen efter parsern
+
+En reproducerbar owner-publicerad f1100-snapshot bekräftar att renderloopen i
+den aktuella scenen bara gör texture-set-lookup för set 0, record 0 och 1
+(`0x802e2158` och `0x802e21a8`). Read-watch på hela asset entry 4 och de
+första `0x800` byten från `kjh`-bodyn ger noll träffar både under f1100--f1120
+och, för bodyn, under hela f700--f1100-QIO/parsercykeln. Parsern publicerar
+alltså pekaren men konsumerar inte body-payloaden.
+
+En RAM-vid pointer scan vid f1100 hittar `0x802f3170` exakt en gång: i
+`0x8024fa60`, asset entry 4 själv. Pekaren har inte kopierats till någon
+render-, owner- eller queue-struktur. Nästa kausala mål är därför guestkoden
+som slår upp/aktiverar poster i `0x8024f9a0`-tabellen. Följ index- eller
+namnlookupen för entry 4 fram till första pointer-load; ändra inte QIO,
+`kjh`-payloaden eller Voodoo-uppladdningen innan en sådan consumer finns.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-index4-owner-f1100-20260719.warm`
+- `/tmp/eutherdrive-gauntlet-probe/index4-body-consumer-f700-f1100-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/index4-asset-read-f1100-f1120-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/index4-body-read-f1100-f1120-20260719.log`
