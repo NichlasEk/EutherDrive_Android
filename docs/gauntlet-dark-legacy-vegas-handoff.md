@@ -12539,6 +12539,15 @@ filesystem open worker `0x800f087c` through f115, while the passport callback
 keeps allocating descriptors. The immediate next boundary is consequently the
 worker queue/scheduler dispatch, not descriptor release.
 
+The queue-head watch narrows that boundary again. At f100 -> f105,
+`0x800ed514` reads an empty head at `0x8021e97c`, then `0x800ed530` installs
+node `0x8021e8d8`. Its owner object is `0x8021e8a8` and its worker is
+`0x800f10e0`. No later instruction reads or clears the head. The passport open
+nodes are therefore appended behind an already stalled earlier filesystem
+worker; `0x800f087c` is not the first blocked job. Continue at the scheduler
+signal emitted by `0x800ed4ac` and determine why the runnable worker thread is
+never selected after this enqueue under the f100 warm replay.
+
 The opt-in asset-parser trace now follows the dynamic open object, covers all
 `/d0/` paths, and retains up to 512 lines so the pre-exhaustion lifetime is
 visible. It remains observational:
@@ -12560,4 +12569,5 @@ resource sizes or recycle live records at allocation time.
 /tmp/eutherdrive-gauntlet-probe/descriptor-free-list-writes-corrected-f100-f115-20260719.log
 /tmp/eutherdrive-gauntlet-probe/descriptor-pool-memrefs-20260719.log
 /tmp/eutherdrive-gauntlet-probe/passport-open-worker-hit-f100-f115-20260719.log
+/tmp/eutherdrive-gauntlet-probe/passport-worker-queue-head-f100-f105-20260719.log
 ```
