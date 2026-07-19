@@ -3101,3 +3101,57 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/static-objects-qio-lifecycle-f100-f150-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/static-objects-full-body-f100-f150-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/static-objects-real-path-companion-f100-f150-20260719.log`
+
+### Worker-kön dräneras och nästa passport-jobb publiceras
+
+Den tidigare scheduleranalysen använde fel adress för interruptnivån.
+Instruktionen `lui 0x8023; lw ...,0x8160` använder en signerad immediate och
+läser därför `0x80228160`, inte `0x80238160`. En korrigerad write-watch
+visar att värdet inte sitter fast: initieringen skriver `-1`,
+`0x800de46c` skriver `0` före varje callback och `0x800de494` återställer
+det tidigare `-1` efter callbacken.
+
+Det förklarar också varför `signal(0)` inte sätter CP0 Cause `0x0200` för
+just den observerade worker-enqueuen. Signalen sker inne i den redan aktiva
+schedulersektionen. Det är inte i sig ett tappat jobb: schedulerloopen vid
+`0x800de420` plockar callback och context ur noden och gör `jalr s1` direkt.
+
+Med den inbyggda, aktuella preseten
+`EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1` och dess interrupt bridge aktiv
+träffar CPU:n `0x800f10e0` vid instruktion `#11861244` och igen vid
+`#11861760`. Det andra anropet dispatchar objektstate 1 till `0x800f126c`.
+Handlern publicerar state 2 i `object+0xe8` och anropar `0x800efb7c` för att
+fortsätta jobbet. Senare, vid `#12556104`, materialiserar guestkoden
+callbackadressen `0x800f087c` och skriver den i nästa jobbnode. De tidigare
+slutsatserna att `0x800f10e0` aldrig körs och att köhuvudet aldrig konsumeras
+är därför avfärdade.
+
+Presetskillnaden är kausal. Med full baseline men explicit
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE=0` stannar f100--f105 efter
+initieringsskrivningen och når inte schedulerdräneringen. Med bridgen aktiv
+når en ren f100--f115-replay riktig `"Loading Game."`,
+`frameHash=0x30e41dc5`, 38 415 LFB-writes och 64 texture-map-writes. Den exakta
+entry-tracen för `0x800f087c` gav ännu ingen träff senast f115, så dess
+konsumtion är nästa avgränsade gräns. Ett f130-försök avslutades innan
+scoreboard och skapade ingen snapshot; det ska inte användas som resultat.
+
+En ny default-off trace
+`EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORKER_SIGNAL=1` rapporterar bara när CP0:s
+software-pending-bit och worker-kön samtidigt är aktiva, samt när emulatorn
+faktiskt går in i interruptvektorn. Den läser inte worker-köns guestminne när
+tracen är avstängd.
+
+Nästa steg:
+
+1. Spara en reproducerbar f115-snapshot med den inbyggda baseline-preseten.
+2. Fortsätt från f115 och tracea exakt `0x800f087c` tills callbacken anropas.
+3. Dumpa första stabila frame efter `"Loading Game."` och separera
+   schedulerframsteg från de kvarvarande null-body/texturproblemen.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/scheduler-level-owner-f100-f105-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/worker-entry-full-baseline-bridge-f100-f105-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/worker-state-machine-f100-f105-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/worker-progress-f100-f110-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/passport-worker-entry-f100-f115-20260719.log`

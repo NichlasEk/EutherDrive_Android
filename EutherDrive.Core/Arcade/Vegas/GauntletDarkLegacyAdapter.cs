@@ -707,6 +707,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE"));
     private readonly bool _enableRuntimeInterruptSuppress =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS");
+    private readonly bool _traceRuntimeWorkerSignal =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORKER_SIGNAL"));
     private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
     private readonly bool _enableRuntimeFormatBufferInFlightFastPath =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_FORMAT_BUFFER_INFLIGHT");
@@ -1391,6 +1393,8 @@ internal sealed class MipsR5000Core
     private int _runtimeRecordScanAllocateTraceCount;
     private int _runtimeRecordScanAllocateRejectTraceCount;
     private int _runtimeInterruptSuppressTraceCount;
+    private int _runtimeWorkerSignalTraceCount;
+    private ulong _runtimeWorkerSignalLastState = ulong.MaxValue;
     private int _exceptionFpuContextTraceCount;
     private int _exceptionFpuContextLoadTraceCount;
     private int _exceptionRestoreTailTraceCount;
@@ -26332,6 +26336,29 @@ internal sealed class MipsR5000Core
 
     private bool TryEnterPendingInterrupt(ulong pc)
     {
+        const ulong runtimeWorkerQueueHeadAddress = 0xffffffff8021e97cUL;
+        ulong softwarePending = _cp0[13] & Cp0CauseSoftwareInterruptMask;
+        uint runtimeWorkerQueueHead = 0;
+        if (_traceRuntimeWorkerSignal)
+            runtimeWorkerQueueHead = _memory.Read32(runtimeWorkerQueueHeadAddress);
+        if (softwarePending != 0 && runtimeWorkerQueueHead != 0)
+        {
+            ulong interruptState =
+                ((_cp0[12] & (Cp0StatusIe | Cp0StatusExl | Cp0StatusErl | Cp0StatusInterruptMask)) << 32) |
+                (softwarePending << 16) |
+                runtimeWorkerQueueHead;
+            if (interruptState != _runtimeWorkerSignalLastState && _runtimeWorkerSignalTraceCount++ < 128)
+            {
+                ulong node = CanonicalizeTraceAddress(runtimeWorkerQueueHead);
+                uint worker = IsMainRamRange(node + 0x08UL, 8) ? _memory.Read32(node + 0x08UL) : 0;
+                uint context = IsMainRamRange(node + 0x08UL, 8) ? _memory.Read32(node + 0x0cUL) : 0;
+                Console.WriteLine(
+                    $"[GAUNTDL:WORKER-SIGNAL] state pc={pc:x16} status={_cp0[12]:x16} cause={_cp0[13]:x16} " +
+                    $"pending={softwarePending:x4} queueHead={runtimeWorkerQueueHead:x8} worker={worker:x8} context={context:x8}");
+                _runtimeWorkerSignalLastState = interruptState;
+            }
+        }
+
         if ((_cp0[12] & Cp0StatusIe) == 0 || (_cp0[12] & (Cp0StatusExl | Cp0StatusErl)) != 0)
             return false;
 
@@ -26372,6 +26399,14 @@ internal sealed class MipsR5000Core
         _cp0[13] &= ~Cp0CauseExceptionCodeMask;
         _cp0[12] |= Cp0StatusExl;
         _gpr[0] = 0;
+        if (_traceRuntimeWorkerSignal && softwarePending != 0 && runtimeWorkerQueueHead != 0 &&
+            _runtimeWorkerSignalTraceCount++ < 128)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:WORKER-SIGNAL] enter pc={pc:x16} vector=" +
+                $"{((_cp0[12] & Cp0StatusBev) != 0 ? 0xffffffffbfc00380UL : 0xffffffff80000180UL):x16} " +
+                $"status={_cp0[12]:x16} cause={_cp0[13]:x16} pending={pending:x4} queueHead={runtimeWorkerQueueHead:x8}");
+        }
         AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
         _hasPendingBranch = false;
