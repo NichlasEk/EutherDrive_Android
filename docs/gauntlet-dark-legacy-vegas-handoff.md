@@ -12362,3 +12362,66 @@ copy.
 /tmp/eutherdrive-gauntlet-probe/descriptor-copy-9d388-f205-f206-20260719.log
 /tmp/eutherdrive-gauntlet-probe/descriptor-copy-9703c-f205-f206-20260719.log
 ```
+
+## 2026-07-19: texture-set upload coverage checkpoint
+
+The descriptor's `0x13b01` base is computed by guest code rather than allocated
+at the write site. `0x800a6824` reads the declared byte address at descriptor
+`+0x1c`, applies the Voodoo LOD-base adjustment table at `0x8016200c`, stores
+the resulting register value at `+0x0c`, and sets descriptor byte-3 bit 3. The
+wrapper at `0x800a6888` then binds the texture through `0x800bd738`; that path
+only emits texture state and does not download texels.
+
+The actual download chain is now closed in the other direction. The guest's
+`grTexDownloadMipMap` loop enters at `0x80109500`, calls the indirect Glide
+download implementation at `0x800fe200`, and reaches the Type-5 producer at
+`0x800fe5d4`. Only two guest call returns occur during the static upload:
+
+```text
+0x800a7624: 20 texture records
+0x800a776c: 25 texture records
+```
+
+Those 45 calls consume the `0x50`-byte records at
+`0x802eede0..0x802efc40`. They never consume the selected descriptor at
+`0x802ecb6c` or its `0x9d808` atlas address. A clean f205 -> f300 replay emitted
+no further Type-5 producer runs and left texture RAM byte-for-byte unchanged:
+
+```text
+f300 frameHash=0x308a2ac6
+texture nzWords=17098, first=0x000050, last=0x015554
+selected atlas 0x09d808: 0/64 nonzero words, 0/64 owned words
+```
+
+This rules out a merely late upload. It also reconnects the missing atlas to
+the indexed-QIO ownership problem. At f300 the guest texture-set table is:
+
+```text
+slot 0: 0x802ecb6c -> base 0x09d808, empty and unowned
+slots 1-8: all alias 0x803a4df4 -> declared address 0
+slot 9: 0x803d60e4 -> declared address 0
+```
+
+`GauntletProbe` now exposes this in one snapshot-safe report:
+
+```text
+EUTHERDRIVE_GAUNTDL_DUMP_TEXTURE_SET_UPLOAD_COVERAGE=1
+```
+
+It reports each texture-set descriptor, alias ordinal, computed physical base,
+and a 0x100-byte nonzero/last-writer coverage sample. The next repair target is
+therefore the guest-owned indexed QIO completion that should replace slots
+1-8 with their distinct descriptors before the texture-set parser finishes.
+Do not add an on-bind raw copy for slot 0: the controlled identity/scatter
+copies already proved that this bypasses the missing ownership and layout
+semantics.
+
+```text
+/tmp/eutherdrive-gauntlet-probe/static-descriptor-writes-f100-f115-20260719.log
+/tmp/eutherdrive-gauntlet-probe/static-descriptor-reads-f100-f115-20260719.log
+/tmp/eutherdrive-gauntlet-probe/type5-producer-heads-f100-f150-20260719.log
+/tmp/eutherdrive-gauntlet-probe/cpu-grtexdownload-entry-f100-f150-20260719.log
+/tmp/eutherdrive-gauntlet-probe/type5-producer-heads-f205-f300-20260719.log
+/tmp/eutherdrive-gauntlet-probe/texture-set-upload-coverage-f300-20260719.log
+/tmp/eutherdrive-gauntlet-probe/gauntdl-static-heap-current-f300-20260719.warm
+```

@@ -165,6 +165,7 @@ object voodoo = GetProperty(machine, "Voodoo");
 DumpVoodoo(voodoo);
 DumpRequestedTextureWordOwners(voodoo);
 DumpTextureOwnerTargets(voodoo);
+DumpTextureSetUploadCoverage(GetProperty(machine, "MemoryMap"), voodoo);
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_BUFFERS_BEFORE_FRAME") == "1")
     DumpVoodooColorBuffers(voodoo);
 DumpFrame(adapter);
@@ -3143,6 +3144,60 @@ static void DumpTextureOwnerTargets(object voodoo)
             $"lod={group.Key.Lod} bpp={group.Key.BytesPerTexel} seq8={(group.Key.Seq8 ? 1 : 0)} " +
             $"owners={group.Value.Count} physical=0x{minWord * 4:x6}-0x{maxWord * 4 + 3:x6}");
     }
+}
+
+static void DumpTextureSetUploadCoverage(object memory, object voodoo)
+{
+    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_TEXTURE_SET_UPLOAD_COVERAGE") != "1")
+        return;
+
+    const ulong textureSetTable = 0xffffffff802545a0UL;
+    object backend = GetField(voodoo, "_backend");
+    uint[] textureMemory = GetFieldValue<uint[]>(backend, "_textureMemory");
+    IDictionary owners = GetFieldValue<IDictionary>(backend, "_textureWordLastWriters");
+    uint textureByteMask = checked((uint)(textureMemory.Length * sizeof(uint) - 1));
+    var aliases = new Dictionary<uint, int>();
+
+    Console.WriteLine("textureSetUploadCoverage slots=10 sampleBytes=0x100");
+    for (int slot = 0; slot < 10; slot++)
+    {
+        uint descriptor = ReadMem32(memory, textureSetTable + (ulong)slot * 4UL);
+        if (descriptor == 0)
+        {
+            Console.WriteLine($" textureSetSlot slot={slot} descriptor=00000000");
+            continue;
+        }
+
+        aliases.TryGetValue(descriptor, out int aliasCount);
+        aliases[descriptor] = aliasCount + 1;
+        ulong descriptorAddress = 0xffffffff00000000UL | descriptor;
+        uint flags = ReadMem32(memory, descriptorAddress + 0x0cUL);
+        uint baseRegister = flags;
+        uint declaredAddress = ReadMem32(memory, descriptorAddress + 0x1cUL);
+        uint physicalAddress = ((baseRegister & 0x000fffffU) << 3) & textureByteMask;
+        int firstWord = (int)(physicalAddress >> 2);
+        int sampleWords = Math.Min(0x100 / sizeof(uint), textureMemory.Length - firstWord);
+        int nonZeroWords = 0;
+        int ownedWords = 0;
+        for (int word = 0; word < sampleWords; word++)
+        {
+            int textureWord = firstWord + word;
+            if (textureMemory[textureWord] != 0)
+                nonZeroWords++;
+            if (owners.Contains(textureWord))
+                ownedWords++;
+        }
+
+        Console.WriteLine(
+            $" textureSetSlot slot={slot} descriptor={descriptor:x8} aliasOrdinal={aliasCount} " +
+            $"flags={ReadMem32(memory, descriptorAddress):x8}/{ReadMem32(memory, descriptorAddress + 0x08UL):x8} " +
+            $"baseRegister={baseRegister:x8} declaredAddress={declaredAddress:x8} physical={physicalAddress:x6} " +
+            $"nonZeroWords={nonZeroWords}/{sampleWords} ownedWords={ownedWords}/{sampleWords}");
+    }
+
+    Console.WriteLine(
+        "textureSetUploadAliases " +
+        string.Join(",", aliases.OrderBy(entry => entry.Key).Select(entry => $"{entry.Key:x8}:{entry.Value}")));
 }
 
 readonly record struct RamSurfaceFormat(int Width, int Height, int Stride);
