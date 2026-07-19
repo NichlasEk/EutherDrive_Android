@@ -12079,3 +12079,43 @@ framebuffer colored=695
 keeps accidental shell environment leakage from launching the broken MAME-FIFO
 experiment in the browser-facing path while preserving the experiment for
 terminal probes.
+
+## 2026-07-19: static texture container lifecycle checkpoint
+
+The real `/d0/static_lr/objects.rom` and `/d0/static_lr/textures.rom` paths are
+now sufficient to reconstruct the slot-zero QIO metadata at the native
+`0x800c9944` return boundary. The texture file boundary was the decisive
+detail: the mapped `static_lr` base is disk byte `0x0fa00000`, while
+`textures.rom` begins at `0x0fbb0600` (relative offset `0x001b0600`). The older
+`0x001b0830` probe started `0x230` bytes inside the container and therefore fed
+an inner data block to the outer parser.
+
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE` is enabled
+by the normal bringup profile. It retains the old
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE`
+variable as an explicit alias. The fix is guarded by exact path, QIO ABI,
+destination, callback, file header, and size checks. It hydrates the complete
+`0x67b4c`-byte object container and the complete `0xc3674`-byte texture
+container before guest parsing continues.
+
+Warm A/B from
+`gauntdl-pre-record-array-f100-20260718.warm` shows that this is a real asset
+pipeline transition rather than a neutral metadata repair:
+
+```text
+old f150: frameHash=0xf29eb67c, texture-map writes=8
+fixed f150: frameHash=0xdc83ef24, writes=422352, touched=54946
+fixed f300: frameHash=0x143d98e1, writes=1092032, touched=128672
+```
+
+The f300 run is stable and fault-free, but the selected framebuffer is still
+effectively black (`nonBlack=4`, `colored=4`) while the runtime remains in
+`Loading Game.`. This checkpoint fixes static asset ingestion; the next target
+is the post-load render/display transition, not another guessed texture-file
+offset. Evidence logs:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/static-textures-full-container-f100-f150-20260719.log
+/tmp/eutherdrive-gauntlet-probe/static-textures-full-container-f100-f300-20260719.log
+/tmp/eutherdrive-gauntlet-probe/gauntdl-static-textures-full-container-f300-20260719.ppm
+```

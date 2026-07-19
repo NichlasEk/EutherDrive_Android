@@ -758,6 +758,9 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_SIZE_OWNER"));
     private readonly bool _experimentRuntimeBgLoadModelStaticObjectPathOwner =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_PATH_OWNER"));
+    private readonly bool _enableRuntimeBgLoadModelStaticPathLifecycle =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE") ||
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE"));
     private readonly ulong _experimentRuntimeBgLoadModelStaticObjectDiskBase =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_DISK_BASE") ?? 0x0fb2e000UL;
     private readonly bool _experimentRuntimeBgLoadModelStaticObjectCompanionOwner =
@@ -17943,6 +17946,8 @@ internal sealed class MipsR5000Core
         if (_memory.Read32(requestReturnPc) != 0x8fc20020U)
             return;
 
+        if (TryApplyKnownRuntimeBgLoadModelStaticTexturePathLifecycle(pc))
+            return;
         if (TryApplyKnownRuntimeBgLoadModelRecordZeroQioMetadataRepair(pc))
             return;
         if (TryApplyKnownRuntimeBgLoadModelIndexedTextureQioShortReadRepair(pc))
@@ -17990,6 +17995,70 @@ internal sealed class MipsR5000Core
                 $"index={recordIndex} record={record:x16} qio={qio:x16} object={qioObject:x16} " +
                 $"dest={destination:x16} bytes={requestedBytes:x8} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
+    }
+
+    private bool TryApplyKnownRuntimeBgLoadModelStaticTexturePathLifecycle(ulong pc)
+    {
+        const ulong qio = 0xffffffff80217c58UL;
+        const ulong destination = 0xffffffff802e1718UL;
+        const uint requestedBytes = 0x2000U;
+        const uint callback = 0x800ab4e4U;
+        const uint objectStatus = 0x300bU;
+        const uint qioCompleteStatus = 2;
+        const string texturesPath = "/d0/static_lr/textures.rom";
+
+        ulong frame = _gpr[30];
+        ulong returnSlot = frame + 0x20UL;
+        ulong destinationSlot = frame + 0x80UL;
+        ulong callbackSlot = frame + 0x84UL;
+        if (!_enableRuntimeBgLoadModelStaticPathLifecycle ||
+            !IsMainRamRange(returnSlot, 4UL) ||
+            !IsMainRamRange(destinationSlot, 4UL) ||
+            !IsMainRamRange(callbackSlot, 4UL) ||
+            _memory.Read32(returnSlot) != unchecked((uint)qio) ||
+            _memory.Read32(destinationSlot) != unchecked((uint)destination) ||
+            _memory.Read32(callbackSlot) != callback ||
+            ReadAsciiTraceString(qio + 0x18UL, 0x40) != texturesPath ||
+            !IsMainRamRange(qio + 0x18UL, 0x40UL) ||
+            !IsMainRamRange(destination, requestedBytes) ||
+            !IsMainRamRange(_gpr[4] + 0x14UL, 4UL) ||
+            _memory.Read32(qio + 0x04UL) != 0 ||
+            _memory.Read32(qio + 0x08UL) != 0 ||
+            _memory.Read32(qio + 0x0cUL) != 0 ||
+            _memory.Read32(qio + 0x10UL) != 0 ||
+            _memory.Read32(qio + 0x14UL) != qioCompleteStatus)
+        {
+            return false;
+        }
+
+        ulong qioObject = _gpr[4];
+        _memory.Write32(qio + 0x00UL, unchecked((uint)qioObject));
+        _memory.Write32(qio + 0x04UL, callback);
+        _memory.Write32(qio + 0x08UL, unchecked((uint)destination));
+        _memory.Write32(qio + 0x0cUL, requestedBytes);
+        _memory.Write32(qio + 0x10UL, requestedBytes);
+
+        uint oldObjectStatus = _memory.Read32(qioObject + 0x14UL);
+        _memory.Write32(qioObject + 0x14UL, (oldObjectStatus & 0xffff0000U) | objectStatus);
+
+        string hydrationStatus = "unmapped";
+        string hydrationReason = "";
+        if (_enableRuntimeBgLoadModelQioHydration &&
+            TryHydrateKnownRuntimeBgLoadModelQio(qio, qioObject, requestedBytes, out hydrationReason))
+        {
+            hydrationStatus = $"hydrated:{hydrationReason}";
+        }
+        else if (!string.IsNullOrWhiteSpace(hydrationReason))
+        {
+            hydrationStatus = hydrationReason;
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] bgloadmodel-static-texture-path-lifecycle pc={pc:x16} " +
+            $"qio={qio:x16} object={qioObject:x16} dest={destination:x16} " +
+            $"bytes={requestedBytes:x8} callback={callback:x8} " +
+            $"objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8} data={hydrationStatus}");
+        return true;
     }
 
     private bool TryApplyKnownRuntimeBgLoadModelRecordZeroQioMetadataRepair(ulong pc)
@@ -20746,8 +20815,12 @@ internal sealed class MipsR5000Core
             requestedByteCount == 0x2000U &&
             currentOffset is >= 0x00440000U and <= 0x00446000U)
         {
-            readOffset = 0x001b0830UL;
-            offsetMode = "static-lr-bgmodel";
+            readOffset = _enableRuntimeBgLoadModelStaticPathLifecycle
+                ? 0x001b0600UL
+                : 0x001b0830UL;
+            offsetMode = _enableRuntimeBgLoadModelStaticPathLifecycle
+                ? "static-lr-textures-file"
+                : "static-lr-bgmodel";
         }
         else if (string.IsNullOrEmpty(path) &&
                  requestedByteCount == 0x2000U &&
@@ -20809,6 +20882,84 @@ internal sealed class MipsR5000Core
             return false;
 
         string objectTableStatus = "";
+        if (_enableRuntimeBgLoadModelStaticPathLifecycle &&
+            path == "/d0/static_lr/textures.rom" &&
+            requestedByteCount == 0x2000U &&
+            callback == 0x800ab4e4U)
+        {
+            const uint textureByteLength = 0x000c3674U;
+            uint directoryOffset = ReadTraceWord(destination + 0x50UL);
+            uint bodyEndOffset = ReadTraceWord(destination + 0x58UL);
+            uint payloadEndOffset = ReadTraceWord(destination + 0x5cUL);
+            uint directoryStride = ReadTraceWord(destination + 0x60UL);
+            uint directoryCount = ReadTraceWord(destination + 0x64UL);
+            uint continuationBytes = textureByteLength - requestedByteCount;
+            uint continuationFirstWord = 0;
+            string continuationFailure = "header";
+            if (directoryOffset != 0x0000002cU ||
+                bodyEndOffset != 0x000c2bb8U ||
+                payloadEndOffset != 0x000c2fd8U ||
+                directoryStride != 0x00000188U ||
+                directoryCount != 0x0000002fU ||
+                payloadEndOffset >= textureByteLength ||
+                !IsMainRamRange(destination, textureByteLength) ||
+                !_memory.TryReadDiskByteOffsetToMemory(
+                    diskByteOffset + requestedByteCount,
+                    destination + requestedByteCount,
+                    continuationBytes,
+                    out continuationFirstWord,
+                    out continuationFailure))
+            {
+                reason =
+                    $"static-path-texture-body:{directoryOffset:x8}/{bodyEndOffset:x8}/" +
+                    $"{payloadEndOffset:x8}/{directoryStride:x8}/{directoryCount:x8}/{continuationFailure}";
+                return false;
+            }
+
+            objectTableStatus =
+                $"/static-path-texture-body={requestedByteCount:x8}+{continuationBytes:x8}" +
+                $"/directory={directoryOffset:x8}/stride={directoryStride:x8}/count={directoryCount:x8}" +
+                $"/first={continuationFirstWord:x8}";
+        }
+        if (_enableRuntimeBgLoadModelStaticPathLifecycle &&
+            path == "/d0/static_lr/objects.rom" &&
+            requestedByteCount == 0x2000U &&
+            callback == 0x800ab4e4U)
+        {
+            const uint objectByteLength = 0x00067b4cU;
+            uint signature = ReadTraceWord(destination + 0x40UL);
+            uint bodyOffset = ReadTraceWord(destination + 0x5cUL);
+            uint tableIndex = ReadTraceWord(destination + 0x60UL);
+            uint recordCount = ReadTraceWord(destination + 0x64UL);
+            ulong tableOffset = 0x68UL + (ulong)tableIndex * 0x8cUL;
+            ulong tableBytes = (ulong)recordCount * 0x50UL;
+            uint continuationBytes = objectByteLength - requestedByteCount;
+            uint continuationFirstWord = 0;
+            string continuationFailure = "header";
+            if (signature != 0xf00b0001U ||
+                bodyOffset != 0x00067a98U ||
+                tableIndex != 0x149U ||
+                recordCount != 0x2eU ||
+                tableOffset != 0xb454UL ||
+                tableOffset + tableBytes > objectByteLength ||
+                !IsMainRamRange(destination, objectByteLength) ||
+                !_memory.TryReadDiskByteOffsetToMemory(
+                    diskByteOffset + requestedByteCount,
+                    destination + requestedByteCount,
+                    continuationBytes,
+                    out continuationFirstWord,
+                    out continuationFailure))
+            {
+                reason =
+                    $"static-path-object-body:{signature:x8}/{bodyOffset:x8}/{tableIndex:x8}/" +
+                    $"{recordCount:x8}/{tableOffset:x8}/{tableBytes:x8}/{continuationFailure}";
+                return false;
+            }
+
+            objectTableStatus =
+                $"/static-path-object-body={requestedByteCount:x8}+{continuationBytes:x8}" +
+                $"/table={tableOffset:x8}+{tableBytes:x8}/first={continuationFirstWord:x8}";
+        }
         if (useStaticObjectOwner)
         {
             uint signature = ReadTraceWord(destination + 0x40UL);
@@ -20871,7 +21022,7 @@ internal sealed class MipsR5000Core
             $"path={path}/readOffset={readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}");
         reason = useStaticObjectOwner
             ? $"static-objects@{diskByteOffset:x8}/first={firstWord:x8}{objectTableStatus}"
-            : $"{path}@{readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}";
+            : $"{path}@{readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}{objectTableStatus}";
         return true;
     }
 
