@@ -12156,3 +12156,46 @@ source before `0x800aac48`, not to promote the length reject.
 /tmp/eutherdrive-gauntlet-probe/reject-implausible-descriptor-clean-f100-f300-20260719.log
 /tmp/eutherdrive-gauntlet-probe/gauntdl-reject-implausible-descriptor-clean-f300-20260719.ppm
 ```
+
+The source writer was then resolved. Index 9 initially has an empty source
+slot. Its `credits` path calls `0x800c9088`, which is the guest bump allocator:
+it aligns the offset at `0x802280fc` and adds the arena base at `0x80228104`.
+The allocator correctly returns `0x80312a08`, but the full static texture
+hydration had already overwritten that address because it had not reserved its
+`0xc3674`-byte destination range in the guest arena.
+
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_RESERVE_HEAP` is now
+part of the bringup profile. After the fully guarded texture hydration, it
+advances the active guest allocator offset only when the destination is inside
+the allocator arena and the aligned end remains below the guest's own limit.
+The legacy `...EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_PATH_RESERVE_HEAP` name is
+kept as an explicit alias. Observed reservation:
+
+```text
+base=0x802db440
+destination=0x802e1718 bytes=0x000c3674 end=0x803a4d8c
+offset=0x000062d8 -> 0x000c994c
+limit=0x0051aac0
+```
+
+Clean f300 without the descriptor-length reject now leaves the invalid-copy
+loop and restores substantial guest rendering work:
+
+```text
+frameHash=0x935bde80 pc=0x800b1be4
+setup triangles=4980
+lfb writes=4492818
+texture-map writes=113408 touched=18145
+```
+
+The selected framebuffer is still black (`colored=2`). The next target is the
+display/render state after this newly restored setup/LFB burst. Do not return
+to the index-9 pointer or promote the length reject: the pointer was a valid
+allocator result, and the missing heap reservation was the collision.
+
+```text
+/tmp/eutherdrive-gauntlet-probe/static-texture-index9-source-state-f100-f205-20260719.log
+/tmp/eutherdrive-gauntlet-probe/asset-parser-and-lookup-code-f500-20260719.log
+/tmp/eutherdrive-gauntlet-probe/static-path-reserve-heap-f100-f300-20260719.log
+/tmp/eutherdrive-gauntlet-probe/gauntdl-static-path-reserve-heap-f300-20260719.ppm
+```

@@ -763,6 +763,9 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE"));
     private readonly bool _experimentRuntimeBgLoadModelRejectImplausibleDescriptorLength =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH"));
+    private readonly bool _enableRuntimeBgLoadModelStaticPathReserveHeap =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_RESERVE_HEAP") ||
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_PATH_RESERVE_HEAP"));
     private readonly ulong _experimentRuntimeBgLoadModelStaticObjectDiskBase =
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_OBJECT_DISK_BASE") ?? 0x0fb2e000UL;
     private readonly bool _experimentRuntimeBgLoadModelStaticObjectCompanionOwner =
@@ -1366,6 +1369,7 @@ internal sealed class MipsR5000Core
     private ulong _runtimeBgLoadModelStreamDescriptorBuilderRecord;
     private int _runtimeBgLoadModelAssetParserTraceCount;
     private int _runtimeBgLoadModelImplausibleDescriptorLengthTraceCount;
+    private int _runtimeBgLoadModelStaticPathReserveHeapTraceCount;
     private int _runtimeBgLoadModelAssetConsumerTraceCount;
     private int _runtimeBgLoadModelGebSourceTraceCount;
     private int _runtimeBgLoadModelIndexedSourceStateTraceCount;
@@ -20963,6 +20967,7 @@ internal sealed class MipsR5000Core
                 $"/static-path-texture-body={requestedByteCount:x8}+{continuationBytes:x8}" +
                 $"/directory={directoryOffset:x8}/stride={directoryStride:x8}/count={directoryCount:x8}" +
                 $"/first={continuationFirstWord:x8}";
+            TryReserveKnownRuntimeBgLoadModelStaticPathHeap(destination, textureByteLength, ref objectTableStatus);
         }
         if (_enableRuntimeBgLoadModelStaticPathLifecycle &&
             path == "/d0/static_lr/objects.rom" &&
@@ -21067,6 +21072,54 @@ internal sealed class MipsR5000Core
             ? $"static-objects@{diskByteOffset:x8}/first={firstWord:x8}{objectTableStatus}"
             : $"{path}@{readOffset:x8}/{offsetMode}/base={fileBaseLba:x8}/{(useStateLba ? "state" : "mapped")}/first={firstWord:x8}{objectTableStatus}";
         return true;
+    }
+
+    private void TryReserveKnownRuntimeBgLoadModelStaticPathHeap(
+        ulong destination,
+        uint byteLength,
+        ref string status)
+    {
+        const ulong allocatorActiveAddress = 0xffffffff802280f8UL;
+        const ulong allocatorOffsetAddress = 0xffffffff802280fcUL;
+        const ulong allocatorLimitAddress = 0xffffffff80228100UL;
+        const ulong allocatorBaseAddress = 0xffffffff80228104UL;
+
+        if (!_enableRuntimeBgLoadModelStaticPathReserveHeap ||
+            !IsMainRamRange(allocatorActiveAddress, 0x10UL) ||
+            _memory.Read32(allocatorActiveAddress) != 1U)
+        {
+            return;
+        }
+
+        uint currentOffset = _memory.Read32(allocatorOffsetAddress);
+        uint allocatorLimit = _memory.Read32(allocatorLimitAddress);
+        ulong allocatorBase = SignExtend32(_memory.Read32(allocatorBaseAddress));
+        ulong end = destination + byteLength;
+        if (!IsMainRamRange(allocatorBase, 4UL) ||
+            destination < allocatorBase ||
+            end <= destination)
+        {
+            return;
+        }
+
+        ulong requiredOffset64 = (end - allocatorBase + 3UL) & ~3UL;
+        if (requiredOffset64 > uint.MaxValue ||
+            requiredOffset64 > allocatorLimit ||
+            requiredOffset64 <= currentOffset)
+        {
+            return;
+        }
+
+        uint requiredOffset = (uint)requiredOffset64;
+        _memory.Write32(allocatorOffsetAddress, requiredOffset);
+        status += $"/heap={allocatorBase:x8}+{currentOffset:x8}->{requiredOffset:x8}/{allocatorLimit:x8}";
+        if (_runtimeBgLoadModelStaticPathReserveHeapTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-static-path-reserve-heap " +
+                $"destination={destination:x16} bytes={byteLength:x8} end={end:x16} " +
+                $"base={allocatorBase:x16} offset={currentOffset:x8}->{requiredOffset:x8} limit={allocatorLimit:x8}");
+        }
     }
 
     private static bool TryGetKnownRuntimeBgLoadModelTexturePayload(
