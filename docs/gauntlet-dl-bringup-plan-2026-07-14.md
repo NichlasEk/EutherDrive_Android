@@ -2923,3 +2923,47 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/stream-loop-cpu-qio-f100-f200-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/stream-helper-cpu-f100-f200-20260719.log`
 - `/tmp/eutherdrive-gauntlet-probe/stream-descriptor-builder-f100-f132-20260719.log`
+
+### Index 4 når riktig QIO och publicerar `kjh`
+
+En observationsren fortsättning från den experimentfria f300-checkpointen till
+f700 visar att den indexerade laddningen inte har fastnat på index 2. Den
+befintliga QIO-sekvensen laddar först `snm` som en full `0x2000`-request till
+`0x802e5718`, därefter `stk` som short-read-header till `0x802e7718`, och gör
+sedan sin state-7 body-read. Vid f700 har index 1--3 därför separata headers,
+medan index 4 fortfarande är det första helt tomma source-fönstret.
+
+En fortsatt, opatchad f700--f1100-replay träffar sedan nästa riktiga cykel:
+
+```text
+index=4 code=kjh dest=0x802e9718 bytes=0x2000 disk=0x15130e00
+header: marker=0xf00b0001 bodyOffset=0x9a58 count=0x1e kind=0x0d
+```
+
+Det avfärdar både teorin att urvalsloopen återväljer index 2 och den äldre
+f900-slutsatsen att index 4 aldrig når QIO. F900-snapshoten låg helt enkelt
+före nästa laddningscykel. Kontrollens f1100-resultat är
+`frameHash=0xb86ea0ec`, `197112` färgade pixlar och `33068032` texture-map
+writes.
+
+Efter hydreringen pekade source-slot 4 fortfarande på den statiska source 0.
+Ett default-off A/B med den redan befintliga hydrated-source-owner-reparationen
+begränsad till mask `0x10` publicerar `0x802e9718` i slot 4. Parsern konsumerar
+då rätt header/body och skapar asset entry 4 som
+`0x802f3170 / length 4 / "kjh"`. Publiceringen överlever det efterföljande
+parserpasset. Vid f1100 är renderresultatet exakt neutralt mot kontrollen:
+samma hash, pixelantal och texture-map-statistik. Det är alltså en semantisk
+livscykelfix utan tidig renderregression, men ännu inte en omedelbar visuell
+förbättring vid denna frame.
+
+Baseline-scriptet aktiverar därför hydrated-source-owner endast för index 4.
+Nästa sond ska följa asset entry 4 från `0x802f3170` till första
+texture-set-lookup/upload/draw, inte återgå till tidig hydration eller ändra
+descriptorantalet två.
+
+Verifieringsartefakter:
+
+- `/tmp/eutherdrive-gauntlet-probe/index4-lifecycle-f300-f700-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/index4-lifecycle-f700-f1100-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/index4-owner-mask10-f700-f1100-20260719.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-index4-lifecycle-f1100-20260719.warm`
