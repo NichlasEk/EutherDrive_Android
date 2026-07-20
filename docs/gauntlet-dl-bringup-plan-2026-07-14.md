@@ -3264,3 +3264,56 @@ Verifieringsartefakter:
 - `/tmp/gaunt-qio-reentrant-stack-f112-20260719.log`
 - `/tmp/gaunt-qio-targeted-wake-f109-f110-20260719.log`
 - `/tmp/gaunt-qio-targeted-wake-sw0-f109-f110-20260719.log`
+
+### Guestens timer- och schedulerpump är återställd som default-off experiment
+
+Den tidigare stillastående filesystem-servicen berodde på två saknade led, inte
+på ett felaktigt timerrecord. Ett kontextbevarande direktanrop till guestens
+timerkö `0x800ccbb0` med `a0=1000` minskar delta-listans huvud exakt 1000 per
+tick. Första noden `0x802954f0` löpte ut efter cirka 222 ms; därefter blev
+filesystemtimern `0x8021f3f8` huvud och löpte också ut.
+
+`0x800ccbb0` anropar inte timer-callbacken direkt. Vid expiry flyttar den noden
+till ready-listan `0x80262ad0` via `0x800de2cc`. Den normala interruptvägen
+dränerar listan med `0x800de30c`, med `a0=oldStatus` och
+`a1=oldStatus | 1`. Filesystem-callbacken lägger i sin tur ett jobb på
+scheduler-listan `0x80262ae0`, vars riktiga wrapper är `0x800de59c` med samma
+statusargument. Experimentet
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_TICK=1` kör nu alla tre
+leden med sparad och återställd CPU/FPU/CP0-kontext. Det är fortfarande
+default-off och ska inte promoveras före en ren cold-replay.
+
+Från den länkade f112-checkpointen gav kedjan följande verifierade progression:
+
+- f127: timerhuvudet bytte till `0x8021f3f8` och dess delta minskade.
+- f138: filesystemtimern var utgången och låg på ready-listan.
+- f139: timer-ready-listan tömdes och scheduler-jobbet publicerades.
+- f140: scheduler-listan tömdes; riktiga interrupt/exception-returer kördes.
+- f150: filesystemstatus nådde 4 och QIO/statusfälten ändrades utan syntetisk
+  linked-node-completion.
+- f300: den riktiga count-delayen hade passerats och Voodoo nådde 1032 swaps,
+  8373 FIFO-ord och 8256 command-I/O-ord. Bilden var fortfarande den svarta
+  `frameHash=0xf29eb67c` och target-QIO:n var fortsatt länkad med status
+  `0x0805`.
+
+En instruktionstrace bekräftar därefter riktig entry i filesystem-workern
+`0x800f7060`. Den läser IDE-status `0x50` via `0xa4000400` och går genom de
+verkliga servicehjälparna. Nästa gräns är därför statusproveniensen för
+`0x0805` inne i `0x800f7060`-flödet: avgör om den är retry, mediafel eller en
+saknad IDE-transfer/completion. Ändra inte QIO-statusen syntetiskt och avlänka
+inte target-workern manuellt.
+
+GauntletProbe accepterar nu warm-formatversion 1--8 med en explicit
+intervallkontroll; den tidigare pattern-kontrollen avvisade i praktiken en
+giltig v8-checkpoint.
+
+Verifieringsartefakter:
+
+- `/tmp/gaunt-context-queue-1khz-f124-f127-20260720.log`
+- `/tmp/gaunt-context-queue-1khz-f127-f138-20260720.log`
+- `/tmp/gaunt-context-timer-dispatch-f138-f139-20260720.log`
+- `/tmp/gaunt-context-full-dispatch-f139-f140-20260720.log`
+- `/tmp/gaunt-context-full-dispatch-f140-f150-20260720.log`
+- `/tmp/gaunt-context-full-dispatch-f150-f300-20260720.log`
+- `/tmp/gaunt-filesystem-worker-full-dispatch-f139-f140-20260720.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-context-full-dispatch-f300.warm`

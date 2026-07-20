@@ -327,8 +327,11 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
 
 internal sealed class GauntletDarkLegacyMachine
 {
+    private int _runtimeTimerTickAccumulator;
     private readonly bool _splitVblankCpu = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_SPLIT_VBLANK_CPU");
     private readonly bool _enableVblankTickBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_TICK_BRIDGE");
+    private readonly bool _enableContextPreservingVblankTimerDispatch =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_TICK"));
     private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
     private readonly int _vblankCpuSteps = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_VBLANK_CPU_STEPS", 2048);
 
@@ -377,6 +380,15 @@ internal sealed class GauntletDarkLegacyMachine
         Sio.PulseVblank(state: true);
         if (_enableVblankTickBridge)
             MemoryMap.RecordRuntimeVblankTick();
+        if (_enableContextPreservingVblankTimerDispatch)
+        {
+            _runtimeTimerTickAccumulator += 1000;
+            while (_runtimeTimerTickAccumulator >= 60)
+            {
+                Cpu.RunRuntimeTimerTickPreservingContext();
+                _runtimeTimerTickAccumulator -= 60;
+            }
+        }
         if (_enableRuntimeInputPollBridge)
             MemoryMap.RecordRuntimeInputPollEffects();
         if (_splitVblankCpu)
@@ -1517,6 +1529,7 @@ internal sealed class MipsR5000Core
     private ulong _tileWriteMax;
     private ulong _tileWriteCount;
     private bool _timerInterruptPending;
+    private bool _insideContextPreservingRuntimeTimerTick;
     private ulong _hi;
     private ulong _lo;
 
@@ -1596,6 +1609,130 @@ internal sealed class MipsR5000Core
         }
 
         _remainingProbeSteps = 0;
+    }
+
+    public bool RunRuntimeTimerTickPreservingContext()
+    {
+        const ulong timerQueueEntry = 0xffffffff800ccbb0UL;
+        const ulong timerReadyDispatcherEntry = 0xffffffff800de30cUL;
+        const ulong timerReadyListHead = 0xffffffff80262ad0UL;
+        const ulong schedulerReadyDispatcherEntry = 0xffffffff800de59cUL;
+        const ulong schedulerReadyListHead = 0xffffffff80262ae0UL;
+        const ulong returnSentinel = 0xffffffff80000000UL;
+        const int maxSteps = 100_000;
+        if (_halted || _insideContextPreservingRuntimeTimerTick || !IsRuntimeCodeAddress(Pc))
+            return false;
+
+        ulong[] savedGpr = (ulong[])_gpr.Clone();
+        ulong[] savedCp0 = (ulong[])_cp0.Clone();
+        ulong[] savedFpr = (ulong[])_fpr.Clone();
+        uint[] savedFcr = (uint[])_fcr.Clone();
+        ulong savedPc = Pc;
+        uint savedLastFetchedInstruction = LastFetchedInstruction;
+        bool savedHalted = _halted;
+        bool savedHasPendingBranch = _hasPendingBranch;
+        ulong savedPendingBranchTarget = _pendingBranchTarget;
+        bool savedHasImmediatePcOverride = _hasImmediatePcOverride;
+        ulong savedImmediatePcOverride = _immediatePcOverride;
+        ulong savedHi = _hi;
+        ulong savedLo = _lo;
+        int savedRemainingProbeSteps = _remainingProbeSteps;
+        int savedProbeStepDebt = _probeStepDebt;
+        bool returned = false;
+
+        try
+        {
+            _insideContextPreservingRuntimeTimerTick = true;
+            _halted = false;
+            _hasPendingBranch = false;
+            _pendingBranchTarget = 0;
+            _hasImmediatePcOverride = false;
+            _immediatePcOverride = 0;
+            _cp0[12] = savedCp0[12] | Cp0StatusIe;
+            _gpr[4] = 1000;
+            _gpr[31] = returnSentinel;
+            _gpr[0] = 0;
+            Pc = timerQueueEntry;
+
+            for (int i = 0; i < maxSteps && !_halted; i++)
+            {
+                if (Pc == returnSentinel)
+                {
+                    returned = true;
+                    break;
+                }
+                Step();
+            }
+
+            if (returned && _memory.Read32(timerReadyListHead) != 0)
+            {
+                returned = false;
+                _hasPendingBranch = false;
+                _pendingBranchTarget = 0;
+                _hasImmediatePcOverride = false;
+                _immediatePcOverride = 0;
+                _gpr[4] = savedCp0[12];
+                _gpr[5] = savedCp0[12] | Cp0StatusIe;
+                _gpr[31] = returnSentinel;
+                _gpr[0] = 0;
+                Pc = timerReadyDispatcherEntry;
+
+                for (int i = 0; i < maxSteps && !_halted; i++)
+                {
+                    if (Pc == returnSentinel)
+                    {
+                        returned = true;
+                        break;
+                    }
+                    Step();
+                }
+            }
+
+            if (returned && _memory.Read32(schedulerReadyListHead) != 0)
+            {
+                returned = false;
+                _hasPendingBranch = false;
+                _pendingBranchTarget = 0;
+                _hasImmediatePcOverride = false;
+                _immediatePcOverride = 0;
+                _gpr[4] = savedCp0[12];
+                _gpr[5] = savedCp0[12] | Cp0StatusIe;
+                _gpr[31] = returnSentinel;
+                _gpr[0] = 0;
+                Pc = schedulerReadyDispatcherEntry;
+
+                for (int i = 0; i < maxSteps && !_halted; i++)
+                {
+                    if (Pc == returnSentinel)
+                    {
+                        returned = true;
+                        break;
+                    }
+                    Step();
+                }
+            }
+        }
+        finally
+        {
+            Array.Copy(savedGpr, _gpr, _gpr.Length);
+            Array.Copy(savedCp0, _cp0, _cp0.Length);
+            Array.Copy(savedFpr, _fpr, _fpr.Length);
+            Array.Copy(savedFcr, _fcr, _fcr.Length);
+            Pc = savedPc;
+            LastFetchedInstruction = savedLastFetchedInstruction;
+            _halted = savedHalted;
+            _hasPendingBranch = savedHasPendingBranch;
+            _pendingBranchTarget = savedPendingBranchTarget;
+            _hasImmediatePcOverride = savedHasImmediatePcOverride;
+            _immediatePcOverride = savedImmediatePcOverride;
+            _hi = savedHi;
+            _lo = savedLo;
+            _remainingProbeSteps = savedRemainingProbeSteps;
+            _probeStepDebt = savedProbeStepDebt;
+            _insideContextPreservingRuntimeTimerTick = false;
+        }
+
+        return returned;
     }
 
     private void Step()
@@ -3033,7 +3170,8 @@ internal sealed class MipsR5000Core
         const ulong frameCounter = 0xffffffff8022817cUL;
         const ulong frameSubCounter = 0xffffffff80228114UL;
         const ulong countLatch = 0xffffffff8022ae44UL;
-        if (!_enableRuntimeHighTimerFastPath || pc is < entry or > 0xffffffff800de188UL)
+        if (!_enableRuntimeHighTimerFastPath || _insideContextPreservingRuntimeTimerTick ||
+            pc is < entry or > 0xffffffff800de188UL)
             return false;
 
         bool signatureOk = _memory.Read32(entry + 0x00UL) == 0x27bdffe0U &&

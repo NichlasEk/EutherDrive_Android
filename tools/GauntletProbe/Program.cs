@@ -886,7 +886,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8))
+    if (magic != 0x314d5241574c4447UL || version < 1 || version > 8)
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
