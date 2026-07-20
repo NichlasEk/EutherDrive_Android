@@ -3580,3 +3580,45 @@ Verifieringsartefakter:
 - `/tmp/gaunt-current-movie-parser-qio.log`
 - `/tmp/gaunt-current-movie3-stat-v1-f820.log`
 - `/tmp/gaunt-current-movie3-stat-v1-f820.png`
+
+### 2026-07-20: den sena QIO-poolkollapsen börjar i f700 -> f701
+
+Den rena IDE-taskfile-snapshoten vid f700 är den sista verifierat friska sena
+utgångspunkten. QIO-poolens free-head är `0x8021dda8` och allokeringsräknaren
+är `7`. Redan efter en enda frame, mitt under `Restoring Passwords...`, har
+räknaren stigit till `48` och free-head flyttats till `0x8021e558`. Vid f710
+är räknaren exakt `64` och free-head noll. Den tidigare f800-snapshotens
+poolkollaps sker alltså inte gradvis under movie-loaden; den orsakas av
+passport-retryn omedelbart efter f700.
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_PRESERVE_LINKED_MOUNT_QIO=1` ger den rena
+A/B-kontrollen. Från samma f700-state är free-head fortfarande
+`0x8021dda8` och räknaren fortfarande `7` vid f710, men gästen stannar i
+`WaitForQIO: Timeout`. Den syntetiska completionen medan callbacknoden är
+länkad är därför både nödvändig för nuvarande falska progression och direkt
+orsak till poolkollapsen.
+
+Den sena kön har samtidigt en annan ägare än den tidigare state-12-timern.
+Vid f700 är timer-ready-listan `0x80262ad0`, scheduler-ready-listan
+`0x80262ae0` och filesystem-timerrecordets länkar alla tomma. Ett längre test
+till f800 med den contextbevarande timerproben dränerar den vanliga timerkön,
+men ändrar varken filesystem-recordet, service-state 10 eller den blockerade
+QIO-kön. Den proben är dessutom fortfarande ogiltig för checkpoints eftersom
+en timeout kan behålla RAM-sideffekter och kasta bort CPU-continuationen.
+
+Köhuvudet `0x8021e97c -> 0x8021e8d8` kan nu identifieras exakt. Dess owner är
+`0x8021e8a8`, owner-status är redan lyckad `0x3500`, och nodens worker är
+`0x800f10e0`. Passport-jobben hamnar bakom denna äldre, färdigbehandlade men
+fortfarande länkade nod. Nästa korrekta gräns är därmed den normala
+scheduler-återarmningen som ska köra `0x800f10e0` via dispatch-returen
+`0x800de480`, så att guestkoden själv avslutar och avlänkar head-jobbet. Varken
+manuell avlänkning, descriptor-recycling, syntetisk QIO-status eller direkt
+worker-anrop ska användas.
+
+Verifieringsartefakter:
+
+- `/tmp/gaunt-current-f700-f710-pool.log`
+- `/tmp/gaunt-pool-f700.log`
+- `/tmp/gaunt-worker-timer-links-f700-20260720.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-linked-timer-f800.warm` (endast
+  negativt experiment; använd inte som continuation-checkpoint)
