@@ -671,7 +671,10 @@ static void DumpCpuState(object cpu)
     for (int i = 0; i < gpr.Length && i < names.Length; i++)
         Console.WriteLine($"{names[i]}=0x{gpr[i]:x16}");
 
-    Console.WriteLine($"cp0 status=0x{cp0[12]:x16} cause=0x{cp0[13]:x16} epc=0x{cp0[14]:x16} errorepc=0x{cp0[30]:x16}");
+    Console.WriteLine(
+        $"cp0 count=0x{cp0[9]:x16} compare=0x{cp0[11]:x16} status=0x{cp0[12]:x16} " +
+        $"cause=0x{cp0[13]:x16} epc=0x{cp0[14]:x16} errorepc=0x{cp0[30]:x16} " +
+        $"timerPending={(GetFieldValue<bool>(cpu, "_timerInterruptPending") ? 1 : 0)}");
 }
 
 static void DumpVoodoo(object facade)

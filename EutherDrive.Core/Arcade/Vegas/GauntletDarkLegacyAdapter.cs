@@ -699,12 +699,16 @@ internal sealed class MipsR5000Core
     private readonly bool _enableBootLoaderAddressBase = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_LOADER_ADDRESS_BASE");
     private readonly bool _enableBootSerialCopyLoop = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_SERIAL_COPY_LOOP");
     private readonly bool _enableBootCountDelay = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY");
+    private readonly bool _enableRuntimeHighTimerFastPath =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_HIGH_TIMER_FASTPATH");
     private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
     private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
     private readonly bool _enableSelftestLatchRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_SELFTEST_LATCH");
     private readonly bool _enableRuntimeInterruptBridge =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE"));
+    private readonly bool _preserveLinkedMountQio =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_PRESERVE_LINKED_MOUNT_QIO"));
     private readonly bool _enableRuntimeInterruptSuppress =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS");
     private readonly bool _traceRuntimeWorkerSignal =
@@ -3029,7 +3033,7 @@ internal sealed class MipsR5000Core
         const ulong frameCounter = 0xffffffff8022817cUL;
         const ulong frameSubCounter = 0xffffffff80228114UL;
         const ulong countLatch = 0xffffffff8022ae44UL;
-        if (!_enableBootCountDelay || pc is < entry or > 0xffffffff800de188UL)
+        if (!_enableRuntimeHighTimerFastPath || pc is < entry or > 0xffffffff800de188UL)
             return false;
 
         bool signatureOk = _memory.Read32(entry + 0x00UL) == 0x27bdffe0U &&
@@ -11919,6 +11923,9 @@ internal sealed class MipsR5000Core
         {
             return false;
         }
+
+        if (_preserveLinkedMountQio && _memory.Read32(mountObject + 0x30UL) != 0)
+            return false;
 
         status = state == 5U ? 0x0800U : 0x3000U;
         _memory.Write32(mountObject + 0x14UL, status);

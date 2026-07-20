@@ -12683,3 +12683,44 @@ volatile register. Nästa implementation ska driva den riktiga
 `0x800de06c -> 0x800ccbb0`-vägen med korrekt interrupt/context-semantik, eller
 modellera timerlistan och callback-dispatchen med motsvarande bevarande. Den
 ska inte direkt anropa `0x800f7000` från `WaitForQio`.
+
+### 2026-07-20: high-timer-fastpathen sväljer timerlistan
+
+En fungerande tidig tick går via Nile status `0x00200000`, callbackslotten
+`0x80238224` och `0x800de06c`. Slotten används bara under hårdvaruinit och
+nollas senare; försök med Nile IRQ shift 12 och prioritering över PCI C/SIO
+gav därför ingen hållbar runtime-tick och är återtagna.
+
+Den viktiga emulatorgränsen ligger i
+`TryFastPathKnownRuntimeHighTimerService()`. När guest når `0x800de0c0`
+ersätter fastpathen resten av `0x800de06c`, uppdaterar frame-räknarna och
+returnerar före guestens enda `0x800ccbb0`-anrop vid `0x800de0fc`. En egen
+override, `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_HIGH_TIMER_FASTPATH=0`, gör det
+möjligt att stänga av bara denna fastpath utan att slå av alla nödvändiga
+`BOOT_COUNT_DELAY`-fastpaths.
+
+Kontinuerlig f100 -> f112 med den overriden och linked-QIO-guarden gav ett
+positivt kausalresultat:
+
+```text
+timer deadline 0002acff -> 0058b326
+filesystem event field 0 -> 3
+Nile timer pending 1 -> 0
+runtime text: Initializing Disk... Done.
+Voodoo swaps: 756
+```
+
+Checkpoint:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-real-high-timer-f112.warm
+/tmp/gaunt-real-high-timer-f100-f112-20260720.log
+```
+
+Efter att init-callbacken avregistrerats kom inga fler sådana ticks. Ett
+kombinerat CP0-test är negativt: vid f120 är
+`Count=0x4928199a`, `Compare=0x80000000` och `timerPending=0`, cirka 920
+miljoner ticks från nästa Compare. Den bestående runtime-källan är därför
+VBlank/SIO-bridgen. `RecordRuntimeVblankTick()` måste härnäst göras
+timerlist-korrekt (eller ersättas av riktig context-bevarande guest-dispatch),
+utan direktanrop av `0x800f7000`.
