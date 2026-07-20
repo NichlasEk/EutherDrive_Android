@@ -3434,3 +3434,45 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-native-callback-f800.warm`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-native-callback-f1000.warm`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-no-static-lifecycle-f850.warm`
+
+### Static-object-bodyn återställer giltiga texture descriptors
+
+Den första riktiga Type-3-publiceringen efter diagnostic-menyn innehöll
+`S=NaN`. Guestens producent vid `0x800b0834` dividerade descriptorbredd med
+descriptorhöjd, men set 0 record 0 vid `0x802ecb6c` innehöll `0/0`.
+Write-watch stängde orsaken: `0x800ac42c` publicerar korrekt
+`objects.rom + 0xb454`, medan QIO-reparationen bara hade hydrerat requestens
+första `0x2000` byte. Recordtabellen låg alltså utanför den levererade delen
+av den verifierade `0x67b4c`-bytefilen.
+
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_OBJECT_BODY_READ` laddar
+nu resten av just `/d0/static_lr/objects.rom` efter att headern har verifierat
+signatur `0xf00b0001`, body-offset `0x67a98`, tabellindex `0x149`, 46 records
+och tabelloffset `0xb454`. Samma fix aktiverar den tidigare verifierade
+filstorleksägaren så guestens egen allocator reserverar exakt `0x67b4c` och
+senare arenaobjekt inte skriver över bodyn. Den felaktiga full-container-vägen
+för `static_lr/textures.rom` förblir avstängd.
+
+Ren replay från f700 med baseline-scriptet gav:
+
+```text
+f750 frameHash=0x33f33edc
+f800 frameHash=0xf244b244
+Type3=1160
+rasteriserade pixlar=42276
+nonfinite rejects=0
+```
+
+FIRE 3 från f800 gav vid f850 `Type3=1872`, 5 184 718 täckta pixlar och
+167 036 färgade framebufferpixlar (`frameHash=0xa14f6659`). Bilden består
+fortfarande av noise och horisontella stripes. Nästa gräns är därför den
+separata `0x11de4`-byte texture-companionens request/allokering och bindning,
+inte Type-3-layouten, NaN-maskering eller display-buffer-val.
+
+Verifieringsartefakter:
+
+- `/tmp/gaunt-current-texture-table-writes-f700-f750.log`
+- `/tmp/gaunt-static-object-body-promoted-f700-f750.log`
+- `/tmp/gaunt-static-object-body-promoted-f750-f800.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-static-object-body-promoted-f800.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-static-object-body-size-fire3-f850.png`

@@ -783,6 +783,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeBgLoadModelStaticPathLifecycle =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE") ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE"));
+    private readonly bool _enableRuntimeBgLoadModelStaticObjectBodyRead =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_OBJECT_BODY_READ");
     private readonly bool _experimentRuntimeBgLoadModelRejectImplausibleDescriptorLength =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH"));
     private readonly bool _enableRuntimeBgLoadModelStaticPathReserveHeap =
@@ -19660,7 +19662,8 @@ internal sealed class MipsR5000Core
         const uint objectsRom = 0x8013b024U;
         const uint objectByteLength = 0x00067b4cU;
 
-        if (!_experimentRuntimeBgLoadModelStaticObjectSizeOwner ||
+        if ((!_enableRuntimeBgLoadModelStaticObjectBodyRead &&
+             !_experimentRuntimeBgLoadModelStaticObjectSizeOwner) ||
             pc != entry ||
             (uint)_gpr[5] != objectsRom ||
             _gpr[6] != 0 ||
@@ -19678,7 +19681,7 @@ internal sealed class MipsR5000Core
         Pc = _gpr[31];
         CompleteFastPathStep();
         Console.WriteLine(
-            $"[GAUNTDL:EXPERIMENT] bgloadmodel-static-object-size-owner pc={pc:x16} " +
+            $"[GAUNTDL:{(_enableRuntimeBgLoadModelStaticObjectBodyRead ? "FIX" : "EXPERIMENT")}] bgloadmodel-static-object-size-owner pc={pc:x16} " +
             $"source={source:x16} bytes={objectByteLength:x8} ra={Pc:x16}");
         return true;
     }
@@ -21211,7 +21214,7 @@ internal sealed class MipsR5000Core
                 $"/first={continuationFirstWord:x8}";
             TryReserveKnownRuntimeBgLoadModelStaticPathHeap(destination, textureByteLength, ref objectTableStatus);
         }
-        if (_enableRuntimeBgLoadModelStaticPathLifecycle &&
+        if ((_enableRuntimeBgLoadModelStaticPathLifecycle || _enableRuntimeBgLoadModelStaticObjectBodyRead) &&
             path == "/d0/static_lr/objects.rom" &&
             requestedByteCount == 0x2000U &&
             callback == 0x800ab4e4U)
