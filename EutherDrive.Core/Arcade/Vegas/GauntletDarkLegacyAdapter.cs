@@ -40,6 +40,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_PAYLOADS", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK", "0x1fe"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_FULL_INDEXED_SOURCE_PAYLOADS", "0"),
@@ -48,6 +49,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT", "13"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_TEXTURE_QIO_SHORT_READ", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_INDEXED_PREPARE_DETAIL_PRESERVE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEXTURE_EXTENT", "1"),
     ];
 
     private readonly byte[] _frameBuffer = new byte[FrameHeight * FrameStride];
@@ -714,6 +716,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeHighTimerFastPath =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_HIGH_TIMER_FASTPATH");
     private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
+    private readonly bool _enableRuntimeTextureExtentFastPath =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEXTURE_EXTENT");
     private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
     private readonly bool _enableSelftestLatchRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_SELFTEST_LATCH");
@@ -1755,6 +1759,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeWaitForQioReadyLoop(pc))
             return;
         if (TryFastPathKnownRuntimeUiCommandCompleteWait(pc))
+            return;
+        if (TryFastPathKnownRuntimeTextureExtent(pc))
             return;
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioPreStatusMetadataRepair(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStatusStackLimitRepair(pc);
@@ -3075,6 +3081,67 @@ internal sealed class MipsR5000Core
             $"status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} errorepc={_cp0[30]:x16} " +
             $"sp={_gpr[29]:x16} ra={_gpr[31]:x16} k0={_gpr[26]:x16} k1={_gpr[27]:x16} " +
             $"v0={_gpr[2]:x16} a0={_gpr[4]:x16} {contextStatus}");
+    }
+
+    private bool TryFastPathKnownRuntimeTextureExtent(ulong pc)
+    {
+        const ulong entry = 0xffffffff800a64a0UL;
+        const ulong branchAfterDimensions = 0xffffffff800a64b4UL;
+        if (!_enableRuntimeTextureExtentFastPath || pc is not (entry or branchAfterDimensions))
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x94850004U ||
+            _memory.Read32(entry + 0x04UL) != 0x90820002U ||
+            _memory.Read32(entry + 0x08UL) != 0x94860006U ||
+            _memory.Read32(entry + 0x0cUL) != 0x2c420008U ||
+            _memory.Read32(entry + 0x10UL) != 0x14400002U ||
+            _memory.Read32(entry + 0x14UL) != 0x0000382dU ||
+            _memory.Read32(entry + 0x20UL) != 0x00621023U ||
+            _memory.Read32(entry + 0x24UL) != 0x0440000aU ||
+            _memory.Read32(entry + 0x40UL) != 0x0064102aU ||
+            _memory.Read32(entry + 0x48UL) != 0x1040fff9U ||
+            _memory.Read32(entry + 0x54UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x58UL) != 0x00e0102dU)
+        {
+            return false;
+        }
+
+        ulong record = _gpr[4];
+        ulong returnAddress = _gpr[31];
+        ulong returnOffset = returnAddress & 0x1fffffffUL;
+        if (returnOffset is < 0x00010000UL or > 0x01000000UL)
+            return false;
+
+        uint firstLevel = _memory.Read8(record + 0x00UL);
+        uint lastLevel = _memory.Read8(record + 0x01UL);
+        if (lastLevel < firstLevel)
+            return false;
+
+        uint width = _memory.Read16(record + 0x04UL);
+        uint height = _memory.Read16(record + 0x06UL);
+        if (_memory.Read8(record + 0x02UL) >= 8)
+            width = unchecked(width << 1);
+
+        uint total = 0;
+        uint product = 0;
+        uint levels = lastLevel - firstLevel;
+        for (uint level = 0; level <= levels; level++)
+        {
+            long signedProduct = (long)(int)width * (int)height;
+            product = unchecked((uint)signedProduct);
+            total = unchecked(total + product);
+            _hi = unchecked((uint)(signedProduct >> 32));
+            width = unchecked((uint)((int)width >> 1));
+            height = unchecked((uint)((int)height >> 1));
+        }
+
+        _lo = product;
+        _gpr[2] = SignExtend32(total);
+        _gpr[7] = SignExtend32(total);
+        _gpr[0] = 0;
+        Pc = returnAddress;
+        CompleteFastPathStep();
+        return true;
     }
 
     private bool TryFastPathKnownRuntimeTimerOnlyInterruptDispatch(ulong pc)

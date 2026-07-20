@@ -3267,6 +3267,14 @@ Verifieringsartefakter:
 
 ### Guestens timer- och schedulerpump är återställd som default-off experiment
 
+> **Korrigering 2026-07-20:** experimentet nedan är inte säkert. Varje
+> direktanrop får mutera guest-RAM, men efter 100 000 steg återställs alltid
+> CPU/FPU/CP0-kontexten även om anropet inte har returnerat. En timeout kan
+> därför avlänka en callback och samtidigt kasta bort dess fortsättning.
+> Experimentet ska förbli avstängt och får inte användas för nya checkpoints.
+> De äldre progressionerna nedan beskriver observerade sidoeffekter, inte en
+> giltig context-switch-implementation.
+
 Den tidigare stillastående filesystem-servicen berodde på två saknade led, inte
 på ett felaktigt timerrecord. Ett kontextbevarande direktanrop till guestens
 timerkö `0x800ccbb0` med `a0=1000` minskar delta-listans huvud exakt 1000 per
@@ -3381,3 +3389,48 @@ Verifieringsartefakter:
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-ide-taskfile-fixed-f200.warm`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-ide-taskfile-fixed-f300.warm`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-ide-taskfile-fixed-f520.warm`
+
+### Native QIO-fortsättning och static-container-regression
+
+Den reparerade IDE-linjen behöver inte någon syntetisk `signal()` eller den
+osäkra context-preserving timerpumpen efter f700. En ren replay från
+`gauntdl-ide-taskfile-fixed-f700.warm`, med
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_TICK=0`, går under nästa
+frame in i den riktiga QIO-callbacken kring `0x800f0c00`. Target-noden
+konsumeras av guestkoden och runtime fortsätter genom `Restoring Passwords...`
+till `Loading Game.`. Flera riktiga interrupt/exception/ERET-returer syns på
+vägen. Att slå av respektive på `RUNTIME_HIGH_TIMER_FASTPATH` ger samma
+post-QIO-gräns, så den fastpathen äger inte denna fortsättning.
+
+Den nästa låsningen var i stället en asset-proveniensregression. Med
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE=1` matas
+hela den råa `static_lr/textures.rom`-containern till en väg som förväntar sig
+publicerade runtimeposter. Guestens outer count blir då det floatlika råordet
+`0x431c8000`. Loopen `0x800abf00..0x800abf3c` försöker följaktligen skanna
+över en miljard 0x50-byteposter, och storlekshjälparen `0x800a64a0` ser
+`0xffff`-dimensioner i omappat minne. Detta är inte en lång legitim load utan
+fel datalager vid konsumentgränsen.
+
+Baseline-preseten och probe-scriptet sätter nu explicit
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE=0`. Den
+separata indexed texture body-read-fixen kan vara aktiv. En A/B-replay från
+samma f700-state når då world-tabellen (`castle`), bygger render-records och
+har vid f750 producerat 2 774 531 texture-writes och 43 352 type-5-paket. Vid
+f850 är motsvarande värden kvar och runtime arbetar i render-recordflödet i
+stället för den falska stream-scannen. Packet 3 är fortfarande noll och den
+exporterade bilden är svart, så nästa gräns är render-recordens null-body/
+packet-3-publicering, inte timer-, IDE- eller QIO-livslängden.
+
+En signaturkontrollerad fastpath för den rena storlekshjälparen
+`0x800a64a0` räknar nu samma 32-bitars mip-extent utan upp till 65 536 tolkade
+loopvarv. Den ändrar inte recorddata eller scanbeslut; den gjorde det möjligt
+att bevisa den ogiltiga `0x431c8000`-proveniensen snabbt. Den normala
+static-lifecycle-off-linjen behöver inte förlita sig på ett syntetiskt count.
+
+Verifieringsartefakter:
+
+- `/tmp/gaunt-timer-timeout-proof-f700-f701-20260720.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-native-callback-f710.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-native-callback-f800.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-native-callback-f1000.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-no-static-lifecycle-f850.warm`
