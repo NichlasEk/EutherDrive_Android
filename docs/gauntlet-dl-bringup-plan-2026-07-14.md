@@ -3523,3 +3523,60 @@ Verifieringsartefakter:
 - `/tmp/gaunt-static-texture-full-fire3-type3-fields-f800-f801.log`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-static-texture-full-f800.warm`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-static-texture-full-fire3-f850.warm`
+
+### Den sena helskärmsquaden ägs av en misslyckad movie3-open
+
+F800--f820 med FIRE 3 isolerar den sista icke-rasteriserande producentgränsen.
+De 52 nya Type-3-paketen använder samma `0x0180a8cb`-layout. Två av dem bildar
+den synliga 512x384-quaden och slår upp `set 10, record 0`. Vid f800 är set-10-
+slotten fortfarande noll. Gästkoden publicerar den först senare i delay-slotten
+vid `0x800aae64`:
+
+```text
+source 0x8039a4e8
+record 0x8039a550 (= source + 0x68)
+asset  movies/movie3
+lookup set 10, record 0 -> 0x8039a550
+```
+
+Varken source-objektet eller dess 0x50-bytepost skrivs före lookupen. Båda är
+helt nollade, vilket gör att producenten senare beräknar `S=NaN`; rastervägens
+fallback till screen-X skapar då de horisontella ränderna. Bufferdumpen visar
+samtidigt att buffer 1 verkligen är den synliga ytan, så detta är inte ett nytt
+display-bufferfel.
+
+Den generiska resource-open-tracen visar den exakta orsaken. Movievägen försöker
+öppna båda riktiga gästfilerna:
+
+```text
+/d0/movies/movie3/objects.rom
+/d0/movies/movie3/textures.rom
+```
+
+Path lookup lyckas, men request-allocatorn `0x800ebed4` returnerar noll. Det är
+samma redan verifierade 64-posters QIO-pool som tömdes av den äldre upprepade
+`/d0/passport/`-livslängden. File-stat lämnar därför inget callbackresultat i
+stackfältet som `0x800c893c` läser, storleken blir noll och movie-containern
+allokeras utan innehåll.
+
+En smal kontroll som kopierade det kvarvarande `v1=0x17d0` till stat-resultatet
+är avvisad och borttagen. Värdet återkommer för flera orelaterade sökvägar och
+är inte verifierad metadata. För movie3 gjorde kontrollen recordet icke-noll
+och ändrade f820 från `0xc02a9233` till `0x8327e706`, men bilden blev endast mer
+noise/stripes. Det bekräftar kausalitet utan att ge en giltig filstorlek eller
+payload.
+
+Den aktuella f800-snapshoten är alltså användbar som negativ renderer-orakel,
+men kan inte ensam ge korrekt movie3-data: request-poolens tidigare historik är
+redan förlorad. Nästa korrekta bringup-gräns är en ren tidig QIO-livslängd som
+låter `/d0/passport/` slutföras utan descriptorläckan och sedan bygger en ny
+f800-snapshot. Syntetisera inte movie3-storlekar, diskoffsetar eller records och
+ändra inte Type-3-fältlayouten utifrån denna kontaminerade warm state.
+
+Verifieringsartefakter:
+
+- `/tmp/gaunt-current-set10-source-state-f800-f820.log`
+- `/tmp/gaunt-current-set10-slot-writes-f800-f820.log`
+- `/tmp/gaunt-current-movie-parser-qio.log`
+- `/tmp/gaunt-current-movie3-stat-v1-f820.log`
+- `/tmp/gaunt-current-movie3-stat-v1-f820.png`
