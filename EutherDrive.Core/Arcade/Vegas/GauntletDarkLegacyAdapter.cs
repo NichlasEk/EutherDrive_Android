@@ -41,6 +41,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE", "0"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_STREAM", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_PAYLOADS", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISTINCT_SOURCE_INDEXED_HEADER_MASK", "0x1fe"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_FULL_INDEXED_SOURCE_PAYLOADS", "0"),
@@ -785,6 +786,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE"));
     private readonly bool _enableRuntimeBgLoadModelStaticObjectBodyRead =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_OBJECT_BODY_READ");
+    private readonly bool _enableRuntimeBgLoadModelStaticTextureStream =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_STREAM");
     private readonly bool _experimentRuntimeBgLoadModelRejectImplausibleDescriptorLength =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH"));
     private readonly bool _enableRuntimeBgLoadModelStaticPathReserveHeap =
@@ -18190,6 +18193,8 @@ internal sealed class MipsR5000Core
 
         if (TryApplyKnownRuntimeBgLoadModelStaticTexturePathLifecycle(pc))
             return;
+        if (TryApplyKnownRuntimeBgLoadModelStaticTextureStreamRepair(pc))
+            return;
         if (TryApplyKnownRuntimeBgLoadModelRecordZeroQioMetadataRepair(pc))
             return;
         if (TryApplyKnownRuntimeBgLoadModelIndexedTextureQioShortReadRepair(pc))
@@ -18237,6 +18242,94 @@ internal sealed class MipsR5000Core
                 $"index={recordIndex} record={record:x16} qio={qio:x16} object={qioObject:x16} " +
                 $"dest={destination:x16} bytes={requestedBytes:x8} objectStatus={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
         }
+    }
+
+    private bool TryApplyKnownRuntimeBgLoadModelStaticTextureStreamRepair(ulong pc)
+    {
+        const ulong qio = 0xffffffff80217c58UL;
+        const ulong companionBase = 0xffffffff80349268UL;
+        const ulong diskByteOffset = 0x0fb95e00UL;
+        const uint textureByteLength = 0x00011de4U;
+        const uint callback = 0x800ab4e4U;
+        const uint objectStatus = 0x300bU;
+        const uint qioCompleteStatus = 2U;
+        const string texturesPath = "/d0/static_lr/textures.rom";
+
+        if (!_enableRuntimeBgLoadModelStaticTextureStream ||
+            _gpr[16] is 0 or > 0x2000UL ||
+            _gpr[17] is 0 or > textureByteLength ||
+            _gpr[18] != 0x2eUL)
+        {
+            return false;
+        }
+
+        ulong frame = _gpr[30];
+        ulong returnSlot = frame + 0x20UL;
+        if (!IsMainRamRange(returnSlot, 4UL) ||
+            _memory.Read32(returnSlot) != unchecked((uint)qio) ||
+            ReadAsciiTraceString(qio + 0x18UL, 0x40) != texturesPath ||
+            !IsMainRamRange(_gpr[4] + 0x14UL, 4UL) ||
+            _memory.Read32(qio + 0x14UL) != qioCompleteStatus)
+        {
+            return false;
+        }
+
+        uint remainingBytes = (uint)_gpr[17];
+        uint requestedBytes = Math.Min((uint)_gpr[16], remainingBytes);
+        uint readOffset = textureByteLength - remainingBytes;
+        ulong destination = companionBase + readOffset;
+        uint hydrationBytes = readOffset == 0 ? textureByteLength : requestedBytes;
+        string reason = "destination-range";
+        if (!IsMainRamRange(destination, hydrationBytes) ||
+            !_memory.TryReadDiskByteOffsetToMemory(
+                diskByteOffset + readOffset,
+                destination,
+                hydrationBytes,
+                out uint firstWord,
+                out reason))
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-static-texture-stream-fail pc={pc:x16} " +
+                $"offset={readOffset:x8} bytes={hydrationBytes:x8} reason={reason}");
+            return false;
+        }
+
+        ulong qioObject = _gpr[4];
+        if (readOffset == 0)
+        {
+            const ulong allocatorOffsetAddress = 0xffffffff802280fcUL;
+            const ulong allocatorLimitAddress = 0xffffffff80228100UL;
+            const ulong allocatorBaseAddress = 0xffffffff80228104UL;
+            uint currentOffset = _memory.Read32(allocatorOffsetAddress);
+            uint allocatorLimit = _memory.Read32(allocatorLimitAddress);
+            ulong allocatorBase = SignExtend32(_memory.Read32(allocatorBaseAddress));
+            ulong expectedCursor = companionBase - 4UL;
+            ulong reservedEnd = companionBase + textureByteLength;
+            ulong reservedOffset = reservedEnd - allocatorBase;
+            if (allocatorBase + currentOffset == expectedCursor &&
+                reservedOffset <= allocatorLimit &&
+                reservedOffset <= uint.MaxValue)
+            {
+                _memory.Write32(allocatorOffsetAddress, (uint)reservedOffset);
+            }
+        }
+        _memory.Write32(qio + 0x00UL, unchecked((uint)qioObject));
+        _memory.Write32(qio + 0x04UL, callback);
+        _memory.Write32(qio + 0x08UL, unchecked((uint)destination));
+        _memory.Write32(qio + 0x0cUL, requestedBytes);
+        _memory.Write32(qio + 0x10UL, requestedBytes);
+        uint oldObjectStatus = _memory.Read32(qioObject + 0x14UL);
+        _memory.Write32(qioObject + 0x14UL, (oldObjectStatus & 0xffff0000U) | objectStatus);
+
+        if (_runtimeBgLoadModelQioRequestMetadataTraceCount++ < 32)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-static-texture-stream pc={pc:x16} " +
+                $"qio={qio:x16} object={qioObject:x16} dest={destination:x16} " +
+                $"offset={readOffset:x8} bytes={requestedBytes:x8}/{hydrationBytes:x8} remaining={remainingBytes:x8} " +
+                $"first={firstWord:x8} status={oldObjectStatus:x8}->{_memory.Read32(qioObject + 0x14UL):x8}");
+        }
+        return true;
     }
 
     private bool TryApplyKnownRuntimeBgLoadModelStaticTexturePathLifecycle(ulong pc)

@@ -3476,3 +3476,50 @@ Verifieringsartefakter:
 - `/tmp/gaunt-static-object-body-promoted-f750-f800.log`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-static-object-body-promoted-f800.warm`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-static-object-body-size-fire3-f850.png`
+
+### Static texture-companion når verkliga TMU0-uppladdningar
+
+Guestens nästa riktiga QIO-request öppnar `/d0/static_lr/textures.rom` med
+`s0=0x2000`, `s1=0x11de4` och `s2=0x2e`. Readern vid `0x800ab3b0` konsumerar
+hela extenten direkt från `0x80349268`; en första-chunk-hydrering lämnar därför
+resten av källan tom. Råfilens verifierade extent ligger vid byteoffset
+`0x0fb95e00` (LBA `0x7dcaf`) och är exakt `0x11de4` byte.
+
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_STREAM` hydrerar
+hela extenten vid den första exakta requesten, reserverar den bara när
+allocatorns cursor matchar companion-basen och låter QIO metadata rapportera
+den verkliga requeststorleken `0x2000`. Vakterna kräver rätt path, QIO-slot,
+status, recordantal och kvarvarande extent; den äldre felaktiga
+full-container-vägen förblir avstängd.
+
+Korrelation från f800 genom FIRE 3 bevisar hela efterföljande kedjan. Guestens
+bearbetade buffer `0x8037a4f8...` producerar Type-5 `0xc0000205`-paket från
+PC `0x800fe5d4`, och samma writer-poster äger ord som de synliga TMU0-quadarna
+faktiskt samplar. Type-5-adressformeln för `seq_8_downld`, inklusive `tt`,
+`ts` och 32-bitars alignment, matchar MAMEs `internal_texture_w`/`write_ptr`.
+Detta gör companion-hydreringen till en verifierad loaderfix, även om den
+nuvarande förenklade rasteriseringen fortfarande visar RGB332-noise/stripes.
+
+Verifierad effekt från den nya companion-linjen:
+
+```text
+f800 frameHash=0xe04045fd, Type3=1740, Type5=4627, texture writes=40381
+FIRE 3 f850 frameHash=0xc02a9233, Type3=2320, Type5=11055
+FIRE 3 f850 textured pixels=4186934, colored framebuffer pixels=167037
+```
+
+Två kontroller är fortsatt negativa och ska inte promoveras: sample-bias `0`
+ger `frameHash=0x5a1b6aea` med samma stripefamilj, och prefer-TMU0-S/T är exakt
+neutral (`0xc02a9233`). Tidiga `0x0180a8cb`-paket innehåller redan giltiga
+S0/T0-koordinater `0..256`; nästa rendergräns ska därför isoleras från de sena
+helskärmsquadarnas writer/layout-state i stället för att flytta Type-3-fält.
+
+Verifieringsartefakter:
+
+- `/tmp/gaunt-static-texture-record-source-f700-f750.log`
+- `/tmp/gaunt-f800-f850-fire3-writer-correlation.log`
+- `/tmp/gaunt-static-texture-full-fire3-bias0-f800-f850.log`
+- `/tmp/gaunt-static-texture-full-fire3-tmu0st-f800-f850.log`
+- `/tmp/gaunt-static-texture-full-fire3-type3-fields-f800-f801.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-static-texture-full-f800.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-static-texture-full-fire3-f850.warm`
