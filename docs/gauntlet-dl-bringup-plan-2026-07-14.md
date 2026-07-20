@@ -3345,6 +3345,21 @@ gått vidare till `0x3500`. Bilden är ännu oförändrad
 (`frameHash=0xf29eb67c`, packet 3 = 0), så nästa gräns är att fortsätta den
 nu fungerande disk/filesystem-kedjan och hitta första nya renderprogressen.
 
+Den längre fortsättningen bekräftar att detta inte bara skjuter upp IDE-felet.
+Från den reparerade f139-state:n är status fortfarande `0x3500` vid f520,
+IDE-controllern ligger i state 10 i stället för felstate 12, och både
+timer-ready- och scheduler-listan är tomma. Den hämtade katalogdatan i
+`0x802a0578` innehåller bland annat `vmunix`, så bounce-to-final-kedjan är
+verkligen konsumerad av gästen. Reproducerbara snapshots finns nu vid f200,
+f300 och f520.
+
+Den kvarvarande svarta bilden är därför en separat render/producer-loop. Vid
+f520 har Voodoo 20 661 FIFO-ord, 10 312 packets, 2 568 swaps och 12 288
+command-I/O-ord, men packets består fortfarande av type 1 och de 18 tidiga
+type 4-paketen; packet 3 är fortsatt noll. Nästa spårning ska börja från den
+reparerade f520-snapshoten och följa producenten av type 1/swap-loopen eller
+villkoret som ska publicera första packet 3, inte återöppna IDE/QIO-felet.
+
 Avfärdade och återtagna experiment före taskfile-fixen:
 
 - en, två eller åtta artificiellt latched BSY-läsningar;
@@ -3359,3 +3374,10 @@ Verifieringsartefakter:
 - `/tmp/gaunt-ide-taskfile-complete2-f139-f141-20260720.log`
 - `/tmp/gaunt-ide-taskfile-complete-f139-f150-positive-20260720.log`
 - `/tmp/gaunt-ide-taskfile-buffers-f141-20260720.log`
+- `/tmp/gaunt-ide-taskfile-default-f139-f200-20260720.log`
+- `/tmp/gaunt-ide-taskfile-default-f200-f300-20260720.log`
+- `/tmp/gaunt-ide-taskfile-default-f300-f520-20260720.log`
+- `/tmp/gaunt-ide-taskfile-fixed-state-f520-20260720.log`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-ide-taskfile-fixed-f200.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-ide-taskfile-fixed-f300.warm`
+- `/tmp/eutherdrive-gauntlet-probe/gauntdl-ide-taskfile-fixed-f520.warm`
