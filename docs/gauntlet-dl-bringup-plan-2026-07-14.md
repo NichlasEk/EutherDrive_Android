@@ -3317,3 +3317,45 @@ Verifieringsartefakter:
 - `/tmp/gaunt-context-full-dispatch-f150-f300-20260720.log`
 - `/tmp/gaunt-filesystem-worker-full-dispatch-f139-f140-20260720.log`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-context-full-dispatch-f300.warm`
+
+### IDE DMA-taskfilen slutförs och diskinitieringen passerar
+
+Den riktiga filesystem-workern nådde IDE DMA, och PRD:n vid `0x0021f410`
+pekade korrekt ut bounce-bufferten `0x8029e550`. Enheten skrev rätt sektor,
+inklusive `0xfeedf00d`, men gästens slutbuffert förblev tom och QIO:n fick
+`0x3409`. Statusen skrevs av state 12 efter fyra retries; state 4 översatte
+sedan felet till ägarstatus `0x0805` och target-QIO `0x1c07`.
+
+Orsaken var ATA-taskfilen efter en slutförd DMA-läsning. Modellen lämnade
+sector count på det begärda värdet `1`. Gästens completion-handler läser
+taskfilen och såg därför fortfarande en återstående sektor. MAME:s
+`ata_mass_storage_device_base::fill_buffer()` minskar däremot sector count
+efter att DMA-bufferten konsumerats; dess `finished_read()` har dessutom en
+uttrycklig Gauntlet: Dark Legacy-regel som lämnar adressen på den sista
+sektorn. `IdeDiskDevice` gör nu samma sak: sector count blir noll och
+flersektorsläsningar lämnar taskfilens adress på den sist överförda sektorn.
+
+En A/B-replay från den rena f139-checkpointen verifierar kausaliteten. Utan
+ändringen skrivs `0x3409` upprepade gånger. Med ändringen försvinner alla
+`0x3409`-träffar till f150, completion-handlern läser sector count `0`, och
+gästen fortsätter med lyckade DMA-läsningar från bland annat LBA 1, 2, 52,
+688980, 53, 104, 106, 115 och 116. Vid f141 är den tidigare tomma
+slutbufferten `0x802a0578` befolkad och den underliggande QIO-statusen har
+gått vidare till `0x3500`. Bilden är ännu oförändrad
+(`frameHash=0xf29eb67c`, packet 3 = 0), så nästa gräns är att fortsätta den
+nu fungerande disk/filesystem-kedjan och hitta första nya renderprogressen.
+
+Avfärdade och återtagna experiment före taskfile-fixen:
+
+- en, två eller åtta artificiellt latched BSY-läsningar;
+- CPU-instruktioner mellan syntetiska 1 ms-ticks;
+- avbruten tickbatch när IDE-IRQ blev aktiv.
+
+Verifieringsartefakter:
+
+- `/tmp/gaunt-disk-init-signature-f139-f150-20260720.log`
+- `/tmp/gaunt-ide-worker-3409-path-f139-f141-20260720.log`
+- `/tmp/gaunt-dma-bounce-f140.log`
+- `/tmp/gaunt-ide-taskfile-complete2-f139-f141-20260720.log`
+- `/tmp/gaunt-ide-taskfile-complete-f139-f150-positive-20260720.log`
+- `/tmp/gaunt-ide-taskfile-buffers-f141-20260720.log`

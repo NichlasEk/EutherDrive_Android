@@ -31211,11 +31211,42 @@ internal sealed class IdeDiskDevice
         {
             _transferBuffer = Array.Empty<byte>();
             _transferOffset = 0;
+            CompleteReadTaskFile();
             _status = (byte)(StatusDrdy | StatusDsc);
         }
 
         Trace($"dma transfer bytes={count}");
         return data;
+    }
+
+    private void CompleteReadTaskFile()
+    {
+        uint sectorCount = _sectorCount == 0 ? 256u : _sectorCount;
+        if (sectorCount > 1)
+            SetAddress(BuildAddress() + sectorCount - 1);
+        _sectorCount = 0;
+        Trace($"dma taskfile complete lba={BuildAddress()} count={_sectorCount}");
+    }
+
+    private void SetAddress(ulong lba)
+    {
+        if ((_driveHead & 0x40) != 0)
+        {
+            _sectorNumber = (byte)lba;
+            _cylinderLow = (byte)(lba >> 8);
+            _cylinderHigh = (byte)(lba >> 16);
+            _driveHead = (byte)((ulong)(_driveHead & 0xf0) | ((lba >> 24) & 0x0f));
+            return;
+        }
+
+        DiskGeometry geometry = Geometry;
+        ulong sectorsPerCylinder = (ulong)Math.Max(1, geometry.Heads * geometry.SectorsPerTrack);
+        ulong cylinder = lba / sectorsPerCylinder;
+        ulong withinCylinder = lba % sectorsPerCylinder;
+        _cylinderLow = (byte)cylinder;
+        _cylinderHigh = (byte)(cylinder >> 8);
+        _driveHead = (byte)((ulong)(_driveHead & 0xf0) | ((withinCylinder / (ulong)Math.Max(1, geometry.SectorsPerTrack)) & 0x0f));
+        _sectorNumber = (byte)((withinCylinder % (ulong)Math.Max(1, geometry.SectorsPerTrack)) + 1);
     }
 
     public bool TryReadSector(ulong lba, out byte[] sector)
