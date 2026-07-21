@@ -38,6 +38,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS", "0x510"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES", "1"),
@@ -34021,6 +34022,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_STOP_ON_UNKNOWN"));
     private readonly bool _experimentStandardCommandFifoGenerations =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS"));
+    private readonly bool _experimentStandardCommandFifoGlobalPacketState =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
@@ -35159,6 +35162,13 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         ulong producer = CpuPcProvider?.Invoke() ?? 0;
+        if (_experimentStandardCommandFifoGlobalPacketState)
+        {
+            // FIFO packet ownership follows contiguous logical write order,
+            // not the individual store instruction. Glide's bulk writers use
+            // several alternating store PCs for one header/body stream.
+            producer = 0UL;
+        }
         _cmdFifoPacketMapProducerStates.TryGetValue(producer, out PacketMapProducerState state);
         int normalized = CommandFifoStorageIndex(storageIndex);
         if (_cmdFifoStoragePacketOwnerValid[normalized])

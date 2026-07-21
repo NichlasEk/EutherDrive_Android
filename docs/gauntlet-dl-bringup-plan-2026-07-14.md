@@ -3873,3 +3873,44 @@ behandlas som en cyklisk listkorruption. Voodoo-räknarna är däremot oföränd
 genom f561, så nästa probe ska följa asset-initens caller/state efter lookupen.
 En ny diagnostisk continuation finns i
 `/tmp/eutherdrive-gauntlet-probe/gauntdl-loading-game-f560-200k.warm`.
+
+### 2026-07-21: global FIFO packet-state släpper riktig geometri
+
+Den första f580-körningen rapporterade 12 Type3/draw-paket, men field-trace
+visade bytepackad assetpayload som denormaliserade floatkoordinater. Packet-
+mapen var nycklad per exakt store-PC trots att Glide-writern använder flera
+store-instruktioner för samma sekventiella header/body-ström. Ett första exakt
+specialfall för `0x800fe7a0/ac/c4/cc` flyttade felet till den parallella
+`0x800fe5d4`-familjen och gav ett tunt färgbrus-band; det förkastades.
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE=1`
+låter i stället packet ownership följa sammanhängande logisk write-ordning
+inom generationen, oberoende av vilken store-instruktion som skrev nästa ord.
+Från samma f560-state försvinner alla falska Type3-paket vid f580:
+
+```text
+per-PC state   p3=12, rejected=7, frameHash=0xf29eb67c
+global state   p3=0,  rejected=0, frameHash=0xf29eb67c
+```
+
+Detta parkerar inte riktig geometri. Vid f600 producerar `0x800c4e5c`
+kompletta 19-ords `0x0180a8cb`-paket med plausibla floatkoordinater och exakt
+depth 19. Resultatet är:
+
+```text
+draw/type3     554 / 554
+covered        548
+rejected       6 (clip)
+raster pixels  215460
+texture zero   203250
+frameHash      0x6127a45e
+```
+
+Den globala modellen är därför promoterad till bringup-baseline. f600-bilden
+är nu en vit fullskärm med svarta/blockiga fragment, inte längre falskt FIFO-
+brus. Den nya reload-checkpointen är
+`/tmp/eutherdrive-gauntlet-probe/gauntdl-global-packet-state-f600-200k.warm`.
+Nästa gräns är texture ownership/sampling för de riktiga `0x0180a8cb`-
+trianglarna: cirka 94 procent av deras prover blir noll. Ändra inte vertex-
+decode eller clip för detta; koordinater, packet words och coverage är nu
+verifierade.
