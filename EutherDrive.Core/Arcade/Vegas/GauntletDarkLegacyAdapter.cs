@@ -29,6 +29,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "200000"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS", "0"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT", "1"),
@@ -726,6 +727,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableBootLoaderAddressBase = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_LOADER_ADDRESS_BASE");
     private readonly bool _enableBootSerialCopyLoop = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_SERIAL_COPY_LOOP");
     private readonly bool _enableBootCountDelay = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY");
+    private readonly bool _enableAudioInitCountDelay =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY");
     private readonly bool _enableRuntimeHighTimerFastPath =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_HIGH_TIMER_FASTPATH");
     private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
@@ -1910,6 +1913,7 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeCountDelay(pc))
             return;
+        AccelerateKnownAudioInitCountDelay(pc);
         if (TryFastPathKnownRuntimeDelayCallback(pc))
             return;
         if (TryFastPathKnownRuntimeDelayCallbackLoop(pc))
@@ -11040,6 +11044,56 @@ internal sealed class MipsR5000Core
                 $"delay={delay:x} return={returnAddress:x16}");
         }
         return true;
+    }
+
+    private void AccelerateKnownAudioInitCountDelay(ulong pc)
+    {
+        const ulong entry = 0xffffffff800457f8UL;
+        const ulong comparePc = entry + 0x4cUL;
+        const ulong counterAddress = 0xffffffff8016bbe8UL;
+        const ulong enableAddress = 0xffffffff80227c80UL;
+        const uint limit = 0x02faf080U;
+
+        if (!_enableAudioInitCountDelay || pc != comparePc ||
+            _gpr[16] != 1UL ||
+            (uint)_gpr[2] != limit ||
+            (uint)_gpr[3] >= limit ||
+            _memory.Read32(enableAddress) != 1U ||
+            !IsMainRamRange(_gpr[29] + 0x18UL, 4UL) ||
+            _memory.Read32(_gpr[29] + 0x18UL) != 0x80046048U)
+        {
+            return;
+        }
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffe0U ||
+            _memory.Read32(entry + 0x08UL) != 0x0080802dU ||
+            _memory.Read32(entry + 0x18UL) != 0xafbf0018U ||
+            _memory.Read32(entry + 0x20UL) != 0xa0400000U ||
+            _memory.Read32(entry + 0x24UL) != 0x0c02dcbfU ||
+            _memory.Read32(entry + 0x30UL) != 0x8e227c80U ||
+            _memory.Read32(entry + 0x38UL) != 0x3c0202faU ||
+            _memory.Read32(entry + 0x40UL) != 0x8c83bbe8U ||
+            _memory.Read32(entry + 0x44UL) != 0x3442f080U ||
+            _memory.Read32(entry + 0x48UL) != 0x00701821U ||
+            _memory.Read32(entry + 0x4cUL) != 0x0043102aU ||
+            _memory.Read32(entry + 0x50UL) != 0x10400014U ||
+            _memory.Read32(entry + 0x54UL) != 0xac83bbe8U ||
+            _memory.Read32(entry + 0xa0UL) != 0xac40bbe8U ||
+            _memory.Read32(entry + 0xb8UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0xbcUL) != 0x27bd0020U)
+        {
+            return;
+        }
+
+        // The helper has already performed its LED/callback side effects here.
+        // Let the guest's own branch, delay-slot store, cleanup, and return run.
+        _gpr[3] = limit + 1U;
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] audio-init-count-delay accelerated " +
+                $"pc={pc:x16} counter={_memory.Read32(counterAddress):x8}");
+        }
     }
 
     private bool TryFastPathKnownRuntimeDelayCallbackLoop(ulong pc)
@@ -29641,6 +29695,7 @@ internal sealed class VegasMemoryMap
                 case 0:
                     if ((value & 0x01) == 0)
                         ResetIoasicFromSio();
+                    _audio?.ResetLine((value & 0x01) != 0);
                     break;
                 case 6:
                     _cmosUnlocked = true;

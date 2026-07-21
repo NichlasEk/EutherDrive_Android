@@ -80,12 +80,6 @@ if (!loadedWarmupSnapshot)
 }
 
 RunUntilFrame(adapter, frames, stopPc, frameCheckpoints, summaryContext);
-string? finalSnapshotPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE");
-if (!string.IsNullOrWhiteSpace(finalSnapshotPath))
-{
-    SaveWarmupSnapshot(adapter, finalSnapshotPath, checked((int)adapter.FrameCounter.GetValueOrDefault()), cpuStepsPerFrameConfig);
-    Console.Error.WriteLine($"finalSnapshotSaved={finalSnapshotPath}");
-}
 runStopwatch.Stop();
 
 int extraSteps = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_CPU_STEPS"), out int parsedExtraSteps)

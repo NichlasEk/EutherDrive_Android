@@ -3808,3 +3808,58 @@ tills audio-/gameinit lämnar den tidiga svarta `frameHash=0xf29eb67c`, och
 kontrollera att pool-count förblir under 64 när de senare static/movie-
 resurserna öppnas. Först därefter ska den engångspuls som byggde f120-linjen
 promoveras från experiment till normal bringup-semantik.
+
+### 2026-07-21: audio-init lämnar count-delay och når `Loading Game.`
+
+Den native QIO-linjen fortsätter reproducerbart genom f520 med pool-count 38,
+men CPU:n fastnade därefter i audio-init-hjälparen `0x800457f8`. Anroparen
+`0x80046040` skickar `a0=1`; hjälparen kör sin LED/callback, inkrementerar
+globalen `0x8016bbe8` och väntar tills det signerade jämförelseresultatet mot
+`0x02faf080` blir falskt. Detta är ett rent emuleringsdyrt count-delay, inte en
+ny scheduler- eller QIO-blockering.
+
+Ett första försök att prima globalen vid hjälparens entry förkastades eftersom
+gästens normala store omedelbart skrev över värdet. Den aktiva fixen
+`EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY=1` ingriper därför först vid
+den exakta `slt`-instruktionen `0x80045844`, efter att hjälparens riktiga
+side-effects redan körts. Den verifierar helper-signaturen, `s0=1`, enable-
+globalen `0x80227c80=1`, limit-operanden och sparad returadress `0x80046048`.
+Endast jämförelseoperanden `v1` sätts till `limit + 1`; gästen kör själv sin
+jämförelse, branch, delay-slot-store, cleanup och return.
+
+A/B från samma rena f520-snapshot gav följande:
+
+```text
+fix=0  f521 pc=0x80045838, helpern ~4652 varv, pool-count 38
+fix=1  f521 pc=0x80045354/0x800cc650, pool-count 40
+```
+
+Den accelererade linjen når `Loading Game.` vid f525 och fortsätter att mata
+Voodoo. Vid f540 är räknarna `fifoWords=190209`, `packets=8983`,
+`texWrites=113453`, `swaps=14` och `type5=2461`. Poolens kumulativa count har
+stigit till 294, men free-head `0x8021ddd8` är fortsatt giltig och descriptors
+återanvänds; detta är därför inte ännu evidens för den gamla passport-deadlocken.
+Displayen är fortfarande svart (`frameHash=0xf29eb67c`) och inga type-3/draw-
+paket har nåtts.
+
+Vegas SIO-reset har samtidigt synkats med hårdvarureferensen: CS2 reset-control
+bit 0 driver nu både IOASIC-reset och DCS reset line. Det är korrekt Midway-
+Vegas-koppling, men det var inte orsaken till count-loopen; hjälparens write på
+CS5 är system-LED.
+
+Probeverktyget skrev tidigare en begärd final snapshot två gånger. Den tidiga
+duplicerade skrivningen är borttagen, så en körning producerar nu exakt en
+`finalSnapshotSaved`. Den nya continuation-filen är:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-audio-init-f540-200k.warm
+```
+
+Reload f540 -> f541 är verifierad: CPU:n fortsätter till `0x800de5dc` och de
+sparade Voodoo-räknarna är exakt bevarade (`swaps=14`, `texWrites=113453`).
+
+Nästa mätbara gräns är första type-3/draw-paketet eller annan icke-svart
+displayövergång. Fortsätt samtidigt följa pool-count/free-list och verkliga
+IDE-interrupt så att nästa static/game-resursfel kan skiljas från normal
+resursallokering; lägg inte in en ny syntetisk completion utan en observerad
+guest-blockering.
