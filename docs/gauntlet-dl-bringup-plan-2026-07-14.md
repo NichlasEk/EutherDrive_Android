@@ -3863,3 +3863,13 @@ displayövergång. Fortsätt samtidigt följa pool-count/free-list och verkliga
 IDE-interrupt så att nästa static/game-resursfel kan skiljas från normal
 resursallokering; lägg inte in en ny syntetisk completion utan en observerad
 guest-blockering.
+
+Fortsatt körning till f560 visade först en mycket het traversering i
+`0x800ef8e8..0x800ef900`: gästen hashar ett 24-bitars asset-ID och följer en
+`node->next`-kedja. Noderna runt `0x802b8990` är konsistenta, framåtlänkade
+assetposter och f560 -> f561 lämnar loopen normalt; hot-count sjunker från cirka
+179k till 4,3k och PC fortsätter till `0x8011f3fc`. Detta ska alltså inte
+behandlas som en cyklisk listkorruption. Voodoo-räknarna är däremot oförändrade
+genom f561, så nästa probe ska följa asset-initens caller/state efter lookupen.
+En ny diagnostisk continuation finns i
+`/tmp/eutherdrive-gauntlet-probe/gauntdl-loading-game-f560-200k.warm`.
