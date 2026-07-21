@@ -3658,3 +3658,44 @@ interrupt-context som kan köra `0x800de06c -> 0x800ccbb0` och återuppta en
 blockerad scheduler-callback över flera frame-budgetar. Den får inte återställa
 CPU-kontекст efter timeout medan RAM-sideffekter behålls, och den får inte
 direktanropa `0x800f7000` eller `0x800f10e0`.
+
+### 2026-07-21: en riktig VBlank-utlöst guest-IRQ når timerkön
+
+Det nya default-off-experimentet
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_IRQ=1` injicerar watchdog-
+bit 5 som en vanlig Nile-IRQ i stället för att anropa guestfunktioner direkt.
+Gästen går genom den normala exceptionvektorn, kvitterar biten med INTCLR,
+kör `0x800de06c -> 0x800ccbb0` och återvänder med `eret`. Emulatorn håller
+bara den vanliga timer-3-källan spärrad medan den injicerade IRQ:n är aktiv;
+efter `eret` återgår den till runtime-bridgens befintliga suppression. Ingen
+CPU-, FPU- eller CP0-kontext återställs av hosten.
+
+Från den rena f200-staten, med den obligatoriska baseline-preseten och
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_HIGH_TIMER_FASTPATH=0`, gav en enda frame:
+
+```text
+PC före/efter IRQ   0x800c86b8 -> 0x800c8714
+Status efter eret   0x34007f01
+Cause efter eret    0x00000000
+timer deadline      0x00071903 -> 0x0016cc29
+timer-ready root    0x80262ad0 -> 0x8021f3f8
+frameHash           0xf29eb67c
+```
+
+Det viktiga resultatet är att guestkoden själv flyttar filesystem-noden till
+timer-ready-listan och återvänder till den avbrutna `WaitForQIO`-loopen. Med
+baseline-preseten aktiv finns ingen interruptstorm, och samma test över tio
+frames slutar fortsatt i normal runtimekod med IE satt. Testkommandon som bara
+laddar warm-staten men utelämnar `EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1` är
+ogiltiga: runtime-flaggorna ingår inte i snapshoten och då är interrupt-
+bridgens suppression avstängd.
+
+Nästa led är nu avgränsat till timer-ready-dispatchen. `0x800de30c` har exakt
+en direkt JAL-anropare vid `0x800dea2c`; den ska normalt dränera
+`0x80262ad0`, anropa `0x800f7060` och därefter publicera scheduler-jobbet.
+Den nuvarande watchdog-IRQ:n når ännu inte anroparen, så QIO-headen
+`0x8021e97c -> 0x8021e8d8` ligger kvar. Ett A/B-försök med GPT bit 6 är
+negativt och återtaget: gästen har den källan uroutad i Nile control, så den
+ger ingen CPU-pin. Nästa steg är att hitta den riktiga guestvägen till
+`0x800dea2c`; varken bit-6-routing, direkt dispatch eller software-IRQ ska
+syntetiseras.

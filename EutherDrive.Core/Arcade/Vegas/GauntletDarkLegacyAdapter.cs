@@ -331,10 +331,15 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
 internal sealed class GauntletDarkLegacyMachine
 {
     private int _runtimeTimerTickAccumulator;
+    private int _vblankGuestTimerInterruptCountdown;
     private readonly bool _splitVblankCpu = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_SPLIT_VBLANK_CPU");
     private readonly bool _enableVblankTickBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_TICK_BRIDGE");
     private readonly bool _enableContextPreservingVblankTimerDispatch =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_TICK"));
+    private readonly bool _enableVblankGuestTimerInterrupt =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_IRQ"));
+    private readonly int _vblankGuestTimerInterruptInterval =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_IRQ_INTERVAL", 1);
     private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
     private readonly int _vblankCpuSteps = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_VBLANK_CPU_STEPS", 2048);
 
@@ -383,6 +388,13 @@ internal sealed class GauntletDarkLegacyMachine
         Sio.PulseVblank(state: true);
         if (_enableVblankTickBridge)
             MemoryMap.RecordRuntimeVblankTick();
+        if (_enableVblankGuestTimerInterrupt && _vblankGuestTimerInterruptCountdown <= 0)
+        {
+            MemoryMap.RequestRuntimeTimerInterrupt();
+            _vblankGuestTimerInterruptCountdown = _vblankGuestTimerInterruptInterval;
+        }
+        if (_enableVblankGuestTimerInterrupt)
+            _vblankGuestTimerInterruptCountdown--;
         if (_enableContextPreservingVblankTimerDispatch)
         {
             _runtimeTimerTickAccumulator += 1000;
@@ -2271,6 +2283,8 @@ internal sealed class MipsR5000Core
         TraceTextureUploadSourceLimitTable(pc, op, "post");
         TraceTextureUploadCallerTransition(pc, op, textureUploadCallerBefore);
         AdvanceCp0Count(_cp0CountStep);
+        if (op == 0x42000018U) // eret
+            _memory.CompleteRuntimeTimerInterrupt();
         _instructionCounter++;
         TraceSuspiciousS8Transition(pc, op, s8BeforeExecute);
         TraceSuspiciousS8DeadState(pc, "post");
@@ -27697,6 +27711,8 @@ internal sealed class VegasMemoryMap
     private bool _fpgaConfigSeenLow;
     private bool _fpgaConfigStatusHigh;
     private bool _fpgaConfigDone;
+    private bool _runtimeTimerInterruptPending;
+    private bool _runtimeTimerInterruptActive;
     private int _traceIoasicCount;
     private int _traceIoasicInputCount;
     private int _traceIoasicPicCount;
@@ -28373,6 +28389,8 @@ internal sealed class VegasMemoryMap
         _fpgaConfigDone = false;
         _nileIrqState = 0;
         _nileIrqPins = 0;
+        _runtimeTimerInterruptPending = false;
+        _runtimeTimerInterruptActive = false;
         _idePci.Reset();
         _voodooPci.Reset();
         UpdateIoasicIrq();
@@ -28401,6 +28419,7 @@ internal sealed class VegasMemoryMap
         uint status0 = ReadNileRegister32(NileInterruptStatus0Offset);
         uint status0High = ReadNileRegister32(NileInterruptStatus0Offset + 4);
         return $"nileState={_nileIrqState:x4} nilePins={_nileIrqPins:x2} " +
+            $"timerPulse={(_runtimeTimerInterruptPending ? 1 : 0)}/{(_runtimeTimerInterruptActive ? 1 : 0)} " +
             $"nileCtl={lowControl:x8}/{highControl:x8} nileStatus={status0:x8}/{status0High:x8} " +
             $"sio={(_sio?.InterruptLine == true ? 1 : 0)} ide={(_idePci.InterruptLine ? 1 : 0)}";
     }
@@ -28412,7 +28431,10 @@ internal sealed class VegasMemoryMap
             return false;
 
         ushort previousState = _nileIrqState;
-        _nileIrqState &= unchecked((ushort)~NileTimerInterruptMask);
+        ushort suppressMask = NileTimerInterruptMask;
+        if (_runtimeTimerInterruptPending)
+            suppressMask &= unchecked((ushort)~(1 << 5));
+        _nileIrqState &= unchecked((ushort)~suppressMask);
         UpdateNileInterrupts();
         if (_nileIrqPins == 0)
             return true;
@@ -28450,6 +28472,25 @@ internal sealed class VegasMemoryMap
     {
         _nileIrqState = 0;
         _nileIrqPins = 0;
+        _runtimeTimerInterruptPending = false;
+        _runtimeTimerInterruptActive = false;
+    }
+
+    public void RequestRuntimeTimerInterrupt()
+    {
+        if (_runtimeTimerInterruptActive)
+            return;
+
+        _runtimeTimerInterruptPending = true;
+        _runtimeTimerInterruptActive = true;
+        _nileIrqState |= 1 << 5;
+        UpdateNileInterrupts();
+    }
+
+    public void CompleteRuntimeTimerInterrupt()
+    {
+        if (!_runtimeTimerInterruptPending)
+            _runtimeTimerInterruptActive = false;
     }
 
     public void AdvanceNileClock(ulong ticks)
@@ -28477,7 +28518,7 @@ internal sealed class VegasMemoryMap
             {
                 if (timer == 2)
                     _nileIrqState |= 1 << 6;
-                else if (timer == 3)
+                else if (timer == 3 && !_runtimeTimerInterruptActive)
                     _nileIrqState |= 1 << 5;
             }
         }
@@ -28777,7 +28818,11 @@ internal sealed class VegasMemoryMap
 
         BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4), value);
         if (offset == NileInterruptClearOffset)
+        {
             _nileIrqState &= (ushort)~(value & ~0x0f00u);
+            if ((value & (1 << 5)) != 0)
+                _runtimeTimerInterruptPending = false;
+        }
         if (offset is >= NileInterruptControlOffset and < NileInterruptControlOffset + 8 ||
             offset == NileInterruptClearOffset)
             UpdateNileInterrupts();
@@ -29144,7 +29189,11 @@ internal sealed class VegasMemoryMap
 
         BinaryPrimitives.WriteUInt64LittleEndian(_nileRegisters.AsSpan((int)offset, 8), value);
         if (offset == NileInterruptClearOffset)
+        {
             _nileIrqState &= (ushort)~(value & ~0x0f00UL);
+            if ((value & (1UL << 5)) != 0)
+                _runtimeTimerInterruptPending = false;
+        }
         if (offset is >= NileInterruptControlOffset and < NileInterruptControlOffset + 8 ||
             offset == NileInterruptClearOffset)
             UpdateNileInterrupts();
