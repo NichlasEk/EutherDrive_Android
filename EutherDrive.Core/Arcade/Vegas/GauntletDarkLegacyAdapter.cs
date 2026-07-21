@@ -27713,6 +27713,8 @@ internal sealed class VegasMemoryMap
     private bool _fpgaConfigDone;
     private bool _runtimeTimerInterruptPending;
     private bool _runtimeTimerInterruptActive;
+    private readonly bool _suppressRuntimeNileWatchdog =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE"));
     private int _traceIoasicCount;
     private int _traceIoasicInputCount;
     private int _traceIoasicPicCount;
@@ -28430,18 +28432,15 @@ internal sealed class VegasMemoryMap
         if (_nileIrqPins == 0 || (_nileIrqState & NileTimerInterruptMask) == 0)
             return false;
 
-        ushort previousState = _nileIrqState;
         ushort suppressMask = NileTimerInterruptMask;
         if (_runtimeTimerInterruptPending)
             suppressMask &= unchecked((ushort)~(1 << 5));
+        if (suppressMask == 0)
+            return false;
+
         _nileIrqState &= unchecked((ushort)~suppressMask);
         UpdateNileInterrupts();
-        if (_nileIrqPins == 0)
-            return true;
-
-        _nileIrqState = previousState;
-        UpdateNileInterrupts();
-        return false;
+        return _nileIrqPins == 0;
     }
 
     public bool SuppressOnlyNilePciCInterrupt()
@@ -28518,7 +28517,7 @@ internal sealed class VegasMemoryMap
             {
                 if (timer == 2)
                     _nileIrqState |= 1 << 6;
-                else if (timer == 3 && !_runtimeTimerInterruptActive)
+                else if (timer == 3 && !_runtimeTimerInterruptActive && !_suppressRuntimeNileWatchdog)
                     _nileIrqState |= 1 << 5;
             }
         }

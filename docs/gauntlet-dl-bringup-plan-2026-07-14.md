@@ -3699,3 +3699,67 @@ negativt och återtaget: gästen har den källan uroutad i Nile control, så den
 ger ingen CPU-pin. Nästa steg är att hitta den riktiga guestvägen till
 `0x800dea2c`; varken bit-6-routing, direkt dispatch eller software-IRQ ska
 syntetiseras.
+
+### 2026-07-21: guest-IRQ:n kör hela filesystem- och worker-kedjan
+
+Den tidigare slutsatsen att watchdog-IRQ:n inte nådde `0x800dea2c` berodde på
+att den första korta tracen slutade innan den indirekta exception-callbacken
+var färdig. Från den rena länkade f112-staten går bit 5 genom den riktiga
+exceptionvektorn till `0x800dec10`, med returadress `0x800114ec`. Den fortsätter
+genom `0x800de82c`, dränerar timer-ready-listan och anropar därefter
+filesystem-servicen från schedulerreturen `0x800de480`:
+
+```text
+#13388996 pc=0xffffffff800f7060
+a0=0xffffffff8021e8a8
+ra=0xffffffff800de480
+Status=0x34007f01 Cause=0
+```
+
+Samma obrutna guestflöde når sedan den tidigare blockerade workern utan
+direktanrop eller syntetisk software-IRQ:
+
+```text
+#13392060 pc=0xffffffff800f10e0
+a0=0xffffffff8021e8a8
+a1=0xffffffff8021e8d8
+a3=0xffffffff800efb7c
+ra=0xffffffff800de480
+```
+
+Den kvarvarande interruptstormen hade en separat orsak. Efter att gästen
+kvitterat den uttryckligt injicerade bit-5-pulsen satte Nile-modellens vanliga
+periodiska timer 3 omedelbart watchdogbiten igen. Om SIO samtidigt var aktiv
+återställde dessutom `SuppressOnlyNileTimerInterrupts` den borttagna
+timerbiten för att bevara det andra avbrottet. Resultatet blev blandade
+`Cause=0x2800`-entries och nya bit-5-assertions inne i handlern.
+
+Runtime-interrupt-bridgen spärrar nu den vanliga timer-3-källan vid själva
+producenten. `RequestRuntimeTimerInterrupt` kan fortfarande uttryckligen sätta
+bit 5, och bridgefiltreringen tar nu bort timerbitar även när en riktig
+device-IRQ återstår. Device-IRQ:n bevaras och går vidare till gästen.
+
+Med en enda injicerad puls (`IRQ_INTERVAL=100`) går f112 -> f120 nu rent ut ur
+exceptionkoden:
+
+```text
+PC                 0xffffffff800ebaf8
+Status/Cause       0x34007f01 / 0
+Nile state/pins    0x0100 / 0
+timer pulse        0 / 0
+timer-ready        empty
+scheduler-ready    empty
+frameHash          0xf29eb67c
+```
+
+Utan den injicerade pulsen är f112 -> f114-oraklet oförändrat: CPU:n ligger
+kvar i `0x800c86f0`, service-state är 12, båda ready-listorna är tomma och
+frameHash är `0xf29eb67c`. En reload-verifierad ren continuation finns i
+`/tmp/eutherdrive-gauntlet-probe/gauntdl-guest-irq-worker-clean-f120-200k.warm`.
+Den tidigare f114-filen som sparades mitt i handlern har tagits bort.
+
+Nästa gräns är nu guestens QIO-state efter workern, inte dispatchen. Från den
+rena f120-staten ska nästa replay följa `0x800efb7c` och owner/QIO-statusen från
+det observerade `0x3500`-läget tills den länkade noden antingen slutförs och
+återgår till free-listan eller producerar ett verkligt IDE-fel. Den fysiska
+watchdogen ska inte återaktiveras som ersättning för den explicita pulsen.
