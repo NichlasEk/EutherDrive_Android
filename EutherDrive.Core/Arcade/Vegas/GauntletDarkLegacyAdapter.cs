@@ -37,6 +37,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS", "0x510"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_ALPHA8_MASK", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
@@ -34185,6 +34186,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BILINEAR_FILTER"));
     private readonly bool _experimentFbzColorPathRgbCombine =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FBZ_COLORPATH_RGB_COMBINE"));
+    private readonly bool _experimentTextureAlpha8Mask =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_ALPHA8_MASK"));
     private readonly bool _fixTextureBaseAddressShift =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT") ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_BASE_SHIFT"));
@@ -42904,6 +42907,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool mameAuxMask = useMameAuxDepth && (fbzMode & 0x400u) != 0;
         bool mameDepthTest = useMameAuxDepth && (fbzMode & 0x10u) != 0;
         bool mameAlphaPlanes = useMameAuxDepth && (fbzMode & 0x40000u) != 0;
+        bool alpha8Mask = _experimentTextureAlpha8Mask &&
+            ((ReadTextureSampleRegister(RegTextureMode) >> 8) & 0x0fu) == 2u;
         ushort zaColor = (ushort)_registers[RegZaColor];
         int setupStartZ = unchecked((int)_registers[RegFstartZ]);
         int setupDzDx = unchecked((int)_registers[RegFdZdX]);
@@ -43065,6 +43070,17 @@ sampledTexel:
 
                 if (_experimentFbzColorPathRgbCombine)
                     texel = ApplyFbzColorPathRgb(texel, fallbackColor);
+
+                if (alpha8Mask)
+                {
+                    int alpha = Rgb565ToGrayscale8(texel);
+                    if (alpha == 0)
+                    {
+                        coveredAny = true;
+                        continue;
+                    }
+                    texel = BlendRgb565(buffer[pixel], fallbackColor, alpha);
+                }
 
                 if (mameRgbMask)
                 {
@@ -43497,6 +43513,8 @@ sampledTexel:
         InvalidateFastFillCache(bufferIndex);
         ushort[] buffer = _colorBuffers[bufferIndex];
         int writerId = GetPixelLastWriterId("tex", "direct", fallbackColor);
+        bool alpha8Mask = _experimentTextureAlpha8Mask &&
+            ((ReadTextureSampleRegister(RegTextureMode) >> 8) & 0x0fu) == 2u;
         bool coveredAny = false;
         int coveredPixels = 0;
         int zeroPixels = 0;
@@ -43537,7 +43555,19 @@ sampledTexel:
                 if (_experimentFbzColorPathRgbCombine)
                     texel = ApplyFbzColorPathRgb(texel, fallbackColor);
 
-                buffer[(row + x) & (LfbPixels - 1)] = texel;
+                int pixel = (row + x) & (LfbPixels - 1);
+                if (alpha8Mask)
+                {
+                    int alpha = Rgb565ToGrayscale8(texel);
+                    if (alpha == 0)
+                    {
+                        coveredAny = true;
+                        continue;
+                    }
+                    texel = BlendRgb565(buffer[pixel], fallbackColor, alpha);
+                }
+
+                buffer[pixel] = texel;
                 TrackPixelLastWriter(bufferIndex, x, y, writerId);
                 coveredAny = true;
                 _texturedRasterPixelCount++;
@@ -47478,6 +47508,24 @@ sampledTexel:
         }
 
         return BytesToRgb565(r, g, b);
+    }
+
+    private static int Rgb565ToGrayscale8(ushort color)
+    {
+        Rgb565ToBytes(color, out int r, out int g, out int b);
+        return (r + g + b) / 3;
+    }
+
+    private static ushort BlendRgb565(ushort destination, ushort source, int alpha)
+    {
+        int clampedAlpha = Math.Clamp(alpha, 0, 255);
+        Rgb565ToBytes(destination, out int dr, out int dg, out int db);
+        Rgb565ToBytes(source, out int sr, out int sg, out int sb);
+        int inverseAlpha = 255 - clampedAlpha;
+        return BytesToRgb565(
+            (sr * clampedAlpha + dr * inverseAlpha + 127) / 255,
+            (sg * clampedAlpha + dg * inverseAlpha + 127) / 255,
+            (sb * clampedAlpha + db * inverseAlpha + 127) / 255);
     }
 
     private ushort GetIntegerDrawColor()

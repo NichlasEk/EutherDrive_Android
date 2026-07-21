@@ -3914,3 +3914,29 @@ Nästa gräns är texture ownership/sampling för de riktiga `0x0180a8cb`-
 trianglarna: cirka 94 procent av deras prover blir noll. Ändra inte vertex-
 decode eller clip för detta; koordinater, packet words och coverage är nu
 verifierade.
+
+### 2026-07-21: A8-texturer behandlas som alfamask
+
+Ett fokuserat TMU-registerspår från f600 visar att `textureMode=0x8c2412cf`,
+`tLOD=0x00302104` och `texBaseAddr=0xfffff800` kommer från ett komplett
+gästpacket skrivet av `0x800bd18c..0x800bd19c`. Basvärdet är alltså inte en
+läckt payload. Samma frame växlar avsiktligt mellan bas `0` och `0xfffff800`.
+En A/B med rå, oskiftad bas gav fler nollprover (`66004` mot `63932`) och
+förkastades; 4 MiB-bankwrap var neutral.
+
+De riktiga trianglarna använder texture format 2, Voodoo A8. Bringup-renderaren
+tolkade tidigare alfabyten som grå RGB och skrev därför svarta/grå block runt
+glypherna. `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_ALPHA8_MASK=1`
+använder i stället den filtrerade A8-intensiteten som täckning för triangelns
+itererade färg och lämnar destinationen orörd vid alfa noll. Från exakt samma
+f600-state, med oförändrade 278 trianglar och 75180 textureprover:
+
+```text
+grå RGB       frameHash=0x80fc291a colored=3558 white=303436
+A8-mask       frameHash=0x5a9d0a4b colored=2728 white=304472
+```
+
+A8-vägen tar bort de stora svarta alfaytorna och är promoterad till baseline.
+Kvarvarande bild är fortfarande fragmenterad: nästa mätbara blockerare är
+texture-layout/adresscoverage för glyph-atlasen, inte FIFO packet ownership,
+vertexdecode, clip eller format-2-färgsemantik.
