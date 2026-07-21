@@ -3763,3 +3763,48 @@ rena f120-staten ska nästa replay följa `0x800efb7c` och owner/QIO-statusen fr
 det observerade `0x3500`-läget tills den länkade noden antingen slutförs och
 återgår till free-listan eller producerar ett verkligt IDE-fel. Den fysiska
 watchdogen ska inte återaktiveras som ersättning för den explicita pulsen.
+
+### 2026-07-21: native mount-QIO konsumeras efter en enda guest-IRQ
+
+Den rena f120-fortsättningen behöver inga fler injicerade avbrott. Workern
+`0x800f10e0` driver först filesystem-servicens state 10/2-cykel och de riktiga
+IDE-completionerna går genom exceptionvektorn och `eret`. Den länkade
+mount-QIO:n ligger kvar medan detta arbete pågår, men descriptorpoolen är
+oförändrad med free-head `0x8021dd78` och count 6 genom f170.
+
+Vid progress f200 når samma obrutna guestflöde slutligen den riktiga callbacken:
+
+```text
+#35992850 pc=0xffffffff800f087c
+a0=0xffffffff80295670
+a1=0xffffffff802954e0
+ra=0xffffffff800de480
+Status=0x34007f01
+```
+
+Callbacken körs därefter igen för verkliga `/d0/.../index%c.rom`-jobb. Ingen
+direktdispatch, software-IRQ, syntetisk QIO-status eller descriptor-recycling
+används. Vid f300 är filesystem-köhuvudet `0x8021e97c` noll, target-QIO:n är
+avlänkad, dess handle är `-1` och status har lämnat `0x0800` för `0x0500`.
+Runtime har samtidigt nått texten `Initializing Audio...`.
+
+Poolens allocationsräknare är 38 och free-head fortsatt giltig vid både f300
+och reload-verifierade f301. En separat f300 -> f310-kontroll lämnar count
+exakt 38, så den gamla passport-retryns rusning till 64 är borta efter att
+target-jobbet konsumerats. CPU:n slutar i normal runtimekod med IE satt,
+IDE/Nile kvitterade och båda ready-listorna tomma. CP0 Compare-latchen ligger
+kvar som maskerad IP7 (`Cause=0x8000`); den är inte en aktiv CPU-IRQ eftersom
+Status maskerar IP7 och ska inte blandas ihop med den tidigare Nile-watchdog-
+stormen.
+
+Ny reload-verifierad continuation:
+
+```text
+/tmp/eutherdrive-gauntlet-probe/gauntdl-native-guest-irq-f300-200k.warm
+```
+
+Nästa gräns är inte längre QIO/scheduler. Fortsätt från den rena f300-staten
+tills audio-/gameinit lämnar den tidiga svarta `frameHash=0xf29eb67c`, och
+kontrollera att pool-count förblir under 64 när de senare static/movie-
+resurserna öppnas. Först därefter ska den engångspuls som byggde f120-linjen
+promoveras från experiment till normal bringup-semantik.
