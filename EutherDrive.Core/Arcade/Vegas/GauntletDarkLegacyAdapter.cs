@@ -27614,12 +27614,10 @@ internal sealed class VegasMemoryMap
     private const uint NileTimerStride = 0x10;
     private const uint NileTimerControlBitsOffset = 0x04;
     private const uint NileTimerCounterOffset = 0x08;
-    private const int NileTimerInterruptBase = 5;
-    private const ushort NileTimerInterruptMask =
-        (ushort)((1 << NileTimerInterruptBase) |
-                 (1 << (NileTimerInterruptBase + 1)) |
-                 (1 << (NileTimerInterruptBase + 2)) |
-                 (1 << (NileTimerInterruptBase + 3)));
+    // VRC5074 timer 2 is the GPT interrupt (bit 6) and timer 3 is the
+    // watchdog interrupt (bit 5). Timers 0 and 1 are SDRAM/bus timers and do
+    // not drive interrupt inputs.
+    private const ushort NileTimerInterruptMask = (1 << 5) | (1 << 6);
     private const ushort NilePciInterruptC = 1 << 10;
     private const ushort NilePciInterruptD = 1 << 11;
     private const ulong FpgaConfigBase = 0x00000000a1600000UL;
@@ -28476,7 +28474,12 @@ internal sealed class VegasMemoryMap
                 next = 0;
             WriteNileRegister32(baseOffset + NileTimerCounterOffset, (uint)next);
             if (expired)
-                _nileIrqState |= (ushort)(1 << (NileTimerInterruptBase + timer));
+            {
+                if (timer == 2)
+                    _nileIrqState |= 1 << 6;
+                else if (timer == 3)
+                    _nileIrqState |= 1 << 5;
+            }
         }
     }
 

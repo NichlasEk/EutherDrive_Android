@@ -3622,3 +3622,39 @@ Verifieringsartefakter:
 - `/tmp/gaunt-worker-timer-links-f700-20260720.log`
 - `/tmp/eutherdrive-gauntlet-probe/gauntdl-linked-timer-f800.warm` (endast
   negativt experiment; använd inte som continuation-checkpoint)
+
+### 2026-07-21: scheduler-producenten och Nile-timerkällorna är separerade
+
+En write-watch från den friska f138-staten visar nu scheduleroperationen
+instruktion för instruktion. Noden `0x8021f3e8` har redan callback
+`0x800f7060` och context `0x8021e8a8` innan den publiceras. List-hjälparen
+skriver rotpekaren med `pc=0x800de234` och nästa länk med
+`pc=0x800de238`. Dispatchern nollställer därefter bara länkarna vid
+`0x800de458` och `0x800de460`; den skriver inte callback/context. Returen
+`0x800de480` är alltså fortsatt konsumentretur, inte producent.
+
+Detta avslöjade också ett provenancefel i de äldre sena snapshotarna. Den
+reparerade f200-snapshoten har frisk QIO-pool (`free=0x8021dda8`, count 7)
+och callbackordet `0x800f7060` kvar. Den sparade f300-snapshoten har däremot
+callbackordet noll. En ny f200 -> f300-replay utan den osäkra context-timer-
+proben behåller callbackordet, och en write-watch över ordet ser ingen guest-
+store som nollställer det. Nollan i den äldre f300/f700-kedjan får därför inte
+längre tolkas som en normal guest-avregistrering; den kedjan bär state från den
+tidigare contextbevarande direktpumpen och duger endast som negativ oracle.
+
+Nile-modellen hade samtidigt en konkret avvikelse från MAME:s VRC5074. Endast
+timer 2 och 3 genererar interrupts: timer 2 mappar till GPT bit 6 och timer 3
+till watchdog bit 5. Timer 0/1 är SDRAM-/busstimers och ska inte sätta IRQ.
+Modellen använder nu samma mapping. Runtime-bridgens befintliga suppression
+av den kortperiodiska Nile-watchdogen är tills vidare kvar; att släppa igenom
+den ger fortfarande den kända, korrekt kvitterade men omedelbart återassertade
+`cause=0x0800`-stormen. CP0 Compare-spåret är också fortsatt negativt och ska
+inte användas som ersättning för tickkällan.
+
+Ändringen bygger rent och f700 -> f701-oraklet är oförändrat:
+`frameHash=0xf29eb67c`, pool-count 48 och free-head `0x8021e558`. Nästa
+korrekta implementation ska därför ge VBlank/SIO-vägen en resumable guest-
+interrupt-context som kan köra `0x800de06c -> 0x800ccbb0` och återuppta en
+blockerad scheduler-callback över flera frame-budgetar. Den får inte återställa
+CPU-kontекст efter timeout medan RAM-sideffekter behålls, och den får inte
+direktanropa `0x800f7000` eller `0x800f10e0`.
