@@ -3940,3 +3940,38 @@ A8-vägen tar bort de stora svarta alfaytorna och är promoterad till baseline.
 Kvarvarande bild är fortfarande fragmenterad: nästa mätbara blockerare är
 texture-layout/adresscoverage för glyph-atlasen, inte FIFO packet ownership,
 vertexdecode, clip eller format-2-färgsemantik.
+
+### 2026-07-21: gäststyrd triangel-LOD träffar uppladdad atlasdata
+
+Efter att `/tmp` rensades regenererades en ny kall f600-state med Release-
+proben och exakt 200000 CPU-steg/frame. Den ligger repo-lokalt i den redan
+Git-ignorerade artifact-katalogen:
+
+```text
+artifacts/gauntlet-probe/gauntdl-alpha8-global-f600-200k.warm
+sha256 c6b9820c966c44d5389d462cfda29dfde216f71284048e85520815e39c1e9a0e
+frameHash 0x8e00966c
+```
+
+Snapshoten reload-verifieras till samma frame/hash. Dess texture-set-tabell
+visar också riktig data vid de levande slotarnas fysiska baser, bland annat
+`0x02f620`, `0x057488`, `0x07f4e8` och `0x0a7350`; det är alltså inte en tom
+texture-RAM.
+
+Det fokuserade LOD-spåret för de första riktiga f600 -> f601-trianglarna visar
+att `tLOD=0x00302104` har både min och max `8.8 LOD = 256`, derivatan ger
+`base8p8=256`, och MAME-beräkningen väljer exakt `targetLod=1`. Den gamla
+baseline-vägen ignorerade allt detta och samplade alltid LOD 0. Samma snapshot
+ger följande rena A/B:
+
+```text
+forcerad LOD 0   frameHash=0x3f068f9b zero=4813/11304 colored=8479
+triangel-LOD 1   frameHash=0xd7808d00 zero=2083/11304 colored=10967
+```
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_TRIANGLE_LOD=1` är därför
+promoterad till baseline. Den gör att mip-offseten wrappar den höga signerade
+basen in i faktiskt uppladdad atlasdata och mer än halverar nollproverna utan
+att ändra packet-, vertex- eller coverage-räknarna. Bilden har tydligt mer
+glyphinnehåll men är ännu inte korrekt; nästa gräns är återstående atlaslayout
+och färg/alpha-kombination för LOD 1.
