@@ -445,3 +445,17 @@ Nästa smala steg är att korrelera de upprepade Type3-rektanglarna med den
 aktiva renderposten och dess textureMode/base/ST-källa. Använd kandidaten som
 visuellt orakel och jämför särskilt varför flera poster återanvänder samma
 atlasområde trots clampade TMU-lägen.
+
+Den korrelationen visar att rektanglarna är riktiga Type3-par från
+`0x800c4e5c`, inte fel hopsatta framebuffer-tiles. Paketen har ST0 och Wb;
+MAME kopierar uttryckligen båda till TMU0 och TMU1, vilket vår setupväg redan
+gör. Deras skärmkoordinater flyttar rektanglarna avsiktligt medan S/T täcker
+hela den valda texturen. TMU0/TMU1-LOD beräknas nu också separat i experimentet.
+Det är hårdvarukorrekt men hashneutralt i f901-kandidaten (`0xeea919dd`).
+
+Den kvarvarande upprepningen är därför inte en T-flip, lane-ordning, gemensam
+LOD eller sammanfogning av framebuffer-delar. De synliga quads som återstår är
+loading/Hall-of-Legends-arbete från den redan kända renderproducenten. Nästa
+kausala gräns går tillbaka till renderposterna med null body och
+`No Nodes have this object`: få modellen att materialisera riktig body/node-data
+innan ytterligare rasterorientering ändras.

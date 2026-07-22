@@ -43075,7 +43075,13 @@ internal class VoodooBringupBackend : IVoodooBackend
                         long iterW = unchecked(textureStartW + dy * textureDwDy + dx * textureDwDx);
                         if (_experimentMameTwoTmuCombine)
                         {
-                            TextureRgba combined = SampleAndCombineTwoTmusMameFixed(iterS, iterT, iterW, targetLod);
+                            TextureRgba combined = SampleAndCombineTwoTmusMameFixed(
+                                iterS,
+                                iterT,
+                                iterW,
+                                triangleLodBase8p8,
+                                x,
+                                y);
                             texel = combined.Rgb565;
                             textureAlpha = combined.A;
                         }
@@ -44430,18 +44436,34 @@ sampledTexel:
         return (byte)value;
     }
 
-    private TextureRgba SampleAndCombineTwoTmusMameFixed(long iterS, long iterT, long iterW, int targetLod)
+    private TextureRgba SampleAndCombineTwoTmusMameFixed(
+        long iterS,
+        long iterT,
+        long iterW,
+        int lodBase8p8,
+        int x,
+        int y)
     {
         TextureRgba combined = default;
         if (_tmuRegisterValid[1][RegTextureMode] && _tmuRegisterValid[1][RegTextureLod])
         {
-            TextureRgba local1 = SampleTextureMameFixedForTmu(1, iterS, iterT, iterW, targetLod);
-            combined = CombineTextureMame(ReadTextureRegisterForTmu(1, RegTextureMode), local1, combined, targetLod << 8);
+            uint mode1 = ReadTextureRegisterForTmu(1, RegTextureMode);
+            uint lod1 = ReadTextureRegisterForTmu(1, RegTextureLod);
+            int targetLod1 = lodBase8p8 == int.MinValue
+                ? GetTextureTargetLod(lod1, ReadTextureRegisterForTmu(1, RegTextureBaseAddr))
+                : ComputeMameTexturePixelLod(lodBase8p8, iterW, x, y, mode1, lod1);
+            TextureRgba local1 = SampleTextureMameFixedForTmu(1, iterS, iterT, iterW, targetLod1);
+            combined = CombineTextureMame(mode1, local1, combined, targetLod1 << 8);
         }
         if (_tmuRegisterValid[0][RegTextureMode] && _tmuRegisterValid[0][RegTextureLod])
         {
-            TextureRgba local0 = SampleTextureMameFixedForTmu(0, iterS, iterT, iterW, targetLod);
-            combined = CombineTextureMame(ReadTextureRegisterForTmu(0, RegTextureMode), local0, combined, targetLod << 8);
+            uint mode0 = ReadTextureRegisterForTmu(0, RegTextureMode);
+            uint lod0 = ReadTextureRegisterForTmu(0, RegTextureLod);
+            int targetLod0 = lodBase8p8 == int.MinValue
+                ? GetTextureTargetLod(lod0, ReadTextureRegisterForTmu(0, RegTextureBaseAddr))
+                : ComputeMameTexturePixelLod(lodBase8p8, iterW, x, y, mode0, lod0);
+            TextureRgba local0 = SampleTextureMameFixedForTmu(0, iterS, iterT, iterW, targetLod0);
+            combined = CombineTextureMame(mode0, local0, combined, targetLod0 << 8);
         }
         return combined;
     }
