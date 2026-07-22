@@ -609,3 +609,54 @@ f600--f700 gör inga ytterligare texture writes och behåller samma bankinnehål
 f700 ger `frameHash=0x31a748a7`. Bilden är fortfarande diagnostikmosaik, inte
 spelgrafik. Fortsätt diagnostic-exit/assetkedjan från den nya v9-f700-filen
 och kassera alla gamla f700--f906-filer som visuella bankorakel.
+
+### Ren f700--f906-kedja tar bort atlasmosaiken
+
+Den verifierade FIRE-3/Turbo-bryggan kördes från den genuint kalla f700-filen,
+med MAME:s två-TMU-combiner aktiv. f740 fångades mitt i den nya uploadvågen:
+texture writes ökade från 576763 till 1043343 och TMU1 fick eget
+`mode/lod/base=00000A00/00300800/00016416`. Vid f770 är de gamla stora
+upprepade färgbanden borta. Bilden är en ren vit diagnostikyta med textfragment
+och ett korrekt färgat WAR-porträtt, `frameHash=0x25e82a6d`.
+
+Diagnostik-enable-suppressionen fortsatte därefter samma v9-linje till f900.
+Den når QIO-index 10/`levelE1`, 846139 icke-noll texture-ord och fysisk sista
+adress `0x52aa9c` i TMU1. f900 ger `frameHash=0x50f31d75`. Den sena
+state-`0x8007`-pulsen ger vid f906:
+
+```text
+frameHash=0x03a897ce
+swaps=1552
+texWrites=1612470
+colored=1815
+tmu0=0C26100F/FF802000/00000000
+tmu1=0C26100F/FF802000/00000000
+```
+
+f906-bilden är nästan vit med ett enda korrekt färgat porträtt. Den gamla
+atlasmosaiken och dess upprepade feltexturer är borta. Detta är en kausal
+förbättring från korrekt kall bank-lineage plus två-TMU-sampling, men ännu inte
+riktig spelgrafik. Nästa blockerare är world-/panelgeometrins eller renderlistans
+produktion efter assettransitionen; bildvändning, framebuffer-sammansättning,
+MAME-write_ptr och TMU-bankval är nu avförda.
+
+MAME-combinern ingår därför nu tillsammans med de två bankreglerna i
+`run-gauntdl-baseline.sh`. Den påverkar endast probe-baseline och förblir
+default-off i adaptern utanför bringupverktyget.
+
+```text
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-exit-f770-v9-20260722.warm
+sha256=12ea0f3340a9434bb6066eb5027fefc093e16a5dbe5f7d8906b9f4e35ffeb433
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-exit-f770-v9-20260722.png
+sha256=c9156f7e549ae50039c161f1dd5c9ef9ce127e541f849386b02b240b152bcb91
+
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-f900-v9-20260722.warm
+sha256=dd8b74e56fcae03b84474d8ef348e4884839c63d201cb6eb0dc821048c2cb25a
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-f900-v9-20260722.png
+sha256=da5177784275c96032cf6fcb809be103c78576c2d61216bf9834a996d028531c
+
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-f906-v9-20260722.warm
+sha256=4455ebe7412b1dad115f32d578c7f70c739c606c0d42ad2db30bb07bdb5ba6b3
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-f906-v9-20260722.png
+sha256=66c8b51974ec27f4655bf09bedd59da9a876e2011046d6997bed6665f396599e
+```
