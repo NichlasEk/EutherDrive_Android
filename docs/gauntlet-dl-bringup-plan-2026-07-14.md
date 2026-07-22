@@ -4744,9 +4744,23 @@ avfördes också: den gjorde alla tolv spelarbits aktiva i vila.
 f810-dumpens renderlista har 61 poster, varav 38 har flagga `0x40`, 42 har
 noll-body och bara 19 har en icke-noll token. De konsumerade materialposterna
 är fortfarande endast set 0; alloc-tabellens `+0x4c` är den gemensamma
-dataadressen `0x804922b8`, inte en callback. Nästa gräns är därför fortfarande
-ägaren som ska skapa en riktig world/render-node efter state `0x8007`, inte
-fler sampler-, alpha-, display-buffer- eller inputpolaritetsjusteringar.
+dataadressen `0x804922b8`, inte en callback.
+
+Ett efterföljande write-owner-spår f770 -> f811 avför dessutom hela denna
+lista som world-kandidat. Gäst-PC `0x800b2018` nollställer count på
+`0x80213600`; `0x800b1c8c` och `0x800b1b10` bygger därefter om 53--69
+poster per pass. Bodypekare skrivs av `0x800b1c78`/`0x800b1afc` till den
+sammanhängande textbufferten `0x8020f268...`, samtidigt som wrappern vid
+`0x800c7aa0` emitterar `DIAGNOSTIC MENU`, `Exit menu (FIRE 3)` och
+inställningsrader. Det är alltså diagnostikmenyns textlista, inte en
+ofullständig 3D-scen.
+
+Ett separat skrivspår över `0x80227a00..0x80227cff` visar ingen skrivning till
+själva `0x80227ab0` mellan f770 och f811; värdet ligger kvar på `0x8007` medan
+närliggande räknare uppdateras. Nästa gräns är därför väljaren/callern som
+håller diagnostikrenderaren aktiv eller den upstream-ägare som ska ersätta
+den med en world-renderer, inte de 61 textposterna och inte fler sampler-,
+alpha-, display-buffer- eller inputpolaritetsjusteringar.
 
 Den kausala men negativa FIRE3-punkten är sparad repo-lokalt:
 

@@ -270,8 +270,18 @@ png sha256=68efa1981ef6f867261bcde4084e5eccc400c17a3a6fd325080e28d5f3304edd
 
 f810-renderlistan har 61 poster: 38 med flagga `0x40`, 42 med noll-body och
 19 med token. Endast material-set 0 konsumeras; alloc-tabellens `+0x4c` är
-delad data på `0x804922b8`, inte en callback. Nästa steg är därför att spåra
-ägaren som ska skapa första riktiga world/render-node efter `0x8007`. Ändra
+delad data på `0x804922b8`, inte en callback. Ett write-owner-spår f770 ->
+f811 visar nu att listan inte är en world-lista alls: `0x800b2018` nollställer
+count, `0x800b1c8c`/`0x800b1b10` bygger 53--69 poster, och
+`0x800b1c78`/`0x800b1afc` pekar deras bodies på textbufferten
+`0x8020f268...`. Samma pass emitterar `DIAGNOSTIC MENU` och
+`Exit menu (FIRE 3)` via callern `0x800c7aa0`.
+
+Stateblocket `0x80227a00..0x80227cff` uppdaterar flera närliggande räknare,
+men själva `0x80227ab0` skrivs inte mellan f770 och f811 och ligger kvar på
+`0x8007`. Nästa steg är därför väljaren/callern som håller
+diagnostikrenderaren aktiv eller upstream-ägaren som ska ersätta den med en
+world-renderer. Försök inte reparera de 61 textposterna till 3D-noder. Ändra
 inte WAR-upload/byteordning, sampler-LOD, A8-semantik, display-buffer-val eller
 inputpolaritet utan ny kausal evidens.
 
