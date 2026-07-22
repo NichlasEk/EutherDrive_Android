@@ -13,6 +13,31 @@ Kandidatändringen i
 runtime-verifierad genom f760, f762 och f770. Den stora atlasmattan försvinner,
 FIFO:n fortsätter och både record-0- och glyphbaserna når TMU0.
 
+## Senaste fortsättningspunkt: riktig WAR-upload och hårdvarubyteordning
+
+Den riktiga `WAR_FACE_HS`-payloaden är nu fångad i en obruten
+f740 -> f751-körning med 200000 CPU-steg/frame. Placeholdern finns kvar vid
+f750; under nästa frame fyller 32 Type-5-paket exakt fysisk wordrange
+`0x3e9be..0x3ebbd` med 176 unika payloadbyte. Upload-state är
+`00000900/0000080c/0001a0df` och producent-PC är `0x800fe7cc`.
+
+Det avför den tidigare slutsatsen att payloaden aldrig når Type 5. Den gamla
+generella Type-5-förswappen är nu explicit compatibility-only och av som
+standard. Den registerfiltrerade sampler-byte-swappen är samtidigt borttagen
+från probe-baseline. Den nya f770-referensen visar ett tydligt, mindre hackigt
+porträtt och reloadar byte-identiskt:
+
+```text
+frameHash=0x80f5fb64
+PPM sha256=734de15e30aaaf957130addccb4c4cc97b149fb78b689d63f720435e996c9e93
+snapshot sha256=ee11fa70b4bf1869de38bb05799de7c61c087ac147b00099fa94ef65b411ebc7
+artifacts/gauntlet-probe/gauntdl-war-face-type5-hardware-f770-200k-20260722.warm
+artifacts/gauntlet-probe/gauntdl-war-face-type5-hardware-f770-200k-20260722.png
+```
+
+Nästa grafikgräns är panel-/glyphblocken och den omgivande scenrenderingen;
+WAR-upload, LOD3-adressering och byteordning är nu verifierade.
+
 ## Nytt avgörande fynd
 
 Den stora felritade 128x128-spriten använder descriptor `0x802592b0`, vilken

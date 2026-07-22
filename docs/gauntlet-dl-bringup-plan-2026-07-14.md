@@ -4627,6 +4627,66 @@ därför tillbaka; den tidigare registerfiltrerade sampler-swappen förblir en
 visualiseringsbracket, inte en hårdvarufix. Nästa kausala gräns är varför kall
 asset-hydrering inte publicerar WAR-payloaden före f600.
 
+### Den riktiga WAR-uploaden sker f750 -> f751 vid 200k-cadence
+
+Den kalla placeholderkontrollen ovan använde fel tidslinje för den sena
+assetvågen. Från den friska f740-checkpointen måste fortsättningen köras med
+`EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000`. Med den cadencen är
+`0x0fa6f8..0x0faef8` fortfarande exakt `00/03`-placeholder vid f750 men har
+den fulla strukturerade WAR-payloaden redan vid f751:
+
+```text
+f750 sha256 7031da0f5860a0eeb9afb9264bcf6f8609607f1298bc6f4258d2626c646d79d8
+f751 sha256 35014820a9b0a6dd028e6f9c2e0e692437d56d3941f171422f2328b0c25f539b
+f751 unique bytes=176 nonzero bytes=1836
+```
+
+Ett f740 -> f751-spår filtrerat till WAR-intervallet fångar exakt 32 Type
+5-paket om 16 ord. De täcker fysisk wordrange `0x3e9be..0x3ebbd` utan hål:
+
+```text
+cmd=0xc0000085
+targets=0x018000..0x018f8f
+tmu=0
+mode/lod/base=00000900/0000080c/0001a0df
+producer pc=0x800fe7cc
+```
+
+Payloaden når alltså Voodoo korrekt; den saknas inte mellan BGLoadModel och
+Type 5. Den tidigare generella Type-5-förswappen var det återstående
+byteordningsfelet. En korrekt A/B från samma f740-state till f770 visar att
+förswapp avstängd och den lokala sampler-swappen avstängd påverkar endast
+WAR-rutan. Jämfört med den gamla visualiseringsbracketen ändras 621 pixlar i
+bbox `(128,280)-(155,306)`, medan resten av framebuffer-ytan är byte-identisk.
+Porträttet förblir tydligt och dess lokala RGB-variation sjunker från
+`177.52` till `154.50`, vilket tar bort det parvisa texelhacket.
+
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_TEXTURE_ENDIAN` är därför åter en
+explicit compatibility-flagga och är av som standard. Probe-baseline sätter
+inte längre sampler-byte-swappen för `0x1a0df`; LOD3-valet och
+koordinatskalningen ligger kvar. Referenskörningen gav:
+
+```text
+frameHash=0x80f5fb64
+PPM sha256=734de15e30aaaf957130addccb4c4cc97b149fb78b689d63f720435e996c9e93
+colored=68801
+```
+
+Den nya reloadbara referensen och PNG-bilderna finns repo-lokalt:
+
+```text
+artifacts/gauntlet-probe/gauntdl-war-face-type5-hardware-f770-200k-20260722.warm
+snapshot sha256=ee11fa70b4bf1869de38bb05799de7c61c087ac147b00099fa94ef65b411ebc7
+artifacts/gauntlet-probe/gauntdl-war-face-type5-hardware-f770-200k-20260722.png
+png sha256=1d753b4776000887c28f6dfa87f7cf8239d617f5410ee4c85a66349627e7c63c
+artifacts/gauntlet-probe/gauntdl-war-face-type5-hardware-f770-crop16x-20260722.png
+crop sha256=c8f19c1471b85882eba54bd30928dbed9d5e2bfac2acfe8d0e626712e42a9659
+```
+
+Spårloggen är `/tmp/gauntdl-direct200-f740-f751-war-upload.log`. Nästa
+grafikgräns är åter den omgivande panel-/glyph- och scenrenderingen, inte
+WAR-payloadens upload eller byteordning.
+
 ### f770-snapshot och synliga referensbilder
 
 Det promoterade probeskriptets f770-läge är sparat repo-lokalt under den

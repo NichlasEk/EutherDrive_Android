@@ -34221,7 +34221,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _experimentMameCommandFifoDecodePacketLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DECODE_PACKET_LIMIT"), 0);
     private readonly bool _fixType5TextureEndian =
-        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_TEXTURE_ENDIAN");
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_TEXTURE_ENDIAN"));
     private readonly bool _fixSequential8BitTextureDownload =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SEQ8_TEXTURE_DOWNLOAD");
     private readonly bool _fixSparse8BitTextureUpload =
