@@ -1093,6 +1093,9 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_DESCRIPTOR"));
     private readonly int _traceRuntimeWorldTextureDescriptorMinFrame =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_DESCRIPTOR_MIN_FRAME", 0);
+    private readonly ulong? _experimentRuntimeWarFaceTextureBase =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WAR_FACE_TEXTURE_BASE");
+    private bool _runtimeWarFaceTextureBaseExperimentLogged;
     private readonly bool _traceType5ProducerHeads =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TYPE5_PRODUCER_HEADS"));
     private readonly ulong? _traceType5ProducerHeadFifoMin =
@@ -1835,6 +1838,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelStaticObjectCompanionOwner(pc);
         ApplyKnownRuntimeBgLoadModelIndexedTextureQioStreamLimitRepair(pc);
         TraceKnownRuntimeBgLoadModelTextureChunkReturn(pc);
+        ApplyKnownRuntimeWarFaceTextureBaseExperiment(pc);
         TraceKnownRuntimeWorldTextureDescriptor(pc);
         TraceKnownRuntimeBgLoadModelLookupHelpers(pc);
         if (TryApplyKnownRuntimeBgLoadModelStaticObjectPathOwner(pc))
@@ -19390,6 +19394,33 @@ internal sealed class MipsR5000Core
             $"textureSetTable={FormatTraceWords(0xffffffff802545a0UL, 16)} ra={_gpr[31]:x16}");
     }
 
+    private void ApplyKnownRuntimeWarFaceTextureBaseExperiment(ulong pc)
+    {
+        const ulong textureBaseStorePc = 0xffffffff800bd19cUL;
+        const ulong warFaceDescriptor = 0xffffffff805b1be4UL;
+        const ulong expectedMode = 0xffffffff8c2419cfUL;
+        const ulong expectedLod = 0x0600260cUL;
+
+        if (!_experimentRuntimeWarFaceTextureBase.HasValue ||
+            pc != textureBaseStorePc ||
+            _gpr[18] != warFaceDescriptor ||
+            _gpr[16] != expectedMode ||
+            _gpr[21] != expectedLod)
+        {
+            return;
+        }
+
+        ulong oldBase = _gpr[2];
+        _gpr[2] = _experimentRuntimeWarFaceTextureBase.Value;
+        if (!_runtimeWarFaceTextureBaseExperimentLogged)
+        {
+            _runtimeWarFaceTextureBaseExperimentLogged = true;
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] war-face-texture-base frame={_memory.VoodooRenderFrameCount} " +
+                $"pc={pc:x16} descriptor={_gpr[18]:x16} base={oldBase:x8}->{_gpr[2]:x8}");
+        }
+    }
+
     private int HydrateKnownRuntimeBgLoadModelRemainingIndexedTextureSources(uint requestedBytes, ulong sourceStride = 0)
     {
         const ulong destinationBase = 0xffffffff802e1718UL;
@@ -34261,6 +34292,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH"));
     private readonly bool _experimentTextureUseLodMin =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_USE_LOD_MIN"));
+    private readonly bool _experimentTextureLodMinBaseLevel =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_BASE_LEVEL"));
     private readonly ulong? _experimentTextureSampleLodOrMask =
         ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_LOD_OR_MASK"));
     private readonly int _experimentTextureSampleFormatOverride =
@@ -44175,7 +44208,7 @@ sampledTexel:
     }
 
     private int GetTextureTargetLod(uint textureLod)
-        => _experimentTextureUseLodMin
+        => _experimentTextureUseLodMin || _experimentTextureLodMinBaseLevel
             ? Math.Clamp((int)(textureLod & 0x3fu) >> 2, 0, 8)
             : Math.Clamp(_experimentTextureForceLod, 0, 8);
 
@@ -46408,15 +46441,18 @@ sampledTexel:
     private uint GetTextureLodOffset(int targetLod, int bytesPerTexel, uint textureLod, uint textureBaseRegister)
         => GetTextureLodOffsetFromBase(targetLod, bytesPerTexel, textureLod, GetTextureBaseAddress(textureBaseRegister));
 
-    private static uint GetTextureLodOffsetFromBase(int targetLod, int bytesPerTexel, uint textureLod, uint baseAddress)
+    private uint GetTextureLodOffsetFromBase(int targetLod, int bytesPerTexel, uint textureLod, uint baseAddress)
     {
         uint width = GetTextureWidth(textureLod);
         uint height = GetTextureHeight(textureLod);
         uint lodMask = ((textureLod >> 19) & 1u) != 0
             ? (((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u)
             : 0x1ffu;
+        int firstStoredLod = _experimentTextureLodMinBaseLevel
+            ? Math.Clamp((int)(textureLod & 0x3fu) >> 2, 0, 8)
+            : 0;
 
-        for (int lod = 0; lod < targetLod; lod++)
+        for (int lod = firstStoredLod; lod < targetLod; lod++)
         {
             if (((lodMask >> lod) & 1u) == 0)
                 continue;

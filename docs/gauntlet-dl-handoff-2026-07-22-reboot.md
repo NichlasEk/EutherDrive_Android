@@ -211,15 +211,28 @@ Type5-sekvensdiagnostiken spårar nu alla texture-space-3-paket, inte bara
 avförd: den tillhör en tidig `hiscore/legends`-textur och landar korrekt vid
 TMU-byte `0x12a710`.
 
-WAR-postens kompletta RAM-block är `0x8061c5a8..+0x1550`. En rå f770-TMU-dump
-visar blocket byte-exakt och sammanhängande vid `0x4c25e0`. WAR-texturen är
-alltså redan hydrerad och uppladdad. Felet är att draw-descriptor
-`0x805b1be4` fortfarande publicerar `tBase=0x1a0df`, så LOD3 samplar
-`0x0fa6f8`.
+Korrigering: `0x8061c5a8..+0x1550`/TMU `0x4c25e0` är ett verkligt uppladdat
+block men identifierades felaktigt som WAR genom en bristfällig asset-offset.
+Det ska inte längre användas som WAR-orakel.
 
-En exakt, default-avstängd samplerremap till `0x4c25e0` träffade drawen och
-ändrade intern f760-hash, men den presenterade f780-bilden förblev
-byte-identisk (`frameHash=0xb11fe479`). Proben togs bort. Fortsätt vid
-descriptorproducenten/bindningen för `0x805b1be4` och spåra därefter vilken
-senare fill/swap som skriver över f760-resultatet. Ändra inte LOD-val,
-sample-bias, QIO-hydrering eller Type5-placement igen utan ny motbevisning.
+Den faktiska drawen är nu isolerad till bbox `(128,279)-(160,311)` med
+descriptor `0x805b1be4` och
+`mode/lod/base=8c2419cf/0600260c/0001a0df`. Baselinesamplern väljer LOD0,
+layout `256x256`, fysisk bas `0x0d06f8` och läser spritt genom
+`0x0d0cfe..0x0efcfe`. Sidbitsproben `0x1a0df -> 0x9a0df` ändrade exakt
+porträttrutan men gav röd/vit skräpdata; den höga biten maskas inom TMU0:s
+4 MiB-bank och är inte den saknade bindningen.
+
+Två default-avstängda diagnostiker finns nu:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_BASE_LEVEL=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WAR_FACE_TEXTURE_BASE=0x...
+```
+
+LOD-min `0x0c` ger korrekt `32x32`-layout. Med lokal bas blir rutan nästan
+enfärgad; med `WAR_FACE_TEXTURE_BASE=0x984bc`, vilket mappar till den gamla
+`0x4c25e0`-kandidaten, blir den också nästan enfärgad. Båda är negativa.
+Fortsätt genom att återskapa upload-proveniens före f759 för bankregionen vid
+`0x0d06f8`; snapshotens writer-map säger `none`, så ett senare f759-spår kan
+inte identifiera producenten.

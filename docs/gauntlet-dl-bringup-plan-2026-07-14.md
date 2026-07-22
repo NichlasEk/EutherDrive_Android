@@ -4482,7 +4482,7 @@ i stället binda de nya Type-5-uploadsen mellan f762 och f770 till den första
 efterföljande scen-Type-3-drawen, eller bevisa att gästen aldrig publicerar en
 sådan draw.
 
-### WAR_FACE_HS finns i TMU men draw-descriptorn är stale
+### WAR_FACE_HS-drawen är isolerad; tidigare payloadbindning var fel
 
 Den tidigare Type5-sekvensdiagnostiken accepterade bara 64-ordspaketet
 `0xc0000205`. BGLoadModel-fastpathen använder även 2-, 4-, 8-, 16- och
@@ -4494,22 +4494,29 @@ en tidig textur i `hiscore/legends`, inte `WAR_FACE_HS`. Den laddas korrekt
 till fysisk TMU-byte `0x12a710` under state
 `mode/lod/base=00000100/00000808/00022ce2`.
 
-En f770-RAM/TMU-dump ger den avgörande WAR-bindningen. Tabellen har 26 poster;
-WAR är post 23 och dess kompletta `0x1550`-byte mip/palettblock börjar vid
-`0x8061c5a8`. Varje kontrollerat 32-bytefönster återfinns byte-exakt, med
-förväntad ord-endianvändning, sammanhängande i TMU från `0x4c25e0`. Texturen
-är alltså både hydrerad och uppladdad. Den saknas inte.
+Den tidigare slutsatsen att RAM-blocket vid `0x8061c5a8` och TMU-blocket vid
+`0x4c25e0` var WAR var fel. Blocket är verkligt och byte-exakt uppladdat, men
+asset-offsetinferensen som gav det namnet var inte tillförlitlig.
 
-Drawen använder däremot fortfarande descriptor `0x805b1be4` och väljer LOD3
-vid fysisk byte `0x0fa6f8`. Detta är en stale descriptor-/allokeringsadress,
-inte ett sampler-, QIO- eller Type5-fel. En strikt default-avstängd probe som
-ersatte bara denna draws slutliga LOD3-bas med `0x4c25e0` ändrade den interna
-f760-framehashen till `0x460c8256`, men den presenterade f780-bilden blev
-byte-identisk med baseline (`frameHash=0xb11fe479`, PPM SHA-256
-`a67a72f06307df6409446da4ea36160a07681bfd2960a4a2ea19ef5ac24e29c0`).
-Proben togs därför bort.
+Ett producentspår visar descriptor `0x805b1be4` med
+`mode/lod/base=8c2419cf/0600260c/0001a0df`. Grannposterna har bas
+`0x9a00a` och `0x9a15e`, men den saknade `0x80000`-biten är inte en förlorad
+4 MiB-sida: separat TMU-minne maskar adressen inom respektive 4 MiB-bank.
+En exakt A/B-ändring `0x1a0df -> 0x9a0df` träffade bara porträttets
+`32x32`-ruta (932 ändrade pixlar) och gav tydlig röd/vit skräpdata.
 
-Nästa smala gräns är producenten av `0x805b1be4`/`tBase=0x1a0df` och den
-efterföljande buffer-overwrite/presentationen. Reparera descriptor-adressen
-där den byggs eller binds; lägg inte in en global samplerbias och upprepa inte
-source- eller Type5-spåret för WAR.
+Sampler-summaryn isolerar den faktiska drawen till bbox `(128,279)-(160,311)`.
+Baseline väljer `targetLod=0`, layout `256x256`, bas `0x0d06f8` och adresser
+över `0x0d0cfe..0x0efcfe`. `tLOD`-minimum `0x0c` motsvarar LOD 3. Två nya
+default-avstängda prober kan testa den gränsen:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_BASE_LEVEL=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_WAR_FACE_TEXTURE_BASE=0x...
+```
+
+LOD3 med den lokala basen samplar `0x0d06f8`, men blocket är nästan enfärgat.
+LOD3 med den tidigare felidentifierade kandidaten `0x4c25e0` är också nästan
+enfärgat. Båda är tydligt sämre än baseline och ska inte promoteras. Nästa
+smala gräns är därför upload-proveniens före f759-snapshoten för WAR-descriptorns
+egen `0x0d06f8`-bankregion, inte descriptor-pagebit, global LOD eller NCC.
