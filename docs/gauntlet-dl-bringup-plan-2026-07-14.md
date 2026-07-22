@@ -4172,7 +4172,7 @@ snapshot sha256 0d2a650ce3223682efa5f9ff5249d0ede2ad8ac053aa153bd9fedd90ca9f100d
 reload frameCounter=601 ranFrames=0 frameHash=0xe23a380e colored=9571
 ```
 
-### FIRE 3 lämnar diagnostiken och exponerar nästa formatfel
+### FIRE 3 startar nya uploads och exponerar nästa formatfel
 
 Den läsbara f601-checkpointen kördes vidare i repo-lokala tiobildrutesteg. Vid
 f700 stod diagnostikmenyn kvar (`frameHash=0x3f727c21`, 404 swaps och 578027
@@ -4183,9 +4183,11 @@ swaps ökade 404 -> 468, 131196 nya Type 5-texturord skrevs och PC flyttade
 till `0x800a725c`. Gästloggen bekräftar samtidigt strängen
 `Exit menu (FIRE 3)`.
 
-Den fortsatta kedjan är sparad som PNG/PPM och `.warm`-filer. Vid f740 hade
-spelet nått en ny, igenkännbar scen med 738 texturtrianglar, men stora delar
-var fortfarande regnbågsrandiga. f740-checkpointen utan nya formatprober är:
+Den fortsatta kedjan är sparad som PNG/PPM och `.warm`-filer. Vid f740 syntes
+en ny, till synes igenkännbar scen med 738 texturtrianglar, men stora delar
+var fortfarande regnbågsrandiga. Senare TMU-banktest visar att scenintrycket
+byggde på cross-TMU-aliasering och alltså inte är ett korrekt slutresultat.
+f740-checkpointen utan nya formatprober är:
 
 ```text
 artifacts/gauntlet-probe/gauntdl-post-diagnostic-f740.png
@@ -4241,3 +4243,45 @@ Regeln är avsiktligt inte promoterad till baseline ännu. Nästa steg är att
 spåra varför gästens helskärmspaket bär format 0 trots att bas-0-innehållet är
 RGB565, och separat klassificera drawsen som producerar den korrupta
 nederhalvan.
+
+### Separata 4 MiB-TMU-banker bevarar fontatlasen
+
+Rå textur-RAM vid f700 och f740 gav den avgörande jämförelsen. Vid f700 är
+området runt `0x4500` en binär A8-atlas med huvudsakligen `00`/`ff`. Efter
+FIRE3-uploaden innehåller samma fysiska adresser RGB565-liknande ord som
+`59ae 49ce 736d ...`. A8-fontens bas ligger nära slutet och wrappar till detta
+område, vilket förklarar att menytexten började läsa scenbytes som glypher.
+
+MAME:s Vegas-konfiguration anger Voodoo 2 med två TMU:er och 4 MiB RAM per
+TMU. En ren omkörning från den läsbara f700-checkpointen använde därför båda
+de redan befintliga proberna genom hela FIRE3-kedjan:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SEPARATE_TMU_TEXTURE_MEMORY=1
+```
+
+Vid f740 är resultatet en sammanhängande diagnostiksida i stället för en
+korrupt RGB/A8-blandning. Strängar som `DIAGNOSTIC MODE`, `VERSION`, `NORMAL`
+och flera tabellrader går åter att urskilja. Den andra MAGIC-pulsen f740 ->
+f750 lämnar sidan kvar, så den första pulsen startade grafikuppladdningar men
+stängde inte menyn; den mörklila RGB565-tolkningen var ett aliaseringsartefakt.
+
+```text
+artifacts/gauntlet-probe/gauntdl-separated-tmu-f740.png
+frameHash=0x4ee29f95
+PPM sha256 e7de2dcf6bff7aa0e30c16e1ef9950fc53292a94552e653f55eba8c391320ac3
+
+artifacts/gauntlet-probe/gauntdl-separated-tmu-f740-200k.warm
+snapshot sha256 e05d15b764730585f0a50500b87d36861abd2e8c0212abeac2dfbdc7a3bb4061
+
+artifacts/gauntlet-probe/gauntdl-separated-tmu-f741-both.png
+frameHash=0x072e3349
+PPM sha256 cefc0f4f3e7be2ccad96a493885895a3568d844316ae0baff8f976b8285dc4ab
+```
+
+Bankreglerna lämnar den äldre läsbarhetsreferensen f600 -> f601 exakt
+oförändrad: `frameHash=0xe23a380e`, 314 täckta texturtrianglar och 3719
+nolltexlar. Eftersom de både matchar den verkliga hårdvarutopologin, bevarar
+den gamla referensen och tar bort ett uppmätt cross-TMU-fel är de nu
+promoterade till baseline. RGB332-as-RGB565-regeln förblir default-off.
