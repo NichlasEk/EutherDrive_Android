@@ -848,7 +848,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(8);
+        writer.Write(9);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -881,7 +881,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version < 1 || version > 8)
+    if (magic != 0x314d5241574c4447UL || version < 1 || version > 9)
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1138,6 +1138,10 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
     WriteUShortArray(writer, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
     WriteTextureWriterMaps(writer, backend);
     WriteStandardFifoGenerationState(writer, backend);
+    WriteUIntArrayArray(writer, GetFieldValue<uint[][]>(backend, "_tmuRegisters"));
+    WriteBoolArrayArray(writer, GetFieldValue<bool[][]>(backend, "_tmuRegisterValid"));
+    WriteUShortArrayArray(writer, GetFieldValue<ushort[][]>(backend, "_tmuPaletteRgb565"));
+    WriteBoolArrayArray(writer, GetFieldValue<bool[][]>(backend, "_tmuPaletteValid"));
 }
 
 static void LoadVoodoo(BinaryReader reader, object facade, int version)
@@ -1184,6 +1188,13 @@ static void LoadVoodoo(BinaryReader reader, object facade, int version)
         ReadTextureWriterMaps(reader, backend);
     if (version >= 6)
         ReadStandardFifoGenerationState(reader, backend, version);
+    if (version >= 9)
+    {
+        ReadUIntArrayArrayInto(reader, GetFieldValue<uint[][]>(backend, "_tmuRegisters"));
+        ReadBoolArrayArrayInto(reader, GetFieldValue<bool[][]>(backend, "_tmuRegisterValid"));
+        ReadUShortArrayArrayInto(reader, GetFieldValue<ushort[][]>(backend, "_tmuPaletteRgb565"));
+        ReadBoolArrayArrayInto(reader, GetFieldValue<bool[][]>(backend, "_tmuPaletteValid"));
+    }
 }
 
 static void WriteStandardFifoGenerationState(BinaryWriter writer, object backend)
@@ -1473,6 +1484,22 @@ static void ReadUShortArrayArrayInto(BinaryReader reader, ushort[][] values)
         ReadUShortArrayInto(reader, values[i]);
 }
 
+static void WriteUIntArrayArray(BinaryWriter writer, uint[][] values)
+{
+    writer.Write(values.Length);
+    foreach (uint[] value in values)
+        WriteUIntArray(writer, value);
+}
+
+static void ReadUIntArrayArrayInto(BinaryReader reader, uint[][] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"UInt32 array-array length mismatch: snapshot={length} runtime={values.Length}");
+    for (int i = 0; i < values.Length; i++)
+        ReadUIntArrayInto(reader, values[i]);
+}
+
 static void WriteUIntArray(BinaryWriter writer, uint[] values)
 {
     writer.Write(values.Length);
@@ -1560,6 +1587,22 @@ static void ReadBoolArrayInto(BinaryReader reader, bool[] values)
         throw new InvalidDataException($"Boolean array length mismatch: snapshot={length} runtime={values.Length}");
     for (int i = 0; i < values.Length; i++)
         values[i] = reader.ReadBoolean();
+}
+
+static void WriteBoolArrayArray(BinaryWriter writer, bool[][] values)
+{
+    writer.Write(values.Length);
+    foreach (bool[] value in values)
+        WriteBoolArray(writer, value);
+}
+
+static void ReadBoolArrayArrayInto(BinaryReader reader, bool[][] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"Boolean array-array length mismatch: snapshot={length} runtime={values.Length}");
+    for (int i = 0; i < values.Length; i++)
+        ReadBoolArrayInto(reader, values[i]);
 }
 
 static void ReadBoolArrayPrefixInto(BinaryReader reader, bool[] values)

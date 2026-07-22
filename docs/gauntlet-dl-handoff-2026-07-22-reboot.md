@@ -524,3 +524,41 @@ upprepade mönster kvarstår, så proben får inte promoteras. Den bevisar endas
 att avsett bildmaterial finns på rätt lokala offsets i TMU0 medan de aktiva
 TMU1-registernas ytor är tomma. Fortsätt vid paket-5-källan som skulle fylla
 TMU1 eller vid den register-/assettransition som felaktigt väljer TMU1.
+
+### Snapshot v9 och den ärvda TMU-bankkontamineringen
+
+Warm-snapshotformat v8 sparade hela 8 MiB texture RAM men tappade de separata
+TMU0/TMU1-registren samt båda TMU:ernas NCC/palettcache. Format v9 sparar och
+återläser nu alla fyra arrayerna. Ett f907 save/reload-prov behåller
+`tmu0=tmu1=0C26100F/FF802000/00000000`, `frameHash=0xbe919a03` och exakt samma
+PPM SHA-256 `663ec8ec4fa024dcf67a9405cef215b7111446885262a977f1835934ab9ec525`.
+Även nästa frame, sammanhängande respektive med reload vid f907, är
+byteidentisk. Äldre v1-v8-filer kan fortfarande läsas.
+
+MAME:s `rasterizer_texture::write_ptr` jämfördes därefter med vår sena Type5-
+adressväg. Att applicera MAME-writepekaren på hela f900--f906-vågen är
+byteidentiskt med kontrollen, så LOD-offset, 32-bitars align och download-
+swizzle är inte den återstående orsaken.
+
+Den avgörande Type3-staten för de tomma ytorna är i stället:
+
+```text
+tmu0=80000009/FF802000/00000000      passthrough av downstream
+tmu1=8C2419CF/06502600/0009C40E      faktisk textur/combine
+```
+
+Samma familj väljer även TMU1-bas `0x9d964` och `0x9a00a`. MAME:s equation-
+modell bekräftar alltså att drawsen verkligen måste läsa TMU1; detta är inte
+ett felaktigt sampler-val. De tre 32 KiB-fönstren är redan noll i TMU1 vid
+f710 och förblir byteidentiska till f900, medan motsvarande lokala TMU0-
+offsetar redan innehåller bilddata. Även artefakten med namnet
+`gauntdl-type5-hardware-endian-cold-f600-200k-20260722.warm` har samma
+TMU0/TMU1-fördelning.
+
+Orsaken är att den senare tvåbankskedjan byggdes vidare från warm-states som
+skapats innan bankseparationen var aktiv. Planen sade att de två bankreglerna
+var promoterade, men `run-gauntdl-baseline.sh` exporterade dem inte. Wrappern
+gör nu det. Nästa nödvändiga oracle är därför en verklig kall körning från
+frame noll med `TEXTURE_UPLOAD_TMU_BANKS=1` och
+`SEPARATE_TMU_TEXTURE_MEMORY=1`; återanvänd inte någon gammal f600--f900-state
+för att avgöra var dessa tidiga ytor hör hemma.
