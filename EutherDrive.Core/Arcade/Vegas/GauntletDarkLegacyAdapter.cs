@@ -28001,8 +28001,9 @@ internal sealed class VegasMemoryMap
 
         const ulong mainState = 0xffffffff80227ab0UL;
         const ulong diagnosticExitLatch = 0xffffffff80227ec8UL;
+        uint currentMainState = Read32(mainState);
         if (_enableRuntimeInputDiagnosticExitBridge &&
-            Read32(mainState) == 0x8000U &&
+            (currentMainState == 0x8000U || currentMainState == 0x8007U) &&
             ((player1Bits | player2Bits) & 0x0800U) != 0)
         {
             Write32(diagnosticExitLatch, 1U);
@@ -34488,6 +34489,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_TMU"), -1);
     private readonly bool _experimentMameTwoTmuCombine =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TWO_TMU_COMBINE"));
+    private readonly bool _experimentTmu1SampleTmu0Memory =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_SAMPLE_TMU0_MEMORY"));
     private readonly bool _experimentSetupMameAuxDepth =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
@@ -44286,7 +44289,8 @@ sampledTexel:
     {
         bool sixteenBit = IsTextureFormat16Bit(format);
         uint texelIndex = (uint)(y * width + x);
-        uint byteAddress = MapTextureBankByteAddress(tmu, baseAddress + texelIndex * (sixteenBit ? 2u : 1u));
+        int memoryTmu = _experimentTmu1SampleTmu0Memory && tmu == 1 ? 0 : tmu;
+        uint byteAddress = MapTextureBankByteAddress(memoryTmu, baseAddress + texelIndex * (sixteenBit ? 2u : 1u));
         uint word = ReadTexture32(byteAddress & ~3u);
         ushort raw;
         if (sixteenBit)

@@ -455,7 +455,72 @@ Det är hårdvarukorrekt men hashneutralt i f901-kandidaten (`0xeea919dd`).
 
 Den kvarvarande upprepningen är därför inte en T-flip, lane-ordning, gemensam
 LOD eller sammanfogning av framebuffer-delar. De synliga quads som återstår är
-loading/Hall-of-Legends-arbete från den redan kända renderproducenten. Nästa
-kausala gräns går tillbaka till renderposterna med null body och
-`No Nodes have this object`: få modellen att materialisera riktig body/node-data
-innan ytterligare rasterorientering ändras.
+loading/Hall-of-Legends-arbete från den redan kända renderproducenten.
+
+`No Nodes have this object` är inte heller en world-loadergräns. Callern vid
+`0x800b2904..0x800b297c` kör diagnostikens object-viewer för objektindex
+`0x22`; texten väljs när dess statiska diagnostikrecord saknar fälten vid
+`+0x50` och `+0x60`. Syntetisera därför inte nodepekare från den texten.
+
+### Sen checkpoint: diagnostik-exit i huvudstate `0x8007`
+
+Runtime-bryggan för FIRE 3 hade fortfarande den äldre state-guarden `0x8000`,
+trots att senare mätningar fastställde att f900 ligger i huvudstate `0x8007`.
+Turbo nådde därför det normaliserade inputrecordet men bryggan skrev aldrig
+gästlatchen. Guarden accepterar nu både den tidigare verifierade `0x8000`-
+transitionen och den sena `0x8007`-varianten.
+
+En smal trace från den rena f900-snapshoten verifierar hela kedjan:
+
+```text
+f901 före puls: read32 0x80227ec8 = 0
+Turbo:          active=0x40, p1=0x0800
+brygga:         write32 0x80227ec8 = 1
+gäst:           pc=0x80082ee0 read32 0x80227ec8 = 1
+
+kontroll f906:  frameHash=0x098b0209 swaps=1042 texWrites=1491566
+Turbo f906:     frameHash=0x3ac5577d swaps=1094 texWrites=1571630
+```
+
+Skillnaden är kausal och sker i gästflödet, inte bara genom vanlig
+frame-progression. Med två-TMU-combinern och MAME:s texelriktning blir den
+fortsatta f906-bilden `frameHash=0xbe919a03`, `colored=166981`. Den är ren och
+rättvänd men visar fortfarande upprepade atlasdelar i de avsiktligt placerade
+Type3-rektanglarna.
+
+```text
+artifacts/gauntlet-probe/gauntdl-state8007-exit-two-tmu-f906-200k-20260722.warm
+sha256=b06972b138a35ab156b3bcc0f13c5080b6a419679f61d9d77131be21a9bb6d30
+artifacts/gauntlet-probe/gauntdl-state8007-exit-two-tmu-f906-20260722.png
+sha256=86b1b0e73b28488264cef898c9f459561bcc5cf618339a782574438d45f59845
+```
+
+Den aktiva kommandotypen `0x0180a8cb` har Wb+ST0 och 19 ord, precis som
+MAME-decodern förväntar sig. Ett representativt par ger skärmrektangeln
+`(232,167)..(360,295)`, W=`1/96` och S/T=`0..2.666667`; perspektivdivisionen
+ger exakt `0..256` texlar. Paketen byter samtidigt TMU1-base mellan bland annat
+`0x0009c40e` och `0x0009d964`. Återstående repetitioner uppstår alltså efter
+korrekt vertexordning, perspektivskalning och base-registerval. Nästa smala
+gräns är TMU1-uploadens fysiska write-pointer/layout mot de base-adresser som
+paketen faktiskt samplar.
+
+En rådump från f900 gör gränsen konkret. TMU1:s fysiska 32 KiB-fönster för
+base `0x9c40e`, `0x9d964` och `0x9a00a` ligger vid `0x4e2070`, `0x4ecb20`
+respektive `0x4d0050`; alla tre är helt noll. Samma lokala offsets i TMU0
+innehåller däremot 24935, 30339 respektive 29381 icke-nollbyte och upp till
+256 unika bytevärden. Inget av de första 64-byteblocken återfinns på någon
+annan offset i TMU1-banken.
+
+En default-off kausal probe låter därför endast TMU1-samplern läsa motsvarande
+lokala offset ur TMU0, utan att ändra register, S/T, LOD eller upload:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_SAMPLE_TMU0_MEMORY=1
+```
+
+Tillsammans med två-TMU/MAME-riktningen ändras f901 från `0xeea919dd` till
+`0x1d887fbb`; flera riktiga färgporträtt och tiles blir synliga. Bakgrundens
+upprepade mönster kvarstår, så proben får inte promoteras. Den bevisar endast
+att avsett bildmaterial finns på rätt lokala offsets i TMU0 medan de aktiva
+TMU1-registernas ytor är tomma. Fortsätt vid paket-5-källan som skulle fylla
+TMU1 eller vid den register-/assettransition som felaktigt väljer TMU1.
