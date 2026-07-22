@@ -229,6 +229,32 @@ Den verifierade FIFO-fixen tar bort atlasmattan men löser inte återstående
 drawfel. Nästa fortsättning ska börja från f770-checkpointen och isolera den
 vita bakgrunden samt panel-/glyphdrawsen, inte med ytterligare lång väntan.
 
+## Senaste fortsättning: coin/start och f810
+
+Den hårdvarukorrigerade WAR-referensen vid f770 är fortfarande
+regressionsoraklet. Pixel-writer- och Type3-spår visar att de upprepade banden
+kommer från A8 setup-draws vid PC `0x800c4e5c`; record-0-familjen samplar
+exakt noll i f759 -> f760 och är inte en dold scen. MAME-kontrollen gav inget
+stöd för ännu en lokal A8-formatregel.
+
+RAM-state vid f770 är `0x8007`, inte diagnostikstate `0x8000`. Coin f771..772
+och start f776..777 startar ny aktivitet. Swaps går 956 -> 964 vid f782 ->
+976 vid f800 -> 984 vid f810. f810 har `frameHash=0xfb43df30`, 150928
+drawpaket och 1506009 texture writes, men fortfarande ingen world/3D-familj.
+
+Fortsätt i första hand från:
+
+```text
+artifacts/gauntlet-probe/gauntdl-coin-start-f810-200k-20260722.warm
+snapshot sha256=0bf161fc49490f2f59689a709674714e629c2cb528cc7c5d18838f18d77ac640
+artifacts/gauntlet-probe/gauntdl-coin-start-f810-200k-20260722.png
+png sha256=ddda94740c992bc30f181fc88a49064a987d99c2ad3f1783e47f08fb0ef82a1d
+```
+
+Nästa steg är att spåra stateövergången efter `0x8007` eller den första
+world-render-posten. Ändra inte WAR-upload/byteordning, sampler-LOD,
+A8-semantik eller display-buffer-val utan ny kausal evidens.
+
 ## Ny exakt WAR_FACE_HS-gräns
 
 Type5-sekvensdiagnostiken spårar nu alla texture-space-3-paket, inte bara

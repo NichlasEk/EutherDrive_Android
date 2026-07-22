@@ -4687,6 +4687,56 @@ Spårloggen är `/tmp/gauntdl-direct200-f740-f751-war-upload.log`. Nästa
 grafikgräns är åter den omgivande panel-/glyph- och scenrenderingen, inte
 WAR-payloadens upload eller byteordning.
 
+### Paneldrawsen är A8-UI; coin + start öppnar nästa aktiva sekvens
+
+Ett pixel-writer-spår från den korrigerade f770-referensen band de upprepade
+blå banden till setup-trianglar från gäst-PC `0x800c4e5c`, kommando
+`0x0180a8cb`. Ett koncentrerat f759 -> f760-spår delade drawsen i fyra
+familjer:
+
+```text
+180 draws  mode/lod/base=8c2412cf/00002104/ffffe000  pixels=1351602 nonzero=0
+42 draws   mode/lod/base=8c2412cf/00302104/fffff800  pixels=1512    nonzero=883
+8 draws    mode/lod/base=80000009/ff802000/00000000  pixels=4224    nonzero=1928
+2 draws    mode/lod/base=8c2419cf/0600260c/0001a0df  pixels=1056    nonzero=1056
+```
+
+Record-0-familjens 180 stora panelquads samplar alltså exakt noll i den
+aktuella framen. Den återstående panelmattan är ackumulerat A8/UI-innehåll,
+inte en dold world-scen och inte WAR-texturen. Referenskontroll mot MAME
+bekräftade samtidigt att format 2 avkodas som A8 med samma värde i RGBA;
+ingen ny alpha- eller formatregel infördes.
+
+RAM-dumpen vid f770 visar little-endian huvudstate `0x8007` på
+`0x80227ab0`; diagnostik-exit från `0x8000` har alltså lyckats. En coin-puls
+f771..f772 följd av start f776..f777 återstartar aktiv presentation: swaps
+ökar från 956 till 964 vid f782 och fortsätter till 976 vid f800 och 984 vid
+f810. Nya uploads och drawpaket fortsätter också. En tvåframespaus direkt
+efter f800 var inte ett FIFO-stopp; f805/f810 visar fortsatt progress.
+
+```text
+f782 frameHash=0xd56dede7 swaps=964
+f800 frameHash=0x4849eafb swaps=976
+f810 frameHash=0xfb43df30 swaps=984 drawPackets=150928 texWrites=1506009
+```
+
+De repo-lokala, ignorerade fortsättningspunkterna är:
+
+```text
+artifacts/gauntlet-probe/gauntdl-war-face-coin-start-f782-200k-20260722.warm
+artifacts/gauntlet-probe/gauntdl-coin-start-f800-200k-20260722.warm
+artifacts/gauntlet-probe/gauntdl-coin-start-f810-200k-20260722.warm
+artifacts/gauntlet-probe/gauntdl-coin-start-f810-200k-20260722.png
+f810 snapshot sha256=0bf161fc49490f2f59689a709674714e629c2cb528cc7c5d18838f18d77ac640
+f810 png sha256=ddda94740c992bc30f181fc88a49064a987d99c2ad3f1783e47f08fb0ef82a1d
+```
+
+Startsekvensen ger ännu ingen world/3D-drawfamilj; bilden består fortfarande
+av A8-paneler/glypher, små bas-0-sprites och det riktiga WAR-porträttet. Nästa
+kausala gräns är därför gästflödet efter state `0x8007`: identifiera nästa
+stateövergång eller world-render-post, inte fler sampler-, alpha- eller
+display-bufferjusteringar.
+
 ### f770-snapshot och synliga referensbilder
 
 Det promoterade probeskriptets f770-läge är sparat repo-lokalt under den
