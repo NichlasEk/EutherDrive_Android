@@ -34486,6 +34486,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR_TARGET_WORDS"));
     private readonly int _experimentTextureSampleTmu =
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_TMU"), -1);
+    private readonly bool _experimentMameTwoTmuCombine =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TWO_TMU_COMBINE"));
     private readonly bool _experimentSetupMameAuxDepth =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
@@ -43059,6 +43061,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 float s;
                 float t;
                 ushort texel;
+                byte textureAlpha = 255;
                 int targetLod = triangleTargetLod;
                 _lastTextureSampleValid = false;
                 if (_experimentTextureMameSetupGradients)
@@ -43070,7 +43073,16 @@ internal class VoodooBringupBackend : IVoodooBackend
                     if (_experimentTextureMameFixedFetch)
                     {
                         long iterW = unchecked(textureStartW + dy * textureDwDy + dx * textureDwDx);
-                        texel = SampleTextureRgb565MameFixed(iterS, iterT, iterW, targetLod);
+                        if (_experimentMameTwoTmuCombine)
+                        {
+                            TextureRgba combined = SampleAndCombineTwoTmusMameFixed(iterS, iterT, iterW, targetLod);
+                            texel = combined.Rgb565;
+                            textureAlpha = combined.A;
+                        }
+                        else
+                        {
+                            texel = SampleTextureRgb565MameFixed(iterS, iterT, iterW, targetLod);
+                        }
                         goto sampledTexel;
                     }
 
@@ -43179,8 +43191,14 @@ sampledTexel:
                     }
                 }
 
+                if (_experimentMameTwoTmuCombine && (fbzMode & 0x2000u) != 0 && (textureAlpha & 1) == 0)
+                {
+                    coveredAny = true;
+                    continue;
+                }
+
                 if (_experimentFbzColorPathRgbCombine)
-                    texel = ApplyFbzColorPathRgb(texel, fallbackColor);
+                    texel = ApplyFbzColorPathRgb(texel, fallbackColor, textureAlpha);
 
                 if (alpha8Mask)
                 {
@@ -44196,6 +44214,236 @@ sampledTexel:
         TrackTextureSampleDebug(byteAddress, raw, result);
         TraceTextureSample(s24_8 / 256.0f, t24_8 / 256.0f, width, height, x, y, mode, textureLod, textureBase, baseAddress, byteAddress, word, raw, result);
         return result;
+    }
+
+    private readonly record struct TextureRgba(byte R, byte G, byte B, byte A)
+    {
+        public ushort Rgb565 => Rgb888ToRgb565(R, G, B);
+    }
+
+    private TextureRgba SampleTextureMameFixedForTmu(int tmu, long iterS, long iterT, long iterW, int targetLodOverride)
+    {
+        uint mode = ReadTextureRegisterForTmu(tmu, RegTextureMode);
+        uint textureLod = ReadTextureRegisterForTmu(tmu, RegTextureLod);
+        uint textureBase = ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr);
+        int targetLod = targetLodOverride >= 0
+            ? Math.Clamp(targetLodOverride, 0, 8)
+            : GetTextureTargetLod(textureLod, textureBase);
+        int format = ResolveTextureSampleFormat(mode, textureLod, textureBase);
+        TextureFetchLayout layout = GetMameTextureFetchLayout(targetLod, mode, tmu);
+
+        int s24_8;
+        int t24_8;
+        if ((mode & 1u) != 0 && iterW != 0)
+        {
+            double reciprocalW = 256.0 / iterW;
+            s24_8 = MameSetupCastToInt32(iterS * reciprocalW);
+            t24_8 = MameSetupCastToInt32(iterT * reciprocalW);
+        }
+        else
+        {
+            s24_8 = MameSetupCastToInt32(iterS * (1.0 / (1 << 24)));
+            t24_8 = MameSetupCastToInt32(iterT * (1.0 / (1 << 24)));
+        }
+        if ((mode & 0x20u) != 0 && iterW < 0)
+            s24_8 = t24_8 = 0;
+
+        bool filtered = IsTextureFilteringEnabled(mode);
+        if (filtered)
+        {
+            s24_8 -= 0x80;
+            t24_8 -= 0x80;
+        }
+        bool clampS = !_experimentTextureCoordinateWrap && (mode & 0x40u) != 0;
+        bool clampT = !_experimentTextureCoordinateWrap && (mode & 0x80u) != 0;
+        int x0 = Coordinate24_8ToTexelIndex(s24_8, layout.Width, targetLod, clampS);
+        int y0 = Coordinate24_8ToTexelIndex(t24_8, layout.Height, targetLod, clampT);
+        if (_fixTextureTOriginFlip)
+            y0 = layout.Height - 1 - y0;
+        TextureRgba c00 = ReadTextureRgbaAt(tmu, x0, y0, layout.Width, format, mode, layout.BaseAddress);
+        if (!filtered)
+            return c00;
+
+        int x1 = Coordinate24_8ToTexelIndex(s24_8 + (1 << (targetLod + 8)), layout.Width, targetLod, clampS);
+        int y1 = Coordinate24_8ToTexelIndex(t24_8 + (1 << (targetLod + 8)), layout.Height, targetLod, clampT);
+        if (_fixTextureTOriginFlip)
+            y1 = layout.Height - 1 - y1;
+        TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress);
+        TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress);
+        TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress);
+        int fx = (int)(Coordinate24_8Fraction(s24_8, targetLod) * 256.0f);
+        int fy = (int)(Coordinate24_8Fraction(t24_8, targetLod) * 256.0f);
+        return BilinearTextureRgba(c00, c10, c01, c11, fx, fy);
+    }
+
+    private TextureRgba ReadTextureRgbaAt(int tmu, int x, int y, int width, int format, uint mode, uint baseAddress)
+    {
+        bool sixteenBit = IsTextureFormat16Bit(format);
+        uint texelIndex = (uint)(y * width + x);
+        uint byteAddress = MapTextureBankByteAddress(tmu, baseAddress + texelIndex * (sixteenBit ? 2u : 1u));
+        uint word = ReadTexture32(byteAddress & ~3u);
+        ushort raw;
+        if (sixteenBit)
+        {
+            uint laneAddress = GetTexture16BitLaneByteAddress(byteAddress);
+            raw = (ushort)((word >> (int)((laneAddress & 2u) * 8u)) & 0xffffu);
+            if (_experimentTexture16BitByteSwapRegisterBase.HasValue &&
+                ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr) == (uint)_experimentTexture16BitByteSwapRegisterBase.Value)
+            {
+                raw = BinaryPrimitives.ReverseEndianness(raw);
+            }
+        }
+        else
+        {
+            uint lane = byteAddress & 3u;
+            if (_experimentReverse8BitTextureSampleLanes)
+                lane = 3u - lane;
+            raw = (byte)(word >> (int)(lane * 8u));
+        }
+
+        TextureRgba result = DecodeTextureRgba(tmu, format, raw, mode);
+        _lastTextureSampleByteAddress = byteAddress;
+        _lastTextureSampleRaw = raw;
+        _lastTextureSampleResult = result.Rgb565;
+        _lastTextureSampleValid = true;
+        return result;
+    }
+
+    private TextureRgba DecodeTextureRgba(int tmu, int format, ushort raw, uint mode)
+    {
+        byte low = (byte)raw;
+        ushort rgb;
+        byte alpha;
+        switch (format)
+        {
+            case 0:
+                rgb = ConvertRgb332ToRgb565(low);
+                alpha = 255;
+                break;
+            case 1:
+                rgb = ConvertNccToRgb565(tmu, low, mode);
+                alpha = 255;
+                break;
+            case 2:
+                return new TextureRgba(low, low, low, low);
+            case 3:
+                return new TextureRgba(low, low, low, 255);
+            case 4:
+            {
+                byte intensity = (byte)((low & 0x0f) * 17);
+                return new TextureRgba(intensity, intensity, intensity, (byte)((low >> 4) * 17));
+            }
+            case 8:
+                rgb = ConvertRgb332ToRgb565(low);
+                alpha = (byte)(raw >> 8);
+                break;
+            case 9:
+                rgb = ConvertNccToRgb565(tmu, low, mode);
+                alpha = (byte)(raw >> 8);
+                break;
+            case 10:
+                rgb = ConvertRgb565Lane(raw, 0);
+                alpha = 255;
+                break;
+            case 11:
+                rgb = ConvertXrgb1555Lane(raw, 0, hasAlphaBit: true);
+                alpha = (raw & 0x8000) != 0 ? (byte)255 : (byte)0;
+                break;
+            case 12:
+                rgb = ConvertArgb4444ToRgb565(raw);
+                alpha = (byte)(((raw >> 12) & 0x0f) * 17);
+                break;
+            case 13:
+                return new TextureRgba(low, low, low, (byte)(raw >> 8));
+            default:
+                rgb = ConvertTextureFormatToRgb565(format, raw, mode);
+                alpha = 255;
+                break;
+        }
+        Rgb565ToBytes(rgb, out int r, out int g, out int b);
+        return new TextureRgba((byte)r, (byte)g, (byte)b, alpha);
+    }
+
+    private static TextureRgba BilinearTextureRgba(TextureRgba c00, TextureRgba c10, TextureRgba c01, TextureRgba c11, int fx, int fy)
+    {
+        static byte Blend(byte a, byte b, byte c, byte d, int x, int y)
+        {
+            int top = a * (256 - x) + b * x;
+            int bottom = c * (256 - x) + d * x;
+            return (byte)Math.Clamp((top * (256 - y) + bottom * y + 0x8000) >> 16, 0, 255);
+        }
+        return new TextureRgba(
+            Blend(c00.R, c10.R, c01.R, c11.R, fx, fy),
+            Blend(c00.G, c10.G, c01.G, c11.G, fx, fy),
+            Blend(c00.B, c10.B, c01.B, c11.B, fx, fy),
+            Blend(c00.A, c10.A, c01.A, c11.A, fx, fy));
+    }
+
+    private static TextureRgba CombineTextureMame(uint mode, TextureRgba local, TextureRgba other, int lod8p8)
+    {
+        return new TextureRgba(
+            CombineTextureMameChannel(mode, local.R, local.A, other.R, other.A, lod8p8, alpha: false),
+            CombineTextureMameChannel(mode, local.G, local.A, other.G, other.A, lod8p8, alpha: false),
+            CombineTextureMameChannel(mode, local.B, local.A, other.B, other.A, lod8p8, alpha: false),
+            CombineTextureMameChannel(mode, local.A, local.A, other.A, other.A, lod8p8, alpha: true));
+    }
+
+    private static byte CombineTextureMameChannel(
+        uint mode,
+        int local,
+        int localAlpha,
+        int other,
+        int otherAlpha,
+        int lod8p8,
+        bool alpha)
+    {
+        int zeroBit = alpha ? 21 : 12;
+        int subtractBit = alpha ? 22 : 13;
+        int selectShift = alpha ? 23 : 14;
+        int reverseBit = alpha ? 26 : 17;
+        int addShift = alpha ? 27 : 18;
+        int invertBit = alpha ? 29 : 20;
+        int value = ((mode >> zeroBit) & 1u) != 0 ? 0 : other;
+        if (((mode >> subtractBit) & 1u) != 0)
+            value -= local;
+        int factor = ((mode >> selectShift) & 7u) switch
+        {
+            1 => local,
+            2 => otherAlpha,
+            3 => localAlpha,
+            5 => lod8p8 & 0xff,
+            _ => 0
+        };
+        if (((mode >> reverseBit) & 1u) == 0)
+            factor ^= 0xff;
+        factor++;
+        int addSelect = alpha ? (int)((mode >> addShift) & 1u) : (int)((mode >> addShift) & 3u);
+        int add = addSelect switch
+        {
+            1 => local,
+            2 when !alpha => localAlpha,
+            _ => 0
+        };
+        value = Math.Clamp((value * factor >> 8) + add, 0, 255);
+        if (((mode >> invertBit) & 1u) != 0)
+            value ^= 0xff;
+        return (byte)value;
+    }
+
+    private TextureRgba SampleAndCombineTwoTmusMameFixed(long iterS, long iterT, long iterW, int targetLod)
+    {
+        TextureRgba combined = default;
+        if (_tmuRegisterValid[1][RegTextureMode] && _tmuRegisterValid[1][RegTextureLod])
+        {
+            TextureRgba local1 = SampleTextureMameFixedForTmu(1, iterS, iterT, iterW, targetLod);
+            combined = CombineTextureMame(ReadTextureRegisterForTmu(1, RegTextureMode), local1, combined, targetLod << 8);
+        }
+        if (_tmuRegisterValid[0][RegTextureMode] && _tmuRegisterValid[0][RegTextureLod])
+        {
+            TextureRgba local0 = SampleTextureMameFixedForTmu(0, iterS, iterT, iterW, targetLod);
+            combined = CombineTextureMame(ReadTextureRegisterForTmu(0, RegTextureMode), local0, combined, targetLod << 8);
+        }
+        return combined;
     }
 
     private static int Coordinate24_8ToTexelIndex(int value24_8, int size, int lod, bool clamp)
@@ -46519,8 +46767,13 @@ sampledTexel:
     private readonly record struct TextureFetchLayout(int Width, int Height, uint BaseAddress);
 
     private TextureFetchLayout GetMameTextureFetchLayout(int targetLod, uint textureMode)
+        => GetMameTextureFetchLayout(targetLod, textureMode, -1);
+
+    private TextureFetchLayout GetMameTextureFetchLayout(int targetLod, uint textureMode, int tmu)
     {
-        uint textureLod = ReadTextureSampleRegister(RegTextureLod);
+        uint textureLod = tmu >= 0
+            ? ReadTextureRegisterForTmu(tmu, RegTextureLod)
+            : ReadTextureSampleRegister(RegTextureLod);
         uint widthMask = 0xffu;
         uint heightMask = 0xffu;
         int aspect = (int)((textureLod >> 21) & 0x03u);
@@ -46535,15 +46788,17 @@ sampledTexel:
 
         int bppShift = (int)(((textureMode >> 8) & 0x0fu) >> 3);
         int lodLimit = Math.Clamp(targetLod, 0, 8);
-        uint baseAddress = GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr));
+        uint baseAddress = GetTextureBaseAddress(tmu >= 0
+            ? ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr)
+            : ReadTextureSampleRegister(RegTextureBaseAddr));
         bool multiBase = ((textureLod >> 24) & 1u) != 0 && ((textureLod >> 28) & 0x0fu) == 0;
         if (multiBase && lodLimit != 0)
         {
             baseAddress = lodLimit switch
             {
-                1 => GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr1)),
-                2 => GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr2)),
-                _ => GetTextureBaseAddress(ReadTextureSampleRegister(RegTextureBaseAddr38))
+                1 => GetTextureBaseAddress(tmu >= 0 ? ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr1) : ReadTextureSampleRegister(RegTextureBaseAddr1)),
+                2 => GetTextureBaseAddress(tmu >= 0 ? ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr2) : ReadTextureSampleRegister(RegTextureBaseAddr2)),
+                _ => GetTextureBaseAddress(tmu >= 0 ? ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr38) : ReadTextureSampleRegister(RegTextureBaseAddr38))
             };
 
             if (lodLimit > 3)
@@ -47608,7 +47863,12 @@ sampledTexel:
         return color == 0 ? (ushort)0xffff : color;
     }
 
-    private ushort ApplyFbzColorPathRgb(ushort texel, ushort iteratedColor)
+    private ushort ApplyFbzColorPathRgb(ushort texel, ushort iteratedColor, byte textureAlpha = 255)
+        => _experimentMameTwoTmuCombine
+            ? ApplyFbzColorPathRgbMame(texel, iteratedColor, textureAlpha)
+            : ApplyFbzColorPathRgbLegacy(texel, iteratedColor);
+
+    private ushort ApplyFbzColorPathRgbLegacy(ushort texel, ushort iteratedColor)
     {
         uint fbzcp = _registers[RegFbzColorPath];
         ushort color0 = ArgbToRgb565(_registers[RegColor0]);
@@ -47630,14 +47890,12 @@ sampledTexel:
         int r = ((fbzcp >> 8) & 1u) == 0 ? or : 0;
         int g = ((fbzcp >> 8) & 1u) == 0 ? og : 0;
         int b = ((fbzcp >> 8) & 1u) == 0 ? ob : 0;
-
         if (((fbzcp >> 9) & 1u) != 0)
         {
             r -= lr;
             g -= lg;
             b -= lb;
         }
-
         (int mr, int mg, int mb) = ((fbzcp >> 10) & 0x07u) switch
         {
             1 => (lr, lg, lb),
@@ -47650,16 +47908,99 @@ sampledTexel:
             mg = 255 - mg;
             mb = 255 - mb;
         }
-
         r = r * mr / 255;
         g = g * mg / 255;
         b = b * mb / 255;
+        if (((fbzcp >> 14) & 0x03u) == 1)
+        {
+            r += lr;
+            g += lg;
+            b += lb;
+        }
+        if (((fbzcp >> 16) & 1u) != 0)
+        {
+            r = 255 - r;
+            g = 255 - g;
+            b = 255 - b;
+        }
+        return BytesToRgb565(r, g, b);
+    }
+
+    private ushort ApplyFbzColorPathRgbMame(ushort texel, ushort iteratedColor, byte textureAlpha)
+    {
+        uint fbzcp = _registers[RegFbzColorPath];
+        ushort color0 = ArgbToRgb565(_registers[RegColor0]);
+        ushort color1 = ArgbToRgb565(_registers[RegColor1]);
+        int color0Alpha = (int)(_registers[RegColor0] >> 24);
+        int color1Alpha = (int)(_registers[RegColor1] >> 24);
+        int otherAlpha = ((fbzcp >> 2) & 0x03u) switch
+        {
+            0 => 255,
+            1 => textureAlpha,
+            2 => color1Alpha,
+            _ => 0
+        };
+        ushort other = ((fbzcp >> 0) & 0x03u) switch
+        {
+            0 => iteratedColor,
+            1 => texel,
+            2 => color1,
+            _ => 0
+        };
+        ushort local = ((fbzcp >> 7) & 1u) != 0
+            ? ((textureAlpha & 0x80) != 0 ? color0 : iteratedColor)
+            : (((fbzcp >> 4) & 1u) == 0 ? iteratedColor : color0);
+        int localAlpha = ((fbzcp >> 5) & 0x03u) switch
+        {
+            0 => 255,
+            1 => color0Alpha,
+            _ => 255
+        };
+
+        Rgb565ToBytes(other, out int or, out int og, out int ob);
+        Rgb565ToBytes(local, out int lr, out int lg, out int lb);
+        Rgb565ToBytes(texel, out int tr, out int tg, out int tb);
+        int r = ((fbzcp >> 8) & 1u) == 0 ? or : 0;
+        int g = ((fbzcp >> 8) & 1u) == 0 ? og : 0;
+        int b = ((fbzcp >> 8) & 1u) == 0 ? ob : 0;
+
+        if (((fbzcp >> 9) & 1u) != 0)
+        {
+            r -= lr;
+            g -= lg;
+            b -= lb;
+        }
+
+        (int mr, int mg, int mb) = ((fbzcp >> 10) & 0x07u) switch
+        {
+            1 => (lr, lg, lb),
+            2 => (otherAlpha, otherAlpha, otherAlpha),
+            3 => (localAlpha, localAlpha, localAlpha),
+            4 => (textureAlpha, textureAlpha, textureAlpha),
+            5 => (tr, tg, tb),
+            _ => (0, 0, 0)
+        };
+        if (((fbzcp >> 13) & 1u) == 0)
+        {
+            mr = 255 - mr;
+            mg = 255 - mg;
+            mb = 255 - mb;
+        }
+
+        r = r * (mr + 1) / 256;
+        g = g * (mg + 1) / 256;
+        b = b * (mb + 1) / 256;
         switch ((fbzcp >> 14) & 0x03u)
         {
             case 1:
                 r += lr;
                 g += lg;
                 b += lb;
+                break;
+            case 2:
+                r += localAlpha;
+                g += localAlpha;
+                b += localAlpha;
                 break;
         }
 
@@ -47937,6 +48278,11 @@ sampledTexel:
     private ushort ConvertNccToRgb565(byte value, uint textureMode)
     {
         int tmu = GetTextureSampleRegisterSourceTmu();
+        return ConvertNccToRgb565(tmu, value, textureMode);
+    }
+
+    private ushort ConvertNccToRgb565(int tmu, byte value, uint textureMode)
+    {
         int table = (int)((textureMode >> 5) & 1u);
         int start = RegNccTable + table * 12;
         int yIndex = (value >> 4) & 0x0f;

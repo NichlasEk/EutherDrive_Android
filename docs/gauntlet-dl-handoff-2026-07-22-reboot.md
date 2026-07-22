@@ -399,3 +399,49 @@ blocker. Trace väljer nu giltig `record+0` före fallback `record+8`. Nästa
 kausala mål är levelE1-payloadens konsument och vägen som senare skriver
 `No Nodes have this object`; detta är närmare world/model-state än själva
 diagnostikmenyn.
+
+## MAME-jämförelse: två TMU:er och riktig texture-alpha
+
+Den lokala MAME-källan visar att Vegas-konfigurationen har Voodoo 2 med två
+separata 4 MiB-TMU:er. Rasterizern samplar TMU1 först, kombinerar dess texel,
+och matar sedan resultatet som `c_other` till TMU0. Den tidigare
+bringup-rasterizern valde i stället en enda giltig TMU och tappade dessutom
+alpha från Alpha8, NCC16, ARGB1555, ARGB4444 och AI88.
+
+Ett nytt default-off-experiment modellerar den verkliga kedjan, inklusive
+per-TMU-register/bank, bilinjär RGBA-sampling, TMU1 -> TMU0-combinern och
+texture-alpha in i framebuffer-combinern:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TWO_TMU_COMBINE=1
+```
+
+Från exakt samma f900-state till f901 gav kontrollen:
+
+```text
+baseline                         frameHash=0xdcb2114e colored=182837
+two-TMU, gammal riktning          frameHash=0x9d9df305 colored=185854
+two-TMU, MAME texelriktning       frameHash=0xeea919dd colored=163014
+```
+
+MAME gör varken bringup-vägens globala T-origin-flip eller omvända
+8-bitars sample-lanes. Med båda avstängda blir atlasinnehållet visuellt
+sammanhängande och det färgade slumpbruset försvinner. Samma atlas upprepas
+fortfarande över flera draw-rektanglar; därför är återstående blockerare inte
+en helbildsflip utan sannolikt draw-postens material/objektbindning eller dess
+per-draw koordinatkälla. Varken två-TMU-vägen eller MAME-riktningen är
+promoterad till baseline ännu.
+
+Reproducerbar kandidat:
+
+```text
+artifacts/gauntlet-probe/gauntdl-two-tmu-mame-orient-f901-20260722.warm
+sha256=2d074ac76c9edaf15f56330b349df97d743993204db814fce73710170f1eeb86
+artifacts/gauntlet-probe/gauntdl-two-tmu-mame-orient-f901-20260722.png
+sha256=659de9a37293edd7ca2e37a249353b1af0f73170a25f1fd0debfb528fffcf510
+```
+
+Nästa smala steg är att korrelera de upprepade Type3-rektanglarna med den
+aktiva renderposten och dess textureMode/base/ST-källa. Använd kandidaten som
+visuellt orakel och jämför särskilt varför flera poster återanvänder samma
+atlasområde trots clampade TMU-lägen.
