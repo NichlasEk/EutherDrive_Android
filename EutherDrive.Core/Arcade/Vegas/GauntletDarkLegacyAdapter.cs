@@ -29,6 +29,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "200000"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS", "0"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK", "1"),
@@ -27731,6 +27732,8 @@ internal sealed class VegasMemoryMap
     private readonly ushort? _ioasicPort0Override = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_PORT0"));
     private readonly bool _traceIoasicInputs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_INPUTS") == "1";
     private readonly bool _traceRuntimeInputBridge = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_INPUT_BRIDGE") == "1";
+    private readonly bool _enableRuntimeInputDiagnosticExitBridge =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE");
     private readonly bool _traceIoasic = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC") == "1";
     private readonly int _traceIoasicLimit = ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_LIMIT"), 240);
     private readonly bool _traceIoasicPic = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_PIC") == "1";
@@ -27935,6 +27938,15 @@ internal sealed class VegasMemoryMap
         UpdateRuntimeInputBitfieldRecord(record0, player1Bits);
         UpdateRuntimeInputBitfieldRecord(record1, player2Bits);
         UpdateRuntimeInputBitfieldRecord(record5, previousLowBits | systemBits);
+
+        const ulong mainState = 0xffffffff80227ab0UL;
+        const ulong diagnosticExitLatch = 0xffffffff80227ec8UL;
+        if (_enableRuntimeInputDiagnosticExitBridge &&
+            Read32(mainState) == 0x8000U &&
+            ((player1Bits | player2Bits) & 0x0800U) != 0)
+        {
+            Write32(diagnosticExitLatch, 1U);
+        }
     }
 
     private static uint BuildRuntimePlayerButtonBits(GauntletPlayerInput player)

@@ -162,6 +162,7 @@ ScanRequestedPointers(GetProperty(machine, "MemoryMap"));
 ScanRequestedMainRamWords(GetProperty(machine, "MemoryMap"));
 ScanRequestedAddressLoads(GetProperty(machine, "MemoryMap"));
 ScanRequestedMemoryRefs(GetProperty(machine, "MemoryMap"));
+DumpRequestedMainRam(GetProperty(machine, "MemoryMap"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS") == "1")
     ScanFifoCommandBuilders(GetProperty(machine, "MemoryMap"));
 
@@ -2162,6 +2163,17 @@ static void ScanRequestedMemoryRefs(object memory)
     }
 
     Console.WriteLine($"memRefScan matches={matches}");
+}
+
+static void DumpRequestedMainRam(object memory)
+{
+    string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_MAIN_RAM");
+    if (string.IsNullOrWhiteSpace(path))
+        return;
+
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    File.WriteAllBytes(path, mainRam);
+    Console.WriteLine($"mainRamDump={path} bytes={mainRam.Length}");
 }
 
 static bool IsMemoryReferenceOpcode(uint opcode)

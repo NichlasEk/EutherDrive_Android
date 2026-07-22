@@ -4285,3 +4285,57 @@ oförändrad: `frameHash=0xe23a380e`, 314 täckta texturtrianglar och 3719
 nolltexlar. Eftersom de både matchar den verkliga hårdvarutopologin, bevarar
 den gamla referensen och tar bort ett uppmätt cross-TMU-fel är de nu
 promoterade till baseline. RGB332-as-RGB565-regeln förblir default-off.
+
+### FIRE 3 lämnar diagnostikmenyn via dess gästlatch
+
+Den tidigare slutsatsen att en MAGIC- eller TURBO-puls i sig startade nästa
+renderförlopp var fel: en ny kontrollkörning utan input gav exakt samma f710-
+hash `0x2e22fdd3`, 404 swaps och 578027 texturwrites. Den verkliga
+inputkedjan verifierades i stället genom en repo-lokal 32 MiB RAM-dump och
+MIPS-disassemblering. Proben kan nu skriva dumpen med
+`EUTHERDRIVE_GAUNTDL_DUMP_MAIN_RAM=/path/to/mainram.bin`.
+
+Gästfunktionen vid `0x80019b9c` producerar de normaliserade current-, latch-
+och edge-fälten. En sen FIRE 3-puls gav `0x0800` i alla tre aggregaten, men
+diagnostikrenderaren lämnade ändå inte state `0x8000`. CPU-tracen genom
+`0x8008458c..0x80084a68` visade orsaken: menyobjektet som normalt förmedlar
+knappen saknas (`s6=0`) och kontrollen vid `0x80084a50` returnerar noll.
+Det stämmer med de redan loggade null-render-recorden och är inte ett fel i
+den råa IO- eller normaliseringskedjan.
+
+Baseline innehåller därför nu
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE=1`. Fixen är strikt
+begränsad till huvudstate `0x8000`; när den normaliserade FIRE 3-biten syns
+sätter den spelets eget latch `0x80227ec8`. Gästkoden utför därefter sin
+ordinarie transition. Den tillfälliga proben som vände spelarposternas
+ordning togs bort.
+
+En ren baseline-körning från f700 verifierar övergången utan extra flaggor:
+
+```text
+input press/release: f708/f711
+f712 main state: 0x8007
+f712 frameHash: 0xc2b9fd15
+f712 swaps: 444
+
+artifacts/gauntlet-probe/gauntdl-baseline-diagnostic-exit-f712.ppm
+PPM sha256 6814a3ad39084678abe98e1fdd3744fcff7e249c586c8038d8086a95eb4f6bfa
+artifacts/gauntlet-probe/gauntdl-baseline-diagnostic-exit-f712-200k.warm
+snapshot sha256 c0a61238fa7b52d4603459efb7408b621d9b809ee196749e790f5b5ac9912fca
+```
+
+Vid f720 visar PNG:n nästa `DIAGNOSTIC MODE`-sida. Vid f740 är bilden
+oförändrad men gästförloppet fortsätter: 856 swaps, 933767 texturwrites och
+nya spelarassets når `BGLoadModel`. Nästa isolerade blockerare är att denna
+caller-kedja anländer med `key=<empty>` trots att assettabellen innehåller
+bland annat `players/sel_lr/yel` och `players/dwf/sfxyel`.
+
+```text
+artifacts/gauntlet-probe/gauntdl-diagnostic-exit-bridge-f720.png
+artifacts/gauntlet-probe/gauntdl-diagnostic-exit-bridge-f720-200k.warm
+snapshot sha256 c15e5385c8d33064340ab99f4c522e3dd9f5b5eae12d1f8bdb2ab8d17fe9b676
+
+artifacts/gauntlet-probe/gauntdl-post-diagnostic-exit-f740.png
+artifacts/gauntlet-probe/gauntdl-post-diagnostic-exit-f740-200k.warm
+snapshot sha256 df94868c6d0f9fae0484fe52ab00e13e7339027f70154b70fbd0d5e8f2ca5121
+```
