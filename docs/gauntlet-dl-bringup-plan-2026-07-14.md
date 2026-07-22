@@ -4559,14 +4559,15 @@ MAME fixed-fetch, men den här drawens setup-gradienter ger vertikala ränder i
 stället för porträttet (`frameHash=0x17c7320a`). Nästa gräns är därför WAR-drawens
 fixed-point setup-gradienter/färgkombination, inte payloadadress eller upload.
 
-### WAR_FACE_HS kräver byte-swap inne i AYIQ-texeln
+### Byte-swap gör WAR_FACE_HS synlig och avgränsar AYIQ-pipelinen
 
 En rådump av det nu korrekt adresserade LOD3-blocket förklarar varför den första
 bilden fortfarande var nästan enfärgad. Format 9 är 16-bitars AYIQ. I minnet
 ligger par som `fe00`, `0bff` och `1bff`; lästa i den tidigare byteordningen
 blir YIQ-färgbytena nästan bara `00/ff`, medan den strukturerade bildinformationen
-hamnar i den andra byten. Det är ett endianfel inne i varje 16-bitars texel, inte
-ett nytt LOD-, koordinat- eller uploadfel.
+hamnar i den andra byten. En sampler-byte-swap är därför en användbar,
+registerfiltrerad visualiseringsbracket för att bevisa att porträttets data och
+geometri är rätt, men den är ännu inte en generell hårdvarufix.
 
 Den nya default-avstängda proben
 
@@ -4577,7 +4578,8 @@ EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_16BIT_BYTE_SWAP_REGISTER_BASE=0x1a
 byter endast de två bytena i 16-bitars texlar när den aktiva registerbasen
 matchar. Efter swap blir samma värden `00fe`, `ff0b` och `ff1b`, och WAR-rutan
 visar ett tydligt färgporträtt. Den är nu påslagen i probeskriptet tillsammans
-med den tidigare registerfiltrerade LOD3-skalningen.
+med den tidigare registerfiltrerade LOD3-skalningen, fortfarande begränsad till
+WAR:s registerbas.
 
 En ren f759 -> f770 A/B från samma snapshot ger:
 
@@ -4590,3 +4592,36 @@ Skillnaden är exakt 936 pixlar inom bbox `(128,279)-(160,311)`; inga pixlar
 utanför WAR-rutan ändras. Global `fbzColorPath`-kombinering provades separat
 men gjorde stora delar av porträttet svart och påverkar många andra draws, så
 den promoterades inte i det här steget.
+
+En efterföljande kontroll mot MAME:s Voodoo-referens och den lokala uploadvägen
+visar varför proben inte ska generaliseras ännu. `tLOD=0x0600260c` har både
+`tdataSwizzle` (bit 25) och `tdataSwap` (bit 26). MAME applicerar först en
+32-bitars endianvändning och därefter en 16-bitars lane-swap; kombinationen
+motsvarar byte-swap inom varje texel. Vår `WriteTexturePort32` gör redan samma
+två operationer. RAM/TMU-dumpen bekräftar också att uploaden transformerar
+källans `fe 00` till TMU:s `00 fe`. En extra global 16-bitars lane-swap är
+alltså fel och avvisades. Nästa hårdvarutrogna gräns är hur format 9:s separata
+YIQ- och alphakomponenter går genom texture combine och pixel-pipelinen, inte
+ytterligare upload- eller lane-swizzling.
+
+### f770-snapshot och synliga referensbilder
+
+Det promoterade probeskriptets f770-läge är sparat repo-lokalt under den
+git-ignorerade artifact-katalogen:
+
+```text
+artifacts/gauntlet-probe/gauntdl-war-face-ayiq-f770-60k-20260722.warm
+size=79920316
+sha256=005336a0f7d29209aa05a7017af3d890bf73e51d2a569ee5c020b520636130a5
+
+artifacts/gauntlet-probe/gauntdl-war-face-ayiq-f770-20260722.png
+sha256=91e86151a0a6c3ac341134ba3f3bd3aa173d658b8d9f7524f318390394a14b9e
+
+artifacts/gauntlet-probe/gauntdl-war-face-ayiq-f770-crop16x-20260722.png
+sha256=40748c95a013600fcc9ec541ab87cda49cb995fdcab2d2833e1cb5c11aae8ca6
+```
+
+Snapshoten reloadades vid target/warmup frame 770 med noll körda frames.
+Reload-dumpen är byte-identisk med original-PPM:n, SHA-256
+`c74e1d8617354efdae093e0e86101f73339e9c080d3ff750247db3e6e2092bde`,
+och återger `frameHash=0x90bebe98` / `colored=71743`.
