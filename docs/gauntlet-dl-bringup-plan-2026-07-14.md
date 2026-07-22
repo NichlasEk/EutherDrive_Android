@@ -4558,3 +4558,35 @@ Den fulla `EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1`-preseten når också LOD3 via
 MAME fixed-fetch, men den här drawens setup-gradienter ger vertikala ränder i
 stället för porträttet (`frameHash=0x17c7320a`). Nästa gräns är därför WAR-drawens
 fixed-point setup-gradienter/färgkombination, inte payloadadress eller upload.
+
+### WAR_FACE_HS kräver byte-swap inne i AYIQ-texeln
+
+En rådump av det nu korrekt adresserade LOD3-blocket förklarar varför den första
+bilden fortfarande var nästan enfärgad. Format 9 är 16-bitars AYIQ. I minnet
+ligger par som `fe00`, `0bff` och `1bff`; lästa i den tidigare byteordningen
+blir YIQ-färgbytena nästan bara `00/ff`, medan den strukturerade bildinformationen
+hamnar i den andra byten. Det är ett endianfel inne i varje 16-bitars texel, inte
+ett nytt LOD-, koordinat- eller uploadfel.
+
+Den nya default-avstängda proben
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_16BIT_BYTE_SWAP_REGISTER_BASE=0x1a0df
+```
+
+byter endast de två bytena i 16-bitars texlar när den aktiva registerbasen
+matchar. Efter swap blir samma värden `00fe`, `ff0b` och `ff1b`, och WAR-rutan
+visar ett tydligt färgporträtt. Den är nu påslagen i probeskriptet tillsammans
+med den tidigare registerfiltrerade LOD3-skalningen.
+
+En ren f759 -> f770 A/B från samma snapshot ger:
+
+```text
+utan byte-swap: frameHash=0x3910fd24, PPM sha256=4ab9df06abce46671a6bdba33532caa176b738a8d175034838fc0d9d5960283d
+med byte-swap:  frameHash=0x90bebe98, PPM sha256=c74e1d8617354efdae093e0e86101f73339e9c080d3ff750247db3e6e2092bde
+```
+
+Skillnaden är exakt 936 pixlar inom bbox `(128,279)-(160,311)`; inga pixlar
+utanför WAR-rutan ändras. Global `fbzColorPath`-kombinering provades separat
+men gjorde stora delar av porträttet svart och påverkar många andra draws, så
+den promoterades inte i det här steget.
