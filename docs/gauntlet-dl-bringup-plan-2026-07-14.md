@@ -4147,6 +4147,16 @@ linjer. Bias `0` gav hash `0xb11fe479`, 11 948 färgpixlar och tog bort dessa
 linjer utan att ta bort de underliggande UI-/face-drawsen. Den kanoniska
 runnern sätter nu åter default `0`.
 
+Ett efterföljande f780-spår isolerade `WAR_FACE_HS` ytterligare. Den
+derivatbaserade MAME-LOD-beräkningen väljer LOD3 och en 32x32-layout vid
+`0x0fa6f8`, vilket stämmer med descriptorn. Den default-off min-LOD-hjälparen
+skalade quarter-LOD-fältet fel och är korrigerad från rå `0x0c -> LOD8` till
+`0x0c >> 2 -> LOD3`. Global min-LOD är fortfarande visuellt fel och förblir
+avstängd. Type5-spåret visar samtidigt ingen upload till face-intervallet
+`0x0fa6f8..0x0faef8`; närmaste senare upload börjar vid `0x0fb1e8` med annan
+texture state. Nästa arbete ska reparera den saknade LOD3-materialiseringen,
+inte ändra LOD-valet eller sample-basen igen.
+
 ### T-origin och 8-bitars lanes gör texten läsbar
 
 Den bias-0-bilden visade teckenformer men de såg fortfarande upp-och-ner och

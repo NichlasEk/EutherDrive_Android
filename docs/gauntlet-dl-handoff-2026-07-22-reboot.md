@@ -137,6 +137,36 @@ artifacts/gauntlet-probe/gauntdl-f780-bias0.png
 artifacts/gauntlet-probe/gauntdl-f780-bias510.png
 ```
 
+### Face-drawen väljer LOD3 men dess yta saknas
+
+Ett fokuserat sampler-spår på `WAR_FACE_HS`-descriptorn
+`0x805b1be4` visar att baseline tidigare tvingade LOD0 trots
+`tLOD=0x0600260c`. Den MAME-liknande derivatberäkningen ger däremot korrekt:
+
+```text
+base8p8=-256 perspective8p8=-1024 bias8p8=128
+candidate8p8=896 clamped8p8=896 targetLod=3
+layout=32x32 base=0x0fa6f8 sampled=0x0fa7be..0x0faef6
+```
+
+Den default-off `TEXTURE_USE_LOD_MIN`-hjälparen hade dessutom skalat det
+6-bitars quarter-LOD-fältet som ett heltals-LOD. `0x0c` klampades därför till
+LOD8. Hjälparen skalar nu fältet med `>> 2`, vilket ger LOD3. Experimentet
+ska fortfarande vara avstängt globalt: min-LOD på alla draws förstör övriga
+UI-texturer.
+
+Derivatbaserad triangel-LOD väljer LOD3 endast för face-drawen och lämnar
+resten av f780 i stort sett oförändrad, men ansiktet blir ett solitt rött
+32x32-block. Råorden i ytan domineras av `fe00/0bff`. Ett Type5-spår från
+f759 till f770 visar varför: den närliggande uploaden använder annan state
+(`mode/lod/base=00000900/00000804/0001b63d`) och börjar vid fysisk byte
+`0x0fb1e8`. Ingen Type5-sekvens materialiserar face-intervallet
+`0x0fa6f8..0x0faef8`.
+
+Nästa smala gräns är därför inte fler samplerjusteringar. Spåra var
+`hiscore/legends`-postens LOD3-upload tappas mellan BGLoadModel-källan och
+Type5-produceraren, och använd intervallet ovan som regressionsoracle.
+
 Efter FIFO-checkpointen provades både A8-maskning och undertryckning av den
 vita fast-fillen. A8-maskningen tar bort falska linjer men visar ingen scen;
 utan den vita fillen återkommer den gamla atlasmattan under UI:t. Båda förblir

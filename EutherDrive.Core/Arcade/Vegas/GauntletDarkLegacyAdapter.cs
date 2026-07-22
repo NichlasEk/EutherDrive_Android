@@ -44177,7 +44177,7 @@ sampledTexel:
 
     private int GetTextureTargetLod(uint textureLod)
         => _experimentTextureUseLodMin
-            ? Math.Clamp((int)(textureLod & 0x3fu), 0, 8)
+            ? Math.Clamp((int)(textureLod & 0x3fu) >> 2, 0, 8)
             : Math.Clamp(_experimentTextureForceLod, 0, 8);
 
     private ushort SampleTextureRgb565(float s, float t, int targetLodOverride = -1)
