@@ -4433,3 +4433,33 @@ snapshot sha256 164100e7cedd4d9f7410abf0c61546ad4c42e5e802966304bd85d2e96f636213
 artifacts/gauntlet-probe/gauntdl-f770-fifo-head-wait-200k.warm
 snapshot sha256 9853a1afcb3553a15b1e96b41ac54f68a7e2b04c9673b99d0796e5774a52eebf
 ```
+
+Två default-avstängda kontrollprober avgränsar nästa fel ytterligare. Format
+2-drawsen är A8 och record-0-familjen samplar nästan bara nollor (typiskt
+`8250/8256` pixlar per triangel). A8-maskningen tar därför bort de falska
+horisontella linjerna och håller genom f770, men den exponerar ingen saknad
+scen:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_ALPHA8_MASK=1
+f762/f770 frameHash=0xa4b14168
+f770 swaps=952
+```
+
+En andra probe undertryckte den enda vita fast-fillen efter raster. Den tog
+inte fram spelgrafik utan blottade den gamla atlasmattan under det färgade
+A8-UI:t:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_WHITE_FASTFILL_AFTER_RASTER=1
+f762 frameHash=0xa7b05b48
+white pixels=120036
+colored pixels=167125
+```
+
+Den vita fillen är alltså en slutlig rensning av en backbuffer som ännu inte
+har ersatts av en scen, inte orsaken till att en redan ritad scen försvinner.
+Varken A8-maskningen eller fill-undertryckningen promoterades. Nästa probe ska
+i stället binda de nya Type-5-uploadsen mellan f762 och f770 till den första
+efterföljande scen-Type-3-drawen, eller bevisa att gästen aldrig publicerar en
+sådan draw.

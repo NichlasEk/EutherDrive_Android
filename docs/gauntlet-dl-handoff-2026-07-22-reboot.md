@@ -111,6 +111,12 @@ rätt generation och producer-PC när paketet konsumeras.
 4. Gör nästa beteendeändring default-off tills en smal A/B-probe visar vilken
    drawklass som ändras.
 
+Efter FIFO-checkpointen provades både A8-maskning och undertryckning av den
+vita fast-fillen. A8-maskningen tar bort falska linjer men visar ingen scen;
+utan den vita fillen återkommer den gamla atlasmattan under UI:t. Båda förblir
+default-off. Nästa smala gräns är de nya Type-5-uploadsen f762 -> f770 mot den
+första efterföljande scen-Type-3-drawen, inte alpha/clear/swap.
+
 ## Diskutrymme och temporära filer
 
 `/tmp` fylls snabbt av `.warm`-filer. Under den här bringup-fasen ska stora
