@@ -41665,9 +41665,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         uint targetStart = target;
-        uint payloadHash = ComputeType5PayloadHash(count, targetStart);
-        int payloadNonZeroWords = CountType5PayloadNonZeroWords(count, targetStart);
-        int payloadFloatLikeWords = CountType5PayloadFloatLikeWords(count, targetStart);
+        uint payloadHash = ComputeType5PayloadHash(count);
+        int payloadNonZeroWords = CountType5PayloadNonZeroWords(count);
+        int payloadFloatLikeWords = CountType5PayloadFloatLikeWords(count);
         _currentType5TextureWritePhysicalMinWord = -1;
         _currentType5TextureWritePhysicalMaxWord = -1;
         try
@@ -41689,7 +41689,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                     _currentType5TextureWriteCount = count;
                     _currentType5TextureWriteStreaming = streaming;
                     _currentType5TextureWriteReadIndex = _cmdFifoReadIndex;
-                    value = DecodeType5TexturePayloadWord(target, value);
+                    if (_fixType5TextureEndian)
+                        value = BinaryPrimitives.ReverseEndianness(value);
                     WriteTexturePort32(target, value);
                 }
                 else if (space == 0 && _fixMameCommandFifoModel)
@@ -41719,33 +41720,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
     }
 
-    private uint DecodeType5TexturePayloadWord(uint targetWord, uint value)
-    {
-        if (!_fixType5TextureEndian)
-            return value;
-
-        int tmu = (int)((targetWord >> 19) & 0x03u);
-        uint mode = ReadTextureUploadRegister(tmu, RegTextureMode);
-        uint textureLod = ReadTextureUploadRegister(tmu, RegTextureLod);
-        int bytesPerTexel = GetTextureFormatBytesPerTexel((int)((mode >> 8) & 0x0fu));
-        // The legacy FIFO bus correction remains necessary for other uploads.
-        // On a 16-bit surface, tdataSwizzle+tdataSwap already performs the
-        // per-texel byte swap; pre-swapping here would cancel that hardware path.
-        bool hardwareSwapsBytesWithin16BitTexels =
-            bytesPerTexel == 2 && (textureLod & 0x06000000u) == 0x06000000u;
-        return hardwareSwapsBytesWithin16BitTexels
-            ? value
-            : BinaryPrimitives.ReverseEndianness(value);
-    }
-
-    private uint ComputeType5PayloadHash(int count, uint targetStart)
+    private uint ComputeType5PayloadHash(int count)
     {
         int payloadWords = Math.Min(count, Math.Max(0, _fifoBuffer.Count - 2));
         uint hash = 2166136261u;
         for (int i = 0; i < payloadWords; i++)
         {
             uint value = _fifoBuffer[i + 2];
-            value = DecodeType5TexturePayloadWord(targetStart + (uint)i, value);
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
             hash ^= value;
             hash *= 16777619u;
         }
@@ -41753,14 +41736,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         return hash;
     }
 
-    private int CountType5PayloadNonZeroWords(int count, uint targetStart)
+    private int CountType5PayloadNonZeroWords(int count)
     {
         int payloadWords = Math.Min(count, Math.Max(0, _fifoBuffer.Count - 2));
         int nonZero = 0;
         for (int i = 0; i < payloadWords; i++)
         {
             uint value = _fifoBuffer[i + 2];
-            value = DecodeType5TexturePayloadWord(targetStart + (uint)i, value);
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
             if (value != 0)
                 nonZero++;
         }
@@ -41768,14 +41752,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         return nonZero;
     }
 
-    private int CountType5PayloadFloatLikeWords(int count, uint targetStart)
+    private int CountType5PayloadFloatLikeWords(int count)
     {
         int payloadWords = Math.Min(count, Math.Max(0, _fifoBuffer.Count - 2));
         int floatLike = 0;
         for (int i = 0; i < payloadWords; i++)
         {
             uint value = _fifoBuffer[i + 2];
-            value = DecodeType5TexturePayloadWord(targetStart + (uint)i, value);
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
             if (IsLikelyPackedFloatWord(value) ||
                 IsLikelyPackedFloatWord(BinaryPrimitives.ReverseEndianness(value)))
             {
@@ -41833,14 +41818,15 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         int payloadAvailable = Math.Max(0, _fifoBuffer.Count - 2);
         int payloadWords = Math.Min(count, payloadAvailable);
-        int nonZero = CountType5PayloadNonZeroWords(count, targetStart);
-        uint hash = ComputeType5PayloadHash(count, targetStart);
+        int nonZero = CountType5PayloadNonZeroWords(count);
+        uint hash = ComputeType5PayloadHash(count);
         uint first = 0;
         uint last = 0;
         for (int i = 0; i < payloadWords; i++)
         {
             uint value = _fifoBuffer[i + 2];
-            value = DecodeType5TexturePayloadWord(targetStart + (uint)i, value);
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
             if (i == 0)
                 first = value;
             last = value;
@@ -41850,7 +41836,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             ? "phys=-"
             : $"phys=0x{_currentType5TextureWritePhysicalMinWord:X5}-0x{_currentType5TextureWritePhysicalMaxWord:X5}";
         string rawWords = payloadWords > 0 && _traceType5TextureUploadSequenceWords > 0
-            ? $" rawWords={FormatType5PayloadWordList(count, _traceType5TextureUploadSequenceWords, decoded: false)} decWords={FormatType5PayloadWordList(count, _traceType5TextureUploadSequenceWords, decoded: true, targetStart)}"
+            ? $" rawWords={FormatType5PayloadWordList(count, _traceType5TextureUploadSequenceWords, decoded: false)} decWords={FormatType5PayloadWordList(count, _traceType5TextureUploadSequenceWords, decoded: true)}"
             : "";
         string storageWords = payloadWords > 0
             ? $" storage=hdr[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart)}] target[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 1)}] first[{FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 2)}]"
@@ -41923,7 +41909,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         for (int i = 0; i < payloadWords; i++)
         {
             uint value = _fifoBuffer[i + 2];
-            value = DecodeType5TexturePayloadWord(targetStart + (uint)i, value);
+            if (_fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
             words[i] = value;
         }
 
@@ -42190,9 +42177,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             _type5PayloadTraceCount++;
         }
 
-        uint decodedFirst = DecodeType5TexturePayloadWord(targetWord, first);
-        uint decodedSecond = DecodeType5TexturePayloadWord(targetWord + 1u, second);
-        uint decodedLast = DecodeType5TexturePayloadWord(targetWord + (uint)Math.Max(0, count - 1), last);
+        uint decodedFirst = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(first) : first;
+        uint decodedSecond = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(second) : second;
+        uint decodedLast = _fixType5TextureEndian ? BinaryPrimitives.ReverseEndianness(last) : last;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         uint targetByte = _fifoBuffer.Count > 1 ? _fifoBuffer[1] : targetWord << 2;
         string storageStatus = focusedTarget
@@ -42202,7 +42189,7 @@ internal class VoodooBringupBackend : IVoodooBackend
               $"w2={FormatCommandFifoStorageWordDebug(_currentCommandFifoPacketStart + 2)}"
             : "";
         string wordStatus = focusedTarget && _traceType5PayloadWords > 0
-            ? $" rawWords={FormatType5PayloadWordList(count, _traceType5PayloadWords, decoded: false)} decWords={FormatType5PayloadWordList(count, _traceType5PayloadWords, decoded: true, targetWord)}"
+            ? $" rawWords={FormatType5PayloadWordList(count, _traceType5PayloadWords, decoded: false)} decWords={FormatType5PayloadWordList(count, _traceType5PayloadWords, decoded: true)}"
             : "";
         string tag = focusedTarget ? "VOODOO-TYPE5-TARGET" : focusedAfterCap ? "VOODOO-TYPE5-FOCUS" : "VOODOO-TYPE5";
         Console.WriteLine(
@@ -42239,7 +42226,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static bool MatchesTracePc(ulong[] pcs, ulong pc)
         => pcs.Contains(pc) || pcs.Contains(pc & 0xffffffffUL);
 
-    private string FormatType5PayloadWordList(int count, int limit, bool decoded, uint targetStart = 0)
+    private string FormatType5PayloadWordList(int count, int limit, bool decoded)
     {
         int words = Math.Min(count, Math.Min(limit, Math.Max(0, _fifoBuffer.Count - 2)));
         StringBuilder builder = new(words * 11);
@@ -42249,8 +42236,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 builder.Append('/');
 
             uint value = _fifoBuffer[i + 2];
-            if (decoded)
-                value = DecodeType5TexturePayloadWord(targetStart + (uint)i, value);
+            if (decoded && _fixType5TextureEndian)
+                value = BinaryPrimitives.ReverseEndianness(value);
             builder.Append("0x");
             builder.Append(value.ToString("x8", CultureInfo.InvariantCulture));
         }

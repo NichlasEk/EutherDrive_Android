@@ -4577,10 +4577,9 @@ EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_16BIT_BYTE_SWAP_REGISTER_BASE=0x1a
 
 byter endast de två bytena i 16-bitars texlar när den aktiva registerbasen
 matchar. Efter swap blir samma värden `00fe`, `ff0b` och `ff1b`, och WAR-rutan
-visar ett tydligt färgporträtt. Den användes först i probeskriptet tillsammans
-med den tidigare registerfiltrerade LOD3-skalningen, begränsad till WAR:s
-registerbas. Efter upload-endianbeviset nedan är sampler-swappen borttagen ur
-baseline igen.
+visar ett tydligt färgporträtt. Den är påslagen i probeskriptet tillsammans
+med den tidigare registerfiltrerade LOD3-skalningen, fortfarande begränsad till
+WAR:s registerbas.
 
 En ren f759 -> f770 A/B från samma snapshot ger:
 
@@ -4600,35 +4599,33 @@ visade först att `tLOD=0x0600260c` har både `tdataSwizzle` (bit 25) och
 därefter en 16-bitars lane-swap; kombinationen motsvarar byte-swap inom varje
 texel. Vår `WriteTexturePort32` gör redan samma två operationer.
 
-Ett senare kontrollpass hittade den saknade länken före den funktionen:
-`_fixType5TextureEndian` ärver `BRINGUP_FAST` och vänder normalt hela Type5-
-payloadordet före `WriteTexturePort32`. För WAR:s 16-bitarsformat, där båda
-tLOD-bitarna redan är satta, blir det en transform för mycket.
+Ett efterföljande kallkörningspass testade hypotesen att den äldre generella
+Type5-endianregeln var orsaken. Den hypotesen är nu falsifierad. Den fungerande
+f759-snapshotens WAR-region har 176 unika byte, 1836 icke-nollbyte och SHA-256
+`35014820a9b0a6dd...`; det är den strukturerade porträttpayloaden. Både en kall
+global-no-endian-lineage och en kall state-villkorad lineage innehöll däremot
+bara en placeholder med alternerande `00/03`, två unika byte och 1024
+icke-nollbyte. Deras inbördes `swap16`-relation sade därför ingenting om WAR-
+payloadens riktiga byteordning.
 
-En ny kall f0 -> f600-körning med 200 000 CPU-steg per frame och den globala
-Type5-regeln avstängd gav den avgörande råjämförelsen. Hela WAR-blocket
-`0x0fa6f8..0x0faef8` (2048 byte) är exakt `swap16` av samma block i den äldre
-f700-lineage:n: alla 2048 byte ändras och alla 2048 matchar efter swap. En
-default-off snapshotprobe
-`EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_SWAP16=0fa6f8:800` reproducerar
-dessutom den promoterade f770-bilden utan sampler-byte-swap: både
-`frameHash=0x90bebe98` och PPM-SHA-256 `c74e1d8617354ef...` är byteidentiska.
+Checkpointkedjan isolerar placeholder-uploaden till f200 -> f300. Den verkliga
+Type5-tracen visar:
 
-Den globala avstängningen är däremot för bred. En riktig 200k-continuation
-f600 -> f770 utan Type5-förswap gav `frameHash=0xca68d6e6` och omfattande
-texturkorruption utanför WAR. Regeln är därför kvar för vanliga Type5-
-payloads, men `DecodeType5TexturePayloadWord` hoppar nu över förswappen endast
-för 16-bitarsformat där både `tdataSwizzle` och `tdataSwap` är satta. Trace-
-hashar och decoded previews använder samma villkor som den faktiska writern.
+```text
+pc=0x800fe7cc
+targets=0x008a80..0x008ebf
+mode/lod/base=00000900/00500804/0001e237
+rawWords=00030003...
+physical=0x3e9ae..0x3ebed
+```
 
-Den befintliga f759-snapshoten innehåller redan den gamla TMU-RAM-layouten.
-En f759 -> f770-kontroll med Type5-endian avstängd är byte-stabil mot den
-promoterade bilden (`frameHash=0x90bebe98`) eftersom intervallet inte innehåller
-några Type5-texture-write. Den registerfiltrerade sampler-byte-swappen behövs
-alltså fortfarande endast som en explicit visualiseringsbracket för denna
-lineage. Alternativt migrerar snapshotproben exakt WAR-blocket. Nya kalla
-snapshots använder den villkorsstyrda uploadregeln, och probeskriptet slår inte
-längre på sampler-swappen.
+Det är alltså inte WAR-descriptorns senare draw-state
+`8c2419cf/0600260c/0001a0df`, utan en konstant tidigare yta. Den kalla
+lineage:n når aldrig den hydrerade upload som ersätter placeholdern med de 176
+unika WAR-bytena. Type5-endianpromoteringen och snapshot-swap16-proben togs
+därför tillbaka; den tidigare registerfiltrerade sampler-swappen förblir en
+visualiseringsbracket, inte en hårdvarufix. Nästa kausala gräns är varför kall
+asset-hydrering inte publicerar WAR-payloaden före f600.
 
 ### f770-snapshot och synliga referensbilder
 
