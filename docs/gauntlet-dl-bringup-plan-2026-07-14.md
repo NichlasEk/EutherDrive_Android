@@ -4577,9 +4577,10 @@ EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_16BIT_BYTE_SWAP_REGISTER_BASE=0x1a
 
 byter endast de två bytena i 16-bitars texlar när den aktiva registerbasen
 matchar. Efter swap blir samma värden `00fe`, `ff0b` och `ff1b`, och WAR-rutan
-visar ett tydligt färgporträtt. Den är nu påslagen i probeskriptet tillsammans
-med den tidigare registerfiltrerade LOD3-skalningen, fortfarande begränsad till
-WAR:s registerbas.
+visar ett tydligt färgporträtt. Den användes först i probeskriptet tillsammans
+med den tidigare registerfiltrerade LOD3-skalningen, begränsad till WAR:s
+registerbas. Efter upload-endianbeviset nedan är sampler-swappen borttagen ur
+baseline igen.
 
 En ren f759 -> f770 A/B från samma snapshot ger:
 
@@ -4600,22 +4601,34 @@ därefter en 16-bitars lane-swap; kombinationen motsvarar byte-swap inom varje
 texel. Vår `WriteTexturePort32` gör redan samma två operationer.
 
 Ett senare kontrollpass hittade den saknade länken före den funktionen:
-`_fixType5TextureEndian` ärvde tidigare `BRINGUP_FAST` och vände hela Type5-
-payloadordet en extra gång innan `WriteTexturePort32`. För WAR-källans byte
-`fe 00 fe 00` blir kedjan med den gamla regeln därför pre-swap, tLOD-swizzle
-och tLOD-lane-swap; TMU-RAM får `00 fe 00 fe`. Utan den äldre pre-swapen ger
-Voodoo-bitarna i stället den förväntade `fe 00 fe 00`-ordningen. Type5-regeln
-är därför bortkopplad från `BRINGUP_FAST` och är nu endast en explicit
-kompatibilitetsinställning; probeskriptet sätter den till `0`.
+`_fixType5TextureEndian` ärver `BRINGUP_FAST` och vänder normalt hela Type5-
+payloadordet före `WriteTexturePort32`. För WAR:s 16-bitarsformat, där båda
+tLOD-bitarna redan är satta, blir det en transform för mycket.
+
+En ny kall f0 -> f600-körning med 200 000 CPU-steg per frame och den globala
+Type5-regeln avstängd gav den avgörande råjämförelsen. Hela WAR-blocket
+`0x0fa6f8..0x0faef8` (2048 byte) är exakt `swap16` av samma block i den äldre
+f700-lineage:n: alla 2048 byte ändras och alla 2048 matchar efter swap. En
+default-off snapshotprobe
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_SWAP16=0fa6f8:800` reproducerar
+dessutom den promoterade f770-bilden utan sampler-byte-swap: både
+`frameHash=0x90bebe98` och PPM-SHA-256 `c74e1d8617354ef...` är byteidentiska.
+
+Den globala avstängningen är däremot för bred. En riktig 200k-continuation
+f600 -> f770 utan Type5-förswap gav `frameHash=0xca68d6e6` och omfattande
+texturkorruption utanför WAR. Regeln är därför kvar för vanliga Type5-
+payloads, men `DecodeType5TexturePayloadWord` hoppar nu över förswappen endast
+för 16-bitarsformat där både `tdataSwizzle` och `tdataSwap` är satta. Trace-
+hashar och decoded previews använder samma villkor som den faktiska writern.
 
 Den befintliga f759-snapshoten innehåller redan den gamla TMU-RAM-layouten.
 En f759 -> f770-kontroll med Type5-endian avstängd är byte-stabil mot den
 promoterade bilden (`frameHash=0x90bebe98`) eftersom intervallet inte innehåller
 några Type5-texture-write. Den registerfiltrerade sampler-byte-swappen behövs
-alltså fortfarande som visualiserings-/snapshotkompatibilitetsbracket för
-denna lineage. En ny kall snapshot före den ursprungliga WAR-uploaden krävs
-för att bekräfta den korrigerade uploadordningen och därefter ta bort
-sampler-bracketen.
+alltså fortfarande endast som en explicit visualiseringsbracket för denna
+lineage. Alternativt migrerar snapshotproben exakt WAR-blocket. Nya kalla
+snapshots använder den villkorsstyrda uploadregeln, och probeskriptet slår inte
+längre på sampler-swappen.
 
 ### f770-snapshot och synliga referensbilder
 

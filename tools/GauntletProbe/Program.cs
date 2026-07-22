@@ -61,6 +61,7 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
 }
 
 ApplyRequestedGuestTextureMemoryCopy(adapter);
+ApplyRequestedTextureMemorySwap16(adapter);
 
 long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
 var runStopwatch = Stopwatch.StartNew();
@@ -256,6 +257,48 @@ static void ApplyRequestedGuestTextureMemoryCopy(GauntletDarkLegacyAdapter adapt
     Console.WriteLine(
         $"guestTextureCopy guest=0x{guestAddress:x16}/off=0x{guestOffset:x8} " +
         $"texture=0x{textureAddress:x8} bytes=0x{byteLength:x}");
+}
+
+static void ApplyRequestedTextureMemorySwap16(GauntletDarkLegacyAdapter adapter)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_SWAP16");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    string[] parts = raw.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (parts.Length != 2 ||
+        !TryParseHexUlong(parts[0], out ulong textureAddress) ||
+        !TryParseHexUlong(parts[1], out ulong byteLength) ||
+        byteLength == 0 ||
+        (textureAddress & 1UL) != 0 ||
+        (byteLength & 1UL) != 0)
+    {
+        throw new InvalidDataException(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_SWAP16 must be texture:length in hex with even alignment");
+    }
+
+    object machine = GetField(adapter, "_machine");
+    object voodoo = GetProperty(machine, "Voodoo");
+    uint[] textureMemory = GetFieldValue<uint[]>(GetField(voodoo, "_backend"), "_textureMemory");
+    ulong textureBytes = (ulong)textureMemory.Length * 4UL;
+    if (textureAddress + byteLength > textureBytes)
+        throw new InvalidDataException("Texture swap16 range is outside texture memory");
+
+    for (ulong offset = 0; offset < byteLength; offset += 2)
+    {
+        ulong firstAddress = textureAddress + offset;
+        ulong secondAddress = firstAddress + 1;
+        int firstWord = (int)(firstAddress >> 2);
+        int secondWord = (int)(secondAddress >> 2);
+        int firstShift = (int)(firstAddress & 3UL) * 8;
+        int secondShift = (int)(secondAddress & 3UL) * 8;
+        byte first = (byte)(textureMemory[firstWord] >> firstShift);
+        byte second = (byte)(textureMemory[secondWord] >> secondShift);
+        textureMemory[firstWord] = (textureMemory[firstWord] & ~(0xffu << firstShift)) | ((uint)second << firstShift);
+        textureMemory[secondWord] = (textureMemory[secondWord] & ~(0xffu << secondShift)) | ((uint)first << secondShift);
+    }
+
+    Console.WriteLine($"textureMemorySwap16 texture=0x{textureAddress:x8} bytes=0x{byteLength:x}");
 }
 
 static int StepCpu(Action step, int count, object? cpu = null, ulong? stopPc = null)
