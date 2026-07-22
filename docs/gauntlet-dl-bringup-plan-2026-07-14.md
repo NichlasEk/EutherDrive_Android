@@ -4171,3 +4171,73 @@ artifacts/gauntlet-probe/gauntdl-readable-text-f601-200k.warm
 snapshot sha256 0d2a650ce3223682efa5f9ff5249d0ede2ad8ac053aa153bd9fedd90ca9f100d
 reload frameCounter=601 ranFrames=0 frameHash=0xe23a380e colored=9571
 ```
+
+### FIRE 3 lämnar diagnostiken och exponerar nästa formatfel
+
+Den läsbara f601-checkpointen kördes vidare i repo-lokala tiobildrutesteg. Vid
+f700 stod diagnostikmenyn kvar (`frameHash=0x3f727c21`, 404 swaps och 578027
+texturord). Korta pulser på TEST, START och COIN gav identiska förlopp.
+MAME:s Vegas-inputtabell visar däremot att FIRE 3 är `BUTTON3`/Magic, inte
+Turbo. En hållen MAGIC/B-puls f700 -> f710 gav omedelbart ett nytt förlopp:
+swaps ökade 404 -> 468, 131196 nya Type 5-texturord skrevs och PC flyttade
+till `0x800a725c`. Gästloggen bekräftar samtidigt strängen
+`Exit menu (FIRE 3)`.
+
+Den fortsatta kedjan är sparad som PNG/PPM och `.warm`-filer. Vid f740 hade
+spelet nått en ny, igenkännbar scen med 738 texturtrianglar, men stora delar
+var fortfarande regnbågsrandiga. f740-checkpointen utan nya formatprober är:
+
+```text
+artifacts/gauntlet-probe/gauntdl-post-diagnostic-f740.png
+artifacts/gauntlet-probe/gauntdl-post-diagnostic-f740-200k.warm
+frameHash=0x643d4f30
+snapshot sha256 f6d325e3e0c9a9c0b6703eb9e623ef4bf12a1164116dbe7fe0263fb5aa1eef9e
+PPM sha256 9c7ddb49458acf0c21b7ef79273cc93b24cc67770e03714c806705dbb856669c
+```
+
+Type 3-spåret f730 -> f740 delar renderingen i två tydliga grupper: 732
+A8-glyphtrianglar med `mode/lod/base=8C2412CF/00302104/FFFFF800`, och sex
+helskärmstrianglar med `80000009/FF802000/00000000`. De senare täcker
+512x384 och använder S/T-området 0..256. Samma råa bas-0-textur blir en
+sammanhängande mörklila 3D-scen när dess byte tolkas som RGB565 i stället för
+det RGB332-format som textureMode-fältet för närvarande anger.
+
+Format-override-proben gick tidigare bara genom float-samplern. Den går nu
+genom en gemensam `ResolveTextureSampleFormat` även för den aktiva
+MAME-fixed-samplern och dess spårsammanfattningar. En ny, default-avstängd
+probe begränsar RGB565-tolkningen till exakt helskärmssignaturen ovan:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_RGB332_FULLRECT_AS_RGB565=1
+```
+
+Ren f730 -> f740 A/B verifierar både förbättringen och att baseline är orörd:
+
+```text
+flag off  frameHash=0x643d4f30
+flag on   frameHash=0x793e695c
+
+artifacts/gauntlet-probe/gauntdl-post-diagnostic-f740-rgb332-as-rgb565.png
+PPM sha256 6eaa35f96590c84c7fa6cae5405585d24a218c7f89aa0bef93fe22b623a77951
+
+artifacts/gauntlet-probe/gauntdl-post-diagnostic-f740-rgb332-as-rgb565-200k.warm
+snapshot sha256 d4b091b1632e89e2d17a266cf2e9db77585362f1a200268f15e2ff1b5f409a9f
+reload frameCounter=740 ranFrames=0 frameHash=0x793e695c
+```
+
+Proben håller även f740 -> f750: den sammanhängande övre 3D-scenen ligger
+kvar samtidigt som ytterligare glyphgeometri ritas. Nästa isolerade fel är
+den vita/brusiga nederhalvan, inte längre hela scenens texelformat:
+
+```text
+artifacts/gauntlet-probe/gauntdl-post-diagnostic-f750-rgb332-as-rgb565.png
+PPM sha256 c3054b6533c4580cd6b5afc0ebb860d9858188c8a321d7ff4d44e84a7aa1968e
+
+artifacts/gauntlet-probe/gauntdl-post-diagnostic-f750-rgb332-as-rgb565-200k.warm
+snapshot sha256 83774c741a14ee12006f248bfee09daf433c76b0b509ce831601d42c86793433
+```
+
+Regeln är avsiktligt inte promoterad till baseline ännu. Nästa steg är att
+spåra varför gästens helskärmspaket bär format 0 trots att bas-0-innehållet är
+RGB565, och separat klassificera drawsen som producerar den korrupta
+nederhalvan.
