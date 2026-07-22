@@ -34294,6 +34294,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_USE_LOD_MIN"));
     private readonly bool _experimentTextureLodMinBaseLevel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_BASE_LEVEL"));
+    private readonly bool _experimentTextureScaleCoordinatesByLod =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SCALE_COORDINATES_BY_LOD"));
+    private readonly ulong? _experimentTextureLodMinRegisterBase =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_REGISTER_BASE"));
     private readonly ulong? _experimentTextureSampleLodOrMask =
         ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SAMPLE_LOD_OR_MASK"));
     private readonly int _experimentTextureSampleFormatOverride =
@@ -43390,7 +43394,7 @@ sampledTexel:
             uint mode = ReadTextureSampleRegister(RegTextureMode);
             uint lod = ReadTextureSampleRegister(RegTextureLod);
             uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
-            int targetLod = GetTextureTargetLod(lod);
+            int targetLod = GetTextureTargetLod(lod, registerBase);
             int format = (int)((mode >> 8) & 0x0fu);
             bool sixteenBit = IsTextureFormat16Bit(format);
             uint sampleBase = GetTextureBaseAddress(registerBase);
@@ -43750,7 +43754,7 @@ sampledTexel:
         uint lod = ReadTextureSampleRegister(RegTextureLod);
         uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int format = ResolveTextureSampleFormat(mode, lod, registerBase);
-        int targetLod = GetTextureTargetLod(lod);
+        int targetLod = GetTextureTargetLod(lod, registerBase);
         uint sampleBase = GetTextureBaseAddress(registerBase);
         if (_textureSampleBaseBias != 0)
             sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
@@ -43789,7 +43793,7 @@ sampledTexel:
         uint lod = ReadTextureSampleRegister(RegTextureLod);
         uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int format = ResolveTextureSampleFormat(mode, lod, registerBase);
-        int targetLod = GetTextureTargetLod(lod);
+        int targetLod = GetTextureTargetLod(lod, registerBase);
         uint sampleBase = GetTextureBaseAddress(registerBase);
         if (_textureSampleBaseBias != 0)
             sampleBase = (uint)((sampleBase + _textureSampleBaseBias) & (TextureBytes - 1));
@@ -43848,7 +43852,7 @@ sampledTexel:
         }
 
         _texturedTriangleSampleSummaryTraceCount++;
-        int targetLod = GetTextureTargetLod(lod);
+        int targetLod = GetTextureTargetLod(lod, registerBase);
         int format = ResolveTextureSampleFormat(mode, lod, registerBase);
         bool sixteenBit = IsTextureFormat16Bit(format);
         int width;
@@ -44090,7 +44094,7 @@ sampledTexel:
         uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int targetLod = targetLodOverride >= 0
             ? Math.Clamp(targetLodOverride, 0, 8)
-            : GetTextureTargetLod(textureLod);
+            : GetTextureTargetLod(textureLod, textureBase);
         int format = ResolveTextureSampleFormat(mode, textureLod, textureBase);
         bool sixteenBit = IsTextureFormat16Bit(format);
         int width;
@@ -44207,8 +44211,12 @@ sampledTexel:
         return (int)((mode >> 8) & 0x0fu);
     }
 
-    private int GetTextureTargetLod(uint textureLod)
-        => _experimentTextureUseLodMin || _experimentTextureLodMinBaseLevel
+    private int GetTextureTargetLod(uint textureLod, uint? textureBase = null)
+        => _experimentTextureUseLodMin ||
+           _experimentTextureLodMinBaseLevel ||
+           (textureBase.HasValue &&
+            _experimentTextureLodMinRegisterBase.HasValue &&
+            textureBase.Value == (uint)_experimentTextureLodMinRegisterBase.Value)
             ? Math.Clamp((int)(textureLod & 0x3fu) >> 2, 0, 8)
             : Math.Clamp(_experimentTextureForceLod, 0, 8);
 
@@ -44222,7 +44230,7 @@ sampledTexel:
         uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         int targetLod = targetLodOverride >= 0
             ? Math.Clamp(targetLodOverride, 0, 8)
-            : GetTextureTargetLod(textureLod);
+            : GetTextureTargetLod(textureLod, textureBase);
         int format = ResolveTextureSampleFormat(mode, textureLod, textureBase);
         bool sixteenBit = IsTextureFormat16Bit(format);
         int width;
@@ -44245,6 +44253,15 @@ sampledTexel:
             baseAddress = GetTextureLodOffsetFromBase(targetLod, GetTextureFormatBytesPerTexel(format), textureLod, sampleBase);
         }
         bool filtered = IsTextureFilteringEnabled(mode);
+        bool scaleCoordinatesByLod = _experimentTextureScaleCoordinatesByLod ||
+            (_experimentTextureLodMinRegisterBase.HasValue &&
+             textureBase == (uint)_experimentTextureLodMinRegisterBase.Value);
+        if (scaleCoordinatesByLod && targetLod > 0)
+        {
+            float lodScale = 1 << targetLod;
+            s /= lodScale;
+            t /= lodScale;
+        }
         if (_experimentTextureFilterHalfTexel && filtered)
         {
             s -= 0.5f;

@@ -236,3 +236,31 @@ enfärgad; med `WAR_FACE_TEXTURE_BASE=0x984bc`, vilket mappar till den gamla
 Fortsätt genom att återskapa upload-proveniens före f759 för bankregionen vid
 `0x0d06f8`; snapshotens writer-map säger `none`, så ett senare f759-spår kan
 inte identifiera producenten.
+
+## WAR-porträttet är nu synligt i probe-baseline
+
+Uploadgränsen är nu avförd. Rå TMU `0x0d0000..0x0f0000` är byte-identisk vid
+f600, f610, f712 och f740, och ett f740 -> f770-Type5-spår ger noll skrivningar
+i regionen. Blocket är äldre än den sena WAR-assetvågen.
+
+Felet i den lokala LOD3-proben var koordinatskalningen: layouten blev `32x32`
+men float-samplern klampade fortfarande toppnivåkoordinater `4..252` direkt.
+När koordinaterna divideras med `2^3` läses hela
+`0x0fa6f8..0x0faef6`, och en tydlig porträttsilhuett framträder.
+
+Probe-baseline sätter nu:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_REGISTER_BASE=0x1a0df
+```
+
+Detta påverkar endast bbox `(128,279)-(160,311)` (924 pixlar). f770 ger
+`frameHash=0x83bda43f`, colored `11951` och PPM SHA-256
+`babbf00c7a707c3d319a0f9c7f1beca6f0b851869e58c066283bd588d11b378a`.
+
+`GauntletProbe` stöder dessutom
+`EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=/path/state.warm` för stegvis
+proveniensspårning. Den fulla baseline-preseten använder MAME fixed-fetch och
+når samma LOD3-data, men dess setup-gradienter producerar vertikala ränder.
+Fortsätt därför vid fixed-point-gradienterna för just WAR-drawen; ändra inte
+payloadadress, TMU-bank eller LOD-min igen.

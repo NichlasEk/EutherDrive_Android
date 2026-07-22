@@ -4520,3 +4520,41 @@ LOD3 med den tidigare felidentifierade kandidaten `0x4c25e0` är också nästan
 enfärgat. Båda är tydligt sämre än baseline och ska inte promoteras. Nästa
 smala gräns är därför upload-proveniens före f759-snapshoten för WAR-descriptorns
 egen `0x0d06f8`-bankregion, inte descriptor-pagebit, global LOD eller NCC.
+
+### WAR_FACE_HS blir synlig med LOD3-koordinatskalning
+
+Den föregående slutsatsen om det nästan enfärgade lokala LOD3-blocket saknade
+en viktig samplerparameter. Float-samplern gjorde layouten `32x32` men matade
+fortfarande toppnivåkoordinater `4..252` direkt till den mindre mipnivån. Nästan
+alla prover klampades därför till dess sista rad och kolumn.
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_SCALE_COORDINATES_BY_LOD=1`
+dividerar floatkoordinaterna med `2^targetLod`. Med LOD3 läser WAR-drawen då
+hela det strukturerade intervallet `0x0fa6f8..0x0faef6`. Bilden visar en tydlig
+porträttsilhuett med mörkt hår, ljust ansikte, mörka ansiktsdrag och röd
+nederkant.
+
+En registerbasfiltrerad variant begränsar ändringen till WAR:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_REGISTER_BASE=0x1a0df
+```
+
+Den ändrar exakt bbox `(128,279)-(160,311)`, 924 pixlar, och lämnar resten av
+f770-bilden byte-identisk. Resultatet är `frameHash=0x83bda43f`, colored
+`11951`, PPM SHA-256
+`babbf00c7a707c3d319a0f9c7f1beca6f0b851869e58c066283bd588d11b378a`.
+Den är nu probe-baseline; global LOD-min är fortfarande avstängd.
+
+Upload-proveniensspåret gav samtidigt en viktig negativ avgränsning. Rå
+TMU-region `0x0d0000..0x0f0000` är byte-identisk mellan f600, f610, f712 och
+f740, och inga Type5-paket träffar regionen mellan f740 och f770. WAR-drawen
+återanvänder alltså ett äldre mipblock; den sena assetvågen skapar det inte.
+`GauntletProbe` kan skriva ett endpoint-snapshot med
+`EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=/path/state.warm`, vilket gjorde den
+stegvisa f740 -> f750 -> f759-spårningen möjlig.
+
+Den fulla `EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1`-preseten når också LOD3 via
+MAME fixed-fetch, men den här drawens setup-gradienter ger vertikala ränder i
+stället för porträttet (`frameHash=0x17c7320a`). Nästa gräns är därför WAR-drawens
+fixed-point setup-gradienter/färgkombination, inte payloadadress eller upload.
