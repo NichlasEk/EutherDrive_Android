@@ -3998,8 +3998,34 @@ därför promoterad till baseline. Frame-dumpen finns repo-lokalt som
 `artifacts/gauntlet-probe/gauntdl-mame-setup-f601.ppm` med SHA-256
 `2aa816c6a0ff7126873871e3ef846f1379cbaacd199b3f0ffaaee5c3f6fe698d`.
 
-Den fulla fixed-point-fetchvägen ska ännu inte promoteras. Med forcerad LOD 1
-gav den `frameHash=0x1b44ccf4`, `zero=5821/11304` och `colored=7808`; med LOD 0
-blev resultatet ännu sämre (`zero=7818/11304`). Nästa steg är därför att spåra
-varför fixed-fetchens LOD-skift inte träffar samma uppladdade texelområde innan
-den vägen kopplas ihop med setup-gradienterna.
+### Fixed-point-fetch visar glyphkonturerna
+
+Den första numeriska tolkningen av fixed-fetch var missvisande: fler nollprover
+såg ut som en regression, men för en A8-glyph är nollorna transparent bakgrund.
+Frame-dumpen visar att LOD-skiftet bryter upp de stora blå blocken till smala,
+tydligt glyph-liknande konturer.
+
+Källjämförelsen mot MAME hittade samtidigt två riktiga luckor i vår experimentväg:
+
+1. `SampleTextureRgb565MameFixed` ignorerade triangelns beräknade LOD och föll
+   tillbaka till den gamla globala force-LOD-inställningen.
+2. Perspektivläget använde inte itererad W för `S/W` och `T/W`. Bilinearvikten
+   dividerades dessutom med 255 i stället för att använda en 8-bitars fraktion
+   med steg om 1/256.
+
+Efter rättningen tar fixed-fetch emot triangel-LOD direkt, gör perspektivdivision
+och använder 1/256-fraktioner. Ingen `TEXTURE_FORCE_LOD` eller separat
+MAME-fetch-addressflagga behövs. Ren f600 -> f601-baseline ger nu:
+
+```text
+frameHash=0xbe038b7b
+textured=314 triangles, 11304 pixels, 5821 zero texels
+colored=7808
+PPM sha256=9c036e676079ed4f6cfe3a9282f23e93a9a63d0374a30a8d22a58a5a3beeb6f3
+```
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH=1` är därför
+promoterad till baseline. Referensbilden ligger repo-lokalt i
+`artifacts/gauntlet-probe/gauntdl-mame-fixed-perspective-f601.ppm`. Nästa gräns
+är inte längre själva LOD-koordinatskiftet, utan färgkombinationen och de
+kvarvarande felplacerade glyphgrupperna.

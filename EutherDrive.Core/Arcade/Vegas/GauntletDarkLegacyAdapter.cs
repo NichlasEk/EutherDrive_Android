@@ -40,6 +40,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_ALPHA8_MASK", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_TRIANGLE_LOD", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
@@ -42961,7 +42962,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                     long iterT = unchecked(startT + dy * dTdY + dx * dTdX);
                     if (_experimentTextureMameFixedFetch)
                     {
-                        texel = SampleTextureRgb565MameFixed(iterS, iterT);
+                        long iterW = unchecked(textureStartW + dy * textureDwDy + dx * textureDwDx);
+                        texel = SampleTextureRgb565MameFixed(iterS, iterT, iterW, targetLod);
                         goto sampledTexel;
                     }
 
@@ -43999,7 +44001,7 @@ sampledTexel:
     private static float TextureTOrY(SetupVertex vertex)
         => float.IsFinite(vertex.T) ? vertex.T : vertex.Y;
 
-    private ushort SampleTextureRgb565MameFixed(long iterS, long iterT)
+    private ushort SampleTextureRgb565MameFixed(long iterS, long iterT, long iterW, int targetLodOverride = -1)
     {
         if (_textureWriteCount == 0)
             return 0;
@@ -44007,7 +44009,9 @@ sampledTexel:
         uint mode = ReadTextureSampleRegister(RegTextureMode);
         uint textureLod = ReadTextureSampleRegister(RegTextureLod);
         uint textureBase = ReadTextureSampleRegister(RegTextureBaseAddr);
-        int targetLod = GetTextureTargetLod(textureLod);
+        int targetLod = targetLodOverride >= 0
+            ? Math.Clamp(targetLodOverride, 0, 8)
+            : GetTextureTargetLod(textureLod);
         int format = (int)((mode >> 8) & 0x0fu);
         bool sixteenBit = IsTextureFormat16Bit(format);
         int width;
@@ -44030,8 +44034,21 @@ sampledTexel:
             baseAddress = GetTextureLodOffsetFromBase(targetLod, GetTextureFormatBytesPerTexel(format), textureLod, sampleBase);
         }
 
-        int s24_8 = MameSetupCastToInt32(iterS * (1.0 / (1 << 24)));
-        int t24_8 = MameSetupCastToInt32(iterT * (1.0 / (1 << 24)));
+        int s24_8;
+        int t24_8;
+        if ((mode & 1u) != 0 && iterW != 0)
+        {
+            double reciprocalW = 256.0 / iterW;
+            s24_8 = MameSetupCastToInt32(iterS * reciprocalW);
+            t24_8 = MameSetupCastToInt32(iterT * reciprocalW);
+        }
+        else
+        {
+            s24_8 = MameSetupCastToInt32(iterS * (1.0 / (1 << 24)));
+            t24_8 = MameSetupCastToInt32(iterT * (1.0 / (1 << 24)));
+        }
+        if ((mode & 0x20u) != 0 && iterW < 0)
+            s24_8 = t24_8 = 0;
         if (IsTextureFilteringEnabled(mode))
         {
             s24_8 -= 0x80;
@@ -44092,7 +44109,7 @@ sampledTexel:
     private static float Coordinate24_8Fraction(int value24_8, int lod)
     {
         int shifted = value24_8 >> Math.Clamp(lod, 0, 8);
-        return (shifted & 0xff) * (1.0f / 255.0f);
+        return (shifted & 0xff) * (1.0f / 256.0f);
     }
 
     private int GetTextureTargetLod(uint textureLod)
