@@ -4108,3 +4108,33 @@ gradienttecknet är den första ändringen som återställer sammanhängande
 glyphformer snarare än bara ändrar färg eller sampletäthet. Nästa gräns är de
 kvarvarande atlasrutorna/färgvalen och varför flera förväntade scenelement
 inte ritas vid denna checkpoint.
+
+### Den historiska `+0x510`-biasen dolde gradientfelet
+
+Sample-basbiasen `0x510` infördes långt innan LOD, fixed-fetch och
+setup-gradienter var korrekta. Efter determinantfixen kördes därför en ny ren
+f601-matris med bias `0`, `0x100`, `0x400` och `0x510`.
+
+```text
+bias 0x000  frameHash=0x7a22d82d zero=5106/11304 colored=8686
+bias 0x100  frameHash=0xf845630e zero=5012/11304 colored=8407
+bias 0x400  frameHash=0xc12f2660 zero=6768/11304 colored=6993
+bias 0x510  frameHash=0x0131d2c9 zero=6339/11304 colored=7300
+```
+
+Bildjämförelsen är entydig: bias 0 ger sammanhängande tecken och flera
+urskiljbara ord/rader, medan `0x400` och `0x510` hugger sönder samma glypher.
+Den gamla offseten kompenserade delvis för de inverterade gradienterna men är
+fel när koordinatkedjan är korrekt. Baseline sätter nu sample-basbias till
+noll. Den visuella referensen är
+`artifacts/gauntlet-probe/gauntdl-gradient-bias0-f601.png`; den byte-stabila
+PPM-källan har SHA-256
+`c4c100124cb5515ca91400e74ad1063954bc464f043cbd296be1c277511ead04`.
+
+Den nya bias-0-checkpointen är också sparad och reload-verifierad:
+
+```text
+artifacts/gauntlet-probe/gauntdl-gradient-bias0-f601-200k.warm
+sha256 c81352d0d17e2a0a7542e815f153e3aa4d025077b3b6fc1a86ab0c387fb94450
+reload frameCounter=601 ranFrames=0 frameHash=0x7a22d82d colored=8686
+```
