@@ -4138,3 +4138,36 @@ artifacts/gauntlet-probe/gauntdl-gradient-bias0-f601-200k.warm
 sha256 c81352d0d17e2a0a7542e815f153e3aa4d025077b3b6fc1a86ab0c387fb94450
 reload frameCounter=601 ranFrames=0 frameHash=0x7a22d82d colored=8686
 ```
+
+### T-origin och 8-bitars lanes gör texten läsbar
+
+Den bias-0-bilden visade teckenformer men de såg fortfarande upp-och-ner och
+spegelvända ut. Vertexspåret för den första glyphen bekräftade att skärmens Y
+ökar medan T minskar. `TEXTURE_T_ORIGIN_FLIP=1` vänder därför texelraden till
+rätt skärmorientering. Den återstående speglingen låg inte över hela atlasen
+utan i varje 32-bitars A8-ord; fyra byte lästes i motsatt lane-ordning.
+
+Den rena kombinationen är:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_T_ORIGIN_FLIP=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES=1
+```
+
+På f600 -> f601 ger den `frameHash=0xe23a380e`, `zero=3719/11304` och
+`colored=9571`. Viktigare än räknarna är att framebufferdumpen nu innehåller
+läsbara strängar som `DIAGNOSTIC MODE`, `NORMAL`, `ALPHA`, `ATTACHED OBJECTS`
+och `NODE`. Det verifierar både vertikal orientering och byte-laneordning med
+faktiskt glyphinnehåll. Båda inställningarna är promoterade till baseline.
+
+Den visuella filen och den reload-verifierade checkpointen är:
+
+```text
+artifacts/gauntlet-probe/gauntdl-readable-text-f601.png
+artifacts/gauntlet-probe/gauntdl-readable-text-f601.ppm
+PPM sha256 20907f3b550170cab9fdfd55ad4e8bba2815ac37be94cd5e6dc2146941296efc
+
+artifacts/gauntlet-probe/gauntdl-readable-text-f601-200k.warm
+snapshot sha256 0d2a650ce3223682efa5f9ff5249d0ede2ad8ac053aa153bd9fedd90ca9f100d
+reload frameCounter=601 ranFrames=0 frameHash=0xe23a380e colored=9571
+```
