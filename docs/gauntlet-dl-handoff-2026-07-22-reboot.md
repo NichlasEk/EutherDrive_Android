@@ -203,3 +203,23 @@ artifacts/gauntlet-probe/gauntdl-f800-asset-progress-200k.warm
 Den verifierade FIFO-fixen tar bort atlasmattan men löser inte återstående
 drawfel. Nästa fortsättning ska börja från f770-checkpointen och isolera den
 vita bakgrunden samt panel-/glyphdrawsen, inte med ytterligare lång väntan.
+
+## Ny exakt WAR_FACE_HS-gräns
+
+Type5-sekvensdiagnostiken spårar nu alla texture-space-3-paket, inte bara
+`0xc0000205`. Därmed är den tidigare misstänkta källan `0x805b222c`
+avförd: den tillhör en tidig `hiscore/legends`-textur och landar korrekt vid
+TMU-byte `0x12a710`.
+
+WAR-postens kompletta RAM-block är `0x8061c5a8..+0x1550`. En rå f770-TMU-dump
+visar blocket byte-exakt och sammanhängande vid `0x4c25e0`. WAR-texturen är
+alltså redan hydrerad och uppladdad. Felet är att draw-descriptor
+`0x805b1be4` fortfarande publicerar `tBase=0x1a0df`, så LOD3 samplar
+`0x0fa6f8`.
+
+En exakt, default-avstängd samplerremap till `0x4c25e0` träffade drawen och
+ändrade intern f760-hash, men den presenterade f780-bilden förblev
+byte-identisk (`frameHash=0xb11fe479`). Proben togs bort. Fortsätt vid
+descriptorproducenten/bindningen för `0x805b1be4` och spåra därefter vilken
+senare fill/swap som skriver över f760-resultatet. Ändra inte LOD-val,
+sample-bias, QIO-hydrering eller Type5-placement igen utan ny motbevisning.

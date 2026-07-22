@@ -41742,7 +41742,6 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         if (!_traceType5TextureUploadSequences ||
             space != 3 ||
-            command != 0xc0000205u ||
             _type5TextureUploadSequenceTraceCount >= _traceType5TextureUploadSequenceLimit)
         {
             return;

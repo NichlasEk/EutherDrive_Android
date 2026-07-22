@@ -4481,3 +4481,35 @@ Varken A8-maskningen eller fill-undertryckningen promoterades. Nästa probe ska
 i stället binda de nya Type-5-uploadsen mellan f762 och f770 till den första
 efterföljande scen-Type-3-drawen, eller bevisa att gästen aldrig publicerar en
 sådan draw.
+
+### WAR_FACE_HS finns i TMU men draw-descriptorn är stale
+
+Den tidigare Type5-sekvensdiagnostiken accepterade bara 64-ordspaketet
+`0xc0000205`. BGLoadModel-fastpathen använder även 2-, 4-, 8-, 16- och
+32-ordspaket, bland annat `0xc0000085` för 16 ord. Tracen accepterar nu alla
+Type5-paket i texture space 3; den är fortfarande helt default-avstängd.
+
+Det korrigerade spåret visar att den tidigare följda källan `0x805b222c` är
+en tidig textur i `hiscore/legends`, inte `WAR_FACE_HS`. Den laddas korrekt
+till fysisk TMU-byte `0x12a710` under state
+`mode/lod/base=00000100/00000808/00022ce2`.
+
+En f770-RAM/TMU-dump ger den avgörande WAR-bindningen. Tabellen har 26 poster;
+WAR är post 23 och dess kompletta `0x1550`-byte mip/palettblock börjar vid
+`0x8061c5a8`. Varje kontrollerat 32-bytefönster återfinns byte-exakt, med
+förväntad ord-endianvändning, sammanhängande i TMU från `0x4c25e0`. Texturen
+är alltså både hydrerad och uppladdad. Den saknas inte.
+
+Drawen använder däremot fortfarande descriptor `0x805b1be4` och väljer LOD3
+vid fysisk byte `0x0fa6f8`. Detta är en stale descriptor-/allokeringsadress,
+inte ett sampler-, QIO- eller Type5-fel. En strikt default-avstängd probe som
+ersatte bara denna draws slutliga LOD3-bas med `0x4c25e0` ändrade den interna
+f760-framehashen till `0x460c8256`, men den presenterade f780-bilden blev
+byte-identisk med baseline (`frameHash=0xb11fe479`, PPM SHA-256
+`a67a72f06307df6409446da4ea36160a07681bfd2960a4a2ea19ef5ac24e29c0`).
+Proben togs därför bort.
+
+Nästa smala gräns är producenten av `0x805b1be4`/`tBase=0x1a0df` och den
+efterföljande buffer-overwrite/presentationen. Reparera descriptor-adressen
+där den byggs eller binds; lägg inte in en global samplerbias och upprepa inte
+source- eller Type5-spåret för WAR.
