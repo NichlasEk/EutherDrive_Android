@@ -3975,3 +3975,31 @@ basen in i faktiskt uppladdad atlasdata och mer än halverar nollproverna utan
 att ändra packet-, vertex- eller coverage-räknarna. Bilden har tydligt mer
 glyphinnehåll men är ännu inte korrekt; nästa gräns är återstående atlaslayout
 och färg/alpha-kombination för LOD 1.
+
+### MAME-setup-gradienter isolerar nästa förbättring
+
+En direkt fetch-jämförelse på f600 -> f601 visar att vår vanliga layout och
+MAME-layouten redan väljer samma LOD 1-bas, storlek, clamp och byteadress för
+de första texturproverna. Den kvarvarande skillnaden sitter därför inte i
+`GetMameTextureFetchLayout`. Ett separat försök att skala float-koordinaterna
+med mipnivån avvisades också: det flyttade den första glyphtriangeln från
+uppladdad data vid `0x0064c0` till nollor kring `0x005ba8`.
+
+MAME:s setup-gradienter kan däremot slås på isolerat utan fixed-point-fetch.
+Samma snapshot ger en deterministisk förbättring:
+
+```text
+triangel-LOD, barycentrisk float       frameHash=0xd7808d00 zero=2083/11304 colored=10967
+triangel-LOD, MAME setup-gradienter    frameHash=0x5e9405c3 zero=1228/11304 colored=11688
+```
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS=1` är
+därför promoterad till baseline. Frame-dumpen finns repo-lokalt som
+`artifacts/gauntlet-probe/gauntdl-mame-setup-f601.ppm` med SHA-256
+`2aa816c6a0ff7126873871e3ef846f1379cbaacd199b3f0ffaaee5c3f6fe698d`.
+
+Den fulla fixed-point-fetchvägen ska ännu inte promoteras. Med forcerad LOD 1
+gav den `frameHash=0x1b44ccf4`, `zero=5821/11304` och `colored=7808`; med LOD 0
+blev resultatet ännu sämre (`zero=7818/11304`). Nästa steg är därför att spåra
+varför fixed-fetchens LOD-skift inte träffar samma uppladdade texelområde innan
+den vägen kopplas ihop med setup-gradienterna.
