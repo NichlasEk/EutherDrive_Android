@@ -38468,7 +38468,13 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 if (IsStandardCommandFifoPacketComplete(_cmdFifoReadIndex))
                     return true;
-                return TryResyncStandardCommandFifoToNextPacket();
+
+                // The Vegas producer writes a packet header before its body. Once the
+                // read head owns a header from the current logical generation, preserve
+                // FIFO ordering and wait for the remaining words instead of skipping to
+                // a later complete packet. Resync is only appropriate when the current
+                // slot cannot be the head of this generation.
+                return false;
             }
 
             return TryResyncStandardCommandFifoToNextPacket();

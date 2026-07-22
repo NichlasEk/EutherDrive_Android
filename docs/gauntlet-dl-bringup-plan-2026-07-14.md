@@ -4376,3 +4376,60 @@ PPM sha256 cb46a0d36b44d15c028d0d5fc33b3748aa508194530c68aae06ddfdfc40cd77a
 artifacts/gauntlet-probe/gauntdl-f762-asset-count-extend-200k.warm
 snapshot sha256 848269e1dce4762d3235f7d295d03873f36b82e29ba536e424097e3c752d0300
 ```
+
+### Standard-FIFO:n väntar nu på kroppen till ett publicerat huvud
+
+Den kvarvarande 128x128-atlasmattan var inte ett descriptor-, lookup- eller
+gäst-builderfel. Descriptor `0x802592b0` slog upp en giltig record 0 vid
+`0x802e26d4`, och Type-4-buildern vid `0x800bd100` skrev korrekt
+`mode/lod/base=8c2412cf/00002104/ffffe000` efter headern `00059604`.
+
+Felet låg i standard command-FIFO-readiness. När headern vid logisk adress
+`0x015ceb0c` hade publicerats men payloadorden fortfarande skrevs kunde
+`IsCommandFifoPacketReady()` resynka framåt till ett senare komplett paket.
+Det övergav record-0-staten innan dess kropp blev giltig. Read-head väntar nu
+i stället när den aktuella slotten är en giltig header i rätt logiska
+generation; resync behålls för slots som inte kan vara generationens huvud.
+
+Den rena f759 -> f760-körningen verifierar både orsak och effekt:
+
+```text
+frameHash=0xcdaed1a0
+swaps=936
+packet-3=143446
+framebuffer colored=14656
+
+glyph packet 0x015ce870: base fffff800 når TMU0
+record-0 packet 0x015ceb0c: base ffffe000 når TMU0
+```
+
+Den tidigare helskärms-atlasmattan försvinner visuellt och den läsbara
+text-/spritevägen överlever. TMU-spåret visar dessutom upprepade kompletta
+`00059604`-paket med `ffffe000`, medan glyphpaketen fortfarande publicerar
+`fffff800`.
+
+Körningen fortsätter utan FIFO-stopp genom f762 och f770:
+
+```text
+f762 frameHash=0x9aca0a83 swaps=944 textured=682
+f770 frameHash=0x9aca0a83 swaps=952 textured=1356
+f770 textureMap writes=189932 touched=46681
+```
+
+f762 och f770 har identisk framebuffer-SHA-256
+`43d2d7982c5c4478aec3593c4445c1c90883a0c90c63e4a8d1b910044fd8c8d6`,
+trots fortsatt gäst-, FIFO- och texturuploadprogress. FIFO-fixen är därmed en
+separat stabil checkpoint; nästa blockerare är den kvarvarande vita
+bakgrunden och de små korrupta panel-/glyphdrawsen, inte längre den stora
+record-0-atlasmattan.
+
+```text
+artifacts/gauntlet-probe/gauntdl-f760-fifo-head-wait.png
+artifacts/gauntlet-probe/gauntdl-f762-fifo-head-wait.png
+artifacts/gauntlet-probe/gauntdl-f770-fifo-head-wait.png
+
+artifacts/gauntlet-probe/gauntdl-f762-fifo-head-wait-200k.warm
+snapshot sha256 164100e7cedd4d9f7410abf0c61546ad4c42e5e802966304bd85d2e96f636213
+artifacts/gauntlet-probe/gauntdl-f770-fifo-head-wait-200k.warm
+snapshot sha256 9853a1afcb3553a15b1e96b41ac54f68a7e2b04c9673b99d0796e5774a52eebf
+```
