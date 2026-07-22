@@ -4068,3 +4068,43 @@ reload frameCounter=601 ranFrames=0 frameHash=0x83db79e1 colored=7808
 Den tillhörande framebufferdumpen är
 `artifacts/gauntlet-probe/gauntdl-fixed-colorpath-f601.ppm`, SHA-256
 `34749f1a1fa0a95d6676268c8f368a8fb0a966b626dad834ce057db4fd666d2c`.
+
+### Setup-gradienternas determinanttecken återställer glyphrektanglarna
+
+Ett fokuserat spår av det första 8x9-tecknets två trianglar visade att
+skärmgeometrin och atlasrutans hörn redan var konsekventa: skärmrektangeln
+`(200,310)-(208,319)` motsvarar S/T-rektangeln `(48,90)-(64,108)`, vilken vid
+LOD 1 ska bli 8x9 texlar. De två triangelhalvorna läste ändå helt olika
+adressområden (`0x006027..0x0063a7` respektive `0x0056b0..0x005a30`).
+
+Orsaken var ett rent teckenfel. `Edge()` använder motsatt determinantorientering
+mot gradienternas numerator, men setup använde `1 / area`. Därför blev
+`dS/dX=-2` och `dT/dY=+2` när hörnen kräver `+2` respektive `-2`. Med
+`setupDivisor=-1 / area` läser samma två halvor de överlappande intervallen
+`0x005ba7..0x005f27` och `0x005c2e..0x005fae`.
+
+Den visuella skillnaden är stor: diagonalt/repetitivt atlasbrus ersätts av
+separata 8x9-glypher och tunna, delvis läsbara textlinjer. Ren f600 -> f601
+ger nu:
+
+```text
+frameHash=0x0131d2c9
+textured=314 triangles, 11304 pixels, 6339 zero texels
+colored=7300
+PPM sha256=88a0e787cbb85207b272a2407c2375141e9697ec1c20bc46678e969b3ec37368
+```
+
+En ny post-fix checkpoint är skapad utan att skriva över tidigare snapshots:
+
+```text
+artifacts/gauntlet-probe/gauntdl-gradient-sign-f601-200k.warm
+size 77 MB
+sha256 89b8b3c45d07c4e9361d74259be94ed2e3f14c0aad780cf348a9464be81f7987
+reload frameCounter=601 ranFrames=0 frameHash=0x0131d2c9 colored=7300
+```
+
+Texten är ännu inte helt läsbar och scenen är fortfarande ofullständig, men
+gradienttecknet är den första ändringen som återställer sammanhängande
+glyphformer snarare än bara ändrar färg eller sampletäthet. Nästa gräns är de
+kvarvarande atlasrutorna/färgvalen och varför flera förväntade scenelement
+inte ritas vid denna checkpoint.

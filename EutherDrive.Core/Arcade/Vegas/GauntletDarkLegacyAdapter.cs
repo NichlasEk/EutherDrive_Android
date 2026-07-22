@@ -42882,7 +42882,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         double dx2 = a.Y - b.Y;
         double dy1 = a.X - b.X;
         double dy2 = a.X - c.X;
-        double setupDivisor = 1.0 / area;
+        // Edge() uses the opposite determinant orientation from the Voodoo
+        // setup gradient numerators below.
+        double setupDivisor = -1.0 / area;
         const double TextureSetupScale = 65536.0 * 65536.0;
         long startS = MameSetupCastToInt64(a.S * TextureSetupScale);
         long startT = MameSetupCastToInt64(a.T * TextureSetupScale);
