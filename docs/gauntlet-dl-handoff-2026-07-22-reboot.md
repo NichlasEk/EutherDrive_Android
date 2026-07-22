@@ -111,6 +111,32 @@ rätt generation och producer-PC när paketet konsumeras.
 4. Gör nästa beteendeändring default-off tills en smal A/B-probe visar vilken
    drawklass som ändras.
 
+### Baseline-runnern använder åter korrekt sample-basbias
+
+En f771 -> f780-A/B från samma snapshot isolerade en konfigurationsdrift i
+`run-gauntdl-baseline.sh`. Adapterns default och den tidigare verifierade
+gradientmatrisen använder sample-basbias `0`, men runnern tvingade fortfarande
+det historiska värdet `0x510`.
+
+Med identisk CPU/FIFO/texturstate gav de två körningarna:
+
+```text
+bias 0      frameHash=0xb11fe479 colored=11948 zeroTexels=2722766
+bias 0x510  frameHash=0x94f513a3 colored=22945 zeroTexels=2676732
+```
+
+Fler färgpixlar med `0x510` var falsk coverage: bilden innehöll långa
+horisontella linjer genom hela framebuffer-ytan. Bias `0` tar bort linjerna och
+bevarar de underliggande UI-, glyph- och face-drawsen. Runnerns default är
+därför åter `0`; miljövariabeln kan fortfarande användas för explicita A/B-test.
+
+Repo-lokala visuella orakel:
+
+```text
+artifacts/gauntlet-probe/gauntdl-f780-bias0.png
+artifacts/gauntlet-probe/gauntdl-f780-bias510.png
+```
+
 Efter FIFO-checkpointen provades både A8-maskning och undertryckning av den
 vita fast-fillen. A8-maskningen tar bort falska linjer men visar ingen scen;
 utan den vita fillen återkommer den gamla atlasmattan under UI:t. Båda förblir

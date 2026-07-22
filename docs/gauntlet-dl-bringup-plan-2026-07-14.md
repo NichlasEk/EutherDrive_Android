@@ -4139,6 +4139,14 @@ sha256 c81352d0d17e2a0a7542e815f153e3aa4d025077b3b6fc1a86ab0c387fb94450
 reload frameCounter=601 ranFrames=0 frameHash=0x7a22d82d colored=8686
 ```
 
+Den 22 juli hittades en senare runner-drift: adapter-defaulten var fortfarande
+`0`, men `run-gauntdl-baseline.sh` hade återgått till `0x510`. En isolerad
+f771 -> f780-matris reproducerade felet. `0x510` gav hash `0x94f513a3` och
+22 945 färgpixlar, men merparten av skillnaden bestod av falska horisontella
+linjer. Bias `0` gav hash `0xb11fe479`, 11 948 färgpixlar och tog bort dessa
+linjer utan att ta bort de underliggande UI-/face-drawsen. Den kanoniska
+runnern sätter nu åter default `0`.
+
 ### T-origin och 8-bitars lanes gör texten läsbar
 
 Den bias-0-bilden visade teckenformer men de såg fortfarande upp-och-ner och
