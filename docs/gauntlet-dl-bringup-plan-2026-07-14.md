@@ -4029,3 +4029,42 @@ promoterad till baseline. Referensbilden ligger repo-lokalt i
 `artifacts/gauntlet-probe/gauntdl-mame-fixed-perspective-f601.ppm`. Nästa gräns
 är inte längre själva LOD-koordinatskiftet, utan färgkombinationen och de
 kvarvarande felplacerade glyphgrupperna.
+
+### Riktig color-path ersätter den syntetiska A8-masken
+
+En isolerad fyrvägs-A/B på samma f601-state jämförde rå A8, A8-mask,
+`fbzColorPath` utan mask och båda samtidigt. De aktiva registren är
+`fbzColorPath=0x0c482435`, `alphaMode=0x00040400` och `fbzMode=0x00000460`.
+Registerbitarna visar att RGB-write är på medan alpha test, alpha blending och
+alpha-mask är av. För den här drawen väljer color-path texturen som `other`,
+lokal färg som multiplikator och producerar därför textur gånger lokal färg.
+
+Den tidigare `TEXTURE_ALPHA8_MASK`-vägen gjorde nolltexlar transparenta och
+blandade lokalfärgen en extra gång. Det gav vit bakgrund och en användbar
+bringupbild men stämde inte med registren. Kombinationen mask plus color-path
+blev dessutom tydligt urtvättad. Baseline använder nu i stället:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_ALPHA8_MASK=0
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FBZ_COLORPATH_RGB_COMBINE=1
+```
+
+På f600 -> f601 ger den hårdvarutrogna kombinationen
+`frameHash=0x83db79e1`, `colored=7808` och samma 314 texturtrianglar/11304
+covered pixels som före färgsteget. Nolltexlarna skrivs nu svart enligt den
+avstängda alpha/blend-konfigurationen. Nästa checkpoint sparas som en separat
+repo-lokal f601-snapshot så att färg- och placeringsarbetet kan fortsätta utan
+att skriva över det äldre f600-oraklet.
+
+Snapshot-checkpointen är nu skapad och reload-verifierad:
+
+```text
+artifacts/gauntlet-probe/gauntdl-fixed-colorpath-f601-200k.warm
+size 77 MB
+sha256 55c9f8d0d53cbd1a63d1be1eaebb992cf035e6f528e062b7aba1d07cec23ff29
+reload frameCounter=601 ranFrames=0 frameHash=0x83db79e1 colored=7808
+```
+
+Den tillhörande framebufferdumpen är
+`artifacts/gauntlet-probe/gauntdl-fixed-colorpath-f601.ppm`, SHA-256
+`34749f1a1fa0a95d6676268c8f368a8fb0a966b626dad834ce057db4fd666d2c`.
