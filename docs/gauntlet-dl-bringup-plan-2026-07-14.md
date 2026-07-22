@@ -4339,3 +4339,40 @@ artifacts/gauntlet-probe/gauntdl-post-diagnostic-exit-f740.png
 artifacts/gauntlet-probe/gauntdl-post-diagnostic-exit-f740-200k.warm
 snapshot sha256 df94868c6d0f9fae0484fe52ab00e13e7339027f70154b70fbd0d5e8f2ca5121
 ```
+
+### Asset-sökningen når den laddade high-score-tabellen
+
+`key=<empty>` vid f740 var inte nästa blockerare. En fortsatt baseline-körning
+till f760 laddar fler records och producerar riktiga lookup-nycklar, bland
+annat `WAR_FACE_HS` och `VAL_FACE_HS`. En RAM-dump vid f759 visar samtidigt
+att båda namnen redan finns i den hydrerade texturtabellen vid `0x805b1d10`.
+
+Två fel i den lokala known-missing-fastpathen dolde tabellen. Efter den första
+lookup-missen hoppade fastpathen över även återstående descriptors med
+icke-noll count. Dessutom låg `hiscore/legends` färdigladdad i slot 16 med 26
+texturer medan gästens sökhögvatten fortfarande var `count=16`, så den
+ordinarie `< count`-loopen slutade precis före rätt slot.
+
+Fastpathen hoppar nu bara över en faktiskt tom återstod. För en icke-tom
+nyckel utökas sökhögvattnet med en slot endast när slot `count` bevisligen har
+en giltig RAM-pekare, icke-noll texture count och ett namn. Den rena
+f759 -> f760-körningen loggar därefter:
+
+```text
+bgloadmodel-asset-search-count-extend key=WAR_FACE_HS count=16->17 asset=hiscore/legends
+frameHash=0xb3d8eb1a
+```
+
+Vid f762 är ändringen stabil och den nedre menydelen innehåller åter läsbara
+rader som `DIAGNOSTIC MODE` och `CREATE TEXTURES`. Den kvarvarande stora
+atlasmattan kommer från separata format-2 font/panel-draws; face-recordets
+32x32-textur använder redan korrekt LOD3-offset. En 16-bitars byte-swap-probe
+gav identisk framebufferhash och togs bort.
+
+```text
+artifacts/gauntlet-probe/gauntdl-f762-asset-count-extend.png
+frameHash=0x03ff9d41
+PPM sha256 cb46a0d36b44d15c028d0d5fc33b3748aa508194530c68aae06ddfdfc40cd77a
+artifacts/gauntlet-probe/gauntdl-f762-asset-count-extend-200k.warm
+snapshot sha256 848269e1dce4762d3235f7d295d03873f36b82e29ba536e424097e3c752d0300
+```

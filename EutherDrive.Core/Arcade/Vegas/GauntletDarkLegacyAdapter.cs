@@ -16813,8 +16813,30 @@ internal sealed class MipsR5000Core
         if (index < 0 || count < 0 || index >= count || count > 0x10000)
             return false;
 
+        if (key != "EMPTY_BOX")
+        {
+            const ulong descriptorStride = 0x30UL;
+            ulong assetTable = _gpr[16] - (ulong)index * descriptorStride;
+            ulong nextDescriptor = assetTable + (ulong)count * descriptorStride;
+            if (IsMainRamRange(nextDescriptor + 0x2fUL, 1UL) &&
+                IsMainRamRange(SignExtend32(_memory.Read32(nextDescriptor)), 1UL) &&
+                _memory.Read32(nextDescriptor + 0x04UL) != 0 &&
+                _memory.Read8(nextDescriptor + 0x10UL) != 0)
+            {
+                count++;
+                _gpr[19] = SignExtend32((uint)count);
+                if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:FIX] bgloadmodel-asset-search-count-extend " +
+                        $"key={key} count={count - 1}->{count} " +
+                        $"asset={ReadAsciiTraceString(nextDescriptor + 0x10UL, 0x20)}");
+                }
+            }
+        }
+
         ulong remaining = (ulong)(count - index);
-        if (!afterEmptyLookupMiss && key != "EMPTY_BOX")
+        if (key != "EMPTY_BOX")
         {
             ulong cursor = _gpr[16];
             for (ulong i = 0; i < remaining; i++, cursor += 0x30UL)
