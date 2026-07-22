@@ -34220,8 +34220,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_TRUNCATE_PARTIAL_TYPE4"));
     private readonly int _experimentMameCommandFifoDecodePacketLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_DECODE_PACKET_LIMIT"), 0);
+    // Type-5 payload words already pass through the tLOD-controlled Voodoo
+    // swizzle/swap path in WriteTexturePort32. Keep the older pre-swap as an
+    // explicit compatibility experiment instead of inheriting BRINGUP_FAST.
     private readonly bool _fixType5TextureEndian =
-        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_TEXTURE_ENDIAN");
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_TEXTURE_ENDIAN"));
     private readonly bool _fixSequential8BitTextureDownload =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SEQ8_TEXTURE_DOWNLOAD");
     private readonly bool _fixSparse8BitTextureUpload =

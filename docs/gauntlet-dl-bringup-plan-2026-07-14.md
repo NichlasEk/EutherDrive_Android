@@ -4594,15 +4594,28 @@ men gjorde stora delar av porträttet svart och påverkar många andra draws, s�
 den promoterades inte i det här steget.
 
 En efterföljande kontroll mot MAME:s Voodoo-referens och den lokala uploadvägen
-visar varför proben inte ska generaliseras ännu. `tLOD=0x0600260c` har både
-`tdataSwizzle` (bit 25) och `tdataSwap` (bit 26). MAME applicerar först en
-32-bitars endianvändning och därefter en 16-bitars lane-swap; kombinationen
-motsvarar byte-swap inom varje texel. Vår `WriteTexturePort32` gör redan samma
-två operationer. RAM/TMU-dumpen bekräftar också att uploaden transformerar
-källans `fe 00` till TMU:s `00 fe`. En extra global 16-bitars lane-swap är
-alltså fel och avvisades. Nästa hårdvarutrogna gräns är hur format 9:s separata
-YIQ- och alphakomponenter går genom texture combine och pixel-pipelinen, inte
-ytterligare upload- eller lane-swizzling.
+visade först att `tLOD=0x0600260c` har både `tdataSwizzle` (bit 25) och
+`tdataSwap` (bit 26). MAME applicerar först en 32-bitars endianvändning och
+därefter en 16-bitars lane-swap; kombinationen motsvarar byte-swap inom varje
+texel. Vår `WriteTexturePort32` gör redan samma två operationer.
+
+Ett senare kontrollpass hittade den saknade länken före den funktionen:
+`_fixType5TextureEndian` ärvde tidigare `BRINGUP_FAST` och vände hela Type5-
+payloadordet en extra gång innan `WriteTexturePort32`. För WAR-källans byte
+`fe 00 fe 00` blir kedjan med den gamla regeln därför pre-swap, tLOD-swizzle
+och tLOD-lane-swap; TMU-RAM får `00 fe 00 fe`. Utan den äldre pre-swapen ger
+Voodoo-bitarna i stället den förväntade `fe 00 fe 00`-ordningen. Type5-regeln
+är därför bortkopplad från `BRINGUP_FAST` och är nu endast en explicit
+kompatibilitetsinställning; probeskriptet sätter den till `0`.
+
+Den befintliga f759-snapshoten innehåller redan den gamla TMU-RAM-layouten.
+En f759 -> f770-kontroll med Type5-endian avstängd är byte-stabil mot den
+promoterade bilden (`frameHash=0x90bebe98`) eftersom intervallet inte innehåller
+några Type5-texture-write. Den registerfiltrerade sampler-byte-swappen behövs
+alltså fortfarande som visualiserings-/snapshotkompatibilitetsbracket för
+denna lineage. En ny kall snapshot före den ursprungliga WAR-uploaden krävs
+för att bekräfta den korrigerade uploadordningen och därefter ta bort
+sampler-bracketen.
 
 ### f770-snapshot och synliga referensbilder
 
