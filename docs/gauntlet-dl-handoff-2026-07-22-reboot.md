@@ -345,3 +345,42 @@ proveniensspårning. Den fulla baseline-preseten använder MAME fixed-fetch och
 når samma LOD3-data, men dess setup-gradienter producerar vertikala ränder.
 Fortsätt därför vid fixed-point-gradienterna för just WAR-drawen; ändra inte
 payloadadress, TMU-bank eller LOD-min igen.
+
+## Senaste checkpoint: diagnostik-enable undertryckt till f900
+
+Den direkta diagnostikväljaren är nu exakt lokaliserad. Renderaren läser
+`0x80227b9c` vid `0x800c7a64` och returnerar vid `0x800c7a6c` om den är noll.
+Guest-PC `0x80019ef0` skriver annars ett till adressen. Ett smalt, default-off
+experiment finns för fortsatt diagnostik:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SUPPRESS_DIAGNOSTIC_RENDER_ENABLE=1
+```
+
+Det träffar endast fysisk `0x00227b9c`, PC `0x80019ef0`, värde ett och loggar
+de första åtta träffarna. f770 -> f780 verifierade tre exakta träffar.
+
+Från samma f770-state till f820 minskar renderlistan från 51 poster/30 flag40
+till 21 poster/0 flag40. Samtidigt ökar swaps 964 -> 976 och texture-map
+writes 768752 -> 1004768. Det betyder inte att world-renderern låsts upp:
+menystate och huvudstate ändras inte. Diagnostiklagret försvinner bara och
+asset/QIO/upload-arbetet hinner längre inom samma antal frames.
+
+Den fortsatta f900-punkten når QIO metadata-index 10, destination
+`0x802f5718`, 2000 byte. Den ger `frameHash=0xdaabcc41`, swaps 1038,
+drawPackets 150769, texWrites 1491566 och texture-map touched 337915. PNG:n
+visar fortfarande ingen riktig spelvärld, bara vit bakgrund samt ett brusigt
+horisontellt upload-/texturband med WAR-porträttet.
+
+```text
+artifacts/gauntlet-probe/gauntdl-no-diagnostic-render-f900-200k-20260722.warm
+snapshot sha256=ed7ebc0f8c878c17075657b148b5aba3288e428fac07e1056522d4f8da33c74d
+artifacts/gauntlet-probe/gauntdl-no-diagnostic-render-f900-200k-20260722.png
+png sha256=e78d45ca20c1cab20504edcacd27074042fa9d6b78af3363e13d3d09898440f5
+```
+
+Fortsätt från f900 och följ index-10-requesten till completion/assetägare.
+Spåra därefter callern som naturligt ska sluta anropa skrivaren `0x80019ef0`.
+Gör inte suppressionen till baseline: den är ett accelerator-orakel, inte en
+emuleringsfix. Display-buffer-valet, inputpolariteten och diagnostiklistans
+text-bodies är redan avförda.

@@ -27785,6 +27785,8 @@ internal sealed class VegasMemoryMap
     private readonly ushort? _ioasicPort0Override = ParseOptionalHexUshort(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_IOASIC_PORT0"));
     private readonly bool _traceIoasicInputs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC_INPUTS") == "1";
     private readonly bool _traceRuntimeInputBridge = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_INPUT_BRIDGE") == "1";
+    private readonly bool _experimentSuppressDiagnosticRenderEnable =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_SUPPRESS_DIAGNOSTIC_RENDER_ENABLE"));
     private readonly bool _enableRuntimeInputDiagnosticExitBridge =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE");
     private readonly bool _traceIoasic = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_IOASIC") == "1";
@@ -27839,6 +27841,7 @@ internal sealed class VegasMemoryMap
     private int _traceIoasicInputCount;
     private int _traceIoasicPicCount;
     private int _traceRuntimeInputBridgeCount;
+    private int _experimentSuppressDiagnosticRenderEnableTraceCount;
     private readonly uint[] _ioasicReadCounts = new uint[16];
     private readonly uint[] _ioasicWriteCounts = new uint[16];
     private int _lastIoasicReadRegister = -1;
@@ -28831,6 +28834,19 @@ internal sealed class VegasMemoryMap
 
         if (TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
         {
+            if (_experimentSuppressDiagnosticRenderEnable &&
+                physical == 0x00227b9cU &&
+                (_traceCpuPc & 0x1fffffffUL) == 0x00019ef0UL &&
+                value == 1U)
+            {
+                value = 0U;
+                if (_experimentSuppressDiagnosticRenderEnableTraceCount++ < 8)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:EXPERIMENT] suppress-diagnostic-render-enable " +
+                        $"pc={_traceCpuPc:x16} address={address:x16}");
+                }
+            }
             BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4), value);
             Trace("write32", address, value, "mainram");
             return;

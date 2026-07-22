@@ -4792,3 +4792,63 @@ Snapshoten reloadades vid target/warmup frame 770 med noll körda frames.
 Reload-dumpen är byte-identisk med original-PPM:n, SHA-256
 `c74e1d8617354efdae093e0e86101f73339e9c080d3ff750247db3e6e2092bde`,
 och återger `frameHash=0x90bebe98` / `colored=71743`.
+
+## Diagnostikrenderarens direkta enable och f900-orakel
+
+Ett exekveringsspår genom `0x800c7a28..0x800c7b64` visar att renderaren läser
+`0x80227b9c` vid `0x800c7a64` och returnerar tidigt via branchen vid
+`0x800c7a6c` när värdet är noll. När värdet är ett bygger samma väg
+`DIAGNOSTIC MENU`-texten. Den direkta skrivaren är `0x80019ef0`, som skriver
+ett till `0x80227b9c`; tre träffar observerades f770 -> f811. Detta avför
+`0x80227ab0` som direkt render-enable.
+
+Ett default-avstängt experiment undertrycker endast just den skrivningen:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_SUPPRESS_DIAGNOSTIC_RENDER_ENABLE=1
+```
+
+Villkoret kräver fysisk adress `0x00227b9c`, guest-PC `0x80019ef0` och
+skrivvärde ett. En verifieringskörning f770 -> f780 loggade tre exakta
+`[GAUNTDL:EXPERIMENT] suppress-diagnostic-render-enable`-träffar.
+
+En A/B från samma f770-snapshot till f820 gav:
+
+```text
+control:  frameHash=0xc3a9fbe0 swaps=964 drawPackets=147284 texWrites=1315978
+          textureMap writes=768752 touched=176490 renderRecords=51 flag40=30
+suppress: frameHash=0x085c49d9 swaps=976 drawPackets=146694 texWrites=1374982
+          textureMap writes=1004768 touched=226796 renderRecords=21 flag40=0
+```
+
+De kvarvarande 21 posterna är null-body-poster och ingen har token. Textlagret
+försvinner, men ingen dold world-lista eller riktig 3D-scen exponeras. Skillnaden
+är i stället att mindre diagnostikarbete ger gästkoden mer budget för den redan
+pågående asset/QIO/texture-upload-vågen.
+
+En fortsatt experimentkörning till f900 når en ny
+`bgloadmodel-qio-request-metadata` för index 10 (`dest=0x802f5718`, 2000 byte):
+
+```text
+frameHash=0xdaabcc41 swaps=1038 drawPackets=150769 texWrites=1491566
+textureMap writes=1471104 touched=337915 nonzeroWords=645397
+texturedPixels=36074740 zeroTexturedPixels=32583673 pc=0x80106adc
+```
+
+Bilden är fortfarande fel: vit bakgrund och ett brusigt horisontellt
+upload-/texturband med WAR-porträttet, ingen spelvärld. Vid f901 ligger
+`0x80227ab0` kvar på `0x8007`, `0x80227b9c` är experimentellt noll och
+menystate-tabellen runt `0x80228570` är oförändrad. Experimentet är därför
+endast ett accelerator-/observationsverktyg och får inte göras till baseline.
+
+```text
+artifacts/gauntlet-probe/gauntdl-no-diagnostic-render-f900-200k-20260722.warm
+snapshot sha256=ed7ebc0f8c878c17075657b148b5aba3288e428fac07e1056522d4f8da33c74d
+artifacts/gauntlet-probe/gauntdl-no-diagnostic-render-f900-200k-20260722.png
+png sha256=e78d45ca20c1cab20504edcacd27074042fa9d6b78af3363e13d3d09898440f5
+```
+
+Nästa smala gräns är att följa index-10-requesten till completion från f900
+och identifiera vilken asset/state den för framåt, parallellt med callern som
+normalt ska sluta köra skrivaren `0x80019ef0`. Återöppna inte display-buffer,
+inputpolaritet eller textposternas bodies utan ny kausal evidens.
