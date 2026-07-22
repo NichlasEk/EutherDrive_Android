@@ -20309,7 +20309,10 @@ internal sealed class MipsR5000Core
         ulong source = SignExtend32(sourceWord);
         ulong assetEntry = assetTableBase + index * assetTableStride;
         ulong record = recordBase + index * recordStride;
-        ulong recordQio = SignExtend32(ReadTraceWord(record + 0x08UL));
+        ulong recordQioAt0 = SignExtend32(ReadTraceWord(record + 0x00UL));
+        ulong recordQioAt8 = SignExtend32(ReadTraceWord(record + 0x08UL));
+        ulong recordQio = IsMainRamRange(recordQioAt0 + 0x18UL, 4) ? recordQioAt0 : recordQioAt8;
+        string recordQioSlot = recordQio == recordQioAt0 ? "+0" : "+8";
         ulong expectedQio = qioBase + index * qioStride;
         ulong qio = recordQio != 0 && IsMainRamRange(recordQio + 0x18UL, 4) ? recordQio : expectedQio;
         ulong qioObject = SignExtend32(ReadTraceWord(qio));
@@ -20341,7 +20344,7 @@ internal sealed class MipsR5000Core
             $"record={record:x16}:{ReadTraceWord(record):x8}/{ReadTraceWord(record + 0x04UL):x8}/" +
             $"{ReadTraceWord(record + 0x08UL):x8}/{ReadTraceWord(record + 0x0cUL):x8}/" +
             $"{ReadTraceWord(record + 0x10UL):x8}/{ReadTraceWord(record + 0x14UL):x8} " +
-            $"recordQio={recordQio:x16} expectedQio={expectedQio:x16} " +
+            $"recordQio={recordQioSlot}:{recordQio:x16} expectedQio={expectedQio:x16} " +
             $"qio={TraceKnownRuntimeBgLoadModelQioOneLine(qio)} " +
             $"qioFile={TraceKnownRuntimeBgLoadModelQioFileState(qioObject)} " +
             $"asset={TraceKnownRuntimeBgLoadModelAssetTableSummary((long)index)}");
@@ -20504,9 +20507,10 @@ internal sealed class MipsR5000Core
             _gpr[7] < 0x10000UL ? unchecked((long)_gpr[7]) :
             _gpr[17] < 0x10000UL ? unchecked((long)_gpr[17]) : -1;
 
-        ulong recordQio = 0;
-        if (IsMainRamRange(record + 0x08UL, 4))
-            recordQio = SignExtend32(_memory.Read32(record + 0x08UL));
+        ulong recordQioAt0 = IsMainRamRange(record, 4) ? SignExtend32(_memory.Read32(record)) : 0;
+        ulong recordQioAt8 = IsMainRamRange(record + 0x08UL, 4) ? SignExtend32(_memory.Read32(record + 0x08UL)) : 0;
+        ulong recordQio = IsMainRamRange(recordQioAt0 + 0x18UL, 4) ? recordQioAt0 : recordQioAt8;
+        string recordQioSlot = recordQio == recordQioAt0 ? "+0" : "+8";
 
         ulong expectedQio = recordIndex >= 0 ? qioBase + (ulong)recordIndex * qioStride : 0;
         ulong qio = IsMainRamRange(recordQio + 0x18UL, 4) ? recordQio :
@@ -20520,7 +20524,7 @@ internal sealed class MipsR5000Core
         _runtimeBgLoadModelQioRequestTraceCount++;
         Console.WriteLine(
             $"[GAUNTDL:TRACE] bgloadmodel-qio-request {phase}/{label} pc={pc:x16} op={_memory.Read32(pc):x8} " +
-            $"idx={recordIndex} record={recordRegister}:{record:x16} recordQio={recordQio:x16} expectedQio={expectedQio:x16} " +
+            $"idx={recordIndex} record={recordRegister}:{record:x16} recordQio={recordQioSlot}:{recordQio:x16} expectedQio={expectedQio:x16} " +
             $"qio={TraceKnownRuntimeBgLoadModelQioOneLine(qio)} " +
             $"obj={qioObject:x16}:{ReadTraceWord(qioObject):x8}/{ReadTraceWord(qioObject + 0x14UL):x8} " +
             $"file={TraceKnownRuntimeBgLoadModelQioFileState(qioObject)} " +

@@ -4852,3 +4852,36 @@ Nästa smala gräns är att följa index-10-requesten till completion från f900
 och identifiera vilken asset/state den för framåt, parallellt med callern som
 normalt ska sluta köra skrivaren `0x80019ef0`. Återöppna inte display-buffer,
 inputpolaritet eller textposternas bodies utan ny kausal evidens.
+
+### Index 10 är completed `levels/levelE1`, inte en väntande QIO
+
+Det efterföljande adressspåret korrigerar nästa-gränsen ovan. Index 10-recordet
+vid `0x80252e90` håller sin QIO-pekare `0x80218748` i `record+0`, inte i
+`record+8`. Den äldre diagnostiken läste endast `+8` och rapporterade därför
+felaktigt `recordQio=0` trots att recordets första ord var korrekt.
+
+Den exakta write-kedjan är:
+
+```text
+pc=0x800c9944 qio+00=0x80295600 qio+04=0x800ab4e4
+              qio+08=0x802f5718 qio+0c=0x00002000
+              qio+10=0x00000000 qio+14=0x00000000
+pc=0x800c9948 qio+00=0x00000000
+```
+
+Instruktionsdumpen visar att detta är normal completion/cleanup:
+
+```text
+0x800c9938  lw v0,0x20(fp)
+0x800c993c  li v1,2
+0x800c9940  sw v1,0x14(v0)   # QIO complete
+0x800c9944  lw v0,0x20(fp)
+0x800c9948  sw zero,0(v0)    # släpp objectpekaren
+```
+
+Asset-tabellkopplingen är index 9, `levels/levelE1`, och destinationen
+`0x802f5718` är hydrerad med icke-nolldata vid f901. Detta är alltså inte en
+stoppad QIO och objectfältet ska inte bevaras artificiellt. QIO-spårningen
+väljer nu en giltig `record+0`-pekare före legacy-fallbacken `record+8` och
+anger vald slot i loggen. Nästa gräns flyttas till konsumenten av den completed
+levelE1-payloaden och varför modellen senare ger `No Nodes have this object`.

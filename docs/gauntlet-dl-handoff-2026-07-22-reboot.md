@@ -384,3 +384,18 @@ Spåra därefter callern som naturligt ska sluta anropa skrivaren `0x80019ef0`.
 Gör inte suppressionen till baseline: den är ett accelerator-orakel, inte en
 emuleringsfix. Display-buffer-valet, inputpolariteten och diagnostiklistans
 text-bodies är redan avförda.
+
+### Korrigering efter f900: index 10 är redan complete
+
+Index 10 är bundet till asset-tabellindex 9, `levels/levelE1`. Recordet
+`0x80252e90` pekar på QIO `0x80218748` i `record+0`; äldre trace läste felaktigt
+endast `record+8`. Vid `0x800c9944` finns object `0x80295600`, callback
+`0x800ab4e4`, destination `0x802f5718` och längd `0x2000`. Guestinstruktionen
+vid `0x800c9940` sätter status 2 (complete), varefter `0x800c9948` avsiktligt
+nollställer objectpekaren. Destinationen innehåller icke-nolldata vid f901.
+
+Bevara därför inte QIO-objectfältet och återöppna inte metadata/completion som
+blocker. Trace väljer nu giltig `record+0` före fallback `record+8`. Nästa
+kausala mål är levelE1-payloadens konsument och vägen som senare skriver
+`No Nodes have this object`; detta är närmare world/model-state än själva
+diagnostikmenyn.
