@@ -562,3 +562,50 @@ gör nu det. Nästa nödvändiga oracle är därför en verklig kall körning fr
 frame noll med `TEXTURE_UPLOAD_TMU_BANKS=1` och
 `SEPARATE_TMU_TEXTURE_MEMORY=1`; återanvänd inte någon gammal f600--f900-state
 för att avgöra var dessa tidiga ytor hör hemma.
+
+### Genuint kall tvåbankslinje bekräftar lineagefelet
+
+En ny frame-0--f600-körning med baseline-wrapperns båda bankregler aktiva och
+200000 CPU-steg per frame slutfördes på 1381 sekunder. Den sparades direkt i
+snapshotformat v9 och återlästes med exakt `frameHash=0x57fa9f15` samt bevarad
+TMU-state:
+
+```text
+tmu0=8C2412CF/00302104/FFFFF800
+tmu1=0C24100F/FF802000/00000000
+```
+
+Rådumpsjämförelsen mot den äldre så kallade cold-f600-filen bekräftar
+lineagefelet:
+
+```text
+fönster    äldre TMU1  genuint kall TMU1   lokalt TMU0
+0x4e2070   0           21972 / 212 unika   24939 / 256 unika
+0x4ecb20   0               0 /   1 unikt   30339 / 255 unika
+0x4d0050   0           25994 / 226 unika   29381 / 245 unika
+```
+
+Två av de tre senare aktiva TMU1-ytorna fylls alltså korrekt när bankningen är
+aktiv från frame noll. Aliasproben avslöjade verkligt bildmaterial men
+kompenserade för en kontaminerad checkpointkedja, inte för en omvänd sampler.
+`0x4ecb20` väntar fortfarande på en senare upload och är därför inte ännu ett
+separat felbevis.
+
+Nya reloadbara orakel:
+
+```text
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-f600-v9-20260722.warm
+sha256=1568fd1dbe1d73379fada93b4e2478d9b3847ff48de6836abf02627049bd519c
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-f600-v9-20260722.png
+sha256=5e7c2093307edd020010cc89162b7d1fc36134a66bc99e74759a36aa742e6dd0
+
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-f700-v9-20260722.warm
+sha256=fa17fc77ec44b8e6398dcbfbac08fed78182eb170d00ec92ff3be8f55d358899
+artifacts/gauntlet-probe/gauntdl-cold-two-tmu-f700-v9-20260722.png
+sha256=b9b5d7d5bd7ef6adc4a544935c3a8c2a28c648c803c9409801acdf155ded502a
+```
+
+f600--f700 gör inga ytterligare texture writes och behåller samma bankinnehåll;
+f700 ger `frameHash=0x31a748a7`. Bilden är fortfarande diagnostikmosaik, inte
+spelgrafik. Fortsätt diagnostic-exit/assetkedjan från den nya v9-f700-filen
+och kassera alla gamla f700--f906-filer som visuella bankorakel.
