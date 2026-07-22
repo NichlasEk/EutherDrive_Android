@@ -4687,7 +4687,7 @@ Spårloggen är `/tmp/gauntdl-direct200-f740-f751-war-upload.log`. Nästa
 grafikgräns är åter den omgivande panel-/glyph- och scenrenderingen, inte
 WAR-payloadens upload eller byteordning.
 
-### Paneldrawsen är A8-UI; coin + start öppnar nästa aktiva sekvens
+### Paneldrawsen är A8-UI; den sena aktiviteten är tidsstyrd
 
 Ett pixel-writer-spår från den korrigerade f770-referensen band de upprepade
 blå banden till setup-trianglar från gäst-PC `0x800c4e5c`, kommando
@@ -4708,11 +4708,11 @@ bekräftade samtidigt att format 2 avkodas som A8 med samma värde i RGBA;
 ingen ny alpha- eller formatregel infördes.
 
 RAM-dumpen vid f770 visar little-endian huvudstate `0x8007` på
-`0x80227ab0`; diagnostik-exit från `0x8000` har alltså lyckats. En coin-puls
-f771..f772 följd av start f776..f777 återstartar aktiv presentation: swaps
-ökar från 956 till 964 vid f782 och fortsätter till 976 vid f800 och 984 vid
-f810. Nya uploads och drawpaket fortsätter också. En tvåframespaus direkt
-efter f800 var inte ett FIFO-stopp; f805/f810 visar fortsatt progress.
+`0x80227ab0`; diagnostik-exit från `0x8000` har alltså lyckats. Den först
+misstänkta coin-pulsen f771..f772 följd av start f776..f777 är inte kausal:
+en no-input-kontroll f770 -> f782 är bit-identisk med samma hash, swaps och
+draw/upload-räknare. Aktiviteten till f800/f810 är alltså normal tidsprogress,
+inte en inpututlöst presentation.
 
 ```text
 f782 frameHash=0xd56dede7 swaps=964
@@ -4731,11 +4731,31 @@ f810 snapshot sha256=0bf161fc49490f2f59689a709674714e629c2cb528cc7c5d18838f18d77
 f810 png sha256=ddda94740c992bc30f181fc88a49064a987d99c2ad3f1783e47f08fb0ef82a1d
 ```
 
-Startsekvensen ger ännu ingen world/3D-drawfamilj; bilden består fortfarande
-av A8-paneler/glypher, små bas-0-sprites och det riktiga WAR-porträttet. Nästa
-kausala gräns är därför gästflödet efter state `0x8007`: identifiera nästa
-stateövergång eller world-render-post, inte fler sampler-, alpha- eller
-display-bufferjusteringar.
+Coin/start vid f810 är också identisk med no-input-kontrollen. FIRE3/Turbo är
+däremot kausal när pulsen f812..f816 träffar statusläsningen: record 0 returnerar
+`0x00000800`, och f820 avviker från no-input-oraklet
+`frameHash=0x20a6db35`, `swaps=992`, `drawPackets=153396` till
+`frameHash=0xca921eeb`, `swaps=988`, `drawPackets=151788`. Det är ändå en
+negativ väg. Vid f840 ligger huvudstate kvar på `0x8007`, swaps ligger kvar på
+988 och bilden innehåller fortfarande bara A8-paneler/glypher, små
+bas-0-sprites och WAR-porträttet. En aktiv-låg inversion av hela inputrecordet
+avfördes också: den gjorde alla tolv spelarbits aktiva i vila.
+
+f810-dumpens renderlista har 61 poster, varav 38 har flagga `0x40`, 42 har
+noll-body och bara 19 har en icke-noll token. De konsumerade materialposterna
+är fortfarande endast set 0; alloc-tabellens `+0x4c` är den gemensamma
+dataadressen `0x804922b8`, inte en callback. Nästa gräns är därför fortfarande
+ägaren som ska skapa en riktig world/render-node efter state `0x8007`, inte
+fler sampler-, alpha-, display-buffer- eller inputpolaritetsjusteringar.
+
+Den kausala men negativa FIRE3-punkten är sparad repo-lokalt:
+
+```text
+artifacts/gauntlet-probe/gauntdl-fire3-exit-f840-200k-20260722.warm
+snapshot sha256=c95f6ac3b7818dc6576db63fbc270faa5f17e8707d16b9daba97485a497458f3
+artifacts/gauntlet-probe/gauntdl-fire3-exit-f840-200k-20260722.png
+png sha256=68efa1981ef6f867261bcde4084e5eccc400c17a3a6fd325080e28d5f3304edd
+```
 
 ### f770-snapshot och synliga referensbilder
 

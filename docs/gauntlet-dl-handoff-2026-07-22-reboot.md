@@ -229,7 +229,7 @@ Den verifierade FIFO-fixen tar bort atlasmattan men löser inte återstående
 drawfel. Nästa fortsättning ska börja från f770-checkpointen och isolera den
 vita bakgrunden samt panel-/glyphdrawsen, inte med ytterligare lång väntan.
 
-## Senaste fortsättning: coin/start och f810
+## Senaste fortsättning: f810-kontroller och FIRE3-gränsen
 
 Den hårdvarukorrigerade WAR-referensen vid f770 är fortfarande
 regressionsoraklet. Pixel-writer- och Type3-spår visar att de upprepade banden
@@ -237,10 +237,12 @@ kommer från A8 setup-draws vid PC `0x800c4e5c`; record-0-familjen samplar
 exakt noll i f759 -> f760 och är inte en dold scen. MAME-kontrollen gav inget
 stöd för ännu en lokal A8-formatregel.
 
-RAM-state vid f770 är `0x8007`, inte diagnostikstate `0x8000`. Coin f771..772
-och start f776..777 startar ny aktivitet. Swaps går 956 -> 964 vid f782 ->
-976 vid f800 -> 984 vid f810. f810 har `frameHash=0xfb43df30`, 150928
-drawpaket och 1506009 texture writes, men fortfarande ingen world/3D-familj.
+RAM-state vid f770 är `0x8007`, inte diagnostikstate `0x8000`. Korrigering av
+den första tolkningen: coin f771..772 och start f776..777 startar inte den nya
+aktiviteten. En no-input-kontroll f770 -> f782 är exakt identisk med
+coin/start-körningen (`frameHash=0xd56dede7`, swaps 964 och samma räknare).
+Progressen till f800/f810 är tidsstyrd. Coin/start vid f810 är också
+icke-kausal.
 
 Fortsätt i första hand från:
 
@@ -251,9 +253,27 @@ artifacts/gauntlet-probe/gauntdl-coin-start-f810-200k-20260722.png
 png sha256=ddda94740c992bc30f181fc88a49064a987d99c2ad3f1783e47f08fb0ef82a1d
 ```
 
-Nästa steg är att spåra stateövergången efter `0x8007` eller den första
-world-render-posten. Ändra inte WAR-upload/byteordning, sampler-LOD,
-A8-semantik eller display-buffer-val utan ny kausal evidens.
+Den normala inputbryggan är verifierad genom spelets statusläsare. FIRE3/Turbo
+f812..f816 når record 0 som `0x00000800` och gör f820 kausalt annorlunda:
+no-input `0x20a6db35`, swaps 992, drawPackets 153396 mot FIRE3
+`0xca921eeb`, swaps 988, drawPackets 151788. Det låser ändå inte upp scenen.
+Vid f840 är state fortfarande `0x8007`, swaps fortfarande 988 och bilden är
+fortfarande UI-band. En kontroll som inverterade hela recordet aktiv-lågt
+avfördes eftersom alla spelarbits då blev aktiva i vila.
+
+```text
+artifacts/gauntlet-probe/gauntdl-fire3-exit-f840-200k-20260722.warm
+snapshot sha256=c95f6ac3b7818dc6576db63fbc270faa5f17e8707d16b9daba97485a497458f3
+artifacts/gauntlet-probe/gauntdl-fire3-exit-f840-200k-20260722.png
+png sha256=68efa1981ef6f867261bcde4084e5eccc400c17a3a6fd325080e28d5f3304edd
+```
+
+f810-renderlistan har 61 poster: 38 med flagga `0x40`, 42 med noll-body och
+19 med token. Endast material-set 0 konsumeras; alloc-tabellens `+0x4c` är
+delad data på `0x804922b8`, inte en callback. Nästa steg är därför att spåra
+ägaren som ska skapa första riktiga world/render-node efter `0x8007`. Ändra
+inte WAR-upload/byteordning, sampler-LOD, A8-semantik, display-buffer-val eller
+inputpolaritet utan ny kausal evidens.
 
 ## Ny exakt WAR_FACE_HS-gräns
 
