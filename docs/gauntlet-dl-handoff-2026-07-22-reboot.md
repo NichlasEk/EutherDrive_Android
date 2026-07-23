@@ -1022,3 +1022,65 @@ sha256=028493c801a6d7118c4b20d3a33f5f8357679a5a7b78e7d9814016f0facdcc57
 artifacts/gauntlet-probe/gauntdl-fire3-type3-yflip-cull-f1185-20260723.png
 sha256=67eba303a170773db1359ae23235feb15edcc05c33eee94a7a6f16ee5aaec5b8
 ```
+
+### 2026-07-23: MAME-origin-A/B och R5000 FCC-korrigering
+
+R5000-implementationens `MOVF/MOVT.S` och `.D` använde tidigare alltid FCC0.
+MAME väljer i stället FCC-fältet från instruktionsbitarna 20--18. Den lokala
+avkodningen använder nu motsvarande `(ft >> 2) & 7`. Samma FIRE 3-körning från
+plus50m till f1185 blev dock exakt oförändrad:
+
+```text
+före FCC-fix: frameHash=0x33fd81be
+efter FCC-fix: frameHash=0x33fd81be
+plus30m zero-step-regression: frameHash=0x7202e3ef
+```
+
+FCC-felet var alltså verkligt men orsakar inte den inverterade dungeonscenen.
+
+En andra default-off probe applicerar MAME:s riktiga Voodoo-beteende i
+rastersteget: den lämnar vertexdata och winding orörda men mappar skrivraden
+som `yorigin - y`. Med en 384-raders aktiv viewport gav den:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RASTER_Y_ORIGIN=1
+frame=1185
+frameHash=0x61a58b7e
+Type3=263875
+textured triangles=2156
+covered=1691
+pixels=493447
+swaps=7152
+```
+
+Bilden är rättvänd och sammanhängande utan Type3-cullkompensation. Den är
+visuellt nästan identisk med vertexflip-proben, men den här vägen modellerar
+Voodoo-hårdvaran på rätt nivå.
+
+Kallstartsspårning av register `fbiInit3` visar samtidigt att spelet självt
+skriver:
+
+```text
+0x00110040 -> 0x00110000 -> 0x00110001
+```
+
+Y-originfältet är alltså avsiktligt noll i gästläget; proben ska inte göras
+till generell register-default. Ett fokuserat CPU/FPU-spår på en riktig vertex
+visar:
+
+```text
+före viewport: f25=0.871096909
+MADD.S:        f25 = f25 * 192 + 192
+FIFO Y:        f25=359.25061
+```
+
+Den rättvända motsvarigheten ligger nära rad 25. R5000 COP1X-semantiken
+matchar MAME, så nästa rotorsaksmål är tecknet i projektion/matrisvägen som
+producerar NDC-Y före `0x800c6f84`, inte slutscanout eller Voodoo-packetformat.
+
+```text
+artifacts/gauntlet-probe/gauntdl-fire3-raster-yorigin-f1185-20260723.warm
+sha256=1e3a479ea7ebb70abe3cc70ef34e8f6706eba2acc7918d6739a4ef4f219659f0
+artifacts/gauntlet-probe/gauntdl-fire3-raster-yorigin-f1185-20260723.png
+sha256=d9dd4341d03de2f05d193da29443c6f4e0bc456ef20a7cb68c9e2120cda9ee02
+```

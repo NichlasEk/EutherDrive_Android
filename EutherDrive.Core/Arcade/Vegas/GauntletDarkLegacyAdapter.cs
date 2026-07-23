@@ -27246,7 +27246,7 @@ internal sealed class MipsR5000Core
                 _fpr[fd] = unchecked((uint)(int)MathF.Floor(value));
                 break;
             case 0x11: // movf.s/movt.s
-                if (GetCop1Condition() == ((ft & 1) != 0))
+                if (GetCop1Condition((ft >> 2) & 0x07) == ((ft & 1) != 0))
                     _fpr[fd] = (uint)_fpr[fs];
                 break;
             case 0x15: // recip.s
@@ -27321,7 +27321,7 @@ internal sealed class MipsR5000Core
                 _fpr[fd] = unchecked((uint)(int)Math.Floor(value));
                 break;
             case 0x11: // movf.d/movt.d
-                if (GetCop1Condition() == ((ft & 1) != 0))
+                if (GetCop1Condition((ft >> 2) & 0x07) == ((ft & 1) != 0))
                     _fpr[fd] = _fpr[fs];
                 break;
             case 0x20: // cvt.s.d
@@ -27426,7 +27426,9 @@ internal sealed class MipsR5000Core
             $"f20={FormatRuntimeFullrectFloat(ReadSingle(20))}/0x{(uint)_fpr[20]:x8} " +
             $"f21={FormatRuntimeFullrectFloat(ReadSingle(21))}/0x{(uint)_fpr[21]:x8} " +
             $"f22={FormatRuntimeFullrectFloat(ReadSingle(22))}/0x{(uint)_fpr[22]:x8} " +
-            $"f23={FormatRuntimeFullrectFloat(ReadSingle(23))}/0x{(uint)_fpr[23]:x8}";
+            $"f23={FormatRuntimeFullrectFloat(ReadSingle(23))}/0x{(uint)_fpr[23]:x8} " +
+            $"f24={FormatRuntimeFullrectFloat(ReadSingle(24))}/0x{(uint)_fpr[24]:x8} " +
+            $"f25={FormatRuntimeFullrectFloat(ReadSingle(25))}/0x{(uint)_fpr[25]:x8}";
 
     private void TraceInstruction(ulong pc, uint op)
     {
@@ -34632,6 +34634,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_FLIP_VERTEX_Y"));
     private readonly int _experimentType3FlipVertexYHeight =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_FLIP_VERTEX_Y_HEIGHT"), 384);
+    private readonly bool _experimentForceRasterYOrigin =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RASTER_Y_ORIGIN"));
+    private readonly int _experimentForceRasterYOriginHeight =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RASTER_Y_ORIGIN_HEIGHT"), 384);
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
     private readonly bool _experimentRejectNonFiniteTextureCoordinates =
@@ -42985,10 +42991,15 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private int GetRasterBufferY(int y)
     {
-        if ((_registers[RegFbzMode] & (1u << 17)) == 0)
+        if (!_experimentForceRasterYOrigin &&
+            (_registers[RegFbzMode] & (1u << 17)) == 0)
+        {
             return y;
+        }
 
-        int yOrigin = (int)((_registers[RegFbiInit3] >> 22) & 0x3ffu);
+        int yOrigin = _experimentForceRasterYOrigin
+            ? _experimentForceRasterYOriginHeight
+            : (int)((_registers[RegFbiInit3] >> 22) & 0x3ffu);
         return Math.Clamp(yOrigin - y, 0, LfbRows - 1);
     }
 
