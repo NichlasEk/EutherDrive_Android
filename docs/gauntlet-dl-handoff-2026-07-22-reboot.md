@@ -974,3 +974,51 @@ bevisar att swap/frontbuffer-tillståndet nu kan presenteras korrekt. Nästa pas
 ska utgå från plus50m-snapshoten, mata verklig input mot diagnostic-menyn och
 kontrollera nästa swap. Dungeon-backbufferns färgbrus ska därefter isoleras
 som pixel-/skrivlayout; det är inte längre ett presentationsbufferproblem.
+
+### 2026-07-23: FIRE 3 lämnar menyn och Type3-Y isolerar 3D-orienteringen
+
+En två-frame `INPUT_C`/FIRE 3-puls vid f1160--f1162 från plus50m-snapshoten
+fungerar som riktig guest-input. Gästkoden lämnar diagnostic-menyn, passerar
+`CREDITS`-vägen och börjar rita dungeon-scenen. Fem riktiga frames gav
+`frameHash=0xd92e5a45`; 20 ytterligare frames fyllde scenen vidare till:
+
+```text
+frame=1185
+frameHash=0x33fd81be
+Type3=263875
+textured triangles=1893
+covered=1517
+pixels=426548
+swaps=7152
+```
+
+2D diagnostic-menyn är rättvänd medan all Type3-dungeon-geometri är
+vertikalt inverterad. Det avgränsar felet från slutscanout och LFB/UI. En
+default-off Type3-prob speglar därför enbart packet-vertex-Y runt den
+verifierade 384-linjersviewporten. Eftersom speglingen byter winding
+kompenserar samma probe Type3-cullsignalen. Utan cullkompensation föll
+coverage till 92514 pixlar; med kompensation återkom den:
+
+```text
+normal Type3:       frameHash=0x33fd81be colored=182065 pixels=426548
+Y-flip + cull:      frameHash=0x6b358c8b colored=182053 pixels=493447
+CPU/FIFO:           identiskt, pc=0x800c66a0 Type3=263875 swaps=7152
+```
+
+Den kompenserade bilden matchar visuellt den manuellt vända aktiva
+640x384-referensen, men lämnar 2D-menyn och framebufferpresentationen
+orörda. Experimentet ska ännu inte göras till generell Voodoo-default:
+gästens `fbzMode.y_origin` är fortfarande noll, så nästa pass ska knyta
+signfelet till guestens Glide-origin/CPU-transform innan hårdvarubeteendet
+promoveras.
+
+```text
+artifacts/gauntlet-probe/gauntdl-post-fire3-f1185-20260723.warm
+sha256=3bb6df0218470007407d9611d478d3ebc38fc04aade20d58965e87826cb9ff7c
+artifacts/gauntlet-probe/gauntdl-post-fire3-f1185-20260723.png
+sha256=571dc55ce04473a1c0dd20c35234040ce0c7c8dd579dccd4d00d405b68a7ef9d
+artifacts/gauntlet-probe/gauntdl-fire3-type3-yflip-cull-f1185-20260723.warm
+sha256=028493c801a6d7118c4b20d3a33f5f8357679a5a7b78e7d9814016f0facdcc57
+artifacts/gauntlet-probe/gauntdl-fire3-type3-yflip-cull-f1185-20260723.png
+sha256=67eba303a170773db1359ae23235feb15edcc05c33eee94a7a6f16ee5aaec5b8
+```

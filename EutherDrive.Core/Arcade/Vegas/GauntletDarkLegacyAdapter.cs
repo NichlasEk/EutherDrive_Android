@@ -34628,6 +34628,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_NONFINITE_S_AS_X"));
     private readonly bool _experimentDiscardType3Raster =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISCARD_TYPE3_RASTER"));
+    private readonly bool _experimentType3FlipVertexY =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_FLIP_VERTEX_Y"));
+    private readonly int _experimentType3FlipVertexYHeight =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_FLIP_VERTEX_Y_HEIGHT"), 384);
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
     private readonly bool _experimentRejectNonFiniteTextureCoordinates =
@@ -41625,7 +41629,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             PushSetupVertex(
                 new SetupVertex(
                     SetupVertexCoordinate(x),
-                    SetupVertexCoordinate(y),
+                    SetupType3VertexY(y),
                     color,
                     s,
                     t,
@@ -41645,6 +41649,14 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         if (hasNonFiniteTextureCoordinate)
             TraceType3NonFiniteTexturePacket(command, wordsNeeded);
+    }
+
+    private float SetupType3VertexY(float value)
+    {
+        float y = SetupVertexCoordinate(value);
+        return _experimentType3FlipVertexY && float.IsFinite(y)
+            ? _experimentType3FlipVertexYHeight - y
+            : y;
     }
 
     private void TraceType3Packet(uint command, int wordsNeeded)
@@ -42666,6 +42678,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool disablePingPongCorrection = ((_registers[0x98] >> 19) & 1u) != 0;
         if (!fanMode && !disablePingPongCorrection)
             cullingSign ^= (_setupVertexCount - 3) & 1;
+        if (_experimentType3FlipVertexY &&
+            _decodingCommandFifo &&
+            (_currentCommandFifoCommand & 7u) == 3u)
+        {
+            cullingSign ^= 1;
+        }
 
         int divisorSign = divisor < 0 ? 1 : 0;
         return divisorSign == cullingSign;
