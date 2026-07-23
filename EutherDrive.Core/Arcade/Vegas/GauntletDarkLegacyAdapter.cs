@@ -37,8 +37,9 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_DOWNLOAD_ALIGN32", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP", "1"),
-        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_T_ORIGIN_FLIP", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_T_ORIGIN_FLIP", "0"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES", "0"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_GAUNTLET_RASTER_Y_ORIGIN", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS", "0"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_ALPHA8_MASK", "0"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FBZ_COLORPATH_RGB_COMBINE", "1"),
@@ -34634,10 +34635,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_FLIP_VERTEX_Y"));
     private readonly int _experimentType3FlipVertexYHeight =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_FLIP_VERTEX_Y_HEIGHT"), 384);
-    private readonly bool _experimentForceRasterYOrigin =
+    private readonly bool _fixGauntletRasterYOrigin =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_GAUNTLET_RASTER_Y_ORIGIN") ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RASTER_Y_ORIGIN"));
-    private readonly int _experimentForceRasterYOriginHeight =
-        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RASTER_Y_ORIGIN_HEIGHT"), 384);
+    private readonly int _fixGauntletRasterYOriginHeight =
+        ParseOptionalPositiveInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_GAUNTLET_RASTER_Y_ORIGIN_HEIGHT") ??
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RASTER_Y_ORIGIN_HEIGHT"),
+            384);
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
     private readonly bool _experimentRejectNonFiniteTextureCoordinates =
@@ -42991,14 +42996,14 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private int GetRasterBufferY(int y)
     {
-        if (!_experimentForceRasterYOrigin &&
+        if (!_fixGauntletRasterYOrigin &&
             (_registers[RegFbzMode] & (1u << 17)) == 0)
         {
             return y;
         }
 
-        int yOrigin = _experimentForceRasterYOrigin
-            ? _experimentForceRasterYOriginHeight
+        int yOrigin = _fixGauntletRasterYOrigin
+            ? _fixGauntletRasterYOriginHeight
             : (int)((_registers[RegFbiInit3] >> 22) & 0x3ffu);
         return Math.Clamp(yOrigin - y, 0, LfbRows - 1);
     }

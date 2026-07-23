@@ -1106,3 +1106,57 @@ sha256=c68fe9fb461d291e1ee438ac2760b97706b0de675d3e2bc44f212aab1a19c53d
 artifacts/gauntlet-probe/gauntdl-raster-yorigin-f1205-20260723.png
 sha256=10850295fc1e8626226a4e4dfbcef7865cebacb7b71015eeba9ef77e9555a567
 ```
+
+### 2026-07-23: rätt Y-origin är nu frontendstandard och input når IOASIC
+
+Den verifierade Gauntlet-specifika raster-originen är inte längre beroende av
+ett experimentflagga. Den namngivna fixen
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_GAUNTLET_RASTER_Y_ORIGIN` ingår i
+bringup-standardläget som både desktop- och Android-frontenden använder.
+Standardhöjden är 384 och kan vid behov ändras med motsvarande `_HEIGHT`-flagga.
+Det gamla experimentnamnet stöds fortsatt som kompatibilitetsalias.
+
+Baseline-runnern aktiverar fixen explicit. En fortsättning från f1185 till
+f1205 utan det gamla experimentflagget reproducerar exakt den tidigare
+rättvända scenen:
+
+```text
+frameHash=0xd8514c8b
+```
+
+Ett explicit opt-out,
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_GAUNTLET_RASTER_Y_ORIGIN=0`, reproducerar
+exakt den gamla orienteringen från plus30-snapshoten:
+
+```text
+frameHash=0x7202e3ef
+```
+
+Frontendens riktiga inputväg är kopplad till Gauntlets IOASIC. En enbildsruta
+med `UP` från f1205 gav:
+
+```text
+player12=fffe
+p1=00000010
+```
+
+Det bevisar både aktiv-låg IOASIC-port och rätt runtime-riktningsbit. En
+20-rutors kontroll, UP-puls och FIGHT-puls gav alla `0x8f916a6f`; scenen vid
+denna snapshot reagerar alltså ännu inte visuellt på spelinput. Kalla inte
+gameplay verifierat förrän coin/start har nått en interaktiv spelsekvens.
+
+Desktopfrontenden bygger i Release med 0 fel:
+
+```sh
+dotnet build EutherDrive.UI/EutherDrive.UI.csproj -c Release --no-restore
+dotnet EutherDrive.UI/bin/Release/net8.0/EutherDrive.UI.dll \
+  /home/nichlas/roms/MAME/Midway/Vegas/gauntd
+```
+
+Standardtangenter för arcade är pilar, `Z`/`X`/`C` för
+fight/magic/turbo, `Enter` för start och `5` för coin. Den varma
+probe-snapshoten kan ännu inte laddas av den vanliga UI:n, så frontendtestet
+startar kallt och är långsamt. Nästa praktiska slice är att nå en verifierat
+interaktiv coin/start-sekvens och därefter flytta warm-state-formatet från
+probe-reflektion till en riktig Gauntlet-savestateväg om kallstarten hindrar
+snabb användartestning.
