@@ -768,3 +768,59 @@ sha256=07417d60363c599b828f88b4cbe8707cbe7e7265386d4a99471cc5e24c8bc283
 artifacts/gauntlet-probe/gauntdl-invalid-asset-reject-f1100-20260723.ppm
 sha256=6ee0c80766525b42bad63efa634ae352572bb6e03a167feb9e253f55e656628e
 ```
+
+### 2026-07-23: riktig worker-entry och stale filesystem-köhuvud
+
+Den tidigare slutsatsen att callback `0x800f087c` inte nåddes var ett
+sondfel: `EXTRA_STOP_PC=800f087c` jämfördes mot den signerade runtime-PC:n
+`0xffffffff800f087c`. Med hela adressen träffar callbacken efter 4 124
+instruktioner från f1060. Scheduler-dispatchen laddar korrekt:
+
+```text
+s1/callback  0xffffffff800f087c
+s2/context   0xffffffff80295600
+ra           0xffffffff800de480
+```
+
+Worker-tracen visar en komplett native livslängd för den första namnlösa
+requesten. Producenten skriver owner `0x802c35f0` till `QIO+0x28` vid
+`0x800f0c18`; worker-entryn läser samma owner, kör filesystem-anropet och får
+gueststatus `0x1803`; epilogen skriver statusen och nollställer därefter
+`QIO+0x28` vid `0x800f0ab0`. Callbackfältet är alltså inte korrupt och workern
+ska inte forceras.
+
+Ett viktigt A/B-resultat är att den generella
+`EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS` maskerar `0x1803` till `0x1800`.
+Med just den reparationen explicit avstängd avvisar gästen först
+`/d0//textures.rom` och bygger sedan den korrekta sökvägen:
+
+```text
+/d0/monsters/death/textures.rom
+```
+
+Detta är en renare continuation, men ännu inte en färdig fix. Vid f1120 har
+det riktiga QIO-objektet fortfarande state `0x207`, status noll, owner
+`0x802c35f0` och callback `0x800f087c`. Filesystem-köhuvudet
+`0x8021e97c` pekar på nod `0x80295630`, samtidigt som nodens båda länkfält
+redan är noll. Scheduler-ready `0x80262ae0` är tom och CP0 Cause saknar
+software-IRQ. Det konkreta blockerande tillståndet är därför ett stale
+filesystem-köhuvud/saknad wakeup, inte worker-kod eller QIO-data.
+
+En enda guest-korrekt VBlank-timerpuls från f1120 går genom exceptionvektorn
+och `eret`, men publicerar inte filesystem-jobbet. En efterföljande native
+f1122--f1142-körning producerar `WaitForQIO: Timeout`; köhuvud, owner och
+status är oförändrade och renderpoolen är fortfarande tom. Promota därför
+varken timerpulsen eller den globala statusmaskningen. Nästa pass ska spåra
+wakeupen vid enqueue/dispatcher-gränsen och varför software-signalen försvinner
+när `0x8021e97c` fortfarande äger en avlänkad nod.
+
+Reload-verifierade continuations och bild:
+
+```text
+artifacts/gauntlet-probe/gauntdl-native-qio-status-f1120-20260723.warm
+sha256=d72844c01ae925049a35549f48f7b3807c891879441ee82d18442b2db258e504
+artifacts/gauntlet-probe/gauntdl-native-qio-post-pulse-f1142-20260723.warm
+sha256=a1e958e6fe455469ea553b9cb7b2d010170ec0e9c0fd7146888ecddff5df1abc
+artifacts/gauntlet-probe/gauntdl-native-qio-status-f1120-20260723.png
+sha256=a6ba68fe13d0f0de43cd5870edd08e118a1b341bba9b871eeacec8733a2d5cef
+```
