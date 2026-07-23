@@ -1084,3 +1084,25 @@ sha256=1e3a479ea7ebb70abe3cc70ef34e8f6706eba2acc7918d6739a4ef4f219659f0
 artifacts/gauntlet-probe/gauntdl-fire3-raster-yorigin-f1185-20260723.png
 sha256=d9dd4341d03de2f05d193da29443c6f4e0bc456ef20a7cb68c9e2120cda9ee02
 ```
+
+En 20-frame fortsättning med samma raster-origin-probe visar att vägen inte
+bara producerar en korrekt orienterad stillbild. Gästen och renderströmmen
+fortsätter framåt och fyller scenen med mer sammanhängande arkitektur:
+
+```text
+frame=1205
+frameHash=0xd8514c8b
+Type3=266773
+textured triangles=1885
+covered=1563
+pixels=92871
+colored=187986
+swaps=7152
+```
+
+```text
+artifacts/gauntlet-probe/gauntdl-raster-yorigin-f1205-20260723.warm
+sha256=c68fe9fb461d291e1ee438ac2760b97706b0de675d3e2bc44f212aab1a19c53d
+artifacts/gauntlet-probe/gauntdl-raster-yorigin-f1205-20260723.png
+sha256=10850295fc1e8626226a4e4dfbcef7865cebacb7b71015eeba9ef77e9555a567
+```
