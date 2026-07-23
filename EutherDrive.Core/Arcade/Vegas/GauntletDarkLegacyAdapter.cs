@@ -34939,7 +34939,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $":pc{_cmdFifoGenerationBaseLastResetPc:X} " +
            GetCommandFifoDecodeStopDebugStatus() +
            $"peek=0x{PeekCommandFifoWord():X8}:{GetFifoPacketWordsNeeded(PeekCommandFifoWord())} " +
-           $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8} " +
+           $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8} fbi3=0x{_registers[RegFbiInit3]:X8} " +
            $"pdtc={_commandFifoPayloadDirectTriangleCommandSuppressCount} " +
            $"t1ob={_commandFifoImplausibleType1OutsideBulkWindowGateCount}/{_commandFifoImplausibleType1OutsideBulkWindowDropCount}";
     public string RecentEventStatus => FormatRecentVoodooEvents();
@@ -42788,7 +42788,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         for (int y = minY; y < maxY; y++)
         {
             float py = y + 0.5f;
-            int row = y * LfbRowPixels;
+            int screenY = GetRasterBufferY(y);
+            int row = screenY * LfbRowPixels;
             for (int x = minX; x < maxX; x++)
             {
                 float px = x + 0.5f;
@@ -42798,7 +42799,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (positive ? e0 >= 0 && e1 >= 0 && e2 >= 0 : e0 <= 0 && e1 <= 0 && e2 <= 0)
                 {
                     buffer[(row + x) & (LfbPixels - 1)] = color;
-                    TrackPixelLastWriter(bufferIndex, x, y, writerId);
+                    TrackPixelLastWriter(bufferIndex, x, screenY, writerId);
                     drawnPixels++;
                     _solidRasterPixelCount++;
                     if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
@@ -42951,6 +42952,15 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static float Edge(float ax, float ay, float bx, float by, float px, float py)
         => (px - ax) * (by - ay) - (py - ay) * (bx - ax);
 
+    private int GetRasterBufferY(int y)
+    {
+        if ((_registers[RegFbzMode] & (1u << 17)) == 0)
+            return y;
+
+        int yOrigin = (int)((_registers[RegFbiInit3] >> 22) & 0x3ffu);
+        return Math.Clamp(yOrigin - y, 0, LfbRows - 1);
+    }
+
     private bool FillGradientColorTriangle(
         float ax,
         float ay,
@@ -43006,7 +43016,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         for (int y = minY; y < maxY; y++)
         {
             float py = y + 0.5f;
-            int row = y * LfbRowPixels;
+            int screenY = GetRasterBufferY(y);
+            int row = screenY * LfbRowPixels;
             for (int x = minX; x < maxX; x++)
             {
                 float px = x + 0.5f;
@@ -43026,7 +43037,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     color = fallbackColor;
 
                 buffer[(row + x) & (LfbPixels - 1)] = color;
-                TrackPixelLastWriter(bufferIndex, x, y, writerId);
+                TrackPixelLastWriter(bufferIndex, x, screenY, writerId);
                 coveredAny = true;
                 _solidRasterPixelCount++;
                 if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
@@ -43221,7 +43232,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         for (int y = minY; y < maxY; y++)
         {
             float py = y + 0.5f;
-            int row = y * LfbRowPixels;
+            int screenY = GetRasterBufferY(y);
+            int row = screenY * LfbRowPixels;
             for (int x = minX; x < maxX; x++)
             {
                 float px = x + 0.5f;
@@ -43410,7 +43422,7 @@ sampledTexel:
                 if (mameRgbMask)
                 {
                     buffer[pixel] = texel;
-                    TrackPixelLastWriter(bufferIndex, x, y, writerId);
+                    TrackPixelLastWriter(bufferIndex, x, screenY, writerId);
                     _texturedRasterPixelCount++;
                     if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
                         _rasterBufferPixelCounts[bufferIndex]++;
@@ -43846,7 +43858,8 @@ sampledTexel:
         for (int y = minY; y < maxY; y++)
         {
             float py = y + 0.5f;
-            int row = y * LfbRowPixels;
+            int screenY = GetRasterBufferY(y);
+            int row = screenY * LfbRowPixels;
             for (int x = minX; x < maxX; x++)
             {
                 float px = x + 0.5f;
@@ -43893,7 +43906,7 @@ sampledTexel:
                 }
 
                 buffer[pixel] = texel;
-                TrackPixelLastWriter(bufferIndex, x, y, writerId);
+                TrackPixelLastWriter(bufferIndex, x, screenY, writerId);
                 coveredAny = true;
                 _texturedRasterPixelCount++;
                 if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)

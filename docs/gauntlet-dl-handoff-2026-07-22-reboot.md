@@ -880,3 +880,52 @@ sha256=ced845742616175768d5b6f3f59fb163a471a96e09e9556b296cb166fd051c51
 artifacts/gauntlet-probe/gauntdl-clean-native-irq-f1120-20260723.png
 sha256=2af4895020a0d1537bc180fda4a1ec6396f596c7448580ad57062b73880faca9
 ```
+
+### 2026-07-23: TMU0-scenen, lång renderpassage och verifierad Y-origin
+
+Single-TMU + TMU0-S/T fortsätter ge den klart bästa riktiga spelscenen. En
+continuation på ytterligare 20 miljoner råa CPU-instruktioner från
+`gauntdl-single-tmu-st0-scene-f1160-e2m-plus10m` ökade Type3 från 187275 till
+223886 och producerade en sammanhängande dungeon med golv, pelare, väggar och
+spikar. Swaps förblev dock 7150. Den nya snapshoten motsvarar därmed totalt
+cirka 30 miljoner extra instruktioner efter f1160:
+
+```text
+frameHash=0x7202e3ef
+Type3=223886
+textured triangles=24687
+covered=20049
+pixels=6096068
+zero=57193
+swaps=7150
+
+artifacts/gauntlet-probe/gauntdl-single-tmu-st0-scene-f1160-e2m-plus30m-20260723.warm
+sha256=71ce51bf3d730971133ae2bc51a36d60b8741dedb3c0bef15855b83d00bb98aa
+artifacts/gauntlet-probe/gauntdl-single-tmu-st0-scene-f1160-e2m-plus30m-20260723.png
+sha256=a6af9b2b802813df48b7abefab405432c0572130b7e79050dcb9213cc74a29f5
+```
+
+Råa extra-steg är inte ett korrekt spelbarhetstest eftersom de inte kör
+`GauntletDarkLegacyMachine.RunFrame()` och därmed inte pulserar VBlank eller
+övrig frame-tid. En kontroll med tio riktiga frontend-frames visade ändå ingen
+ny swap. Det befintliga kontextbevarande VBlank-tick-experimentet flyttade
+gästen men gav upprepade returer till `0x80000000` från `0x800ccc58` och ska
+inte promoveras.
+
+MAME jämfördes direkt mot den lokala Voodoo-implementationen. MAME applicerar
+`fbzMode.y_origin` per raster-scanline som `fbiInit3.yorigin - y`; den vänder
+inte blint den exporterade slutbilden. Samma hårdvarubeteende finns nu i alla
+lokala triangelrastervägar och `fbiInit3` syns i debugstatus. Den här scenen har
+emellertid:
+
+```text
+fbzMode=0x00000460  (y_origin=0)
+fbiInit3=0x00110001 (yorigin=0)
+```
+
+10k-regressionen är därför avsiktligt byteidentisk med tidigare
+`frameHash=0xbdd7887c`. En manuellt vänd aktiv 640x384-yta ser visuellt korrekt
+ut, men registren bevisar att en generell framebufferflip vore fel fix.
+Nästa pass ska följa vertextransformen/modelltraverseringen som matar
+`0x800c6200..0x800c7200`: det är nu den mest sannolika gemensamma orsaken till
+den inverterade projektionen och det orimligt långa draw-passet.
