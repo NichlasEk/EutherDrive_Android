@@ -824,3 +824,59 @@ sha256=a1e958e6fe455469ea553b9cb7b2d010170ec0e9c0fd7146888ecddff5df1abc
 artifacts/gauntlet-probe/gauntdl-native-qio-status-f1120-20260723.png
 sha256=a6ba68fe13d0f0de43cd5870edd08e118a1b341bba9b871eeacec8733a2d5cef
 ```
+
+### 2026-07-23: ren f1030-rebase återställer native IDE-completion
+
+Den föregående slutsatsen om ett stale filesystem-köhuvud var för tidig.
+Write-watch av både filesystem-kön `0x8021e97c` och scheduler-ready-kön
+`0x80262ae0` visar att targetnoden verkligen dispatchas. Filesystem-servicen
+går därefter state 0 -> 1 -> 2. State 1 startar en riktig bus-master-IDE-read
+via `0x800f6c44`; den saknade händelsen var IDE-completion-interrupten, inte
+den initiala worker-wakeupen.
+
+MAME-källan kopplar Vegas IDE IRQ direkt till Nile PCI interrupt D. Den lokala
+Nile-routingen matchar detta: high control `0x8000ba00` routar PCI-D till
+MIPS-interruptvektor 3. Problemet var i stället snapshot-lineage:
+
+```text
+f950   deviceControl=0x00
+f970   deviceControl=0x00
+f980   deviceControl=0x00
+f1000  deviceControl=0x00
+f1030  deviceControl=0x00
+f1060  deviceControl=0x9b
+```
+
+`0x9b` har ATA `nIEN`-biten satt. Därför genomförde den förorenade
+f1060-continuationen DMA:n men `IdeDiskDevice.SignalInterrupt()` höll
+INTRQ låg. En ren replay från f1030 skriver aldrig device-control-porten och
+behåller `0x00`; IDE-tracen visar då sector read, DMA-copy och native
+completion. Exceptionvektorn får `Cause=0xa000` vid `EPC=0x800f69b4`, och
+gästens IDE-handler fortsätter filesystem-state-maskinen utan QIO-statusfix
+eller syntetisk wakeup.
+
+Rebasen f1030 -> f1080 ger den första tydliga framflyttningen:
+
+```text
+deviceControl=0x00
+filesystem state=10
+texture writes=2489081
+texture-map writes=955824
+texture-map touched=238618
+```
+
+En fortsatt ren körning till f1120 håller IDE:n frisk och laddar fler riktiga
+assets. Bilden är ännu felkomponerad och nästan vit, men innehåller nu en
+tydlig figur-/ansiktstextur nere till vänster samt flera upprepade
+texturfragment. Disk/QIO är alltså inte längre den aktuella bringup-gränsen.
+Nästa pass ska utgå från den rena f1120-snapshoten och följa varför riktiga
+texturer hamnar som små upprepade fragment i stället för en sammanhängande
+Voodoo-scen: packet 3/setup, koordinat-/extent-proveniens och vald color
+buffer är nu relevanta igen.
+
+```text
+artifacts/gauntlet-probe/gauntdl-clean-native-irq-f1120-20260723.warm
+sha256=ced845742616175768d5b6f3f59fb163a471a96e09e9556b296cb166fd051c51
+artifacts/gauntlet-probe/gauntdl-clean-native-irq-f1120-20260723.png
+sha256=2af4895020a0d1537bc180fda4a1ec6396f596c7448580ad57062b73880faca9
+```
