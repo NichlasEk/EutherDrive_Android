@@ -12724,3 +12724,48 @@ miljoner ticks från nästa Compare. Den bestående runtime-källan är därför
 VBlank/SIO-bridgen. `RecordRuntimeVblankTick()` måste härnäst göras
 timerlist-korrekt (eller ersättas av riktig context-bevarande guest-dispatch),
 utan direktanrop av `0x800f7000`.
+
+## 2026-07-23: Type-5 space 0 ska till command-FIFO-RAM
+
+En fortsatt körning från den rena native-IDE-checkpointen vid f1160 skapade
+ett 80 pixlar högt brusband från y=160. Räknarna pekade exakt på ett Type-5-
+paket i address space 0 med 40 960 payloadord. Vår förenklade FIFO-modell
+tolkade space 0 som LFB när den fulla experimentella MAME-command-FIFO-modellen
+var avstängd.
+
+MAMEs `voodoo_2.cpp::packet_type_5()` använder i stället space 0 som linjärt
+framebuffer-/command-FIFO-RAM, space 2 som 3D LFB och space 3 som texture RAM.
+Baseline har därför fått den smala fixen
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_SPACE0_CMD_FIFO_RAM=1`, som skriver
+space-0-payloaden till `_cmdFifoRam` utan att kräva hela den experimentella
+MAME-FIFO-modellen.
+
+Ett explicit A/B-test från samma snapshot ringade in skrivningen mellan
+1 000 000 och 2 000 000 extra CPU-instruktioner:
+
+```text
+fix=0: pc=0xffffffff800fe410, first LFB xy=2,160
+       40 960 LFB writes, frameHash=0x2d254c8f, colored=51 906
+fix=1: inga nya LFB-detail events
+       frameHash=0x03a897ce, colored=1 815
+```
+
+Den stora bildförändringen var alltså inte ny spelgeometri utan command-FIFO-
+data som felaktigt ritades som pixlar. Med fixen passerar samma Type-5-räkning
+(`space0=1 packet/40960 words`) utan att förorena bilden. Inga nya Type-3-
+paket kom under ytterligare fem miljoner instruktioner; runtime fortsätter
+fortfarande modell-/texturlastning.
+
+Reproducerbar checkpoint direkt efter den korrigerade Type-5-passagen:
+
+```text
+artifacts/gauntlet-probe/gauntdl-type5-space0-fixed-f1160-e2m-20260723.warm
+sha256 bf874740ebeb78f4b7427aba8c06db220a19005413c7ca952ee4b7e3d87b307b
+
+artifacts/gauntlet-probe/gauntdl-type5-space0-fixed-f1160-e2m-20260723.png
+sha256 14dd077ef1fbe965d4d5343bc05ecfa775415fc21790c6bc5042413e2a9b18e0
+```
+
+Nästa gräns är nu åter den riktiga renderstarten: fortsätt från checkpointen
+och hitta den första nya Type-3-paketsgenerationen efter asset-/modellastningen.
+Brusbandet ska inte användas som renderframsteg.

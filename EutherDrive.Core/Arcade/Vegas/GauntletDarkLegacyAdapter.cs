@@ -49,6 +49,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SEPARATE_TMU_TEXTURE_MEMORY", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_SPACE0_CMD_FIFO_RAM", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES", "1"),
@@ -34301,6 +34302,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
+    private readonly bool _fixType5Space0CommandFifoRam =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_SPACE0_CMD_FIFO_RAM"));
     private readonly bool _experimentMameCommandFifoBulkLogicalWindow =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_LOGICAL_WINDOW"));
     private readonly bool _experimentMameCommandFifoWriteQueue =
@@ -41896,7 +41899,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                         value = BinaryPrimitives.ReverseEndianness(value);
                     WriteTexturePort32(target, value);
                 }
-                else if (space == 0 && _fixMameCommandFifoModel)
+                else if (space == 0 && (_fixMameCommandFifoModel || _fixType5Space0CommandFifoRam))
                 {
                     if (_experimentMameCommandFifoSpace0Endian)
                         value = BinaryPrimitives.ReverseEndianness(value);
