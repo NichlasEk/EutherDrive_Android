@@ -34626,6 +34626,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_USE_SKIPPED_WORD_AS_T"));
     private readonly bool _experimentType3NonFiniteSAsX =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_NONFINITE_S_AS_X"));
+    private readonly bool _experimentDiscardType3Raster =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISCARD_TYPE3_RASTER"));
     private readonly bool _experimentTextureNonFiniteCoordinateZero =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_NONFINITE_COORD_ZERO"));
     private readonly bool _experimentRejectNonFiniteTextureCoordinates =
@@ -37849,9 +37851,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         int frontActiveCount = GetVisibleBufferActiveColorCount(_frontBufferIndex);
         int frontWhiteCount = GetVisibleBufferWhiteCount(_frontBufferIndex);
         int frontUniqueCount = GetVisibleBufferUniqueColorCount(_frontBufferIndex, 128);
-        bool frontIsWhiteClearDominated = frontWhiteCount > 240_000 && frontActiveCount < 32_000;
+        bool frontIsWhiteClearDominated =
+            frontWhiteCount > 240_000 &&
+            frontActiveCount < 32_000 &&
+            (frontActiveCount <= 1024 || frontUniqueCount <= 8);
         bool frontIsLowDetailFill = frontUniqueCount <= 8 && frontActiveCount > 240_000;
         bool frontIsUsable = !frontIsWhiteClearDominated && frontCount > 1024 && frontActiveCount > 1024;
+        if (frontIsUsable)
+            return _frontBufferIndex;
 
         int bestIndex = _frontBufferIndex;
         int bestCount = frontCount;
@@ -42615,6 +42622,12 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
         if (ShouldSuppressRgbBufferWrite() && (!_experimentSetupMameAuxDepth || !textured))
             return;
+        if (_experimentDiscardType3Raster &&
+            _decodingCommandFifo &&
+            (_currentCommandFifoCommand & 7u) == 3u)
+        {
+            return;
+        }
         if (textured)
             _texturedTriangleCount++;
         if (textured && FillTexturedTriangle(_setupVertices[0], _setupVertices[1], _setupVertices[2], color))

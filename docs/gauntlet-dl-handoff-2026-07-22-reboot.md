@@ -929,3 +929,48 @@ ut, men registren bevisar att en generell framebufferflip vore fel fix.
 Nästa pass ska följa vertextransformen/modelltraverseringen som matar
 `0x800c6200..0x800c7200`: det är nu den mest sannolika gemensamma orsaken till
 den inverterade projektionen och det orimligt långa draw-passet.
+
+### 2026-07-23: två riktiga swaps och läsbar diagnostic-menu i frontbuffern
+
+En default-off Type3-rasterdiscard lades till som ren tidsdiagnostik. Den
+avkodar fortsatt hela command-FIFO:n och uppdaterar setup-vertexstrippen, men
+hoppar över själva pixelrasteriseringen. Från plus30m-snapshoten gav den:
+
+```text
++5m   swaps=7150 Type3=233352
++16m  swaps=7150 Type3=253039
++18m  swaps=7150 Type3=256024
++20m  swaps=7152 Type3=260533
+```
+
+En ny fullrenderad replay av exakt +20m bekräftade samma CPU-, FIFO- och
+swapläge och sparades som plus50m. De två interna buffertarna avslöjade att
+frontbuffer 0 innehåller en ren, läsbar Gauntlet Dark Legacy
+`DIAGNOSTIC MENU` med logotyp, medan backbuffer 1 innehåller den brusiga
+dungeon-scenen.
+
+`ChooseRenderBufferIndex()` valde tidigare buffer 1 trots
+`front=0/back=1`, eftersom heuristiken premierade kandidatens större färgade
+yta. En giltig frontbuffer med fler än 1024 aktiva pixlar och detaljrik
+färgpalett väljs nu alltid före fallback-heuristiken. Reload från samma
+snapshot ändrade därför endast presentationen:
+
+```text
+före: chosen=1 frameHash=0x24617f8b colored=196608
+efter: chosen=0 frameHash=0xf95a6bf2 colored=13226
+```
+
+Verifierade artefakter:
+
+```text
+artifacts/gauntlet-probe/gauntdl-single-tmu-st0-scene-f1160-e2m-plus50m-20260723.warm
+sha256=d4133b400dd5f1faa2c36297ab40e69a384e3f203df8fb09bb3a94600e755c5f
+artifacts/gauntlet-probe/gauntdl-single-tmu-st0-front-f1160-e2m-plus50m-20260723.png
+sha256=5ba88e4218279d6ddc9d0149e5c3d948e727c332464421b8718a912b08545663
+```
+
+Detta är den första läsbara fullskärms-UI:n efter den långa scenpassagen och
+bevisar att swap/frontbuffer-tillståndet nu kan presenteras korrekt. Nästa pass
+ska utgå från plus50m-snapshoten, mata verklig input mot diagnostic-menyn och
+kontrollera nästa swap. Dungeon-backbufferns färgbrus ska därefter isoleras
+som pixel-/skrivlayout; det är inte längre ett presentationsbufferproblem.
