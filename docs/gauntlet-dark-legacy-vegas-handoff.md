@@ -12769,3 +12769,36 @@ sha256 14dd077ef1fbe965d4d5343bc05ecfa775415fc21790c6bc5042413e2a9b18e0
 Nästa gräns är nu åter den riktiga renderstarten: fortsätt från checkpointen
 och hitta den första nya Type-3-paketsgenerationen efter asset-/modellastningen.
 Brusbandet ska inte användas som renderframsteg.
+
+## 2026-07-23: riktig scenrendering efter COP1-komplettering
+
+Fem miljoner instruktioner efter den korrigerade Type-5-checkpointen började
+gästens modellrenderare använda två R5000 COP1-operationer som den lokala
+Vegas-CPU:n saknade: `RECIP.S` (funct `0x15`) och `C.UEQ.S` (funct `0x33`).
+Det gav en massiv `HaltUnsupported`-loop kring `0x800c5cb0-0x800c6734`.
+
+CPU:n implementerar nu `RECIP.S` samt hela `C.cond.S`-familjen (`0x30-0x3f`)
+med standardpredikaten unordered/equal/less. Omkörning från exakt samma warm
+state gav noll COP1-halts och följande första riktiga scenrendering:
+
+```text
+Type-3 packets:       173851 -> 177385
+textured triangles:   2305
+covered triangles:    1822
+rasterized pixels:    468674
+frameHash:            0xefdae938
+colored pixels:       38560
+```
+
+PNG:n visar nu en verklig perspektivisk Gauntlet-scen med väggar, pelare och
+objekttexturer. Geometrin är fortfarande kraftigt klippt/förvrängd och stora
+ytor är vita. Nästa gräns är därför vertex/setup-koordinaterna och
+klippningen; assetlastning och frånvaro av Type-3 är inte längre blockeraren.
+
+```text
+artifacts/gauntlet-probe/gauntdl-cop1-render-f1160-e2m-plus5m-20260723.warm
+sha256 7616d467ec598ff3f821df78854c3b49ed6140fad690ebae2e2a300b1eba7f9e
+
+artifacts/gauntlet-probe/gauntdl-cop1-render-f1160-e2m-plus5m-20260723.png
+sha256 372067cbfddb51713774ed5c102fa99f97242a0b3c5477dacf3d98537b3dfb63
+```

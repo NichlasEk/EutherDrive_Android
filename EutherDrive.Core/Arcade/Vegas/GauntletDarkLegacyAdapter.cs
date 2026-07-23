@@ -27248,6 +27248,9 @@ internal sealed class MipsR5000Core
                 if (GetCop1Condition() == ((ft & 1) != 0))
                     _fpr[fd] = (uint)_fpr[fs];
                 break;
+            case 0x15: // recip.s
+                _fpr[fd] = BitConverter.SingleToUInt32Bits(1.0f / value);
+                break;
             case 0x20: // cvt.s.s
                 _fpr[fd] = (uint)_fpr[fs];
                 break;
@@ -27257,14 +27260,16 @@ internal sealed class MipsR5000Core
             case 0x24: // cvt.w.s
                 _fpr[fd] = unchecked((uint)(int)value);
                 break;
-            case 0x32: // c.eq.s
-                SetCop1Condition((fd >> 2) & 0x07, value == other);
-                break;
-            case 0x3c: // c.lt.s
-                SetCop1Condition((fd >> 2) & 0x07, value < other);
-                break;
-            case 0x3e: // c.le.s
-                SetCop1Condition((fd >> 2) & 0x07, value <= other);
+            case >= 0x30 and <= 0x3f: // c.cond.s
+                bool unordered = float.IsNaN(value) || float.IsNaN(other);
+                bool equal = !unordered && value == other;
+                bool less = !unordered && value < other;
+                uint condition = funct & 0x07u;
+                bool result =
+                    ((condition & 0x01u) != 0 && unordered) ||
+                    ((condition & 0x02u) != 0 && equal) ||
+                    ((condition & 0x04u) != 0 && less);
+                SetCop1Condition((fd >> 2) & 0x07, result);
                 break;
             default:
                 HaltUnsupported(pc, op, $"cop1 s-fmt {funct:x2}");
