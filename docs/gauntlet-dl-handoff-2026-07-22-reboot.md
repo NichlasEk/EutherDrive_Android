@@ -1436,3 +1436,54 @@ YIQ/NCC-färgerna är fortfarande kraftigt brusiga. Nästa smala gräns är att
 jämföra den valda TMU0/TMU1-NCC-tabellen och två-TMU-combinern mot MAME för
 dessa exakta drawpaket. Återöppna inte QIO, Type5-body, råbasen eller
 framebuffer-vändning utifrån denna scen.
+
+### 2026-07-23: draw-buffer 0 innehåller en riktig nivåscen
+
+MAME-jämförelsen hittade ett konkret Type3-fel. Paketet har separata
+`W0/S0/T0`- och `W1/S1/T1`-iteratorer. MAME låter `Wb` mata båda TMU:erna,
+låter `W0` först mata båda och skriver sedan eventuellt över TMU1 med `W1`;
+`S0/T0` och `S1/T1` följer samma arv. Vår decoder kastade däremot bort
+`S1/T1`, och två-TMU-combinern samplade båda TMU:erna med TMU0:s iterator.
+
+`SetupVertex` och MAME-gradientvägen bevarar nu båda koordinatuppsättningarna.
+Den default-off diagnostiken är:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_TMU_ST=1
+```
+
+Med två-TMU-combinern aktiv ändrar splitten den dolda draw-buffer 0 och minskar
+nollsamplingarna:
+
+```text
+shared S/T:   zero=379592  buffer0 sha256=1541a0dee63d112f4aedae5d15f9cd68003aee666674b6dd56d3d6fa0e3170d9
+separate S/T: zero=379288  buffer0 sha256=2859ec2c838704c2610b3380404c173d97224ac8602f4a22c535714b1170d662
+```
+
+Den exporterade f1315-frontbufferten är byteidentisk i båda fallen
+(`frameHash=0xeeebf255`), eftersom drawsen sker i buffer 0 efter den senaste
+swapen medan frontbuffer 1 fortfarande visas.
+
+Det viktigaste fyndet är att single-TMU-kontrollen i buffer 0 inte är brus:
+den visar en sammanhängande Gauntlet-nivå med stenarkitektur, trappor,
+golvtextur och scenobjekt. Detta är den tydligaste riktiga spelgrafiken hittills:
+
+```text
+artifacts/gauntlet-probe/gauntdl-real-scene-draw-buffer-f1315-20260723.png
+sha256=cb17d3da2b18626ce29887db46ac9e9e35c178c2dc8ba1ed52065998413ad2b8
+```
+
+Två-TMU-resultatet lägger fortfarande trasigt TMU1-material över samma
+geometri. Splitten är hårdvarukorrekt men ska därför förbli default-off tills
+TMU1:s register-/minneskälla är verifierad. Nästa gräns är:
+
+1. följ den exakta TMU1-basen och dess Type5-ägare för samma scene draws,
+2. avgör varför en vblank-synkad swap ligger pending utan att dräneras
+   autonomt,
+3. visa buffer 0 via en riktig Voodoo-swap, inte genom att tvinga
+   `ChooseRenderBufferIndex`.
+
+Ett diagnostiskt försök att dränera pending swap vid varje host-`RenderFrame`
+testades och togs bort. Det roterade enligt MAME till den tomma tredje bufferten
+när `fbiInit2` hade gått över till triple buffering och var därför ingen giltig
+exportfix.

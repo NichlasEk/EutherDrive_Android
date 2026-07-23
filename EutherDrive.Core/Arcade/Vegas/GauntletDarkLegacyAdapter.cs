@@ -34631,6 +34631,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FULLRECT_LAYOUT_CANDIDATES_LIMIT"), 32);
     private readonly bool _experimentType3PreferTmu0St =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
+    private readonly bool _experimentType3SeparateTmuSt =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_TMU_ST"));
     private readonly bool _experimentType3UseSkippedWordAsS =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_USE_SKIPPED_WORD_AS_S"));
     private readonly bool _experimentType3UseSkippedWordAsT =
@@ -41548,9 +41550,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort fallbackColor = GetDrawColor();
         int source = 1;
         ushort color = fallbackColor;
-        float s = 0;
-        float t = 0;
-        float q = 1;
+        float s0 = 0;
+        float t0 = 0;
+        float q0 = 1;
+        float s1 = 0;
+        float t1 = 0;
+        float q1 = 1;
         bool hasTmu0Texture = false;
         bool hasTexture = ((command >> 15) & 1u) != 0 || ((command >> 17) & 1u) != 0;
         bool hasNonFiniteTextureCoordinate = false;
@@ -41613,61 +41618,72 @@ internal class VoodooBringupBackend : IVoodooBackend
                     return;
                 }
             }
-            if (((command >> 13) & 1u) != 0 &&
-                !TryReadFloat(wordsNeeded, ref source, out q))
+            if (((command >> 13) & 1u) != 0)
             {
-                return;
+                if (!TryReadFloat(wordsNeeded, ref source, out float wb))
+                    return;
+                q0 = wb;
+                q1 = wb;
             }
-            if (((command >> 14) & 1u) != 0 &&
-                !TryReadFloat(wordsNeeded, ref source, out q))
+            if (((command >> 14) & 1u) != 0)
             {
-                return;
+                if (!TryReadFloat(wordsNeeded, ref source, out float w0))
+                    return;
+                q0 = w0;
+                q1 = w0;
             }
             if (((command >> 15) & 1u) != 0)
             {
-                if (!TryReadFloat(wordsNeeded, ref source, out s) ||
-                    !TryReadFloat(wordsNeeded, ref source, out t))
+                if (!TryReadFloat(wordsNeeded, ref source, out s0) ||
+                    !TryReadFloat(wordsNeeded, ref source, out t0))
                 {
                     return;
                 }
+                s1 = s0;
+                t1 = t0;
 
                 if (_experimentType3UseSkippedWordAsS &&
                     float.IsFinite(skippedWordAsS) &&
-                    !float.IsFinite(s))
+                    !float.IsFinite(s0))
                 {
-                    s = skippedWordAsS;
+                    s0 = skippedWordAsS;
+                    s1 = s0;
                 }
                 else if (_experimentType3UseSkippedWordAsT &&
                          float.IsFinite(skippedWordAsS) &&
-                         !float.IsFinite(s))
+                         !float.IsFinite(s0))
                 {
-                    s = t;
-                    t = skippedWordAsS;
+                    s0 = t0;
+                    t0 = skippedWordAsS;
+                    s1 = s0;
+                    t1 = t0;
                 }
-                else if (_experimentType3NonFiniteSAsX && !float.IsFinite(s))
+                else if (_experimentType3NonFiniteSAsX && !float.IsFinite(s0))
                 {
-                    s = x;
+                    s0 = x;
+                    s1 = s0;
                 }
-                hasNonFiniteTextureCoordinate |= !float.IsFinite(s) || !float.IsFinite(t);
+                hasNonFiniteTextureCoordinate |= !float.IsFinite(s0) || !float.IsFinite(t0);
                 hasTmu0Texture = true;
             }
             if (((command >> 16) & 1u) != 0 &&
-                !TryReadFloat(wordsNeeded, ref source, out q))
+                !TryReadFloat(wordsNeeded, ref source, out q1))
             {
                 return;
             }
             if (((command >> 17) & 1u) != 0)
             {
-                if (!TryReadFloat(wordsNeeded, ref source, out float s1) ||
-                    !TryReadFloat(wordsNeeded, ref source, out float t1))
+                if (!TryReadFloat(wordsNeeded, ref source, out s1) ||
+                    !TryReadFloat(wordsNeeded, ref source, out t1))
                 {
                     return;
                 }
 
-                if (!_experimentType3PreferTmu0St || !hasTmu0Texture)
+                if (!_experimentType3SeparateTmuSt &&
+                    (!_experimentType3PreferTmu0St || !hasTmu0Texture))
                 {
-                    s = s1;
-                    t = t1;
+                    s0 = s1;
+                    t0 = t1;
                 }
                 hasNonFiniteTextureCoordinate |= !float.IsFinite(s1) || !float.IsFinite(t1);
             }
@@ -41677,9 +41693,12 @@ internal class VoodooBringupBackend : IVoodooBackend
                     SetupVertexCoordinate(x),
                     SetupType3VertexY(y),
                     color,
-                    s,
-                    t,
-                    q,
+                    s0,
+                    t0,
+                    q0,
+                    s1,
+                    t1,
+                    q1,
                     hasTexture),
                 code,
                 vertex,
@@ -42632,6 +42651,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             s,
             t,
             q,
+            s,
+            t,
+            q,
             _registers[RegFstartS] != 0 || _registers[RegFstartT] != 0 || _registers[0xa3] != 0 || _registers[0xa4] != 0);
     }
 
@@ -43291,6 +43313,24 @@ internal class VoodooBringupBackend : IVoodooBackend
         long textureStartW = MameSetupCastToInt64(a.Q * TextureSetupScale);
         long textureDwDx = MameSetupCastToInt64(((a.Q - b.Q) * dx1 - (a.Q - c.Q) * dx2) * TextureSetupScale * setupDivisor);
         long textureDwDy = MameSetupCastToInt64(((a.Q - c.Q) * dy1 - (a.Q - b.Q) * dy2) * TextureSetupScale * setupDivisor);
+        float textureS1A = _experimentType3SeparateTmuSt ? a.S1 : a.S;
+        float textureT1A = _experimentType3SeparateTmuSt ? a.T1 : a.T;
+        float textureQ1A = _experimentType3SeparateTmuSt ? a.Q1 : a.Q;
+        float textureS1B = _experimentType3SeparateTmuSt ? b.S1 : b.S;
+        float textureT1B = _experimentType3SeparateTmuSt ? b.T1 : b.T;
+        float textureQ1B = _experimentType3SeparateTmuSt ? b.Q1 : b.Q;
+        float textureS1C = _experimentType3SeparateTmuSt ? c.S1 : c.S;
+        float textureT1C = _experimentType3SeparateTmuSt ? c.T1 : c.T;
+        float textureQ1C = _experimentType3SeparateTmuSt ? c.Q1 : c.Q;
+        long startS1 = MameSetupCastToInt64(textureS1A * TextureSetupScale);
+        long startT1 = MameSetupCastToInt64(textureT1A * TextureSetupScale);
+        long dS1dX = MameSetupCastToInt64(((textureS1A - textureS1B) * dx1 - (textureS1A - textureS1C) * dx2) * TextureSetupScale * setupDivisor);
+        long dT1dX = MameSetupCastToInt64(((textureT1A - textureT1B) * dx1 - (textureT1A - textureT1C) * dx2) * TextureSetupScale * setupDivisor);
+        long dS1dY = MameSetupCastToInt64(((textureS1A - textureS1C) * dy1 - (textureS1A - textureS1B) * dy2) * TextureSetupScale * setupDivisor);
+        long dT1dY = MameSetupCastToInt64(((textureT1A - textureT1C) * dy1 - (textureT1A - textureT1B) * dy2) * TextureSetupScale * setupDivisor);
+        long textureStartW1 = MameSetupCastToInt64(textureQ1A * TextureSetupScale);
+        long textureD1wDx = MameSetupCastToInt64(((textureQ1A - textureQ1B) * dx1 - (textureQ1A - textureQ1C) * dx2) * TextureSetupScale * setupDivisor);
+        long textureD1wDy = MameSetupCastToInt64(((textureQ1A - textureQ1C) * dy1 - (textureQ1A - textureQ1B) * dy2) * TextureSetupScale * setupDivisor);
         int triangleTargetLod = ComputeAndTraceTexturedTriangleLod(
             a,
             b,
@@ -43301,6 +43341,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             dTdY,
             bufferIndex,
             out int triangleLodBase8p8);
+        int triangleLodBase1_8p8 = ComputeTextureLodBase8p8(dS1dX, dS1dY, dT1dX, dT1dY);
         int setupAx = unchecked((short)(int)(a.X * 16.0f)) >> 4;
         int setupAy = unchecked((short)(int)(a.Y * 16.0f)) >> 4;
         uint fbzMode = _registers[RegFbzMode];
@@ -43366,11 +43407,18 @@ internal class VoodooBringupBackend : IVoodooBackend
                         long iterW = unchecked(textureStartW + dy * textureDwDy + dx * textureDwDx);
                         if (_experimentMameTwoTmuCombine)
                         {
+                            long iterS1 = unchecked(startS1 + dy * dS1dY + dx * dS1dX);
+                            long iterT1 = unchecked(startT1 + dy * dT1dY + dx * dT1dX);
+                            long iterW1 = unchecked(textureStartW1 + dy * textureD1wDy + dx * textureD1wDx);
                             TextureRgba combined = SampleAndCombineTwoTmusMameFixed(
                                 iterS,
                                 iterT,
                                 iterW,
                                 triangleLodBase8p8,
+                                iterS1,
+                                iterT1,
+                                iterW1,
+                                triangleLodBase1_8p8,
                                 x,
                                 y);
                             texel = combined.Rgb565;
@@ -43596,12 +43644,7 @@ sampledTexel:
             return -1;
         }
 
-        double texDx = (double)dSdX * dSdX + (double)dTdX * dTdX;
-        double texDy = (double)dSdY * dSdY + (double)dTdY * dTdY;
-        double maxDerivativeSquared = Math.Max(texDx, texDy);
-        lodBase8p8 = maxDerivativeSquared > 0.0 && double.IsFinite(maxDerivativeSquared)
-            ? (int)Math.Round(((Math.Log2(maxDerivativeSquared) - 64.0) * 0.5) * 256.0)
-            : int.MinValue;
+        lodBase8p8 = ComputeTextureLodBase8p8(dSdX, dSdY, dTdX, dTdY);
         float centroidW = (a.Q + b.Q + c.Q) / 3.0f;
         int perspective8p8 = (mode & 1u) != 0 && float.IsFinite(centroidW) && MathF.Abs(centroidW) > 0.0f
             ? (int)Math.Round(Math.Log2(Math.Abs(centroidW)) * 256.0)
@@ -43637,6 +43680,16 @@ sampledTexel:
         }
 
         return _experimentTextureMameTriangleLod ? targetLod : -1;
+    }
+
+    private static int ComputeTextureLodBase8p8(long dSdX, long dSdY, long dTdX, long dTdY)
+    {
+        double texDx = (double)dSdX * dSdX + (double)dTdX * dTdX;
+        double texDy = (double)dSdY * dSdY + (double)dTdY * dTdY;
+        double maxDerivativeSquared = Math.Max(texDx, texDy);
+        return maxDerivativeSquared > 0.0 && double.IsFinite(maxDerivativeSquared)
+            ? (int)Math.Round(((Math.Log2(maxDerivativeSquared) - 64.0) * 0.5) * 256.0)
+            : int.MinValue;
     }
 
     private static int ComputeMameTexturePixelLod(
@@ -44730,10 +44783,14 @@ sampledTexel:
     }
 
     private TextureRgba SampleAndCombineTwoTmusMameFixed(
-        long iterS,
-        long iterT,
-        long iterW,
-        int lodBase8p8,
+        long iterS0,
+        long iterT0,
+        long iterW0,
+        int lodBase0_8p8,
+        long iterS1,
+        long iterT1,
+        long iterW1,
+        int lodBase1_8p8,
         int x,
         int y)
     {
@@ -44742,20 +44799,20 @@ sampledTexel:
         {
             uint mode1 = ReadTextureRegisterForTmu(1, RegTextureMode);
             uint lod1 = ReadTextureRegisterForTmu(1, RegTextureLod);
-            int targetLod1 = lodBase8p8 == int.MinValue
+            int targetLod1 = lodBase1_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod1, ReadTextureRegisterForTmu(1, RegTextureBaseAddr))
-                : ComputeMameTexturePixelLod(lodBase8p8, iterW, x, y, mode1, lod1);
-            TextureRgba local1 = SampleTextureMameFixedForTmu(1, iterS, iterT, iterW, targetLod1);
+                : ComputeMameTexturePixelLod(lodBase1_8p8, iterW1, x, y, mode1, lod1);
+            TextureRgba local1 = SampleTextureMameFixedForTmu(1, iterS1, iterT1, iterW1, targetLod1);
             combined = CombineTextureMame(mode1, local1, combined, targetLod1 << 8);
         }
         if (_tmuRegisterValid[0][RegTextureMode] && _tmuRegisterValid[0][RegTextureLod])
         {
             uint mode0 = ReadTextureRegisterForTmu(0, RegTextureMode);
             uint lod0 = ReadTextureRegisterForTmu(0, RegTextureLod);
-            int targetLod0 = lodBase8p8 == int.MinValue
+            int targetLod0 = lodBase0_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod0, ReadTextureRegisterForTmu(0, RegTextureBaseAddr))
-                : ComputeMameTexturePixelLod(lodBase8p8, iterW, x, y, mode0, lod0);
-            TextureRgba local0 = SampleTextureMameFixedForTmu(0, iterS, iterT, iterW, targetLod0);
+                : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, mode0, lod0);
+            TextureRgba local0 = SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, targetLod0);
             combined = CombineTextureMame(mode0, local0, combined, targetLod0 << 8);
         }
         return combined;
@@ -48655,7 +48712,23 @@ sampledTexel:
         return (ushort)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
     }
 
-    private readonly record struct SetupVertex(float X, float Y, ushort Color, float S, float T, float Q, bool HasTexture);
+    private readonly record struct SetupVertex(
+        float X,
+        float Y,
+        ushort Color,
+        float S,
+        float T,
+        float Q,
+        float S1,
+        float T1,
+        float Q1,
+        bool HasTexture)
+    {
+        public SetupVertex(float x, float y, ushort color, float s, float t, float q, bool hasTexture)
+            : this(x, y, color, s, t, q, s, t, q, hasTexture)
+        {
+        }
+    }
 
     private static void Clear(EutherFrameTarget target, uint bgra)
         => FillRect(target, 0, 0, target.Width, target.Height, bgra);
