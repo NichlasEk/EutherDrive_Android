@@ -12802,3 +12802,56 @@ sha256 7616d467ec598ff3f821df78854c3b49ed6140fad690ebae2e2a300b1eba7f9e
 artifacts/gauntlet-probe/gauntdl-cop1-render-f1160-e2m-plus5m-20260723.png
 sha256 372067cbfddb51713774ed5c102fa99f97242a0b3c5477dacf3d98537b3dfb63
 ```
+
+## 2026-07-23: sammanhängande scen med TMU0 S0/T0
+
+Den första COP1-scenen hade cirka 90 procent nolltexlar trots att den fokuserade
+trace:n visade icke-noll råtexlar och RGB efter TMU0-hämtningen. Felet låg
+efter fetch: den experimentella två-TMU-combinern gjorde slutresultatet noll.
+Den enkla samplern använder samtidigt TMU0 mode/base och ska därför behålla
+Type-3-paketens S0/T0 i stället för att skriva över dem med S1/T1.
+
+Ett rent A/B från samma pre-render-snapshot gav:
+
+```text
+two-TMU combine, S1/T1:
+  frameHash=0xefdae938  colored=38560
+  textured pixels=468674  zero=424165
+
+single TMU, S1/T1:
+  frameHash=0x3467bf94  colored=186614
+  textured pixels=468674  zero=2538
+
+single TMU, S0/T0:
+  frameHash=0xbd14ca89  colored=184594
+  textured pixels=468674  zero=30
+```
+
+Probe-baseline använder nu två-TMU-combine av och
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST=1`. Samma S0/T0-
+val är även aktivt i adapter-defaults; två-TMU-combine var inte ett adapter-
+defaultvärde.
+
+Efter tio miljoner instruktioner är scenen sammanhängande:
+
+```text
+Type-3 packets=187275
+textured triangles=8709/covered=6939
+rasterized pixels=1754560/zero=5198
+frameHash=0x9cffd659
+colored pixels=188037
+```
+
+Tak, väggar, pelare och objekt sitter nu ihop perspektiviskt. De nedersta 96
+raderna är svarta medan innehållet ligger i y=0..383. Vänd inte hela bilden:
+taket och väggarna har redan rimlig vertikal orientering. Nästa kontroll är
+Voodoo-videotimingens aktiva höjd/presentation (troligen 384 rader) och därefter
+input/runtime-frame progression.
+
+```text
+artifacts/gauntlet-probe/gauntdl-single-tmu-st0-scene-f1160-e2m-plus10m-20260723.warm
+sha256 b19d71f9d1b89c0b3dbc2a71c361147a054a749b587ec9842ab0a06825a53bc2
+
+artifacts/gauntlet-probe/gauntdl-single-tmu-st0-scene-f1160-e2m-plus10m-20260723.png
+sha256 72a6a52fb3a22dc5e470cd18b869c531e6be953d83dceac85abe46a33d1be84e
+```
