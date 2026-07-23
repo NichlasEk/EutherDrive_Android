@@ -1296,3 +1296,67 @@ Kvarvarande synliga fel är vita bakgrundshål och möjligen enstaka felkopplade
 material på nivåobjekt. Nästa steg är därför textur/TMU- och clear/depth-spåret,
 inte fler generella FIFO-paketsuppressionsregler. Därefter återstår en
 verifierat interaktiv coin/start-sekvens för praktiskt frontendtest.
+
+### 2026-07-23: första riktiga swapen avgränsar world-texturens saknade ägare
+
+En två-frame coin-puls följd av en två-frame start-puls från f1300 gör att
+gästen utför nästa riktiga swap vid f1315. Buffer 1 blir aktiv och den gamla
+vita bakgrunden försvinner. Geometrin är sammanhängande, men den övre
+world-ytan använder mosaikartade texeldata:
+
+```text
+frame=1315
+frameHash=0xd89cf2a9
+swaps=7153
+drawBuffer=1
+textured=1556
+covered=1348
+pixels=426590
+zero=42
+```
+
+De största dragningarna använder bland annat registerbas `0x00029504`,
+fysisk bas `0x14a820`, mode `0x8c22410f` och LOD `0x00002604`.
+Paketkoordinater, coverage och packetheader-validering är rimliga. Två-TMU,
+TMU0-S/T, lane, T-origin och format-A/B ändrar hash men inte mosaikfamiljen.
+
+Writer-proveniens kan nu avgränsas med:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_RANGE_MIN
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_RANGE_MAX
+```
+
+`GauntletProbe` kan dessutom spara/ladda en default-off writer-sidecar med
+`EUTHERDRIVE_GAUNTDL_SAVE_TEXTURE_WRITER_SIDECAR` och
+`EUTHERDRIVE_GAUNTDL_LOAD_TEXTURE_WRITER_SIDECAR`. Vid import behålls endast
+ägare vars slutliga fysiska texturord matchar byte-för-byte, så provenance
+från en avvikande warm-gren kan inte märka om en annan sidversion.
+
+En spårad continuation från den rena f1120-kedjan gav noll writer-poster i
+intervallet `0x140000..0x160000`. Den sidan tas alltså inte över av någon
+senare world-uppladdning. En 64 KiB page-wrap och en page-scan som flyttade
+samtliga samplingar till sidorna 00, 04, 0a, 10, 15, 18 och 24 gav alla samma
+sammanhängande geometri men fortsatt mosaik. Felet är därför inte ett enkelt
+sampler-page-offset: den legitima world-payloaden saknas före Voodoo-samplern.
+
+```text
+artifacts/gauntlet-probe/gauntdl-page-scan-f1315-20260723.png
+sha256=f73666fb469dbbf2b4ebdf9ffeff44258d85707bfed945447365afdddd206d39
+```
+
+Default-neutral regression från den auktoritativa f1306-snapshoten är exakt:
+
+```text
+frameHash=0xd89cf2a9
+fifoWords=10856116
+fifoPackets=1284730
+drawPackets=275048
+texWrites=2577260
+swaps=7153
+```
+
+Nästa smala gräns är nu QIO/bundle-deskriptorns page-livstid: följ den
+gästvalda world-källan som borde ersätta den äldre GEB/font-sidan och reparera
+den saknade senare Type5-uppladdningen. Ändra inte NCC, samplerlayout eller
+globala page-wraps utifrån denna scen.

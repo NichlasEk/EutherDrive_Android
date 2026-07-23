@@ -61,6 +61,7 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
 }
 
 ApplyRequestedGuestTextureMemoryCopy(adapter);
+LoadRequestedTextureWriterSidecar(adapter);
 
 long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
 var runStopwatch = Stopwatch.StartNew();
@@ -123,6 +124,7 @@ else if (extraSteps > 0)
 Console.WriteLine($"rom={adapter.RomIdentity?.Name ?? "unknown"}");
 Console.WriteLine($"frame={adapter.FrameCounter}");
 PrintScoreboard(adapter, frames, runStartFrame, loadStopwatch.Elapsed, runStopwatch.Elapsed, totalStopwatch.Elapsed);
+SaveRequestedTextureWriterSidecar(adapter);
 SaveRequestedFinalSnapshot(adapter, frames, cpuStepsPerFrameConfig);
 Console.WriteLine($"debug={adapter.DebugStatus}");
 
@@ -873,6 +875,87 @@ static void SaveRequestedFinalSnapshot(GauntletDarkLegacyAdapter adapter, int fr
 
     SaveWarmupSnapshot(adapter, path, frames, cpuStepsPerFrame);
     Console.Error.WriteLine($"finalSnapshotSaved={path}");
+}
+
+static void SaveRequestedTextureWriterSidecar(GauntletDarkLegacyAdapter adapter)
+{
+    string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SAVE_TEXTURE_WRITER_SIDECAR");
+    if (string.IsNullOrWhiteSpace(path))
+        return;
+
+    object machine = GetField(adapter, "_machine");
+    object facade = GetProperty(machine, "Voodoo");
+    object backend = GetField(facade, "_backend");
+    IDictionary writers = GetFieldValue<IDictionary>(backend, "_textureWordLastWriters");
+    uint[] textureMemory = GetFieldValue<uint[]>(backend, "_textureMemory");
+
+    Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
+    using FileStream stream = File.Create(path);
+    using var writer = new BinaryWriter(stream);
+    writer.Write(0x47545753U); // GTWS
+    writer.Write(1);
+    WriteTextureWriterMaps(writer, backend);
+    writer.Write(writers.Count);
+    foreach (int wordOffset in writers.Keys.Cast<int>().Order())
+    {
+        writer.Write(wordOffset);
+        writer.Write((uint)wordOffset < (uint)textureMemory.Length ? textureMemory[wordOffset] : 0U);
+    }
+    Console.Error.WriteLine($"textureWriterSidecarSaved={path} owners={writers.Count}");
+}
+
+static void LoadRequestedTextureWriterSidecar(GauntletDarkLegacyAdapter adapter)
+{
+    string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_TEXTURE_WRITER_SIDECAR");
+    if (string.IsNullOrWhiteSpace(path))
+        return;
+
+    object machine = GetField(adapter, "_machine");
+    object facade = GetProperty(machine, "Voodoo");
+    object backend = GetField(facade, "_backend");
+    IDictionary writers = GetFieldValue<IDictionary>(backend, "_textureWordLastWriters");
+    IDictionary targets = GetFieldValue<IDictionary>(backend, "_textureTargetIndexWords");
+    uint[] textureMemory = GetFieldValue<uint[]>(backend, "_textureMemory");
+
+    using FileStream stream = File.OpenRead(path);
+    using var reader = new BinaryReader(stream);
+    if (reader.ReadUInt32() != 0x47545753U || reader.ReadInt32() != 1)
+        throw new InvalidDataException($"Unsupported texture-writer sidecar: {path}");
+
+    ReadTextureWriterMaps(reader, backend);
+    int expectedCount = reader.ReadInt32();
+    if (expectedCount < 0 || expectedCount > 1_048_576)
+        throw new InvalidDataException($"Invalid texture-writer sidecar owner count: {expectedCount}");
+
+    var expectedWords = new Dictionary<int, uint>(expectedCount);
+    for (int i = 0; i < expectedCount; i++)
+        expectedWords[reader.ReadInt32()] = reader.ReadUInt32();
+
+    int imported = 0;
+    foreach (int wordOffset in writers.Keys.Cast<int>().ToArray())
+    {
+        bool matches =
+            (uint)wordOffset < (uint)textureMemory.Length &&
+            expectedWords.TryGetValue(wordOffset, out uint expected) &&
+            textureMemory[wordOffset] == expected;
+        if (matches)
+        {
+            imported++;
+        }
+        else
+        {
+            writers.Remove(wordOffset);
+        }
+    }
+
+    foreach (object key in targets.Keys.Cast<object>().ToArray())
+    {
+        int wordOffset = (int)targets[key]!;
+        if (!writers.Contains(wordOffset))
+            targets.Remove(key);
+    }
+    Console.Error.WriteLine(
+        $"textureWriterSidecarLoaded={path} matched={imported}/{expectedCount}");
 }
 
 static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, int frames, int cpuStepsPerFrame, bool ignoreCpuStepMismatch)

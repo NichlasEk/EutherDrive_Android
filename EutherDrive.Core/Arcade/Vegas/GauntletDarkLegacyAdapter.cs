@@ -33998,6 +33998,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_LIMIT"), 160);
     private readonly bool _traceTextureSampleWritersRequireWriter =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_REQUIRE_WRITER"));
+    private readonly ulong? _traceTextureSampleWritersRangeMin =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_RANGE_MIN"));
+    private readonly ulong? _traceTextureSampleWritersRangeMax =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_RANGE_MAX"));
     private readonly bool _traceTextureSampleFifoOwners =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_FIFO_OWNERS"));
     private readonly bool _traceTexturedTriangleSampleSummary =
@@ -37590,6 +37594,16 @@ internal class VoodooBringupBackend : IVoodooBackend
              !_debugTextureRangeMin.HasValue &&
              !_traceTextureOverwriteRangeMin.HasValue) ||
             !_currentTextureWriteActive)
+        {
+            return;
+        }
+
+        ulong byteAddress = (ulong)(uint)wordOffset << 2;
+        if (_traceTextureSampleWriters &&
+            _traceTextureSampleWritersRangeMin.HasValue &&
+            _traceTextureSampleWritersRangeMax.HasValue &&
+            (byteAddress < _traceTextureSampleWritersRangeMin.Value ||
+             byteAddress >= _traceTextureSampleWritersRangeMax.Value))
         {
             return;
         }
