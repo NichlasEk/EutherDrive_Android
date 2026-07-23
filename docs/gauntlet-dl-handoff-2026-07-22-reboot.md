@@ -660,3 +660,59 @@ sha256=4455ebe7412b1dad115f32d578c7f70c739c606c0d42ad2db30bb07bdb5ba6b3
 artifacts/gauntlet-probe/gauntdl-cold-two-tmu-f906-v9-20260722.png
 sha256=66c8b51974ec27f4655bf09bedd59da9a876e2011046d6997bed6665f396599e
 ```
+
+### Probe-wrappern kör nu hela MAME-kedjan
+
+Den tidigare promotionen av
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TWO_TMU_COMBINE=1` i
+`run-gauntdl-baseline.sh` var ofullständig. Två-TMU-anropet ligger inne i
+MAME setup-gradient- och fixed-fetch-vägen, men wrappern aktiverade inte dessa
+grindar. Den lämnade även texelriktningen implicit trots att den lokala
+MAME-jämförelsen redan avfört global T-origin-flip och omvända 8-bitars lanes.
+
+Wrappern sätter nu den sammanhängande probe-konfigurationen:
+
+```text
+TEXTURE_T_ORIGIN_FLIP=0
+8BIT_TEXTURE_SAMPLE_REVERSE_LANES=0
+TEXTURE_MAME_TRIANGLE_LOD=1
+TEXTURE_MAME_SETUP_GRADIENTS=1
+MAME_TEXTURE_FIXED_FETCH=1
+MAME_TWO_TMU_COMBINE=1
+```
+
+En enframesverifiering från den genuint kalla v9-f900-snapshoten gav:
+
+```text
+frameHash=0x7328b7a0
+texturedTriangles=96
+texturedPixels=696640
+zeroTexturedPixels=500918
+framebuffer colored=97779
+```
+
+Bilden visar sammanhängande bruna panelytor och flera riktiga färgporträtt.
+Det är ett stort visuellt steg jämfört med den nästan vita inerta
+wrappervägen, men fortfarande diagnostik-/loadinggeometri med upprepade
+paneler och korrupt text, inte en spelvärld.
+
+```text
+artifacts/gauntlet-probe/gauntdl-aligned-mame-f901-20260723.warm
+sha256=94a7c02c1efd0d00029b57c7e6bf08888670db17fbb1e6212aad5edd724468fa
+artifacts/gauntlet-probe/gauntdl-aligned-mame-f901-20260723.png
+sha256=bb7944016099467371c5b062168acb629546ff25d63c8767168718cc2bb03384
+```
+
+Ett separat f906 -> f940-prov bekräftar nästa upstream-gräns. Framebuffern är
+helt oförändrad (`frameHash=0x03a897ce`) under 34 frames och renderlistans
+count förblir noll, trots fortsatt Type5-upload och world-validity-scan.
+World-/panelrenderposterna publiceras alltså inte efter diagnostikexit; nästa
+steg ska spåra publiceraren/callern som normalt skapar world-renderlistan, inte
+återöppna flip, lane-ordning, framebuffer-sammansättning eller TMU-bankning.
+
+```text
+artifacts/gauntlet-probe/gauntdl-post-exit-f940-20260723.warm
+sha256=ab582d5fc377013bc8f011944f3ce309e97cd7b5f38c922a28083da34f7fbbeb
+artifacts/gauntlet-probe/gauntdl-post-exit-f940-20260723.ppm
+sha256=6ee0c80766525b42bad63efa634ae352572bb6e03a167feb9e253f55e656628e
+```
