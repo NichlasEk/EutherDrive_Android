@@ -1160,3 +1160,66 @@ startar kallt och är långsamt. Nästa praktiska slice är att nå en verifiera
 interaktiv coin/start-sekvens och därefter flytta warm-state-formatet från
 probe-reflektion till en riktig Gauntlet-savestateväg om kallstarten hindrar
 snabb användartestning.
+
+### 2026-07-23: frontend använder hela baselineprofilen; FIFO-wrap förblir stabil
+
+En fortsatt körning hittade en exakt bildregression mellan f1220 och f1221.
+f1220 visar fortfarande den sammanhängande spelvärlden, men utan global
+packet-state tolkade standard-FIFO:n en vertexpayload-float som ett nytt
+Type3-kommando:
+
+```text
+packetStart=0x0280032c
+command=0x3b83928b
+words=82
+producer pc=0x800c5bd8
+raster pixels=475388
+frameHash=0x8f916a6f
+```
+
+Det falska packetet uppstod när write-triggered decode hann konsumera
+payloadord efter att ringlagringen återanvänts. Den redan tidigare verifierade
+och promoterade globala packet-state-modellen fanns i
+`BaselineBringupEnvironment`, men baseline-scriptet samt normal desktop- och
+Android-start använde bara delar av profilen.
+
+Baseline-scriptet exporterar nu
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE=1`.
+Desktop och Android anropar alltid `ApplyBaselineBringupPreset()` för Gauntlet;
+explicit satta miljövariabler fortsätter att vinna över presetvärdena.
+
+Exakt A/B från samma f1220-state:
+
+```text
+utan global packet-state:
+frameHash=0x8f916a6f
+raster pixels=475388
+
+med global packet-state:
+frameHash=0xd20ba559
+raster pixels=19633
+Type3 packets in frame=24
+```
+
+Den korrigerade f1221-bilden fortsätter den sammanhängande världen och en
+ytterligare 24-frame-körning förblir scenmässigt sammanhängande vid f1245:
+
+```text
+frame=1245
+frameHash=0x4b605c57
+Type3=270228
+colored=187743
+```
+
+```text
+artifacts/gauntlet-probe/gauntdl-global-packet-f1245-20260723.warm
+sha256=f796eae53bb35c424758f0ba4bb6f1628ef1af334b76b6af14b56839bcbcebb8
+artifacts/gauntlet-probe/gauntdl-global-packet-f1245-20260723.png
+sha256=abf3c1721a40ae12438b70605143a46783447f78930cb067f82e196255a8359a
+```
+
+Desktop Release bygger med 0 fel. Androidkällan använder samma presetväg, men
+den här maskinen saknar installerad Android-workload och lokal kontroll stannar
+därför med `NETSDK1139`; det är en SDK-begränsning, inte ett C#-kompilatorfel.
+Nästa grafikgräns är de kvarvarande orange/atlasfärgade polygonerna och
+småspritarna i den i övrigt riktiga världen, inte raster-Y eller FIFO-wrap.

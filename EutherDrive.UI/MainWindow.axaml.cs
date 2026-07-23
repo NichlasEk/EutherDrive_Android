@@ -864,17 +864,9 @@ public partial class MainWindow : Window
 
     private static void ConfigureGauntletDarkLegacyUiBringup()
     {
-        if (EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsTruthy(
-                Environment.GetEnvironmentVariable(EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.BaselineBringupPresetEnvironmentVariable)))
-        {
-            EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.ApplyBaselineBringupPreset();
-            return;
-        }
-
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST")))
-            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1");
-        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME")))
-            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "200000");
+        // Apply the complete known-good Gauntlet profile for normal UI starts.
+        // Individual environment overrides remain authoritative.
+        EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.ApplyBaselineBringupPreset();
     }
 
     private static bool IsPsxRom(string path)
