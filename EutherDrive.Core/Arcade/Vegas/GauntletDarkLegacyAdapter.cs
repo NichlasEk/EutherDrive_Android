@@ -38492,6 +38492,15 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static bool IsImplausibleCommandFifoPacket(uint command, int wordsNeeded)
     {
         uint type = command & 7u;
+        if (type == 0u)
+        {
+            uint function = (command >> 3) & 7u;
+            // Voodoo 2 packet type 0 reserves bits 31:29 and only defines
+            // NOP/JSR/RET/JMP LOCAL/JMP AGP functions. Vertex coordinates such
+            // as 0x44000000 otherwise look like one-word NOP packets and can
+            // become false FIFO resynchronization targets.
+            return (command >> 29) != 0u || function > 4u;
+        }
         if (type == 1u)
             return (command >> 16) > 1024u || wordsNeeded > 1025;
         if (type == 2u)
@@ -38500,7 +38509,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             uint code = (command >> 3) & 7u;
             uint vertices = (command >> 6) & 0x0fu;
-            return code > 2u || vertices == 0u;
+            const uint reservedMask = (3u << 26) | (0x0fu << 18);
+            return (command & reservedMask) != 0u || code > 2u || vertices == 0u;
         }
         if (type == 4u)
             return wordsNeeded > 22;
@@ -38859,8 +38869,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoStorageLogicalIndex[headerStorage] != headerLogicalIndex)
             return false;
 
+        uint command = _cmdFifoRam[headerStorage];
+        int wordsNeeded = Math.Max(1, GetFifoPacketWordsNeeded(command));
+        if ((command & 7u) > 5u ||
+            IsImplausibleCommandFifoPacket(command, wordsNeeded) ||
+            wordsNeeded > CmdFifoWords)
+            return false;
+
         int packetEnd = _cmdFifoStoragePacketEndLogicalIndex[headerStorage];
-        if (packetEnd < headerLogicalIndex || packetEnd - headerLogicalIndex >= CmdFifoWords)
+        if (packetEnd != headerLogicalIndex + wordsNeeded - 1)
             return false;
         for (int logical = headerLogicalIndex; logical <= packetEnd; logical++)
         {

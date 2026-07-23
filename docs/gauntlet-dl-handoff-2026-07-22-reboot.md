@@ -1223,3 +1223,76 @@ den här maskinen saknar installerad Android-workload och lokal kontroll stannar
 därför med `NETSDK1139`; det är en SDK-begränsning, inte ett C#-kompilatorfel.
 Nästa grafikgräns är de kvarvarande orange/atlasfärgade polygonerna och
 småspritarna i den i övrigt riktiga världen, inte raster-Y eller FIFO-wrap.
+
+### 2026-07-23: reserverade packetbitar stoppar atlas- och orangepolygonerna
+
+En framebisektion från den rena f1221-snapshoten visade att den stora orange
+polygonen introducerades direkt i f1222. Pixel-last-writer band den till ett
+falskt Type3-paket:
+
+```text
+packetStart=0x02803524
+command=0x43b7ce8b
+words=123
+producer pc=0x800bd1e4
+orange/yellow writes=26762 pixels
+```
+
+Kommandot var egentligen vertexdata. Precis före feltolkningen resynkade
+standard-FIFO-modellen dessutom till floatvärdet `0x44000000` som ett enords
+Type0-NOP. MAME:s Voodoo 2-format visar två hårdvarukrav som tidigare saknades
+i `IsImplausibleCommandFifoPacket`:
+
+- Type0 reserverar bit 31:29 och definierar bara funktion 0--4.
+- Type3 reserverar bit 27:26 och 21:18.
+
+`0x43b7ce8b` har Type3-fält 21:18 satt till `0xd` och kan därför inte vara en
+packetheader. Standard-FIFO-resync validerar nu både dessa reserverade bitar
+och att sparad packet-end exakt motsvarar den längd som kommandot kodar. Det
+gör även reload av en warm-state med äldre ringmetadata säker.
+
+Exakt körning från samma f1221-state efter korrigeringen:
+
+```text
+frame=1222
+frameHash=0xb0137750
+false cmd 0x43b7ce8b=0 packets
+textured=283
+covered=283
+pixels=46076
+```
+
+Vid f1245 är orange- och regnbågsatlaspolygonerna borta och den riktiga
+slotts-/dungeonvärlden täcker hela den aktiva spelytan:
+
+```text
+frame=1245
+frameHash=0x177bad29
+textured=2240
+covered=1929
+pixels=540855
+```
+
+Ytterligare 20 frames till f1265 förblir stabila:
+
+```text
+frame=1265
+frameHash=0xd6819d49
+textured=942
+covered=762
+pixels=41976
+```
+
+```text
+artifacts/gauntlet-probe/gauntdl-reserved-packet-guard-f1245-20260723.png
+sha256=54df2c648d0573a6b030c2baa0f20e57d6e65ca356d295decd892b1dd3c22da1
+artifacts/gauntlet-probe/gauntdl-reserved-packet-guard-f1265-20260723.png
+sha256=6e74b0ec8dbb5b96ef5de7260634861883d558c4d06b17642a5ca4eb44ca8ae8
+artifacts/gauntlet-probe/gauntdl-reserved-packet-guard-f1265-20260723.warm
+sha256=f425f3178937d22586839d6d9452aadfd95c5fa603bf487230d1136be5fe7c79
+```
+
+Kvarvarande synliga fel är vita bakgrundshål och möjligen enstaka felkopplade
+material på nivåobjekt. Nästa steg är därför textur/TMU- och clear/depth-spåret,
+inte fler generella FIFO-paketsuppressionsregler. Därefter återstår en
+verifierat interaktiv coin/start-sekvens för praktiskt frontendtest.
