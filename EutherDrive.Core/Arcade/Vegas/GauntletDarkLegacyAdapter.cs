@@ -33992,6 +33992,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _traceTextureMinRenderFrame =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_MIN_RENDER_FRAME"), 0);
     private readonly bool _traceTextureSamples = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLES") == "1";
+    private readonly ulong? _traceTextureSampleRegisterBase =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_REGISTER_BASE"));
     private readonly bool _traceTextureSampleWriters =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS"));
     private readonly int _traceTextureSampleWritersLimit =
@@ -34111,6 +34113,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_PHYSICAL_WORD_MIN"));
     private readonly ulong? _traceType5TextureUploadSequencePhysicalWordMax =
         ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_PHYSICAL_WORD_MAX"));
+    private readonly ulong? _traceType5TextureUploadSequenceTextureBase =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_TBASE"));
     private readonly string _traceType5PayloadTilePrefix =
         (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_PAYLOAD_TILE_PREFIX") ?? "").Trim();
     private readonly int _traceType5PayloadTileLimit =
@@ -42065,6 +42069,14 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
         }
 
+        int tmu = (int)((targetStart >> 19) & 0x03u);
+        uint textureBase = ReadTextureUploadRegister(tmu, RegTextureBaseAddr);
+        if (_traceType5TextureUploadSequenceTextureBase.HasValue &&
+            textureBase != (uint)_traceType5TextureUploadSequenceTextureBase.Value)
+        {
+            return;
+        }
+
         int sourceStorageIndex = CommandFifoReadStorageIndex(_currentCommandFifoPacketStart);
         bool hasBulkSource = _cmdFifoStorageBulkWriteSources.TryGetValue(
             sourceStorageIndex,
@@ -42116,12 +42128,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             : "";
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
-        int tmu = (int)((targetStart >> 19) & 0x03u);
         string textureState =
             $" tmu={tmu} " +
             $"tmode=0x{ReadTextureUploadRegister(tmu, RegTextureMode):X8} " +
             $"tlod=0x{ReadTextureUploadRegister(tmu, RegTextureLod):X8} " +
-            $"tbase=0x{ReadTextureUploadRegister(tmu, RegTextureBaseAddr):X8}";
+            $"tbase=0x{textureBase:X8}";
         string sourceStatus = hasBulkSource
             ? $" source=0x{bulkSource.Source:x16}/root=0x{GetType5TextureUploadSequenceSourceRoot(bulkSource):x8}/base=0x{bulkSource.SourceBase:x8}/packetSource=0x{bulkSource.PacketSourceAddress:x8}/packet={bulkSource.Packet}/index={bulkSource.Index}/{bulkSource.Limit}"
             : " source=-";
@@ -43571,16 +43582,16 @@ sampledTexel:
         bool trace = _traceTexturedTriangleLod &&
             _texturedTriangleLodTraceCount < _traceTexturedTriangleLodLimit &&
             ShouldTraceTexturedTriangleSampleSummaryBuffer(bufferIndex);
-        if (!trace && !_experimentTextureMameTriangleLod && !_experimentTextureMamePixelLod)
-        {
-            return -1;
-        }
 
         uint mode = ReadTextureSampleRegister(RegTextureMode);
         uint lod = ReadTextureSampleRegister(RegTextureLod);
         uint registerBase = ReadTextureSampleRegister(RegTextureBaseAddr);
         if (_traceTexturedTriangleSampleSummaryRegisterBase.HasValue &&
             registerBase != (uint)_traceTexturedTriangleSampleSummaryRegisterBase.Value)
+        {
+            trace = false;
+        }
+        if (!trace && !_experimentTextureMameTriangleLod && !_experimentTextureMamePixelLod)
         {
             return -1;
         }
@@ -47292,8 +47303,13 @@ sampledTexel:
         ushort result)
     {
         TraceTextureSampleWriterCorrelation(s, t, width, height, x, y, mode, lod, registerBase, resolvedBase, byteAddress, word, raw, result);
-        if (!_traceTextureSamples || _textureSampleTraceCount++ >= 160)
+        if (!_traceTextureSamples ||
+            (_traceTextureSampleRegisterBase.HasValue &&
+             registerBase != (uint)_traceTextureSampleRegisterBase.Value) ||
+            _textureSampleTraceCount++ >= 160)
+        {
             return;
+        }
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";

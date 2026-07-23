@@ -1360,3 +1360,79 @@ Nästa smala gräns är nu QIO/bundle-deskriptorns page-livstid: följ den
 gästvalda world-källan som borde ersätta den äldre GEB/font-sidan och reparera
 den saknade senare Type5-uppladdningen. Ändra inte NCC, samplerlayout eller
 globala page-wraps utifrån denna scen.
+
+### 2026-07-23: record 45 har egen upload; råbasdumpen använde fel LOD
+
+Den föregående slutsatsen om en saknad senare Type5-uppladdning var fel.
+Record 45 i `levels/levelE1`-set 9 är:
+
+```text
+record=45 address=0x804a9d68
+fileOffset=0x0006e0e0
+texBaseAddr=0x00029504
+tLOD=0x00002604
+lod1Address=0x0015a820
+```
+
+Ett nytt default-off Type5-filter på registerbas:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_TBASE
+```
+
+visar 160 sammanhängande, icke-noll paket för exakt `tbase=0x29504`.
+Uploaden börjar med target `0x008000`, och MAME-write-pointerformeln placerar
+första ordet på fysisk `0x56a08`, alltså byteadress `0x15a820`. Det är exakt
+recordets LOD1-adress. Sidan vid råbasen `0x14a820` tillhör därför inte den
+aktiva nivån; den gamla RGB332-page-scanen dumpade dessutom YIQ-format 1 som
+om det vore RGB332 och är inget visuellt texturorakel.
+
+Samplertracen kan nu avgränsas med:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_REGISTER_BASE
+```
+
+För drawen `mode/lod/base=8c22410f/00002604/00029504` väljer MAME:s riktiga
+derivat- och perspektivformel LOD 3 eller 4. Exempel:
+
+```text
+base8p8=-700
+perspective8p8=-1623
+bias8p8=128
+candidate8p8=1051
+targetLod=4
+resolvedBase=0x15fc20
+size=16x16
+```
+
+Type3-paketet är komplett och beskriver en projicerad 512x234-quad med fyra
+giltiga XY/W/S/T-hörn. De stora samplerkoordinaterna runt 3000 wrappar över
+den valda 16x16-nivån; den synliga upprepningen kommer alltså inte från
+råbas-, lane- eller page-val.
+
+Registerbasfiltret för triangle-LOD hade samtidigt ett diagnostikfel: när
+filtret var aktivt returnerade beräkningen `-1` för andra texturer och ändrade
+renderingen. Filtret påverkar nu endast loggningen. Den filtrerade
+f1306--f1315-körningen återger åter exakt:
+
+```text
+frameHash=0xd89cf2a9
+```
+
+Ny verifieringsbild:
+
+```text
+artifacts/gauntlet-probe/gauntdl-lod-provenance-f1315-20260723.png
+sha256=95819fa6e8134bdf5549ef2945cdf2b972d8ff77d2586a8efb07ff86ed59bb69
+
+/tmp/gauntdl-lod-provenance-f1315.warm
+sha256=1e1c602f72ac99f8c11963e6463a564469339c4f8be57af82ec5e6025689c858
+```
+
+Bilden innehåller nu tydligt sammanhängande 3D-geometri: golv-/väggytor och
+ett centralt objekt. Geometrin är alltså riktig spel-/scengeometri, men
+YIQ/NCC-färgerna är fortfarande kraftigt brusiga. Nästa smala gräns är att
+jämföra den valda TMU0/TMU1-NCC-tabellen och två-TMU-combinern mot MAME för
+dessa exakta drawpaket. Återöppna inte QIO, Type5-body, råbasen eller
+framebuffer-vändning utifrån denna scen.
