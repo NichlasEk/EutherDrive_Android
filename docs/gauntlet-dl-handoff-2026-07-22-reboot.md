@@ -716,3 +716,55 @@ sha256=ab582d5fc377013bc8f011944f3ce309e97cd7b5f38c922a28083da34f7fbbeb
 artifacts/gauntlet-probe/gauntdl-post-exit-f940-20260723.ppm
 sha256=6ee0c80766525b42bad63efa634ae352572bb6e03a167feb9e253f55e656628e
 ```
+
+### Diagnostikexit är riktig; en namnlös assetpost blockerar ResetModels
+
+F970-spåret visar att stateövergången redan har skett från `0x8007` till
+`0x8008`. Latchen vid `0x80227ec8` återställs under state-`0x8008`-init och
+återassertas senare av updatevägen; den ska inte nollas eller användas för en
+forcerad transition.
+
+Två exakta, kodsignaturbevakade accelerationer gör den fortsatta vägen
+praktiskt körbar utan att ändra gästresultatet:
+
+- modellens inre strängsökning vid `0x8004533c`;
+- cache-underhållsloopen `0x800cc650..0x800cc660`.
+
+Den generella runtime-`strcmp`-implementationen vid `0x8011f764` har också en
+signaturbevakad fastpath. Efter dessa steg når exekveringen assetparsern och
+avslöjar den verkliga korruptionen:
+
+```text
+asset entry       0x8024fb80 (index 10, name empty)
+source            0x805611e8
+asset pointer     0x838b120d
+descriptor count  0x034e0001
+normal observed   0x00001188
+```
+
+Den befintliga implausible-descriptor-rejecten är nu aktiverad i probeprofilen
+och nollställer descriptorantalet för exakt detta verifierade fall. Tidigare
+bröt den bara den första 55-miljonersloopen men lät samma felantal kopieras
+vidare till ResetModels. Med nollningen lämnar gästen både parserloopen och
+ResetModels och går vidare till nästa riktiga sökväg:
+
+```text
+/d0/monsters/death/textures.rom
+```
+
+f1080--f1100 stannar därefter vid den redan kända
+`0x800c86b4..0x800c8728`-WaitForQio-vägen. QIO-objektet `0x80295600` har
+state `0x207`, worker `0x800f087c`, sökvägsbuffert `0x80218518` och status
+noll. Renderpoolen är fortfarande tom och framebuffern har därför samma
+`frameHash=0x03a897ce`.
+
+Nästa pass ska följa varför just detta nya `monsters/death/textures.rom`-jobb
+inte får status från den redan aktiva runtime-interrupt-/workerpumpen. Forcera
+inte world-renderposter, latch, framebufferflip eller worker-entry.
+
+```text
+artifacts/gauntlet-probe/gauntdl-invalid-asset-reject-f1100-20260723.warm
+sha256=07417d60363c599b828f88b4cbe8707cbe7e7265386d4a99471cc5e24c8bc283
+artifacts/gauntlet-probe/gauntdl-invalid-asset-reject-f1100-20260723.ppm
+sha256=6ee0c80766525b42bad63efa634ae352572bb6e03a167feb9e253f55e656628e
+```

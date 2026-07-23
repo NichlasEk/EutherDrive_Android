@@ -2071,6 +2071,10 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRuntimeFixedStringCompare30Wrapper(pc))
             return;
+        if (TryFastPathKnownRuntimeModelStringLookupInner(pc))
+            return;
+        if (TryFastPathKnownRuntimeStringCompare(pc))
+            return;
         if (TryFastPathKnownRuntimeStringCompareN(pc))
             return;
         if (TryFastPathKnownRuntimeStringZeroFillTail(pc))
@@ -2632,6 +2636,17 @@ internal sealed class MipsR5000Core
                 loopBaseOffset: 0x000cc2dcUL,
                 exitOffset: 0x000cc2f0UL,
                 expectedOps: (0xbc8b0000U, 0x008f2021U, 0x0085082bU, 0x1420fffcU)))
+        {
+            return true;
+        }
+
+        if (TryFastPathKnownLoadedBootCacheLoop(
+                pc,
+                offset,
+                loopOffsets: (0x000cc658UL, 0x000cc65cUL, 0x000cc660UL),
+                loopBaseOffset: 0x000cc650UL,
+                exitOffset: 0x000cc664UL,
+                expectedOps: (0xbc910000U, 0x008d2021U, 0x00a4082bU, 0x1020fffcU)))
         {
             return true;
         }
@@ -17323,6 +17338,168 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private bool TryFastPathKnownRuntimeStringCompare(ulong pc)
+    {
+        const ulong entry = 0xffffffff8011f764UL;
+        if (pc != entry)
+            return false;
+
+        if (_memory.Read32(entry + 0x00UL) != 0x80820000U ||
+            _memory.Read32(entry + 0x04UL) != 0x90860000U ||
+            _memory.Read32(entry + 0x08UL) != 0x1040000bU ||
+            _memory.Read32(entry + 0x10UL) != 0x80a30000U ||
+            _memory.Read32(entry + 0x14UL) != 0x00061600U ||
+            _memory.Read32(entry + 0x18UL) != 0x00021603U ||
+            _memory.Read32(entry + 0x1cUL) != 0x14430006U ||
+            _memory.Read32(entry + 0x24UL) != 0x24840001U ||
+            _memory.Read32(entry + 0x28UL) != 0x80820000U ||
+            _memory.Read32(entry + 0x2cUL) != 0x90860000U ||
+            _memory.Read32(entry + 0x30UL) != 0x1440fff7U ||
+            _memory.Read32(entry + 0x34UL) != 0x24a50001U ||
+            _memory.Read32(entry + 0x38UL) != 0x90830000U ||
+            _memory.Read32(entry + 0x3cUL) != 0x90a20000U ||
+            _memory.Read32(entry + 0x40UL) != 0x03e00008U ||
+            _memory.Read32(entry + 0x44UL) != 0x00621023U)
+        {
+            return false;
+        }
+
+        ulong left = _gpr[4];
+        ulong right = _gpr[5];
+        if (!TryApplyStringCompareN(left, right, 0x10000U, out _, out uint compared) ||
+            compared == 0)
+        {
+            return false;
+        }
+
+        ulong finalLeft = left + compared - 1U;
+        ulong finalRight = right + compared - 1U;
+        uint leftByte = _memory.Read8(finalLeft);
+        uint rightByte = _memory.Read8(finalRight);
+        _gpr[2] = SignExtend32(unchecked((uint)((int)leftByte - (int)rightByte)));
+        _gpr[3] = leftByte;
+        _gpr[4] = finalLeft;
+        _gpr[5] = finalRight;
+        _gpr[6] = leftByte;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = _gpr[31];
+
+        ulong skipped = Math.Max(1UL, 8UL + compared * 7UL);
+        AdvanceCp0Count(_cp0CountStep * skipped);
+        _instructionCounter += skipped;
+        return true;
+    }
+
+    private int _runtimeModelStringLookupInnerTraceCount;
+
+    private bool TryFastPathKnownRuntimeModelStringLookupInner(ulong pc)
+    {
+        const ulong loop = 0xffffffff8004533cUL;
+        const ulong matchReturn = 0xffffffff800452e8UL;
+        const ulong nextGroup = 0xffffffff8004537cUL;
+        if (pc != loop)
+            return false;
+
+        if (_memory.Read32(loop + 0x00UL) != 0x86430026U ||
+            _memory.Read32(loop + 0x04UL) != 0x8ee47c8cU ||
+            _memory.Read32(loop + 0x08UL) != 0x00701821U ||
+            _memory.Read32(loop + 0x0cUL) != 0x000310c0U ||
+            _memory.Read32(loop + 0x10UL) != 0x00431023U ||
+            _memory.Read32(loop + 0x14UL) != 0x8c830014U ||
+            _memory.Read32(loop + 0x18UL) != 0x00021080U ||
+            _memory.Read32(loop + 0x1cUL) != 0x00628821U ||
+            _memory.Read32(loop + 0x20UL) != 0x0c047ed0U ||
+            _memory.Read32(loop + 0x24UL) != 0x0220202dU ||
+            _memory.Read32(loop + 0x28UL) != 0x1040ffe0U ||
+            _memory.Read32(loop + 0x2cUL) != 0x26100001U ||
+            _memory.Read32(loop + 0x30UL) != 0x86420024U ||
+            _memory.Read32(loop + 0x34UL) != 0x0202102aU ||
+            _memory.Read32(loop + 0x38UL) != 0x1440fff0U ||
+            _memory.Read32(loop + 0x3cUL) != 0x02c0282dU)
+        {
+            return false;
+        }
+
+        ulong group = _gpr[18];
+        ulong entriesOwner = _gpr[23];
+        ulong needle = _gpr[22];
+        uint compareCount = (uint)_gpr[21];
+        int start = (int)_gpr[16];
+        if (!IsMainRamRange(group + 0x26UL, 2) ||
+            !IsMainRamRange(entriesOwner + 0x7c8cUL, 4) ||
+            !IsMainRamRange(needle, 1) ||
+            compareCount == 0 ||
+            compareCount > 0x100U)
+        {
+            return false;
+        }
+
+        int entryCount = unchecked((short)_memory.Read16(group + 0x24UL));
+        int firstEntry = unchecked((short)_memory.Read16(group + 0x26UL));
+        ulong root = SignExtend32(_memory.Read32(entriesOwner + 0x7c8cUL));
+        if (entryCount <= 0 ||
+            start < 0 ||
+            start >= entryCount ||
+            !IsMainRamRange(root + 0x14UL, 4))
+        {
+            return false;
+        }
+
+        ulong entries = SignExtend32(_memory.Read32(root + 0x14UL));
+        ulong skipped = 0;
+        ulong match = 0;
+        int scanned = 0;
+        for (int item = start; item < entryCount; item++)
+        {
+            long entryIndex = (long)firstEntry + item;
+            if (entryIndex < 0 || entryIndex > 0x100000)
+                return false;
+
+            ulong candidate = entries + (ulong)entryIndex * 0x1cUL;
+            if (!IsMainRamRange(candidate, 0x14UL) ||
+                !TryApplyStringCompareN(candidate, needle, compareCount, out int diff, out uint compared))
+            {
+                return false;
+            }
+
+            scanned++;
+            skipped += Math.Max(1UL, 20UL + compared * 7UL);
+            if (diff == 0)
+            {
+                match = candidate;
+                _gpr[17] = candidate;
+                _gpr[16] = (uint)(item + 1);
+                _gpr[2] = 0;
+                Pc = matchReturn;
+                break;
+            }
+        }
+
+        if (match == 0)
+        {
+            _gpr[16] = (uint)entryCount;
+            _gpr[5] = needle;
+            Pc = nextGroup;
+        }
+
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        AdvanceCp0Count(_cp0CountStep * Math.Max(1UL, skipped));
+        _instructionCounter += Math.Max(1UL, skipped);
+        if (_runtimeModelStringLookupInnerTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] model-string-lookup-inner pc={pc:x16} " +
+                $"group={group:x16} start={start} count={entryCount} first={firstEntry} " +
+                $"scanned={scanned} match={match:x16} needle={needle:x16}");
+        }
+
+        return true;
+    }
+
     private bool TryApplyStringCompareN(ulong left, ulong right, uint count, out int diff, out uint compared)
     {
         diff = 0;
@@ -19835,13 +20012,14 @@ internal sealed class MipsR5000Core
         }
 
         uint completedDescriptors = (uint)_gpr[4];
+        _memory.Write32(source + 0x64UL, 0);
         _gpr[2] = completedDescriptors;
         if (_runtimeBgLoadModelImplausibleDescriptorLengthTraceCount++ < 16)
         {
             Console.WriteLine(
                 $"[GAUNTDL:EXPERIMENT] bgloadmodel-reject-implausible-descriptor-length pc={pc:x16} " +
                 $"index={_gpr[16] & 0xffffffffUL:x8} source={source:x16} asset={assetEntry:x16} " +
-                $"count={descriptorCount:x8}->{completedDescriptors:x8} " +
+                $"count={descriptorCount:x8}->00000000 completed={completedDescriptors:x8} " +
                 $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
         }
     }
