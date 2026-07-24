@@ -2502,9 +2502,62 @@ artifacts/gauntlet-probe/gauntdl-tmu1-bias-scan-f1420-20260724.png
 sha256=dc2d983b052e70c644f29daefc12fddabf972178817738e9c4e274372a43e5cb
 ```
 
-Nästa riktiga gräns är nu death-texturfilens konsument: följ
-`textures.rom` från IDE/DMA-källan genom dekompression/allokering till de
-Type5-registerbaser som faktiskt blir `0x0000e4c0..0x00029889`, och jämför
-dem med objektrecordens `0x1c31xx`-familj. Reparera associationen mellan
-texture-set och object-set; kopiera inte en godtycklig lägre TMU1-sida och
-promotera inte biasproben.
+#### LevelE1-proveniensen korrigerar death-hypotesen
+
+Den aktiva `0x1c31xx`-familjen kommer inte från `death`. FSYS-katalogen för
+`levels/levelE1` ligger vid rådiskoffset `0x09999000` och ordnar filerna efter
+inode:
+
+```text
+inode 0x01000251  objects.rom
+inode 0x01000252  textures.rom
+inode 0x01000253  anim.rom
+inode 0x01000254  worlds.rom
+```
+
+Extentkedjan är:
+
+```text
+objects.rom   disk=0x0999f600 bytes=0x061b10
+textures.rom  disk=0x09a01400 bytes=0x22a944
+anim.rom      disk=0x09c2c000 bytes=0x0004e0
+worlds.rom    disk=0x09c2c800 bytes=0x06d170
+```
+
+`objects.rom` finns byte-för-byte vid RAM `0x80492088`. `worlds.rom` följer
+byte-för-byte vid `0x804f3b98`, och dess slut plus `anim.rom` når exakt nästa
+assetgräns `0x805611e8`. World-/objektladdningen är alltså komplett; den
+tidigare teorin om ett saknat `worlds.rom` är avförd.
+
+En jämförelse av hela `levelE1/textures.rom` mot f1400:s Voodoo-minne visar
+att nästan alla högentropiblock genom filoffset `0x19xxxx` redan är
+materialiserade. Blocken är uppdelade mellan TMU0 och TMU1. Exempelvis
+materialposterna `0x1c1104..0x1c7604` har sina primärblock vid samma lokala
+`0x20xxxx..0x24xxxx`-adresser i TMU0, medan f1420 använder dessa basfamiljer
+som TMU1 och samplar tomma `0x60xxxx`-adresser.
+
+Två nya GauntletProbe-overlayverktyg är default-off:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISK_TEXTURE_COPY=disk:texture:length
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_COPY=source:destination:length
+```
+
+De appliceras först efter snapshotladdning och påverkar därför inte sparade
+states eller normal baseline. Två strikta negativa kontroller från samma
+f1400-state gav:
+
+```text
+rå textures.rom-svans -> TMU1 0x600000:
+frameHash=0x2a0d02f7 colored=47507 zero=430006
+
+TMU0 0x200000..0x2fffff -> TMU1 0x600000..0x6fffff:
+frameHash=0xaf667467 colored=49055 zero=431290
+```
+
+Båda visar enstaka riktiga modellfragment men är sämre än baseline och bevisar
+att TMU1 inte ska ha en linjär råfil eller en kopia av primärtexturen. Nästa
+riktiga gräns är companion-valet: följ den sekundära texture-set-post som
+byggs tillsammans med en `levelE1`-materialpost och avgör varför dess separata
+detail/lightmap-payload aldrig når TMU1:s lokala `0x20xxxx`-familj. Behåll
+neutralvit, bias och båda overlaykopiorna som default-off oracles.

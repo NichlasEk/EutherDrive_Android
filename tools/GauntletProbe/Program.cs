@@ -61,6 +61,8 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
 }
 
 ApplyRequestedGuestTextureMemoryCopy(adapter);
+ApplyRequestedDiskTextureMemoryCopy(adapter);
+ApplyRequestedTextureMemoryCopy(adapter);
 LoadRequestedTextureWriterSidecar(adapter);
 
 long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
@@ -258,6 +260,105 @@ static void ApplyRequestedGuestTextureMemoryCopy(GauntletDarkLegacyAdapter adapt
     Console.WriteLine(
         $"guestTextureCopy guest=0x{guestAddress:x16}/off=0x{guestOffset:x8} " +
         $"texture=0x{textureAddress:x8} bytes=0x{byteLength:x}");
+}
+
+static void ApplyRequestedDiskTextureMemoryCopy(GauntletDarkLegacyAdapter adapter)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISK_TEXTURE_COPY");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    string[] parts = raw.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (parts.Length != 3 ||
+        !TryParseHexUlong(parts[0], out ulong diskAddress) ||
+        !TryParseHexUlong(parts[1], out ulong textureAddress) ||
+        !TryParseHexUlong(parts[2], out ulong byteLength) ||
+        byteLength == 0 ||
+        byteLength > int.MaxValue)
+    {
+        throw new InvalidDataException(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISK_TEXTURE_COPY must be disk:texture:length in hex");
+    }
+
+    string? diskPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RAW_DISK");
+    if (string.IsNullOrWhiteSpace(diskPath) || !File.Exists(diskPath))
+        throw new FileNotFoundException("Gauntlet raw disk is unavailable for disk texture copy", diskPath);
+
+    object machine = GetField(adapter, "_machine");
+    object voodoo = GetProperty(machine, "Voodoo");
+    uint[] textureMemory = GetFieldValue<uint[]>(GetField(voodoo, "_backend"), "_textureMemory");
+    ulong textureBytes = (ulong)textureMemory.Length * 4UL;
+    long diskLength = new FileInfo(diskPath).Length;
+    if (diskAddress + byteLength > (ulong)diskLength || textureAddress + byteLength > textureBytes)
+        throw new InvalidDataException("Disk texture copy range is outside disk or texture memory");
+
+    using FileStream disk = File.OpenRead(diskPath);
+    disk.Position = checked((long)diskAddress);
+    byte[] buffer = new byte[64 * 1024];
+    ulong copied = 0;
+    while (copied < byteLength)
+    {
+        int requested = (int)Math.Min((ulong)buffer.Length, byteLength - copied);
+        int read = disk.Read(buffer, 0, requested);
+        if (read != requested)
+            throw new EndOfStreamException($"Short disk texture copy read: requested={requested} read={read}");
+
+        for (int i = 0; i < read; i++)
+        {
+            ulong destination = textureAddress + copied + (ulong)i;
+            int word = (int)(destination >> 2);
+            int shift = (int)(destination & 3UL) * 8;
+            textureMemory[word] = (textureMemory[word] & ~(0xffu << shift)) | ((uint)buffer[i] << shift);
+        }
+        copied += (ulong)read;
+    }
+
+    Console.WriteLine(
+        $"diskTextureCopy disk=0x{diskAddress:x16} texture=0x{textureAddress:x8} bytes=0x{byteLength:x}");
+}
+
+static void ApplyRequestedTextureMemoryCopy(GauntletDarkLegacyAdapter adapter)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_COPY");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    string[] parts = raw.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (parts.Length != 3 ||
+        !TryParseHexUlong(parts[0], out ulong sourceAddress) ||
+        !TryParseHexUlong(parts[1], out ulong destinationAddress) ||
+        !TryParseHexUlong(parts[2], out ulong byteLength) ||
+        byteLength == 0 ||
+        byteLength > int.MaxValue)
+    {
+        throw new InvalidDataException(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_COPY must be source:destination:length in hex");
+    }
+
+    object machine = GetField(adapter, "_machine");
+    object voodoo = GetProperty(machine, "Voodoo");
+    uint[] textureMemory = GetFieldValue<uint[]>(GetField(voodoo, "_backend"), "_textureMemory");
+    ulong textureBytes = (ulong)textureMemory.Length * 4UL;
+    if (sourceAddress + byteLength > textureBytes || destinationAddress + byteLength > textureBytes)
+        throw new InvalidDataException("Texture memory copy range is outside texture memory");
+
+    byte[] copy = new byte[checked((int)byteLength)];
+    for (ulong i = 0; i < byteLength; i++)
+    {
+        ulong source = sourceAddress + i;
+        uint word = textureMemory[(int)(source >> 2)];
+        copy[(int)i] = (byte)(word >> ((int)(source & 3UL) * 8));
+    }
+    for (ulong i = 0; i < byteLength; i++)
+    {
+        ulong destination = destinationAddress + i;
+        int word = (int)(destination >> 2);
+        int shift = (int)(destination & 3UL) * 8;
+        textureMemory[word] = (textureMemory[word] & ~(0xffu << shift)) | ((uint)copy[(int)i] << shift);
+    }
+
+    Console.WriteLine(
+        $"textureMemoryCopy source=0x{sourceAddress:x8} destination=0x{destinationAddress:x8} bytes=0x{byteLength:x}");
 }
 
 static int StepCpu(Action step, int count, object? cpu = null, ulong? stopPc = null)
