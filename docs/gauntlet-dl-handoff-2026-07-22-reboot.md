@@ -2313,3 +2313,52 @@ EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_Y=144
 
 Nästa pass bör rikta filtret mot en faktiskt gul pixel och jämföra dess
 TMU1-rawvärde och materialbas med en intilliggande blå pixel i samma triangel.
+
+#### Separat ST1 är verifierad speldata
+
+Den riktade jämförelsen träffade två punkter i samma golvtriangel och samma
+Type3-paket `0x01c2a10b`:
+
+```text
+gul  xy=(192,164): TMU1 lod1 addr=0x536500 raw=0xFF68 rgba=FFF525FF
+blå xy=(224,164): TMU1 lod1 addr=0x536680 raw=0x002F rgba=000470FF
+```
+
+Båda använder TMU1 `mode/lod/base=8C241ACF/00200104/00224944`. En rå dump av
+den aktuella TMU1-ytan, RGB565 LOD1 vid fysisk bankadress `0x534A20`, ger en
+sammanhängande `64x128` detaljtextur som uttryckligen innehåller de
+gul/vita formerna i regelbundna rader. Fläckarna skapas alltså inte av
+framebuffer-val, nollminne eller fel byteordning; separat ST1 placerar verklig
+uppladdad texturdata.
+
+MAME-jämförelsen matchar dessutom hela vägen för paketet: ST0 ärvs först till
+ST1, bit 17 läser sedan separata S1/T1, setupgradienterna använder
+`starts1/ds1dx/ds1dy`, och rastervägen kör perspektivdivision och TMU1 före
+TMU0. Den tidigare delade ST-vägen dolde detaljtexturen och var inte
+hårdvarukorrekt.
+
+Separat ST1 är därför promoterad i både adapterpreset och probe-baseline:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_TMU_ST=1
+```
+
+Ren f1390 -> f1400 och omedelbar återladdning av den nya snapshoten ger båda:
+
+```text
+frameHash=0x53c06d66
+framebuffer=640x480 nonBlack=307200 colored=298167
+
+artifacts/gauntlet-probe/gauntdl-separate-st1-f1400-20260724.png
+sha256=492a11302b015ecf91da3afc9e95d44e26ec6783099945c26a763d5cf4fd5979
+
+artifacts/gauntlet-probe/gauntdl-separate-st1-f1400-20260724.warm
+sha256=47bc186f0c7a1952e3f2a55537340c46d57b30d37e87756668ded19a4232d0b9
+
+artifacts/gauntlet-probe/gauntdl-tmu1-detail-lod1-20260724.png
+sha256=7801e079fbab330cdcd5920f68f4e06c263749ad0cf78de2643b24cca1504524
+```
+
+Nästa bildgräns är därför inte längre ST1-valet. Fortsätt med materialets
+texturproveniens/uppladdningslayout eller gå vidare från debugscenen mot nästa
+spelstate; behåll separat ST1 på under båda spåren.
