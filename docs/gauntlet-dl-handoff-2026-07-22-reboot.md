@@ -2362,3 +2362,27 @@ sha256=7801e079fbab330cdcd5920f68f4e06c263749ad0cf78de2643b24cca1504524
 Nästa bildgräns är därför inte längre ST1-valet. Fortsätt med materialets
 texturproveniens/uppladdningslayout eller gå vidare från debugscenen mot nästa
 spelstate; behåll separat ST1 på under båda spåren.
+
+En två-frame FIRE 3-puls från den nya f1400-snapshoten lämnar objektvyn:
+
+```text
+EUTHERDRIVE_GAUNTDL_INPUT_C=1
+EUTHERDRIVE_GAUNTDL_INPUT_PRESS_FRAME=1400
+EUTHERDRIVE_GAUNTDL_INPUT_RELEASE_FRAME=1402
+```
+
+Vid f1405 syns en helvit övergångsbuffer. Vid f1420 har gästen ritat en ny
+3D-scen (`Type3=204485`, `frameHash=0xf234b661`), men stora polygonpartier är
+vita medan enstaka texturer är synliga. Det bevisar fortsatt state- och
+inputprogression och flyttar nästa blockerare till den nya scenens
+färg/alpha/depth-pipeline:
+
+```text
+artifacts/gauntlet-probe/gauntdl-fire3-next-scene-f1420-20260724.png
+sha256=caa03fcd77d14fb1d773a97fa7f9e7158aaa11ad570881d0952994fabdb76335
+```
+
+Nästa riktade trace bör jämföra en vit pixel med en synlig texturpixel i samma
+f1420-frame och fånga sista writer, `fbzColorPath`, alpha mode, depthresultat
+och båda TMU-resultaten. Börja från f1400-snapshoten ovan och samma FIRE
+3-puls; ST1 behöver inte återutredas.
