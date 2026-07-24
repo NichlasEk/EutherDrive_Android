@@ -34003,6 +34003,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_REJECTS"));
     private readonly int _traceTexturedTriangleRejectsLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_REJECTS_LIMIT"), 80);
+    private readonly int _traceTexturedPixelX =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_PIXEL_X"), -1);
+    private readonly int _traceTexturedPixelY =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_PIXEL_Y"), -1);
+    private readonly int _traceTexturedPixelLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_PIXEL_LIMIT"), 80);
     private readonly bool _traceTexturedTriangleCovered =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_COVERED"));
     private readonly int _traceTexturedTriangleCoveredLimit =
@@ -34889,6 +34895,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoImplausiblePacketTraceCount;
     private int _commandFifoType1PacketOwnershipTraceCount;
     private int _commandFifoType4PacketOwnershipTraceCount;
+    private int _texturedPixelTraceCount;
     private int _commandFifoImplausibleType1OutsideBulkWindowGateCount;
     private int _commandFifoImplausibleType1OutsideBulkWindowDropCount;
     private int _commandFifoPayloadType1PacketSkipCount;
@@ -43497,7 +43504,10 @@ internal class VoodooBringupBackend : IVoodooBackend
                     depthValue = ComputeMameSetupDepthValue(fbzMode, _registers[RegFbzColorPath], iterZ, iterW, zaColor);
                     int depthSource = (fbzMode & 0x100000u) == 0 ? depthValue : zaColor;
                     if (mameDepthTest && !MameDepthTest(fbzMode, _auxBuffer[pixel], depthSource))
+                    {
+                        TraceTexturedPixel("depth-reject", x, y, bufferIndex, buffer[pixel], _auxBuffer[pixel], depthSource, fbzMode);
                         continue;
+                    }
                 }
 
                 float wa = e0 * invArea;
@@ -43672,6 +43682,7 @@ sampledTexel:
 
                 if (mameRgbMask)
                 {
+                    TraceTexturedPixel("texture-write", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                     buffer[pixel] = texel;
                     TrackPixelLastWriter(bufferIndex, x, screenY, writerId);
                     _texturedRasterPixelCount++;
@@ -43727,6 +43738,32 @@ sampledTexel:
             TraceTexturedTriangleCovered(a, b, c, fallbackColor, area, minX, maxX, minY, maxY, coveredPixels, zeroPixels);
         }
         return coveredAny;
+    }
+
+    private void TraceTexturedPixel(
+        string action,
+        int x,
+        int y,
+        int bufferIndex,
+        ushort color,
+        ushort currentDepth,
+        int incomingDepth,
+        uint fbzMode)
+    {
+        if (x != _traceTexturedPixelX ||
+            y != _traceTexturedPixelY ||
+            _texturedPixelTraceCount++ >= _traceTexturedPixelLimit)
+        {
+            return;
+        }
+
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXPIXEL] n={_texturedPixelTraceCount} action={action} xy={x},{y} " +
+            $"screen={x},{GetRasterBufferY(y)} " +
+            $"buf={bufferIndex} color=0x{color:x4} depth=0x{currentDepth:x4}/0x{incomingDepth & 0xffff:x4} " +
+            $"fbz=0x{fbzMode:x8} cmd=0x{_currentCommandFifoCommand:x8} " +
+            $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} pc=0x{pc:x16}");
     }
 
     private int ComputeAndTraceTexturedTriangleLod(

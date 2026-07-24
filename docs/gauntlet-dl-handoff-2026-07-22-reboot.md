@@ -1924,3 +1924,37 @@ sha256=e42997f47982c929544d24d5e22f25e8ddba192c3b64cd26090e07965a5317ba
 Den falska vita neder- och högerkanten är borta. Kvarvarande små vita hål
 ligger inne i scenens geometri; nästa gräns är därför saknade
 polygoner/texturprov eller depth/clip, inte outputdimensionerna.
+
+#### De vita hålen är otäckta clearpixlar, inte depth-reject
+
+Connected-component-mätning av medium-res-bilden lokaliserade bland annat ett
+vitt område kring output `(82,129)-(107,153)`, motsvarande ungefär
+512x384-källpixel `(80,112)`. Pixel-last-writer-profilen visar:
+
+```text
+b0@80,112 = fill/fastfill color=0xffff
+pc=0xffffffff801027cc
+command=0x0104824c
+packet=0x028b3cc4
+```
+
+`0x0104824c` är ett genuint Type4-paket med basregister `0x49`
+(`fastfillCMD`). MAME:s `reg_fastfill_w` använder uttryckligen `color1`, precis
+som den lokala modellen; vit färg ska därför inte ersättas heuristiskt.
+
+En ny riktad `VOODOO-TEXPIXEL`-trace kan följa texture-write och depth-reject
+för en vald rasterpixel:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_PIXEL_X=80
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_PIXEL_Y=272
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_PIXEL_LIMIT=120
+```
+
+Raster-Y 272 motsvarar buffer-Y 112 med det aktiva 384-origoflippet. Ingen
+texturerad triangel når den punkten och inga depth-rejects loggas. Att slå av
+setup- eller bulk/direct-suppressions är pixelidentiskt (`0x04ea0636`), och
+det äldre `SUPPRESS_WHITE_FASTFILL_AFTER_RASTER`-experimentet är också
+pixelidentiskt här. Nästa smala gräns är därför paket-/vertexsekvensen för
+geometrin runt öppningarna, inte clearfärg, depth-test eller de två
+triangel-suppressionsskydden.

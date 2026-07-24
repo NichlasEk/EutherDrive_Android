@@ -708,6 +708,8 @@ static void DumpVoodoo(object facade)
         $"pixels:{texturedPixels}:zero:{texturedZeroPixels}:" +
         $"rejects:nf:{texturedRejectNonFinite}:deg:{texturedRejectDegenerate}:clip:{texturedRejectClip}:empty:{texturedRejectEmptyRaster}");
     Console.WriteLine("voodoo buffers=" + FormatVoodooBufferStats((ushort[][])GetField(backend, "_colorBuffers")));
+    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_LAST_WRITERS") == "1")
+        PrintWhitePixelLastWriterSamples(backend);
     Console.WriteLine("voodoo texture=" + FormatTextureStats((uint[])GetField(backend, "_textureMemory")));
     Console.WriteLine(
         "voodoo textureMap=" +
@@ -725,6 +727,43 @@ static void DumpVoodoo(object facade)
     var registers = (uint[])GetField(backend, "_registers");
     foreach (int reg in new[] { 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x40, 0x41, 0x43, 0x44, 0x45, 0x46, 0x47, 0x49, 0x4a, 0x51, 0x52, 0x83, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xc0, 0xc1, 0xc3 })
         Console.WriteLine($"voodoo reg[{reg:x3}]=0x{registers[reg]:x8}");
+}
+
+static void PrintWhitePixelLastWriterSamples(object backend)
+{
+    const int columns = 20;
+    const int rows = 15;
+    const int cellWidth = 32;
+    const int cellHeight = 32;
+    const int samplesPerBuffer = columns * rows;
+    var buffers = (ushort[][])GetField(backend, "_colorBuffers");
+    var writerIds = (int[])GetField(backend, "_pixelLastWriterSampleIds");
+    var writerKeys = (IList)GetField(backend, "_pixelLastWriterKeys");
+    var samples = new List<string>();
+    for (int bufferIndex = 0; bufferIndex < Math.Min(3, buffers.Length); bufferIndex++)
+    {
+        ushort[] buffer = buffers[bufferIndex];
+        for (int row = 0; row < rows; row++)
+        {
+            int y = row * cellHeight + cellHeight / 2;
+            for (int column = 0; column < columns; column++)
+            {
+                int x = column * cellWidth + cellWidth / 2;
+                if (buffer[y * 1024 + x] != 0xffff)
+                    continue;
+
+                int writerId = writerIds[bufferIndex * samplesPerBuffer + row * columns + column];
+                string writer = writerId > 0 && writerId <= writerKeys.Count
+                    ? writerKeys[writerId - 1]?.ToString() ?? "missing"
+                    : "none";
+                samples.Add($"b{bufferIndex}@{x},{y}=id{writerId}:{writer}");
+            }
+        }
+    }
+
+    Console.WriteLine(
+        "voodoo whitePixelWriters=" +
+        (samples.Count == 0 ? "none" : string.Join("|", samples.Take(80))));
 }
 
 static string FormatTextureStats(uint[] texture)
