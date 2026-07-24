@@ -1266,6 +1266,10 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_FIFO_PACKET_LIMIT", 16);
     private readonly bool _traceTextureUploadCallerTransitions =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_CALLER_TRANSITIONS"));
+    private readonly bool _traceTextureMipCaller =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_MIP_CALLER"));
+    private readonly int _traceTextureMipCallerLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_MIP_CALLER_LIMIT", 256);
     private readonly bool _traceTextureUploadDirectWriter =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TEXTURE_UPLOAD_DIRECT_WRITER"));
     private readonly int _traceTextureUploadDirectWriterLimit =
@@ -1482,6 +1486,7 @@ internal sealed class MipsR5000Core
     private int _textureUploadSourceLimitTableTraceCount;
     private int _textureUploadPayloadSpanTraceCount;
     private int _textureUploadPayloadCallerTraceCount;
+    private int _textureMipCallerTraceCount;
     private int _textureUploadPayloadFocusedCallerTraceCount;
     private int _textureUploadPayloadLimitClampTraceCount;
     private int _textureUploadPayloadDiskWordTraceCount;
@@ -2287,6 +2292,7 @@ internal sealed class MipsR5000Core
         _hasImmediatePcOverride = false;
 
         TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
+        TraceTextureMipCaller(pc, op);
         TraceTextureUploadSourceSelectorSetup(pc, op, "pre");
         ApplyRuntimeFontStoryGebBacking(pc, 0xffffffff803129a0UL, 0x803129a4U);
         ApplyKnownRuntimeWorldTextureUploadSourceRepair(pc, op);
@@ -8183,6 +8189,28 @@ internal sealed class MipsR5000Core
             $"sp60={ReadTraceWord(sp + 0x60UL):x8} sp64={ReadTraceWord(sp + 0x64UL):x8} " +
             $"sp70={ReadTraceWord(sp + 0x70UL):x8} sp74={ReadTraceWord(sp + 0x74UL):x8} " +
             $"sp78={ReadTraceWord(sp + 0x78UL):x8}");
+    }
+
+    private void TraceTextureMipCaller(ulong pc, uint op)
+    {
+        if (!_traceTextureMipCaller || _textureMipCallerTraceCount >= _traceTextureMipCallerLimit)
+            return;
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        if (physicalPc is not (0x001095c8UL or 0x001096fcUL))
+            return;
+
+        _textureMipCallerTraceCount++;
+        ulong sp = _gpr[29];
+        ulong source = _gpr[16];
+        Console.WriteLine(
+            $"[GAUNTDL:TEXTURE-MIP-CALLER] n={_textureMipCallerTraceCount} pc=0x{pc:x16} op=0x{op:x8} " +
+            $"ra=0x{_gpr[31]:x16} a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} " +
+            $"a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} s0=0x{source:x16} " +
+            $"s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
+            $"t7=0x{_gpr[15]:x16} sp18={ReadTraceWord(sp + 0x18UL):x8} " +
+            $"sp1c={ReadTraceWord(sp + 0x1cUL):x8} sp20={ReadTraceWord(sp + 0x20UL):x8} " +
+            $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
     }
 
     private bool IsKnownRuntimeBgLoadModelUploadSourceCandidate(ulong source)
@@ -34037,6 +34065,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_FIFO_OWNERS"));
     private readonly bool _traceTwoTmuSamples =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES"));
+    private readonly bool _traceTmu1SamplePages =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_TMU1_SAMPLE_PAGES"));
     private readonly int _traceTwoTmuSamplesLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_LIMIT"), 64);
     private readonly int _traceTwoTmuSamplesMinFrame =
@@ -34049,6 +34079,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_X"), -1);
     private readonly int _traceTwoTmuSamplesY =
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_Y"), -1);
+    private readonly HashSet<uint> _tracedTmu1SamplePages = new();
     private readonly bool _traceTexturedTriangleSampleSummary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
     private readonly bool _traceTexturedTriangleSampleWriters =
@@ -45064,6 +45095,18 @@ sampledTexel:
                 ? GetTextureTargetLod(lod1, ReadTextureRegisterForTmu(1, RegTextureBaseAddr))
                 : ComputeMameTexturePixelLod(lodBase1_8p8, iterW1, x, y, mode1, lod1);
             local1 = SampleTextureMameFixedForTmu(1, iterS1, iterT1, iterW1, targetLod1);
+            if (_traceTmu1SamplePages)
+            {
+                uint sampleAddress = _lastTextureSampleByteAddress;
+                uint localPage = (sampleAddress & (TextureBankBytes - 1u)) >> 12;
+                if (_tracedTmu1SamplePages.Add(localPage))
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:TMU1-SAMPLE-PAGE] frame={_renderFrame} page=0x{localPage:X3} " +
+                        $"address=0x{sampleAddress:X6} base=0x{ReadTextureRegisterForTmu(1, RegTextureBaseAddr):X8} " +
+                        $"lod={targetLod1} raw=0x{_lastTextureSampleRaw:X4}");
+                }
+            }
             if (_experimentTmu1ZeroAsNeutralWhite &&
                 local1.R == 0 &&
                 local1.G == 0 &&

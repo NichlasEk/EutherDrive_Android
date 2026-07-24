@@ -2873,6 +2873,62 @@ redan laddade source-owner-tabellen före f940: identifiera vilken primär
 source som ska paras med levelE-sekundärrecordet och publicera just den till
 selectorloopen. MAME-overlayn och neutralvitproben ska förbli default-off.
 
+#### Index 9-ownern är korrekt men primärallokatorn stannar för lågt
+
+F940:s source-tabell visar levelE på index 9:
+
+```text
+owner=804b1568
+asset=80512da8/00000014 levels/levelE1
+owner header=f00b0001 body=00061840 table=0000029e count=0000006c
+```
+
+Två A/B-prov avför `80512da8` som companion. Den befintliga
+`PRESERVE_ASSET_SOURCE_INDEX_MASK=0x200`-hooken är helt inert genom
+f940--f1420. En direkt tabellpatch vid f1020 minskar i stället uploads:
+
+```text
+control texWrites=2128751 nzWords=849371
+patched texWrites=2046775 nzWords=846008
+frameHash båda=0x6604904f
+```
+
+`80512da8` är alltså worlds/asset-källan, inte den saknade TMU1-payloaden.
+
+En ny callertrace vid `0x801095c8/0x801096fc` fångar hela f1020--f1040-
+mipmatrisen. 233 sekundära anrop (`a0=0`, TMU0) fördelas över 41
+destinationer och når `0x23fa80`. Bara 17 primära anrop (`a0=1`, TMU1)
+fördelas över fyra destinationer:
+
+```text
+0006b610
+0006cb60
+0006f600
+000720b0
+```
+
+Detta är den direkta allokeringsförklaringen till att TMU1 aldrig når
+scenens `0x22dxxx`: primärvägen slutar mer än 1,7 MiB för tidigt.
+
+En unik-page-trace över f1400--f1420 visar att scenen samplar 257 TMU1-sidor
+över lokala pageintervall `0x001..0x3ff`; 182 sidors första prov är noll.
+136 använda, avvikande och icke-noll MAME-sidor har exakt rådiskträff.
+Exempelvis ligger längre sammanhängande grupper vid:
+
+```text
+local pages 0x164..0x167 <- disk 0x043f3800
+local pages 0x170..0x173 <- disk 0x04402d20
+local pages 0x18b..0x198 <- disk 0x0441dd20
+local pages 0x1a1..0x1ae <- disk 0x04433d20
+local pages 0x1bd..0x1c3 <- disk 0x0444fd20
+```
+
+De höga `0x1d0..0x285`-segmenten ensamma ger bara
+`frameHash=0x85288b84`, `zero=292812`, `colored=52296`. Nästa fix måste
+alltså återställa alla faktiskt använda primärsidor eller, helst, reparera
+den tidigare primära mipgrupp som skulle ha allokerat dem. Hydrera inte bara
+`0x1c31`-familjen och använd inte neutralvit som runtime-fix.
+
 Caller-/resursspåret avför dessutom de tomma jobben som en dold companion-
 lista. Funktionen vid `0x800abd64..0x800abe10` hämtar recordlistan från
 `resource + 0x68 + tableIndex*0x8c` och count från `resource + 0x64`.
