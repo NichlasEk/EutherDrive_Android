@@ -34043,6 +34043,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_MIN_FRAME"), 0);
     private readonly ulong? _traceTwoTmuSamplesTmu0Base =
         ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_TMU0_BASE"));
+    private readonly ulong? _traceTwoTmuSamplesTmu1Base =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_TMU1_BASE"));
     private readonly int _traceTwoTmuSamplesX =
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_X"), -1);
     private readonly int _traceTwoTmuSamplesY =
@@ -45168,6 +45170,12 @@ sampledTexel:
         uint mode1 = ReadTextureRegisterForTmu(1, RegTextureMode);
         uint lod1 = ReadTextureRegisterForTmu(1, RegTextureLod);
         uint base1 = ReadTextureRegisterForTmu(1, RegTextureBaseAddr);
+        if (_traceTwoTmuSamplesTmu1Base.HasValue &&
+            base1 != (uint)_traceTwoTmuSamplesTmu1Base.Value)
+        {
+            return;
+        }
+
         uint fbzMode = _registers[RegFbzMode];
         uint fbzColorPath = _registers[RegFbzColorPath];
         _twoTmuSampleTraceCount++;

@@ -2828,6 +2828,51 @@ orsakad av bildvändning, Type4-avkodning, registerbank, texture-writepekare,
 sampler eller rasterisering. Gästens statiska material publiceras korrekt,
 men dess TMU1-payload har aldrig materialiserats i texturminnet.
 
+#### MAME Temple-oraklet bekräftar adressen men avför stream-limit 13
+
+Den lokala MAME-builden kan nu nå Temple utan RAM-patchar. Lua-proben matar
+den inbyggda referenskaraktären `SJB/964` via vanliga arkadinputs, väljer
+Temple och sparar ett gameplay-state. GDB-proben dumpar därefter båda 4 MiB
+TMU-bankerna. Dumpen är stabil mellan Voodoo-update 120 och 600:
+
+```text
+TMU0 sha256=c1356470f8be70d533b867041830b644eaa0a90293cc36c1c2852fb1dcfc9899
+TMU1 sha256=26aa29820758aa421017e1ab01d4530b84ac982d2ff0e872f46dd7f6a9e22d0d
+```
+
+EutherDrives TMU0 matchar MAME på 1895 justerade 256-byte-sidor utan
+adressdelta. MAME:s TMU1 har samtidigt verkliga texlar vid den saknade
+familjen. Exempelvis ligger aktiva `base=0x001c3104`, LOD2-samplingar i
+`0x62caa8..0x62d7a6`; motsvarande lokala MAME-data är icke-noll.
+
+Två sammanhängande rådiskprovenienser täcker just gränsen:
+
+```text
+local 0x200000..0x22c7ef <- disk 0x04492530..0x044bed1f
+local 0x22c7f0..0x285acf <- disk 0x044c2240..0x0451b51f
+```
+
+En hel MAME-TMU1-overlay minskar f1420:s nollslutpixlar från `296786` till
+`141517` och ökar färgpixlar från `48233` till `187965`. Den är endast ett
+oracle: dumpen är ROM-härledd och får inte bli en runtime-resurs eller
+checkas in.
+
+En ren f940--f1420-körning testade därefter om den konfigurerade
+`BGLOADMODEL_INDEXED_TEXTURE_QIO_STREAM_LIMIT=13` klipper companionposten.
+Gränsen 27 gav ingen stream-limit-händelse, ingen ny hög TMU1-write och:
+
+```text
+ranFrames=480 runMs=901601.6
+frameHash=0x2378bfe0
+texture last=0x5ea1ac
+zero=798824 colored=124643
+```
+
+Det avför en enkel höjning av stream-limit. Nästa gräns är i stället den
+redan laddade source-owner-tabellen före f940: identifiera vilken primär
+source som ska paras med levelE-sekundärrecordet och publicera just den till
+selectorloopen. MAME-overlayn och neutralvitproben ska förbli default-off.
+
 Caller-/resursspåret avför dessutom de tomma jobben som en dold companion-
 lista. Funktionen vid `0x800abd64..0x800abe10` hämtar recordlistan från
 `resource + 0x68 + tableIndex*0x8c` och count från `resource + 0x64`.

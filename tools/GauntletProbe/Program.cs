@@ -268,18 +268,6 @@ static void ApplyRequestedDiskTextureMemoryCopy(GauntletDarkLegacyAdapter adapte
     if (string.IsNullOrWhiteSpace(raw))
         return;
 
-    string[] parts = raw.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    if (parts.Length != 3 ||
-        !TryParseHexUlong(parts[0], out ulong diskAddress) ||
-        !TryParseHexUlong(parts[1], out ulong textureAddress) ||
-        !TryParseHexUlong(parts[2], out ulong byteLength) ||
-        byteLength == 0 ||
-        byteLength > int.MaxValue)
-    {
-        throw new InvalidDataException(
-            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISK_TEXTURE_COPY must be disk:texture:length in hex");
-    }
-
     string? diskPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RAW_DISK");
     if (string.IsNullOrWhiteSpace(diskPath) || !File.Exists(diskPath))
         throw new FileNotFoundException("Gauntlet raw disk is unavailable for disk texture copy", diskPath);
@@ -289,32 +277,55 @@ static void ApplyRequestedDiskTextureMemoryCopy(GauntletDarkLegacyAdapter adapte
     uint[] textureMemory = GetFieldValue<uint[]>(GetField(voodoo, "_backend"), "_textureMemory");
     ulong textureBytes = (ulong)textureMemory.Length * 4UL;
     long diskLength = new FileInfo(diskPath).Length;
-    if (diskAddress + byteLength > (ulong)diskLength || textureAddress + byteLength > textureBytes)
-        throw new InvalidDataException("Disk texture copy range is outside disk or texture memory");
-
+    bool zeroDestinationOnly =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISK_TEXTURE_COPY_ZERO_DESTINATION_ONLY") == "1";
     using FileStream disk = File.OpenRead(diskPath);
-    disk.Position = checked((long)diskAddress);
     byte[] buffer = new byte[64 * 1024];
-    ulong copied = 0;
-    while (copied < byteLength)
+    foreach (string specification in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
     {
-        int requested = (int)Math.Min((ulong)buffer.Length, byteLength - copied);
-        int read = disk.Read(buffer, 0, requested);
-        if (read != requested)
-            throw new EndOfStreamException($"Short disk texture copy read: requested={requested} read={read}");
-
-        for (int i = 0; i < read; i++)
+        string[] parts = specification.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 3 ||
+            !TryParseHexUlong(parts[0], out ulong diskAddress) ||
+            !TryParseHexUlong(parts[1], out ulong textureAddress) ||
+            !TryParseHexUlong(parts[2], out ulong byteLength) ||
+            byteLength == 0 ||
+            byteLength > int.MaxValue)
         {
-            ulong destination = textureAddress + copied + (ulong)i;
-            int word = (int)(destination >> 2);
-            int shift = (int)(destination & 3UL) * 8;
-            textureMemory[word] = (textureMemory[word] & ~(0xffu << shift)) | ((uint)buffer[i] << shift);
+            throw new InvalidDataException(
+                "EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISK_TEXTURE_COPY must be comma-separated disk:texture:length hex triples");
         }
-        copied += (ulong)read;
-    }
 
-    Console.WriteLine(
-        $"diskTextureCopy disk=0x{diskAddress:x16} texture=0x{textureAddress:x8} bytes=0x{byteLength:x}");
+        if (diskAddress + byteLength > (ulong)diskLength || textureAddress + byteLength > textureBytes)
+            throw new InvalidDataException("Disk texture copy range is outside disk or texture memory");
+
+        disk.Position = checked((long)diskAddress);
+        ulong copied = 0;
+        ulong applied = 0;
+        while (copied < byteLength)
+        {
+            int requested = (int)Math.Min((ulong)buffer.Length, byteLength - copied);
+            int read = disk.Read(buffer, 0, requested);
+            if (read != requested)
+                throw new EndOfStreamException($"Short disk texture copy read: requested={requested} read={read}");
+
+            for (int i = 0; i < read; i++)
+            {
+                ulong destination = textureAddress + copied + (ulong)i;
+                int word = (int)(destination >> 2);
+                int shift = (int)(destination & 3UL) * 8;
+                if (zeroDestinationOnly && ((textureMemory[word] >> shift) & 0xffu) != 0)
+                    continue;
+
+                textureMemory[word] = (textureMemory[word] & ~(0xffu << shift)) | ((uint)buffer[i] << shift);
+                applied++;
+            }
+            copied += (ulong)read;
+        }
+
+        Console.WriteLine(
+            $"diskTextureCopy disk=0x{diskAddress:x16} texture=0x{textureAddress:x8} " +
+            $"bytes=0x{byteLength:x} applied=0x{applied:x} zeroDestinationOnly={zeroDestinationOnly}");
+    }
 }
 
 static void ApplyRequestedTextureMemoryCopy(GauntletDarkLegacyAdapter adapter)
