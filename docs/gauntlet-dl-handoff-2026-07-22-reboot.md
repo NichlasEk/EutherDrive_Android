@@ -2138,3 +2138,49 @@ otäckta geometriytor, inte framebufferbrus. Fortsätt från den rena f1390-
 snapshoten och spåra bandens sista skrivare/clip-rektangel. Gå inte vidare
 från de äldre `type3-explicit-header-f1330` eller `/tmp/...type4...`-
 snapshotsen när slutlig bildkvalitet bedöms.
+
+#### Det grå bandet är en texturerad fullbreddstriangel
+
+En riktad pixel-last-writer på bufferpunkt `(272,144)`, motsvarande
+outputpunkt ungefär `(340,180)`, identifierar bandets sista skrivare:
+
+```text
+pc=0x800c6324
+command=0x00c2a10b
+packet/read=0x0238c710
+fbzMode=0x00000060
+color=0x8c0f
+```
+
+Triangeln är exakt full medium-res-bredd och cirka 14 rasterrader hög:
+
+```text
+verts=(0,237.312)/(512,247.375)/(512,233.375)
+stq=(6.028,-8.384,0.012241)/
+    (21.517,-8.810,0.011477)/
+    (22.749,-8.218,0.012538)
+```
+
+Den täckta pixeln samplar verklig, icke-noll texturdata:
+
+```text
+tmode=0x8c22490f
+tlod=0x06002604
+tbase=0x0002f050
+address=0x1a246c
+raw=0x4b85
+rgb565=0x8c0f
+```
+
+Bandet är alltså varken fastfill, stale clear, clip-rest eller zero-texture-
+fallback. S/T/Q kollapsar inte heller till en enda koordinat. Nästa smala
+gräns är MAME-jämförelse av fixed-point texture fetch/LOD för just packet
+`0x0238c710`, eller återställd texture-writer-proveniens för adress
+`0x1a246c`. Den nya riktade pixelrapporten kan läsas med:
+
+```text
+EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_LAST_WRITERS=1
+EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_BUFFER=0
+EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_X=272
+EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_Y=144
+```

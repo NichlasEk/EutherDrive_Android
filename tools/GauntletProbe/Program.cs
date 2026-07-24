@@ -709,7 +709,10 @@ static void DumpVoodoo(object facade)
         $"rejects:nf:{texturedRejectNonFinite}:deg:{texturedRejectDegenerate}:clip:{texturedRejectClip}:empty:{texturedRejectEmptyRaster}");
     Console.WriteLine("voodoo buffers=" + FormatVoodooBufferStats((ushort[][])GetField(backend, "_colorBuffers")));
     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_LAST_WRITERS") == "1")
+    {
         PrintWhitePixelLastWriterSamples(backend);
+        PrintRequestedPixelLastWriterSample(backend);
+    }
     Console.WriteLine("voodoo texture=" + FormatTextureStats((uint[])GetField(backend, "_textureMemory")));
     Console.WriteLine(
         "voodoo textureMap=" +
@@ -764,6 +767,46 @@ static void PrintWhitePixelLastWriterSamples(object backend)
     Console.WriteLine(
         "voodoo whitePixelWriters=" +
         (samples.Count == 0 ? "none" : string.Join("|", samples.Take(80))));
+}
+
+static void PrintRequestedPixelLastWriterSample(object backend)
+{
+    if (!int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_BUFFER"), out int bufferIndex) ||
+        !int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_X"), out int x) ||
+        !int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_Y"), out int y))
+    {
+        return;
+    }
+
+    const int columns = 20;
+    const int rows = 15;
+    const int cellWidth = 32;
+    const int cellHeight = 32;
+    const int samplesPerBuffer = columns * rows;
+    var buffers = (ushort[][])GetField(backend, "_colorBuffers");
+    var writerIds = (int[])GetField(backend, "_pixelLastWriterSampleIds");
+    var writerKeys = (IList)GetField(backend, "_pixelLastWriterKeys");
+    bool valid =
+        (uint)bufferIndex < (uint)Math.Min(3, buffers.Length) &&
+        x >= cellWidth / 2 &&
+        y >= cellHeight / 2 &&
+        (x - cellWidth / 2) % cellWidth == 0 &&
+        (y - cellHeight / 2) % cellHeight == 0;
+    int column = valid ? (x - cellWidth / 2) / cellWidth : -1;
+    int row = valid ? (y - cellHeight / 2) / cellHeight : -1;
+    valid = valid && (uint)column < columns && (uint)row < rows;
+    if (!valid)
+    {
+        Console.WriteLine($"voodoo pixelWriterSample=invalid:b{bufferIndex}@{x},{y}");
+        return;
+    }
+
+    ushort color = buffers[bufferIndex][y * 1024 + x];
+    int writerId = writerIds[bufferIndex * samplesPerBuffer + row * columns + column];
+    string writer = writerId > 0 && writerId <= writerKeys.Count
+        ? writerKeys[writerId - 1]?.ToString() ?? "missing"
+        : "none";
+    Console.WriteLine($"voodoo pixelWriterSample=b{bufferIndex}@{x},{y}:c{color:X4}:id{writerId}:{writer}");
 }
 
 static string FormatTextureStats(uint[] texture)

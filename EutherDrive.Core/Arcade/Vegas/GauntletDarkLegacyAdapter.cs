@@ -43788,11 +43788,16 @@ sampledTexel:
         }
 
         ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        string sample = _lastTextureSampleValid
+            ? $"addr=0x{_lastTextureSampleByteAddress & (TextureBytes - 1u):x6}:raw=0x{_lastTextureSampleRaw:x8}:rgb=0x{_lastTextureSampleResult:x4}:writer={GetTextureSampleWriterKey(_lastTextureSampleByteAddress)}"
+            : "none";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TEXPIXEL] n={_texturedPixelTraceCount} action={action} xy={x},{y} " +
             $"screen={x},{GetRasterBufferY(y)} " +
             $"buf={bufferIndex} color=0x{color:x4} depth=0x{currentDepth:x4}/0x{incomingDepth & 0xffff:x4} " +
-            $"fbz=0x{fbzMode:x8} cmd=0x{_currentCommandFifoCommand:x8} " +
+            $"fbz=0x{fbzMode:x8} tmode=0x{ReadTextureSampleRegister(RegTextureMode):x8} " +
+            $"tlod=0x{ReadTextureSampleRegister(RegTextureLod):x8} tbase=0x{ReadTextureSampleRegister(RegTextureBaseAddr):x8} " +
+            $"sample={sample} cmd=0x{_currentCommandFifoCommand:x8} " +
             $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} pc=0x{pc:x16}");
     }
 
@@ -43830,6 +43835,7 @@ sampledTexel:
             $"screen={x},{GetRasterBufferY(y)} inside={(inside ? 1 : 0)} area={area:F3} " +
             $"edge={e0:F3}/{e1:F3}/{e2:F3} bbox=({minX},{minY})-({maxX},{maxY}) " +
             $"verts=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
+            $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
             $"cmd=0x{_currentCommandFifoCommand:x8} packet=0x{_currentCommandFifoPacketStart * 4:x8} " +
             $"rd=0x{_cmdFifoReadIndex * 4:x8} pc=0x{pc:x16}");
     }
