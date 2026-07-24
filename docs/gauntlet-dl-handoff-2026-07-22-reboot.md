@@ -1590,3 +1590,58 @@ smala gräns är därför att återskapa just den ursprungliga f740--f770
 extra-step-sekvensen eller spåra recordbyggaren när den skriver
 `0x804d87e0..0x804d8ae0`. Ändra inte TMU-bankmappningen eller lägg till en
 zero-texel-fallback utifrån aliasbilden.
+
+#### Historisk f740--f770-reproduktion hittar recordbyggarens kopieringskedja
+
+Den exakta äldre körningen har nu reproducerats i en isolerad checkout av
+commit `b2e954f1`, med f740-snapshoten, 200000 CPU-steg per frame och
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TWO_TMU_COMBINE=1`. Den ger åter
+det historiska f770-oraklet:
+
+```text
+frameHash=0x25e82a6d
+texWrites=1247022
+```
+
+Samma snapshot och parametrar på nuvarande HEAD ger `frameHash=0x6540de2f`.
+Det förklarar varför den tidigare skapelsegrenen inte gick att fånga genom att
+bara återanvända f740-checkpointen i dagens kod.
+
+En stegoberoende värdeövergångsvakt visar att renderlistordet
+`0x804d8910` ändras från `0x3f0d0000` till `0x001b1ec4` av:
+
+```text
+writerPc=0x800d1370
+nextPc/return=0x800f7838
+destination=0x804d7568
+source=0x8029e550
+byteCount=0x2000
+```
+
+Det är den kända snabbvägen för en 8-byte-justerad blockkopia. Den exakta
+TMU1-posten kommer från:
+
+```text
+0x8029f8f8: 001B1EC4 8C241ACF
+0x8029f900: 00200104 42B40000
+```
+
+och kopieras till:
+
+```text
+0x804d8910: 001B1EC4 8C241ACF
+0x804d8918: 00200104 42B40000
+```
+
+Källordets egen övergång fångas vid `writerPc=0x800f69b0`,
+`nextPc=0x800f69b4`, med `ra=0x800f6938`. Instruktionen vid
+`0x800f69b0` är sista `sb` i en bytevis recordbyggare. Därmed är kedjan
+verifierad som gästbyggd state följd av en gästblockkopia; TMU1-basen uppstår
+inte genom fel bankmappning i Voodoo-koden.
+
+`EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES` täcker nu också
+`TryFastPathKnownRuntimeAlignedQwordCopy` och loggar
+`kind=fast-aligned-qword-copy` med exakt källa, destination, gammalt och nytt
+64-bitarsvärde. Nästa smala gräns är att spåra indata till recordbyggaren runt
+`0x800f6990..0x800f69b0` och avgöra vad baserna
+`1b1e04/44/84/c4` semantiskt representerar innan rasterizerbeteendet ändras.
