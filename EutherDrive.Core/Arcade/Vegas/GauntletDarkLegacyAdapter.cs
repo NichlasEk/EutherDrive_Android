@@ -44,6 +44,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_ALPHA8_MASK", "0"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FBZ_COLORPATH_RGB_COMBINE", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_TRIANGLE_LOD", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_PIXEL_LOD", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS", "1"),
@@ -43558,6 +43559,17 @@ internal class VoodooBringupBackend : IVoodooBackend
                     if (_experimentTextureMameFixedFetch)
                     {
                         long iterW = unchecked(textureStartW + dy * textureDwDy + dx * textureDwDx);
+                        if (_experimentTextureMamePixelLod)
+                        {
+                            targetLod = ComputeMameTexturePixelLod(
+                                triangleLodBase8p8,
+                                iterW,
+                                x,
+                                y,
+                                ReadTextureSampleRegister(RegTextureMode),
+                                ReadTextureSampleRegister(RegTextureLod));
+                            _experimentTextureMamePixelLodCounts[targetLod]++;
+                        }
                         if (_experimentMameTwoTmuCombine)
                         {
                             long iterS1 = unchecked(startS1 + dy * dS1dY + dx * dS1dX);
@@ -43913,7 +43925,7 @@ sampledTexel:
         double texDy = (double)dSdY * dSdY + (double)dTdY * dTdY;
         double maxDerivativeSquared = Math.Max(texDx, texDy);
         return maxDerivativeSquared > 0.0 && double.IsFinite(maxDerivativeSquared)
-            ? (int)Math.Round(((Math.Log2(maxDerivativeSquared) - 64.0) * 0.5) * 256.0)
+            ? MameFastLog2(maxDerivativeSquared, 64) / 2
             : int.MinValue;
     }
 

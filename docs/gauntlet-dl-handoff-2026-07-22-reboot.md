@@ -2184,3 +2184,53 @@ EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_BUFFER=0
 EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_X=272
 EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_Y=144
 ```
+
+#### MAME-per-pixel-LOD är nu aktiv även i fixed-fetch
+
+Den officiella MAME-vägen i `voodoo_render.cpp` gör inte ett enda LOD-val per
+triangel. Den räknar först `lodbase` från setup-gradienterna och gör sedan
+`lod -= fast_log2(iterw, 32)` för varje pixel innan bias, clamp och mipägarskap
+appliceras.
+
+Vår per-pixel-probe hade rätt beräkning men fixed-fetch-grenen hoppade direkt
+till `SampleTextureRgb565MameFixed` innan den nåddes. Därför använde den
+promoterade fixed-point-vägen fortfarande centroidens triangel-LOD.
+Fixed-fetch räknar nu pixel-LOD före samplingen, och LOD-basens tidigare
+`Math.Log2`-approximation använder samma 7-bitars MAME-tabell som pixelsteget.
+Flaggan är promoterad till bringup-baseline:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_PIXEL_LOD=1
+```
+
+En ren A/B från samma f1390-state till f1400 gav:
+
+```text
+triangel-LOD frameHash=0x65f1f229
+pixel-LOD    frameHash=0x0a01b41d
+
+pixel-LOD-fördelning:
+LOD0=0 LOD1=27979 LOD2=89524 LOD3=22483 LOD4=140
+LOD5=8458 LOD6=219 LOD7=0 LOD8=0
+```
+
+Packet-, draw-, coverage-, zero-sample- och framebuffer-räknarna är identiska.
+Pixel-diffen ligger nästan helt i den utpekade fullbreddspolygonen. Den
+försvinner inte utan byter mipmönster och fortsätter visuellt i samma grå
+markyta nedanför. Det gör ett falskt packet eller en fastfill mindre sannolikt;
+polygonen ser nu snarare ut som en legitim perspektivkomprimerad markyta.
+
+Ny fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gauntdl-mame-pixel-lod-f1400-20260724.png
+sha256=d58f64d60e02fb0f9362eaa95080402450f4a47ae79b8d22c84b6574f49eb72d
+
+artifacts/gauntlet-probe/gauntdl-mame-pixel-lod-f1400-20260724.warm
+sha256=4ee1c4a15f78a6b73a3e700789e51dded52715bb2351c5356bc38a40e5e3e9ad
+```
+
+Nästa bildkvalitetsgräns bör därför flyttas från det grå “bandet” till de
+regnbågsfärgade/vita objektytorna i övre halvan. Jämför där MAME:s val mellan
+minification- och magnification-filter samt TMU0/TMU1 color combine; jaga inte
+bandet som framebuffer- eller FIFO-korruption utan ny motbevisande trace.
