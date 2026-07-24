@@ -400,6 +400,7 @@ internal sealed class GauntletDarkLegacyMachine
 
     public void RunFrame(EutherFrameTarget target)
     {
+        Voodoo.OnVblankStart();
         Sio.PulseVblank(state: true);
         if (_enableVblankTickBridge)
             MemoryMap.RecordRuntimeVblankTick();
@@ -33535,6 +33536,7 @@ public interface IVoodooBackend
     uint ReadRegister(uint address);
     void WriteFifo(uint wordOffset, uint value);
     uint ReadStatus(bool vblank);
+    void OnVblankStart() { }
     uint ReadLfb32(uint offset);
     void WriteLfb32(uint offset, uint value);
     uint ReadTexture32(uint offset);
@@ -33622,6 +33624,7 @@ internal sealed class VoodooFacade : IVoodooBackend
         _backend.WriteFifo(wordOffset, value);
     }
     public uint ReadStatus(bool vblank) => _backend.ReadStatus(vblank);
+    public void OnVblankStart() => _backend.OnVblankStart();
     public uint ReadLfb32(uint offset) => _backend.ReadLfb32(offset);
     public void WriteLfb32(uint offset, uint value) => _backend.WriteLfb32(offset, value);
     public uint ReadTexture32(uint offset) => _backend.ReadTexture32(offset);
@@ -33906,6 +33909,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _fastFillCount;
     private int _swapBufferCount;
     private int _pendingSwapCount;
+    private readonly uint[] _pendingSwapCommands = new uint[7];
+    private readonly bool _fixMameVblankSwapTiming =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_VBLANK_SWAP_TIMING"));
     private int _renderFrame;
     private int _lastDrawBufferIndex = -1;
     private int _lastRenderBufferIndex = -1;
@@ -36908,10 +36914,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             _commandFifoOperationPending = false;
             DecodeCommandFifoPacketsIfNotPending("status");
         }
-        if (vblank && _pendingSwapCount > 0)
+        if (!_fixMameVblankSwapTiming && vblank && _pendingSwapCount > 0)
         {
-            _pendingSwapCount--;
-            ExecuteSwapBuffers(0);
+            ExecuteSwapBuffers(DequeuePendingSwapCommand());
             RecordVoodooEvent($"status swap-drain vblank={(vblank ? 1 : 0)} pend={_pendingSwapCount}");
         }
 
@@ -36922,6 +36927,28 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_recordVoodooEvents && (_statusReadCount <= 16 || _pendingSwapCount > 0 || (_statusReadCount & 0x3ff) == 0))
             RecordVoodooEvent($"status read value=0x{status:x8} vblank={(vblank ? 1 : 0)} pend={_pendingSwapCount}");
         return status;
+    }
+
+    public void OnVblankStart()
+    {
+        if (!_fixMameVblankSwapTiming || _pendingSwapCount <= 0)
+            return;
+
+        ExecuteSwapBuffers(DequeuePendingSwapCommand());
+        RecordVoodooEvent($"vblank swap-drain pend={_pendingSwapCount}");
+    }
+
+    private uint DequeuePendingSwapCommand()
+    {
+        if (_pendingSwapCount <= 0)
+            return 0;
+
+        uint command = _pendingSwapCommands[0];
+        _pendingSwapCount--;
+        if (_pendingSwapCount > 0)
+            Array.Copy(_pendingSwapCommands, 1, _pendingSwapCommands, 0, _pendingSwapCount);
+        _pendingSwapCommands[_pendingSwapCount] = 0;
+        return command;
     }
 
     public virtual uint ReadLfb32(uint offset)
@@ -48080,7 +48107,13 @@ sampledTexel:
     {
         if ((command & 1u) != 0)
         {
-            _pendingSwapCount = Math.Min(7, _pendingSwapCount + 1);
+            TraceFastFillSwapOrder(
+                "swap-pending",
+                RegSwapbufferCommand,
+                command,
+                $"pendingBefore={_pendingSwapCount} vblankWait={(command >> 1) & 0xffu}");
+            if (_pendingSwapCount < _pendingSwapCommands.Length)
+                _pendingSwapCommands[_pendingSwapCount++] = command;
             return;
         }
 
@@ -48094,7 +48127,9 @@ sampledTexel:
 
         int previousFront = _frontBufferIndex;
         int previousBack = _backBufferIndex;
-        bool dontSwap = _fixMameCommandFifoModel && ((command >> 9) & 1u) != 0;
+        // Gauntlet's Voodoo 2 implements swapbufferCMD bit 9 regardless of
+        // which command-FIFO bringup model is selected.
+        bool dontSwap = ((command >> 9) & 1u) != 0;
         // swapbufferCMD bits 1-8 are the vertical-retrace wait count. They do
         // not request a back-buffer clear; clearing here destroyed the frame
         // that had just rotated from front to back.

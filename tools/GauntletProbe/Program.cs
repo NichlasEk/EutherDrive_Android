@@ -850,7 +850,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(9);
+        writer.Write(10);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -964,7 +964,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version < 1 || version > 9)
+    if (magic != 0x314d5241574c4447UL || version < 1 || version > 10)
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1205,6 +1205,7 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
     writer.Write(GetFieldValue<int>(backend, "_fastFillCount"));
     writer.Write(GetFieldValue<int>(backend, "_swapBufferCount"));
     writer.Write(GetFieldValue<int>(backend, "_pendingSwapCount"));
+    WriteUIntArray(writer, GetFieldValue<uint[]>(backend, "_pendingSwapCommands"));
     writer.Write(GetFieldValue<int>(backend, "_renderFrame"));
     writer.Write(GetFieldValue<int>(backend, "_setupVertexCount"));
     writer.Write(GetFieldValue<int>(backend, "_frontBufferIndex"));
@@ -1249,6 +1250,8 @@ static void LoadVoodoo(BinaryReader reader, object facade, int version)
     SetField(backend, "_fastFillCount", reader.ReadInt32());
     SetField(backend, "_swapBufferCount", reader.ReadInt32());
     SetField(backend, "_pendingSwapCount", reader.ReadInt32());
+    if (version >= 10)
+        ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_pendingSwapCommands"));
     SetField(backend, "_renderFrame", reader.ReadInt32());
     SetField(backend, "_setupVertexCount", reader.ReadInt32());
     SetField(backend, "_frontBufferIndex", reader.ReadInt32());

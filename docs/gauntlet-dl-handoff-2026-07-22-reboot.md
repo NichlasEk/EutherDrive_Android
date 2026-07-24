@@ -1754,3 +1754,94 @@ gräns är att spåra de senare direkta `swapbufferCMD=0`-anropen och den
 felaktiga triple-bufferrotationen till buffer 2, och därefter isolera
 texturkorruptionen i den nu synliga arenan. Återinför inte swap-clear och
 använd inte bufferheuristik för att dölja rotationsfelet.
+
+#### Statuspollningen dränerade två swaps under samma vblank
+
+En signutökad CPU-trace kring `0xffffffff80105eac` visar att de två
+`swapbufferCMD=0`-händelserna vid renderframe 1340 inte kommer från två
+gästskrivningar. Instruktionen är:
+
+```text
+80105ea0: lui v0,0x8026
+80105ea4: lw  v0,0x2c8c(v0)
+80105ea8: lw  v0,4(v0)
+80105eac: lw  v0,0(v0)
+```
+
+De två anropen, med returadresser `0x800a852c` och `0x800a8534`, läser
+Voodoo-status. Den lokala modellen växlade vblank-biten på varje statusläsning
+och dränerade en pending swap som en sidoeffekt. Två pollningar kunde därför
+rotera `front=1 -> 2 -> 0` under samma emulerade vblank.
+
+MAME:s `reg_status_r` är passiv. En väntande swap utförs i stället en gång
+från `vblank_start`, varefter nästa FIFO-swap kan behandlas. Fixen
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_VBLANK_SWAP_TIMING=1` flyttar därför
+dräneringen till maskinens host-vblank och är nu standard i
+`run-gauntdl-baseline.sh`. En ny `swap-pending`-trace loggar dessutom
+enqueue-värde, väntantal och tidigare ködjup.
+
+Vid samma f1300--f1325-körning får buffer 2 nu en hel host-frame mellan
+rotationerna och växer från 441 till 146285 icke-nollpixlar. Triple buffering
+är alltså verklig, inte i sig ett fel. Vid f1330 ger den korrigerade timingen:
+
+```text
+frameHash=0x11ecb97a
+front/back/count=1/2/3
+pending=0
+```
+
+De tre buffertarna innehåller tre olika sammanhängande delar av samma
+3D-scen: mörk arkitektur, ett perspektiviskt texturgolv och den blå arenan.
+Nästa gräns är inte att stänga av triple buffering, utan att följa
+`swap-pending`-kommandona och avgöra varför kompletta framekompositioner ännu
+är splittrade mellan buffertarna. Statusläsningar får inte åter börja utföra
+swaps.
+
+#### Pending-kön måste bevara Voodoo 2:s bit 9
+
+Den första `swap-pending`-tracen gav:
+
+```text
+packet=0x3dc211ec words=9 value=0x3ea466f9 vblankWait=124
+packet=0x3f948254 words=11 value=0x4014ccdf vblankWait=111
+```
+
+Den gamla kön sparade bara antalet väntande swaps. Vid vblank utförde den
+sedan `ExecuteSwapBuffers(0)`, vilket tappade originalkommandots bit 9.
+Dessutom var `dont swap` felaktigt villkorad av den alternativa
+MAME-command-FIFO-modellen trots att Gauntlets Voodoo 2 alltid implementerar
+biten.
+
+Pending-kön sparar nu varje originalkommando och warm-snapshotformatet är
+version 10. Voodoo 2-bit 9 respekteras oberoende av FIFO-experiment. Samma
+f1300--f1330-trace visar den avsedda skillnaden:
+
+```text
+0x3ea466f9: dont=1, front/back förblir 1/0
+0x4014ccdf: dont=0, front/back roterar 1/0 -> 2/0
+```
+
+Det tar bort den otillåtna extra rotationen. f1330-resultatet blir:
+
+```text
+frameHash=0x8d2177e6
+```
+
+Bilden är visuellt vitare och mindre komplett än den tidigare blå arenan.
+Det ska inte döljas: den blå kompositionen berodde delvis på den felaktiga
+swapen. Den nya checkpointen är reproducerbar och snapshoten rundtrippas med
+`ranFrames=0` och samma hash:
+
+```text
+artifacts/gauntlet-probe/gauntdl-voodoo2-dont-swap-f1330-20260724.png
+sha256=745fc5e4fc992084cc494d6e33810d99efb5ff739b7baa461a8066d651089e27
+
+artifacts/gauntlet-probe/gauntdl-voodoo2-dont-swap-f1330-20260724.warm
+sha256=a8ffb151f27224c2cc3b153024bb62192aaaa8fa21ab9a758652629b67f3065a
+```
+
+Nästa smala gräns är nu Type4-paketen `0x3dc211ec` och `0x3f948254`.
+Swapvärdena ser ut som flyttals-/rasterpayload, precis som de omedelbara
+värdena `0xffeeddcc` och `0x43b65566`. Kontrollera paketägarskap, mask och
+källa innan fler bufferändringar görs; de kan vara fellästa payloadord snarare
+än genuina swapkommandon.
