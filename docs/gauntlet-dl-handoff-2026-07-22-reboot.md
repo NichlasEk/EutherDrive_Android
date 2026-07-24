@@ -2386,3 +2386,58 @@ Nästa riktade trace bör jämföra en vit pixel med en synlig texturpixel i sam
 f1420-frame och fånga sista writer, `fbzColorPath`, alpha mode, depthresultat
 och båda TMU-resultaten. Börja från f1400-snapshoten ovan och samma FIRE
 3-puls; ST1 behöver inte återutredas.
+
+#### Det vita är utebliven TMU1-residens, inte vita polygoner
+
+Pixel-writer-profilen visar att de vita ytorna fortfarande ägs av den
+föregående helskärms-fastfillen:
+
+```text
+kind=fill source=fastfill color=0xFFFF
+pc=0x801027cc fbzMode=0x460
+```
+
+Polygonerna skriver alltså inte vitt. På nästa renderframe försöker 56
+texturerade trianglar rasterisera 9038 pixlar, men 8984 sluttexlar blir noll.
+TMU0 läser samtidigt varierande giltig NCC-data, medan TMU1 läser enbart noll:
+
+```text
+TMU0 base=0x000257B3 lod5 addr=0x1412xx raw=varierande
+TMU1 base=0x001C3104 lod2 addr=0x62Dxxx raw=0x0000
+combined=0x000000ff
+```
+
+Råminnet bekräftar att hela TMU1-området `0x600000..0x65ffff` är noll.
+MAME:s Vegas-konfiguration använder 4 MiB per TMU, så detta är inte ett
+två-MiB-wrapfel. `texWrites` står dessutom still på `2577260` genom
+f1400--f1420; den nya scenen förutsätter att sidorna redan är residenta.
+
+En strikt default-off diagnostik ersätter endast en svart TMU1-sample med
+neutralvit före den riktiga TMU0-multiplikationen:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_ZERO_AS_NEUTRAL_WHITE=1
+```
+
+Den är inte en hårdvarufix och ingår inte i adapter- eller probe-baseline.
+Den ger däremot ett tydligt oracle:
+
+```text
+f1421: zero 8984 -> 26
+f1420 helpass: zero 296786 -> 3304
+colored 48233 -> 228048
+frameHash=0xb67829a6
+```
+
+Nästan hela den riktiga borggården, trapporna, golvet, väggarna och objekten
+blir synliga:
+
+```text
+artifacts/gauntlet-probe/gauntdl-tmu1-neutral-oracle-f1420-20260724.png
+sha256=2f1f6e205684afd78c134c77a0558c16672daa5b3756bd89d61f7426a8d4f3f0
+```
+
+Nästa riktiga fix ska därför återställa de höga TMU1-sidorna före
+renderfasen. Jämför kallstartens Type5/QIO-historik mot den första referensen
+till basefamiljen `0x1c3104` och dess efterföljare. Promotera inte
+neutralvit-proben och ändra inte MAME:s 4 MiB-minnesmask.

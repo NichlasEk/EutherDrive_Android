@@ -34758,6 +34758,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TWO_TMU_COMBINE"));
     private readonly bool _experimentTmu1SampleTmu0Memory =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_SAMPLE_TMU0_MEMORY"));
+    private readonly bool _experimentTmu1ZeroAsNeutralWhite =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_ZERO_AS_NEUTRAL_WHITE"));
     private readonly bool _experimentSetupMameAuxDepth =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
@@ -45056,6 +45058,13 @@ sampledTexel:
                 ? GetTextureTargetLod(lod1, ReadTextureRegisterForTmu(1, RegTextureBaseAddr))
                 : ComputeMameTexturePixelLod(lodBase1_8p8, iterW1, x, y, mode1, lod1);
             local1 = SampleTextureMameFixedForTmu(1, iterS1, iterT1, iterW1, targetLod1);
+            if (_experimentTmu1ZeroAsNeutralWhite &&
+                local1.R == 0 &&
+                local1.G == 0 &&
+                local1.B == 0)
+            {
+                local1 = new TextureRgba(255, 255, 255, local1.A);
+            }
             if (captureTrace)
             {
                 address1 = _lastTextureSampleByteAddress;
