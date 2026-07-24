@@ -35607,27 +35607,39 @@ internal class VoodooBringupBackend : IVoodooBackend
                                 _experimentCommandFifoType3ProducerHeaderPcs.Any(
                                     candidate => (candidate & 0xffffffffUL) == (writePc & 0xffffffffUL));
         bool resyncHeader = type3Header && explicitHeaderPc;
-        bool body = normalized == _cmdFifoType3ProducerNextStorageIndex &&
-                    _cmdFifoType3ProducerBodyWordsRemaining > 0;
+        bool body = _cmdFifoType3ProducerBodyWordsRemaining > 0 &&
+                    IsCommandFifoStorageInCircularRange(
+                        normalized,
+                        _cmdFifoType3ProducerNextStorageIndex,
+                        _cmdFifoType3ProducerPacketEnd);
         if (resyncHeader)
         {
             _cmdFifoStorageType3Body[normalized] = false;
             _cmdFifoType3ProducerBodyWordsRemaining = GetFifoType3WordsNeeded(value) - 1;
+            _cmdFifoType3ProducerNextStorageIndex = CommandFifoStorageIndex(normalized + 1);
             _cmdFifoType3ProducerPacketEnd = CommandFifoStorageIndex(normalized + _cmdFifoType3ProducerBodyWordsRemaining);
         }
         else if (body)
         {
             _cmdFifoStorageType3Body[normalized] = true;
             _cmdFifoStorageType3PacketEnd[normalized] = _cmdFifoType3ProducerPacketEnd;
-            _cmdFifoType3ProducerBodyWordsRemaining--;
         }
         else
         {
             _cmdFifoStorageType3Body[normalized] = false;
             _cmdFifoType3ProducerBodyWordsRemaining = 0;
+            _cmdFifoType3ProducerNextStorageIndex = -1;
         }
+    }
 
-        _cmdFifoType3ProducerNextStorageIndex = CommandFifoStorageIndex(normalized + 1);
+    private static bool IsCommandFifoStorageInCircularRange(int index, int start, int end)
+    {
+        if (start < 0)
+            return false;
+
+        int distance = (index - start) & CmdFifoMask;
+        int span = (end - start) & CmdFifoMask;
+        return distance <= span;
     }
 
     private void TrackCommandFifoType1ProducerWord(int storageIndex, uint value)

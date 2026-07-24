@@ -2052,3 +2052,27 @@ Nästa spårning ska därför rikta register `0x44,0x45` över just
 f1390--f1420 och identifiera den första falska packet-headern på samma sätt
 som `0x07f3f9fc`; anta inte att den kvarvarande korruptionen bara är gammal
 framebufferdata.
+
+Spårningen identifierade falsk header `0x3ed569ec` vid packet
+`0x0298b374`. Ordet skrivs av vertexemittern vid `0x800bca50` och ligger i
+kroppen till det giltiga tre-vertex-paketet `0x0080a8cb`, vars header skrivs
+vid det redan kända ankaret `0x800bc91c`.
+
+Den kvarvarande Type3-trackern föll på att emittern skriver adresserna
+`...b354` och `...b350` i omvänd ordning. Trackern kräver därför inte längre
+strikt stigande store-adresser; alla ord inom den explicita headerns beräknade
+cirkulära body-intervall märks som body. Samma f1390--f1420-körning behåller
+nu:
+
+```text
+fbzMode=0x00000060
+lfbMode=0x0182a053
+drawPackets=282417
+textured covered/rejected=1005/230
+frameHash(buffer 1)=0x54e8c216
+```
+
+Buffer 1 visar nu betydligt mer riktig och förändrad borggårdsgeometri, men
+har fortfarande RGB-brus i otäckta ytor. Den rörliga renderkedjan fortsätter
+alltså framåt; nästa gräns är clear-/bakgrundstäckning eller ännu tidigare
+innehåll i buffer 1, inte längre register `0x44/0x45` på denna sträcka.
