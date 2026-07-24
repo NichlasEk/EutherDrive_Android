@@ -2076,3 +2076,65 @@ Buffer 1 visar nu betydligt mer riktig och förändrad borggårdsgeometri, men
 har fortfarande RGB-brus i otäckta ytor. Den rörliga renderkedjan fortsätter
 alltså framåt; nästa gräns är clear-/bakgrundstäckning eller ännu tidigare
 innehåll i buffer 1, inte längre register `0x44/0x45` på denna sträcka.
+
+#### Den sena buffer-1-korruptionen var inbakad i gamla snapshots
+
+En pixelvis differens av de äldre f1360/f1390/f1420-snapshotsen visade att
+buffer 1 till stor del behöll gammalt innehåll:
+
+```text
+f1360--f1390: 92.46% identiskt
+f1390--f1420: 77.27% identiskt
+f1360--f1420, nedersta 220 rader: 99.89% identiskt
+```
+
+Historiska snapshots avgränsade ursprunget ytterligare. Buffer 1 var helt
+svart genom f1220, men brusig vid f1245 och därefter byte-identisk genom
+f1265--f1306. Den gamla f1220--f1245-kedjan hade två fastfills och två swaps.
+
+När exakt samma f1220--f1245-sträcka kördes om med dagens Type3/Type4-body-
+ägarskap inträffade ingen fastfill eller swap och buffer 1 förblev helt
+svart. Den äldre brussidan skapades alltså av falska packet-headerer och ska
+inte användas som fortsatt oracle.
+
+En ny ren snapshotkedja byggdes:
+
+```text
+f1220 -> f1245 -> f1270 -> f1300 -> f1330 -> f1360 -> f1390
+```
+
+Genom hela kedjan:
+
+```text
+front/back=0/1
+buffer 1 nonzero=0
+swaps=7150
+fastfills=443 från f1270 och framåt
+```
+
+Buffer 0 utvecklas synligt mellan bilderna och visar en sammanhängande
+borggård utan RGB-brus. Vid f1390:
+
+```text
+frameHash=0x8d656cbc
+drawPackets=202416
+textured covered/rejected=736/218
+buffer 0 nz=307200
+buffer 1 nz=0
+```
+
+Ny fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gauntdl-clean-type3-ownership-f1390-20260724.png
+sha256=033e5cd5522213cd0b01db45d5e83529901b1642d9a0bc86a694b4d795cf2aa5
+
+artifacts/gauntlet-probe/gauntdl-clean-type3-ownership-f1390-20260724.warm
+sha256=e1bb7cb1a89e6cceb0cea5d843dd963a82df40a12734b89f1182d58f8b062e23
+```
+
+Kvarvarande synliga fel är nu några horisontella grå/svarta band och vita
+otäckta geometriytor, inte framebufferbrus. Fortsätt från den rena f1390-
+snapshoten och spåra bandens sista skrivare/clip-rektangel. Gå inte vidare
+från de äldre `type3-explicit-header-f1330` eller `/tmp/...type4...`-
+snapshotsen när slutlig bildkvalitet bedöms.
