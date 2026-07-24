@@ -2631,3 +2631,48 @@ Nästa smala gräns är nu source-root `0x80599fb4` och dess uploadsetup kring
 identifiera grenen eller ägarfältet som skulle schemalägga motsvarande TMU1-
 payload. Ändra inte descriptorbasen, Type5-writepekaren, bankmasken eller
 rasteriseringen för denna familj.
+
+#### Companion-emitter finns, men levelE1-recordet gör bara TMU0-runnen
+
+En source-filtrerad producenttrace binder primäruppladdningen till
+texture-recordet vid `0x804aaee8` (`objects.rom +0x18e60`):
+
+```text
+record      0c010601 00800080 00147524 000434a6
+            0000010f 0003d604 00000000 0022a530
+source-root 80599fb4
+tbase       000434a6
+destination 0022a530
+```
+
+Vid `0x801096fc` anropar record-emitteraren lågnivåuppladdaren med
+`a0=0, a1=0x22a530, a2=1, a3=1` och source `0x80599fb4` på stacken.
+Den resulterande Type5-runnen är entydig:
+
+```text
+pc=800fe5d4
+cmd=c0000105 count=32 packets=128
+targetBytes=00020000 targetWord=008000
+source=80599fb4
+```
+
+Det blir bara en TMU0-run. Inget senare target med TMU1-biten satt använder
+samma source-root.
+
+En verklig TMU1-kontroll i samma f1000--f1030-våg visar samtidigt att
+emitteraren kan göra det förväntade dubbelbanksarbetet. Source-root
+`0x80591e90` används först med TMU0-target `0x000a0000` och därefter med
+TMU1-target `0x00260000`:
+
+```text
+source=80591e90 targetBytes=000a0000 targetWord=028000
+source=80591e90 targetBytes=00260000 targetWord=098000
+```
+
+Felet ligger alltså inte i att lågnivåemitteraren saknar TMU1-stöd.
+Den återstående beslutspunkten ligger i record-/flagghanteringen före
+`0x801096fc`, särskilt den sekundära selectorvägen
+`0x800a776c..0x800a77f4`. Jämför `0x804aaee8` mot ett record som faktiskt
+ger båda runnarna och följ testen av `byte[3]`, bit 0 och bit 1. Det är nu den
+minsta hårdvarunära fixytan; syntetisera inte en andra Type5-run innan
+flaggbetydelsen är verifierad.
