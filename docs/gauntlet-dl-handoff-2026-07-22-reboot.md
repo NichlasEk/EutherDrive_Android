@@ -1896,3 +1896,31 @@ sha256=33a283878c5104c87e1aac7b56cb7d2e54694613f18b3849c72617a129b6994c
 Nästa gräns är nu de vita/oklara ytorna i höger- och nederkant. FIFO-paketens
 komposition är tillräckligt stabil för att gå vidare till rasterklippning,
 clear-rektangel och frame-buffer-ursprung utan fler swapheuristiker.
+
+#### Voodoo medium-res är 512x384, inte 640x480
+
+Den stora vita nederkanten började exakt på rad 384. MAME:s Voodoo-modell
+startar med `m_width=512` och `m_height=384`, och Gauntlets DIP-tabell anger
+`Medium Res 512x384`. Vegas-driverns 640x480 är bara en startstorlek innan
+Voodoo programmerar om skärmtimingen.
+
+Vår warm snapshot har däremot `videoDimensions=0`, så exporten fortsatte att
+kopiera 640x480 råa framebufferpixlar. Baseline-fixen
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_MEDIUM_RES_OUTPUT=1` läser nu den verkliga
+512x384-ytan och skalar den till appens 640x480-mål. Rasterdata och snapshot
+ändras inte; endast presentationen korrigeras.
+
+Snapshot-rundtrippen ger:
+
+```text
+ranFrames=0
+frameHash=0x04ea0636
+framebuffer=640x480 nonBlack=307200 colored=283160
+
+artifacts/gauntlet-probe/gauntdl-medium-res-output-f1330-20260724.png
+sha256=e42997f47982c929544d24d5e22f25e8ddba192c3b64cd26090e07965a5317ba
+```
+
+Den falska vita neder- och högerkanten är borta. Kvarvarande små vita hål
+ligger inne i scenens geometri; nästa gräns är därför saknade
+polygoner/texturprov eller depth/clip, inte outputdimensionerna.

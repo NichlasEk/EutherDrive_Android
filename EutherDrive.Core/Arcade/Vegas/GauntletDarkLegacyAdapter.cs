@@ -34355,6 +34355,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_CMD_FIFO_MODEL"));
+    private readonly bool _fixMameMediumResolutionOutput =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_MEDIUM_RES_OUTPUT"));
     private readonly bool _fixType5Space0CommandFifoRam =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_SPACE0_CMD_FIFO_RAM"));
     private readonly bool _experimentMameCommandFifoBulkLogicalWindow =
@@ -37892,11 +37894,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort[] front = _colorBuffers[renderBufferIndex];
         for (int y = 0; y < copyHeight; y++)
         {
-            int src = y * 1024;
+            int sourceY = _fixMameMediumResolutionOutput ? y * 384 / copyHeight : y;
+            int src = sourceY * 1024;
             int dst = y * target.Stride;
             for (int x = 0; x < copyWidth; x++)
             {
-                ushort rgb = front[(src + x) & (LfbPixels - 1)];
+                int sourceX = _fixMameMediumResolutionOutput ? x * 512 / copyWidth : x;
+                ushort rgb = front[(src + sourceX) & (LfbPixels - 1)];
                 uint bgra = Rgb565ToBgra(rgb);
                 target.Buffer[dst + 0] = (byte)(bgra & 0xff);
                 target.Buffer[dst + 1] = (byte)((bgra >> 8) & 0xff);
