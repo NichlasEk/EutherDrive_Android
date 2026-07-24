@@ -1633,15 +1633,46 @@ och kopieras till:
 0x804d8918: 00200104 42B40000
 ```
 
-Källordets egen övergång fångas vid `writerPc=0x800f69b0`,
-`nextPc=0x800f69b4`, med `ra=0x800f6938`. Instruktionen vid
-`0x800f69b0` är sista `sb` i en bytevis recordbyggare. Därmed är kedjan
-verifierad som gästbyggd state följd av en gästblockkopia; TMU1-basen uppstår
-inte genom fel bankmappning i Voodoo-koden.
+Källordets övergångsvakt rapporterade först `writerPc=0x800f69b0`, men en
+PC-filtrerad CPU-trace korrigerar den tolkningen. Instruktionen där är ett
+`sb` till Voodoo-MMIO-adressen `0xa40001fX`, inte till käll-RAM. PC-värdet är
+bara den senast exekverade gästinstruktionen när en asynkron enhetskopia sker.
+
+Den riktiga producenten syns med den centrala minnestracen:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_MEM=1
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_WRITES_ONLY=1
+EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=ffffffff8029f8f8:0xc
+```
+
+Träffen är `devicecopy`: IDE bus-master DMA återanvänder bufferten
+`0x8029e550` och skriver först `0x1ab0` byte och sedan `0x550` byte. Det
+relevanta blocket är:
+
+```text
+IDE read sectors lba=314923 count=16
+DMA first PRD: destination=0x8029e550 count=0x1ab0
+buffer offset=0x13a8 -> disk byte offset=0x099c69a8
+```
+
+Rådisken innehåller exakt samma ord vid `0x099c69a8`:
+
+```text
+001B1EC4 8C241ACF 00200104 42B40000
+```
+
+TMU1-state är alltså förbyggd data i spelassetens diskstream, som DMA-kopieras
+till en temporär buffert och därefter in i renderlistan. Den uppstår varken i
+en RAM-recordbyggare eller genom fel bankmappning i Voodoo-koden. Att samma
+DMA-buffert skrivs över många gånger förklarar också varför ett enstaka
+värdeövergångs-PC var missvisande.
 
 `EUTHERDRIVE_GAUNTDL_TRACE_MAIN_RAM_WRITES` täcker nu också
 `TryFastPathKnownRuntimeAlignedQwordCopy` och loggar
 `kind=fast-aligned-qword-copy` med exakt källa, destination, gammalt och nytt
-64-bitarsvärde. Nästa smala gräns är att spåra indata till recordbyggaren runt
-`0x800f6990..0x800f69b0` och avgöra vad baserna
-`1b1e04/44/84/c4` semantiskt representerar innan rasterizerbeteendet ändras.
+64-bitarsvärde. Nästa smala gräns är nu kallstartens riktiga Type5-historik
+före f600: hitta om diskassetets textur för basfamiljen
+`1b1e04/44/84/c4` laddas till TMU1 och tappas i paketavkodningen, eller om
+den aldrig skickas av den nuvarande gäst-/fastpathlinjen. Rasterizer-,
+LOD- och bankmappningen ska inte ändras före den kontrollen.
