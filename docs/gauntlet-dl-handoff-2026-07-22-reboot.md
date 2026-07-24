@@ -1540,3 +1540,53 @@ Den default-neutrala single-TMU-regressionen från f1306 till f1315 är fortsatt
 ```text
 frameHash=0xd89cf2a9
 ```
+
+#### Korrigering: TMU0-spegeln är en annan textur, inte en felbankad TMU1-upload
+
+En snapshotbisekt och fokuserad Type5-trace korrigerar aliasprobens tolkning.
+Fönstret är tomt i båda bankerna vid f600, f740 och f770. Mellan f770 och
+f900 fylls endast TMU0:s lokala fönster. De 85 Type5-paketen säger
+uttryckligen `tmu=0` och använder:
+
+```text
+tmode=00000900 tlod=00000804 tbase=0002F44C
+target=0x00a980..0x01139f
+physical=0x67d58..0x68d97
+producer PC=0x800fe7a0..0x800fe7cc
+```
+
+Detta är alltså en legitim TMU0-textur som råkar överlappa samma lokala
+RAM-offset. Den är inte innehållet som TMU1-base `0x1b1ec4` skulle ha pekat
+på. `TMU1_SAMPLE_TMU0_MEMORY` visar därför mer färg av en slump och får
+fortsatt inte användas som fix.
+
+Det tomma TMU1-valet finns däremot i ett verkligt gästrecord. Vid f1306 ligger
+den exakta tripeln i recordet kring `0x804b9430`:
+
+```text
+base=001B1EC4 mode=8C241ACF lod=00200104
+```
+
+Recordserien innehåller baserna `0x1b1e04`, `0x1b1e44`, `0x1b1e84` och
+`0x1b1ec4`, alltså steg om `0x40` registerenheter eller 512 byte. MAME:s
+LOD-formel verifierar ändå den aktiva samplingens extra `0x10000` byte:
+`lod_min=lod_max=4` väljer LOD1, format 10 är RGB565 och LOD0-storleken är
+128x256x2 byte. Både råbasen `0x58f620` och LOD1-basen `0x59f620` är tomma,
+så detta är inte ett felaktigt LOD-offsetval.
+
+Hela 0x300-byteblocket kring recordet är byteidentiskt i följande kedja:
+
+```text
+f770:  0x804d87e0
+f975:  0x804d87e0
+f980+: 0x804b9300
+```
+
+Vid f980 har listan endast kopierats till en ny adress; materialvalet är
+oförändrat. Blocket finns inte vid f740 men är komplett vid f770. Vanlig
+frameprogression och en ny Turbo-puls från den sparade f740-filen reproducerar
+inte den äldre extra-CPU/fastpathgren som skapade f770-checkpointen. Nästa
+smala gräns är därför att återskapa just den ursprungliga f740--f770
+extra-step-sekvensen eller spåra recordbyggaren när den skriver
+`0x804d87e0..0x804d8ae0`. Ändra inte TMU-bankmappningen eller lägg till en
+zero-texel-fallback utifrån aliasbilden.
