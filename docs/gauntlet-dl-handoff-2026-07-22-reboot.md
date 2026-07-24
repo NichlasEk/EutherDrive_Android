@@ -1487,3 +1487,56 @@ Ett diagnostiskt försök att dränera pending swap vid varje host-`RenderFrame`
 testades och togs bort. Det roterade enligt MAME till den tomma tredje bufferten
 när `fbiInit2` hade gått över till triple buffering och var därför ingen giltig
 exportfix.
+
+### 2026-07-24: exakt TMU1-sampling träffar ett oskrivet kallt fönster
+
+En fokuserad samplertrace följer nu båda TMU:erna efter LOD-, koordinat- och
+bankberäkning:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_LIMIT=64
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_MIN_FRAME=0
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_TMU0_BASE=0x29504
+```
+
+För den riktiga scenens paket `0x00c2a10b` är registerparen:
+
+```text
+TMU0 mode/lod/base=8C22410F/00002604/00029504
+TMU1 mode/lod/base=8C241ACF/00200104/001B1EC4
+```
+
+De separata `S0/T0`- och `S1/T1`-iteratorerna ger giltiga men mycket olika
+koordinater. En representativ pixel vid `(504,176)` läser:
+
+```text
+TMU0 lod3 addr=0x15faa0 raw=0x001e rgba=10110bff
+TMU1 lod1 addr=0x5a0bcc raw=0x0000 rgba=000000ff
+```
+
+Alla 32 fokuserade samplingar läser varierande, icke-noll data från TMU0 men
+noll från TMU1 kring `0x5a0bxx`. En separat råkontroll av TMU1-ytans
+64x128-fönster visar `8192/8192` nollord och ett enda unikt värde. Samma
+lokala fönster i TMU0 har `8192/8192` icke-nollord och 419 unika värden.
+
+Den gamla default-off-kausalproben
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_SAMPLE_TMU0_MEMORY=1` flyttar
+exempeladressen till `0x1a0bcc`, där `raw=0x3b80`. Den minskar två-TMU-körningens
+nollsamplingar från 379592 till 233093 och ändrar f1315 från `0xeeebf255` till
+`0xf6ece2aa`, men ger fortfarande felaktigt/repetitivt material. Den ska därför
+inte promoteras.
+
+Type5-uppladdningstracen visar inga skrivningar till TMU1:s fysiska
+wordintervall `0x168000..0x16ffff` under vare sig f900--f1080 eller
+f1080--f1160. Inte heller det lokala TMU0-spegelintervallet
+`0x68000..0x6ffff` skrivs efter f900. Ytan är alltså äldre än
+world-/nivåövergången; nästa orakel måste tas ur den genuint kalla
+tvåbankslinjen före f600. Återöppna inte S/T-dekodern, LOD-valet eller
+world-loadern för just detta nollfönster.
+
+Den default-neutrala single-TMU-regressionen från f1306 till f1315 är fortsatt:
+
+```text
+frameHash=0xd89cf2a9
+```

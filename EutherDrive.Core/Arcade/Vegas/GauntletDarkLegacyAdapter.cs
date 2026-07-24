@@ -34006,6 +34006,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_RANGE_MAX"));
     private readonly bool _traceTextureSampleFifoOwners =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_FIFO_OWNERS"));
+    private readonly bool _traceTwoTmuSamples =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES"));
+    private readonly int _traceTwoTmuSamplesLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_LIMIT"), 64);
+    private readonly int _traceTwoTmuSamplesMinFrame =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_MIN_FRAME"), 0);
+    private readonly ulong? _traceTwoTmuSamplesTmu0Base =
+        ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_TMU0_BASE"));
     private readonly bool _traceTexturedTriangleSampleSummary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
     private readonly bool _traceTexturedTriangleSampleWriters =
@@ -34827,6 +34835,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _type0PacketTraceCount;
     private int _type3PacketTraceCount;
     private int _type3NonFiniteTextureTraceCount;
+    private int _twoTmuSampleTraceCount;
     private int _type5PayloadTraceCount;
     private int _type5PayloadFocusedZeroTargetTraceCount;
     private int _type5PayloadFocusedTargetTraceCount;
@@ -44795,27 +44804,124 @@ sampledTexel:
         int y)
     {
         TextureRgba combined = default;
+        bool captureTrace = _traceTwoTmuSamples &&
+            _renderFrame >= _traceTwoTmuSamplesMinFrame &&
+            _twoTmuSampleTraceCount < _traceTwoTmuSamplesLimit;
+        int targetLod1 = -1;
+        uint address1 = 0;
+        ushort raw1 = 0;
+        TextureRgba local1 = default;
+        TextureSampleWriterKey writer1 = default;
         if (_tmuRegisterValid[1][RegTextureMode] && _tmuRegisterValid[1][RegTextureLod])
         {
             uint mode1 = ReadTextureRegisterForTmu(1, RegTextureMode);
             uint lod1 = ReadTextureRegisterForTmu(1, RegTextureLod);
-            int targetLod1 = lodBase1_8p8 == int.MinValue
+            targetLod1 = lodBase1_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod1, ReadTextureRegisterForTmu(1, RegTextureBaseAddr))
                 : ComputeMameTexturePixelLod(lodBase1_8p8, iterW1, x, y, mode1, lod1);
-            TextureRgba local1 = SampleTextureMameFixedForTmu(1, iterS1, iterT1, iterW1, targetLod1);
+            local1 = SampleTextureMameFixedForTmu(1, iterS1, iterT1, iterW1, targetLod1);
+            if (captureTrace)
+            {
+                address1 = _lastTextureSampleByteAddress;
+                raw1 = (ushort)_lastTextureSampleRaw;
+                writer1 = GetTextureSampleWriterKey(address1);
+            }
             combined = CombineTextureMame(mode1, local1, combined, targetLod1 << 8);
         }
+        int targetLod0 = -1;
+        uint address0 = 0;
+        ushort raw0 = 0;
+        TextureRgba local0 = default;
+        TextureSampleWriterKey writer0 = default;
         if (_tmuRegisterValid[0][RegTextureMode] && _tmuRegisterValid[0][RegTextureLod])
         {
             uint mode0 = ReadTextureRegisterForTmu(0, RegTextureMode);
             uint lod0 = ReadTextureRegisterForTmu(0, RegTextureLod);
-            int targetLod0 = lodBase0_8p8 == int.MinValue
+            targetLod0 = lodBase0_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod0, ReadTextureRegisterForTmu(0, RegTextureBaseAddr))
                 : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, mode0, lod0);
-            TextureRgba local0 = SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, targetLod0);
+            local0 = SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, targetLod0);
+            if (captureTrace)
+            {
+                address0 = _lastTextureSampleByteAddress;
+                raw0 = (ushort)_lastTextureSampleRaw;
+                writer0 = GetTextureSampleWriterKey(address0);
+            }
             combined = CombineTextureMame(mode0, local0, combined, targetLod0 << 8);
         }
+        if (captureTrace)
+        {
+            TraceTwoTmuSample(
+                x,
+                y,
+                iterS0,
+                iterT0,
+                iterW0,
+                targetLod0,
+                address0,
+                raw0,
+                local0,
+                writer0,
+                iterS1,
+                iterT1,
+                iterW1,
+                targetLod1,
+                address1,
+                raw1,
+                local1,
+                writer1,
+                combined);
+        }
         return combined;
+    }
+
+    private void TraceTwoTmuSample(
+        int x,
+        int y,
+        long iterS0,
+        long iterT0,
+        long iterW0,
+        int targetLod0,
+        uint address0,
+        ushort raw0,
+        TextureRgba local0,
+        TextureSampleWriterKey writer0,
+        long iterS1,
+        long iterT1,
+        long iterW1,
+        int targetLod1,
+        uint address1,
+        ushort raw1,
+        TextureRgba local1,
+        TextureSampleWriterKey writer1,
+        TextureRgba combined)
+    {
+        if (!_traceTwoTmuSamples ||
+            _renderFrame < _traceTwoTmuSamplesMinFrame ||
+            _twoTmuSampleTraceCount >= _traceTwoTmuSamplesLimit)
+        {
+            return;
+        }
+
+        uint base0 = ReadTextureRegisterForTmu(0, RegTextureBaseAddr);
+        if (_traceTwoTmuSamplesTmu0Base.HasValue &&
+            base0 != (uint)_traceTwoTmuSamplesTmu0Base.Value)
+        {
+            return;
+        }
+
+        uint mode0 = ReadTextureRegisterForTmu(0, RegTextureMode);
+        uint lod0 = ReadTextureRegisterForTmu(0, RegTextureLod);
+        uint mode1 = ReadTextureRegisterForTmu(1, RegTextureMode);
+        uint lod1 = ReadTextureRegisterForTmu(1, RegTextureLod);
+        uint base1 = ReadTextureRegisterForTmu(1, RegTextureBaseAddr);
+        _twoTmuSampleTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TWO-TMU-SAMPLE] n={_twoTmuSampleTraceCount} frame={_renderFrame} xy={x},{y} " +
+            $"tmu0={mode0:X8}/{lod0:X8}/{base0:X8}:lod{targetLod0}:iter{iterS0}/{iterT0}/{iterW0}:addr0x{address0:X6}:raw0x{raw0:X4}:rgba{local0.R:X2}{local0.G:X2}{local0.B:X2}{local0.A:X2} " +
+            $"writer0={FormatTextureSampleWriterKey(writer0)} " +
+            $"tmu1={mode1:X8}/{lod1:X8}/{base1:X8}:lod{targetLod1}:iter{iterS1}/{iterT1}/{iterW1}:addr0x{address1:X6}:raw0x{raw1:X4}:rgba{local1.R:X2}{local1.G:X2}{local1.B:X2}{local1.A:X2} " +
+            $"writer1={FormatTextureSampleWriterKey(writer1)} combined={combined.R:X2}{combined.G:X2}{combined.B:X2}{combined.A:X2}");
     }
 
     private static int Coordinate24_8ToTexelIndex(int value24_8, int size, int lod, bool clamp)
