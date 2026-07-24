@@ -1845,3 +1845,54 @@ Swapvärdena ser ut som flyttals-/rasterpayload, precis som de omedelbara
 värdena `0xffeeddcc` och `0x43b65566`. Kontrollera paketägarskap, mask och
 källa innan fler bufferändringar görs; de kan vara fellästa payloadord snarare
 än genuina swapkommandon.
+
+#### Type4-träffarna var Type3-vertexpayload
+
+Den riktade packet-ownership-tracen bekräftade att de misstänkta
+Type4-kommandona skrivs av Gauntlets vertexemitter. Exempelvis skrivs
+`0x3f2bd1ec` från `swc1` vid `0x800bcaa0`, inte av en registerpacket-rutin.
+Ett 32-ords bakåtfönster gav den exakta gränsen:
+
+```text
+0x0080a853  Type3 continue, 1 vertex, 7 ord totalt
+0x4386961b  payload 1
+0x43bbf012  payload 2
+0x42cc0000  payload 3
+0x3b55861e  payload 4
+0x3f2bd1ec  payload 5; tidigare felläst som Type4
+0x00000000  payload 6
+```
+
+MAME:s Voodoo 2-formel ger också exakt sex payloadord för `0x0080a853`.
+Paketlängden var alltså rätt; den separata producenttrackern hade tappat
+synkronisering och lät ett flyttal starta ett nytt packet.
+
+Gauntlets två verifierade heltals-store-PC:n, `0x800bc8ec` och `0x800bc91c`,
+är nu explicita Type3-headerankare. Float-store-PC:n får fortsätta en aktiv
+body men inte återförankra den. Baseline aktiverar därefter
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER`
+och hoppar över resten av en känd Type3-body om read-pekaren hamnar mitt i
+den. Vid f1300--f1330 dekodas inga av de fyra kända falska Type4-värdena:
+
+```text
+0x3dc211ec
+0x3f948254
+0x3f2bd1ec
+0x07f3f9fc
+```
+
+Resultatet är en sammanhängande perspektivisk arena med golv, bro, pelare och
+port:
+
+```text
+frameHash=0x7702569b
+framebuffer=640x480 nonBlack=307200 colored=181941
+artifacts/gauntlet-probe/gauntdl-type3-explicit-header-f1330-20260724.png
+sha256=98924ea7aa22fc6928813b16ab996c3fbf7dd3c2eeaf764ef8bb37832ecb92d5
+artifacts/gauntlet-probe/gauntdl-type3-explicit-header-f1330-20260724.warm
+sha256=33a283878c5104c87e1aac7b56cb7d2e54694613f18b3849c72617a129b6994c
+```
+
+Nästa gräns är nu de vita/oklara ytorna i höger- och nederkant. FIFO-paketens
+komposition är tillräckligt stabil för att gå vidare till rasterklippning,
+clear-rektangel och frame-buffer-ursprung utan fler swapheuristiker.
