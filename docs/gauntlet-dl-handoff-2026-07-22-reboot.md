@@ -2778,3 +2778,67 @@ TMU0-innehållet är inte materialets riktiga TMU1-payload. Nästa trace ska
 identifiera source-recordet som hör till Type4-materialkommandot
 `0x0082a10b` (`target=0x421`, chipmask TMU1) i stället för att återanvända
 TMU0-recordet.
+
+#### Materialkommandot är nu korrekt avkodat och den verkliga TMU1-uppladdningen saknas
+
+Den sista raden ovan innehöll en viktig feltolkning. `0x0082a10b` är inte
+självt ett Voodoo Type4-paket: de tre låga bitarna är `3`, inte `4`.
+Det är spelmotorns interna material-/drawopcode i `levelE1/objects.rom`.
+Renderern vid `0x800c6c78..0x800c6c84` översätter posten till det verkliga
+fyra ord långa Voodoo-paketet:
+
+```text
+header  0005a604
+mode    8c241acf
+lod     00300208
+base    001c3104
+```
+
+`0x0005a604` avkodas enligt MAME som Type4, registerbas `0x4c0`, mask
+`0x000b` och chipmask `4` (TMU1). Registerbankrutningen i adaptern är alltså
+korrekt. Samma aktiva draw har omedelbart före paketet följande TMU0-state:
+
+```text
+TMU0 mode/lod/base = 8c22410f / 00002604 / 000257b3
+TMU1 mode/lod/base = 8c241acf / 00300208 / 001c3104
+```
+
+Den tidigare kopian av TMU0-recordet `0x804aaee8`, lokalt
+`0x22a530..0x22fa7f`, var därför inte bara fel payload utan också fel
+TMU0-material. Den riktiga TMU0-halvan är `base=0x000257b3`. Dess Type5-
+uppladdning finns i f940--f1030-spåret och kommer från source-root
+`0x805b40ec`; den ger varierande NCC-texlar vid scenens samplingar.
+
+En ny exakt kontroll körde från den rena f940-snapshoten till f1422:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCES=1
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE5_TEXTURE_UPLOAD_SEQUENCE_TBASE=0x001c3104
+
+ranFrames=482
+frameCounter=1422
+Type5 texture sequences med tbase=0x001c3104: 0
+frameHash=0x2378bfe0
+```
+
+Det stämmer med den tidigare råminneskontrollen: TMU1-samplingarna runt
+fysisk `0x62dxxx` är noll och har ingen writer, medan TMU0-samplingarna runt
+`0x1412xx` är varierande och icke-noll. Den saknade bilden är därmed inte
+orsakad av bildvändning, Type4-avkodning, registerbank, texture-writepekare,
+sampler eller rasterisering. Gästens statiska material publiceras korrekt,
+men dess TMU1-payload har aldrig materialiserats i texturminnet.
+
+Caller-/resursspåret avför dessutom de tomma jobben som en dold companion-
+lista. Funktionen vid `0x800abd64..0x800abe10` hämtar recordlistan från
+`resource + 0x68 + tableIndex*0x8c` och count från `resource + 0x64`.
+De count=0-poster som delar source `0x805611e8` är samma redan kända
+malformade/återanvända levelE-asset som
+`bgloadmodel-reject-implausible-descriptor-length` avvisar. Nästa giltiga
+tabell publicerar 26 record och den efterföljande 0x220 record; ingen av de
+tomma aliasposterna är en separat TMU1-tabell.
+
+Nästa smala gräns är därför source-recordet som borde skriva TMU1:s lokala
+`0x22dxxx`-område. Bind den verkliga TMU0-recordfamiljen för
+`base=0x000257b3`/source-root `0x805b40ec` tillbaka till sin resource- och
+QIO-proveniens, och jämför den med den saknade primära recordfamiljen.
+Behåll neutralvit och alla TMU-kopior default-off; de är endast oracles.
