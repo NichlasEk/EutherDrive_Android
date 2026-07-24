@@ -43443,7 +43443,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                                 iterW1,
                                 triangleLodBase1_8p8,
                                 x,
-                                y);
+                                y,
+                                bufferIndex);
                             texel = combined.Rgb565;
                             textureAlpha = combined.A;
                         }
@@ -44815,7 +44816,8 @@ sampledTexel:
         long iterW1,
         int lodBase1_8p8,
         int x,
-        int y)
+        int y,
+        int bufferIndex)
     {
         TextureRgba combined = default;
         bool captureTrace = _traceTwoTmuSamples &&
@@ -44884,7 +44886,8 @@ sampledTexel:
                 raw1,
                 local1,
                 writer1,
-                combined);
+                combined,
+                bufferIndex);
         }
         return combined;
     }
@@ -44908,7 +44911,8 @@ sampledTexel:
         ushort raw1,
         TextureRgba local1,
         TextureSampleWriterKey writer1,
-        TextureRgba combined)
+        TextureRgba combined,
+        int bufferIndex)
     {
         if (!_traceTwoTmuSamples ||
             _renderFrame < _traceTwoTmuSamplesMinFrame ||
@@ -44929,9 +44933,12 @@ sampledTexel:
         uint mode1 = ReadTextureRegisterForTmu(1, RegTextureMode);
         uint lod1 = ReadTextureRegisterForTmu(1, RegTextureLod);
         uint base1 = ReadTextureRegisterForTmu(1, RegTextureBaseAddr);
+        uint fbzMode = _registers[RegFbzMode];
+        uint fbzColorPath = _registers[RegFbzColorPath];
         _twoTmuSampleTraceCount++;
         Console.WriteLine(
-            $"[GAUNTDL:VOODOO-TWO-TMU-SAMPLE] n={_twoTmuSampleTraceCount} frame={_renderFrame} xy={x},{y} " +
+            $"[GAUNTDL:VOODOO-TWO-TMU-SAMPLE] n={_twoTmuSampleTraceCount} frame={_renderFrame} buf={bufferIndex} xy={x},{y} " +
+            $"fbz=0x{fbzMode:X8} colorPath=0x{fbzColorPath:X8} " +
             $"tmu0={mode0:X8}/{lod0:X8}/{base0:X8}:lod{targetLod0}:iter{iterS0}/{iterT0}/{iterW0}:addr0x{address0:X6}:raw0x{raw0:X4}:rgba{local0.R:X2}{local0.G:X2}{local0.B:X2}{local0.A:X2} " +
             $"writer0={FormatTextureSampleWriterKey(writer0)} " +
             $"tmu1={mode1:X8}/{lod1:X8}/{base1:X8}:lod{targetLod1}:iter{iterS1}/{iterT1}/{iterW1}:addr0x{address1:X6}:raw0x{raw1:X4}:rgba{local1.R:X2}{local1.G:X2}{local1.B:X2}{local1.A:X2} " +
@@ -48088,13 +48095,16 @@ sampledTexel:
         int previousFront = _frontBufferIndex;
         int previousBack = _backBufferIndex;
         bool dontSwap = _fixMameCommandFifoModel && ((command >> 9) & 1u) != 0;
-        bool clearBackBuffer = ((command >> 6) & 1u) != 0;
+        // swapbufferCMD bits 1-8 are the vertical-retrace wait count. They do
+        // not request a back-buffer clear; clearing here destroyed the frame
+        // that had just rotated from front to back.
+        int vblankSwap = (int)((command >> 1) & 0xffu);
         TraceFastFillSwapOrder(
-            clearBackBuffer ? "swap-clear" : "swap",
+            "swap",
             RegSwapbufferCommand,
             command,
-            $"preFront={previousFront} preBack={previousBack} dont={(dontSwap ? 1 : 0)} clear={(clearBackBuffer ? 1 : 0)}");
-        CountSwapPc(command, dontSwap, clearBackBuffer);
+            $"preFront={previousFront} preBack={previousBack} dont={(dontSwap ? 1 : 0)} vblankWait={vblankSwap}");
+        CountSwapPc(command, dontSwap, clearBackBuffer: false);
         if (dontSwap)
         {
             _swapDontSwapCount++;
@@ -48114,19 +48124,11 @@ sampledTexel:
             }
         }
 
-        if (clearBackBuffer)
-        {
-            _swapClearBackBufferCount++;
-            TrackPixelLastWriterRect(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, GetPixelLastWriterId("fill", "swapclear", 0));
-            SetPendingClear(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
-            CacheFastFill(_backBufferIndex, 0, LfbRowPixels, 0, LfbRows, 0);
-        }
-
         TraceFastFillSwapOrder(
             "swap-result",
             RegSwapbufferCommand,
             command,
-            $"preFront={previousFront} preBack={previousBack} dont={(dontSwap ? 1 : 0)} clear={(clearBackBuffer ? 1 : 0)} clearTarget={_backBufferIndex}");
+            $"preFront={previousFront} preBack={previousBack} dont={(dontSwap ? 1 : 0)} vblankWait={vblankSwap}");
     }
 
     private void SetPendingClear(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)

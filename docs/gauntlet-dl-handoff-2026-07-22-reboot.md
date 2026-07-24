@@ -1676,3 +1676,81 @@ före f600: hitta om diskassetets textur för basfamiljen
 `1b1e04/44/84/c4` laddas till TMU1 och tappas i paketavkodningen, eller om
 den aldrig skickas av den nuvarande gäst-/fastpathlinjen. Rasterizer-,
 LOD- och bankmappningen ska inte ändras före den kontrollen.
+
+#### Komplett Type5-historik och MAME:s swapsemantik blottar riktig spelgeometri
+
+Den historiska f740--f770-körningen loggades därefter utan den tidigare
+2000-paketsgränsen. Den innehåller totalt 8386 Type5-textursekvenser:
+
+```text
+TMU0: 6051 sekvenser, physical word 0x03e46e..0x05d349, 40 tbase-värden
+TMU1: 2335 sekvenser, physical word 0x130dec..0x143aab, 30 tbase-värden
+```
+
+Det finns noll skrivningar i TMU1:s fysiska wordfönster
+`0x160000..0x16ffff`, inklusive målområdet kring `0x167d88`. Den aktiva
+LOD1-samplingen vid byteadressen omkring `0x59f620` kan alltså inte ha fått
+sin data under den historiska f740--f770-grenen. Samtidigt visar MAME:s
+texture equation-dekod att TMU1-läget `0x8C241ACF` producerar sin lokala
+RGB565-texel och att TMU0-läget `0x8C22410F` multiplicerar med resultatet
+nedströms. TMU1 är därför verkligt aktiv; nollan är inte ett pass-throughläge.
+
+En tillfällig neutral-vit substitution för endast TMU1-base `0x1b1ec4`
+träffade de exakta samplingarna men gav samma f1315-hash och byteidentisk
+bild som baslinjen:
+
+```text
+frameHash=0x128bbd84
+```
+
+Den togs bort. Den utökade samplingen förklarade varför försöket inte syntes:
+
+```text
+frame=1325 buf=0 xy=504,176
+fbzMode=0x00000460 fbzColorPath=0x0C60743A
+TMU0 addr=0x15faa0 raw=0x001e
+TMU1 addr=0x59f69e raw=0x0000
+```
+
+`fbzMode=0x460` aktiverar både RGB- och auxskrivning och väljer frontbuffer.
+Drawen skrev alltså verkligen färg till buffer 0. Tre renderframes senare
+kom denna swap:
+
+```text
+swapbufferCMD=0xFFEEDDCC
+pre front=0 back=1
+post front=1 back=0
+```
+
+Den lokala implementationen tolkade bit 6 som `clearBackBuffer` och rensade
+därmed buffer 0 direkt efter rotationen. MAME visar att
+`swapbufferCMD`-bitarna 1--8 i stället är vblank-väntantal; kommandot har
+ingen clear-back-semantik. Den felaktiga rensningen är nu borttagen.
+
+Vid f1315 visas fortfarande buffer 1 och resultatet är därför oförändrat.
+Efter nästa swapgräns vid f1330 ändras däremot resultatet reproducerbart:
+
+```text
+före: frameHash=0x128bbd84
+efter: frameHash=0xea6e797a
+```
+
+Den nya bilden visar en sammanhängande riktig 3D-arena med golv, väggar,
+scenobjekt och pelare över nästan hela 640x480-ytan. Texturmaterialet är ännu
+kraftigt korrupt, men detta är första gången den bevarade scenen roterar fram
+via Voodoos riktiga bufferlivscykel:
+
+```text
+artifacts/gauntlet-probe/gauntdl-no-false-swap-clear-f1330-20260724.png
+sha256=db4b5fcc68b258f968d46158401c6ad70dac040aed900f0543ceb57a47b6dbd0
+
+artifacts/gauntlet-probe/gauntdl-no-false-swap-clear-f1330-20260724.warm
+sha256=4633a76fe6bfeb67b4a502861afa787e1286e157608fb77d07db8d0bb37c8612
+```
+
+Snapshoten laddar på under en sekund med `ranFrames=0` och återger exakt
+`frameHash=0xea6e797a`. Fortsätt därför från f1330-snapshoten. Nästa smala
+gräns är att spåra de senare direkta `swapbufferCMD=0`-anropen och den
+felaktiga triple-bufferrotationen till buffer 2, och därefter isolera
+texturkorruptionen i den nu synliga arenan. Återinför inte swap-clear och
+använd inte bufferheuristik för att dölja rotationsfelet.
