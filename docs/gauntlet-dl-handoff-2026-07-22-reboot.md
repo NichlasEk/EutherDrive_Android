@@ -2234,3 +2234,58 @@ Nästa bildkvalitetsgräns bör därför flyttas från det grå “bandet” til
 regnbågsfärgade/vita objektytorna i övre halvan. Jämför där MAME:s val mellan
 minification- och magnification-filter samt TMU0/TMU1 color combine; jaga inte
 bandet som framebuffer- eller FIFO-korruption utan ny motbevisande trace.
+
+#### Två-TMU-combinern återställer scenmaterialen
+
+En riktad writer-/samplertrace på bufferpunkt `(368,48)`, rasterpunkt
+`(368,336)`, fångade den färgkorrupta pelarfamiljen. Single-TMU-vägen läste
+`textureMode=0x80000009`, alltså punktfiltrerad RGB332-data, och visade den
+lokala mellantexturen direkt som regnbågsfärger. Minification/magnification-
+filter är därför inte orsaken.
+
+MAME:s riktiga TMU1 -> TMU0-kedja ger i stället för samma materialfamilj:
+
+```text
+TMU0 mode/lod/base=8C22490F/06002604/0002C5A8
+TMU1 mode/lod/base=8C241ACF/00200104/00224944
+
+TMU0 lod2 addr=0x18b3fe raw=0x7484 rgba=83767373
+TMU1 lod1 addr=0x53579e raw=0x0025 rgba=00035aff
+combined rgba=00012873
+```
+
+TMU1-proverna är varierande och icke-noll. Visuellt ersätts de stora
+regnbågsbalkarna av sammanhängande mörka metallpelare, räcken och korrekt
+modulerade scenytor. En ren f1390 -> f1400-A/B ger:
+
+```text
+single TMU                 frameHash=0x0a01b41d zero=9951
+two TMU, ärvd S/T          frameHash=0x5dd9800f zero=11349
+two TMU, separat S0/T0-S1/T1 frameHash=0x53c06d66 zero=11349
+```
+
+Den separata S/T-proben skapar fortfarande stora upprepade gula texelgrupper
+i den nedre markytan. Den är därför fortsatt default-off även om separata
+iteratorer finns i hårdvaran; dess packet-/arvsdecode måste verifieras innan
+den kan användas. Två-TMU-combinern med den befintliga ärvda koordinatvägen
+är däremot promoterad till adapter- och probe-baseline:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TWO_TMU_COMBINE=1
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_TMU_ST=0
+```
+
+Ny fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gauntdl-two-tmu-f1400-20260724.png
+sha256=a6b0b2805a822803101fa2d49534486223501612beeee776161d31e6f8a57cfe
+
+artifacts/gauntlet-probe/gauntdl-two-tmu-f1400-20260724.warm
+sha256=780d7dfe668c2cb4697e6a65890e75062fddd5a93e6dfc6dba57540864e4de9b
+```
+
+Nästa smala bildgräns är den separata ST1-arvsregeln: avgör per Type3-mask om
+TMU1 ska ärva Wb/W0/ST0 eller använda egna W1/ST1. Använd den blå sammanhängande
+markytan som kontroll och avvisa varianter som återinför de gula repetitiva
+grupperna.
