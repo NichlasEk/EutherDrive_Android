@@ -34100,6 +34100,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_RENDER_BUFFER_CHOICE"));
     private readonly int _traceRenderBufferChoiceLimit =
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_RENDER_BUFFER_CHOICE_LIMIT"), 32);
+    private readonly int _experimentForceRenderBufferIndex =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX"), -1);
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
     private readonly bool _traceType0JumpsOnly = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_JUMPS_ONLY"));
@@ -34896,6 +34898,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoType1PacketOwnershipTraceCount;
     private int _commandFifoType4PacketOwnershipTraceCount;
     private int _texturedPixelTraceCount;
+    private int _texturedPixelCandidateTraceCount;
     private int _commandFifoImplausibleType1OutsideBulkWindowGateCount;
     private int _commandFifoImplausibleType1OutsideBulkWindowDropCount;
     private int _commandFifoPayloadType1PacketSkipCount;
@@ -37947,14 +37950,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         int active = GetVisibleBufferActiveColorCount(index);
         int white = GetVisibleBufferWhiteCount(index);
         int unique = GetVisibleBufferUniqueColorCount(index, 128);
+        int discontinuities = GetVisibleBufferDiscontinuityCount(index);
         string pending = IsPendingClearBuffer(index)
             ? $"p=1:{_pendingClearX0[index]}-{_pendingClearX1[index]}x{_pendingClearY0[index]}-{_pendingClearY1[index]}:0x{_pendingClearColor[index]:X4}"
             : "p=0";
-        return $"b{index}=nz{nonZero}:act{active}:w{white}:u{unique}:{pending}";
+        return $"b{index}=nz{nonZero}:act{active}:w{white}:u{unique}:d{discontinuities}:{pending}";
     }
 
     private int ChooseRenderBufferIndex()
     {
+        if ((uint)_experimentForceRenderBufferIndex < (uint)_colorBuffers.Length)
+            return _experimentForceRenderBufferIndex;
+
         if (!_fixDisplayBufferSelection)
             return _frontBufferIndex;
 
@@ -37962,19 +37969,22 @@ internal class VoodooBringupBackend : IVoodooBackend
         int frontActiveCount = GetVisibleBufferActiveColorCount(_frontBufferIndex);
         int frontWhiteCount = GetVisibleBufferWhiteCount(_frontBufferIndex);
         int frontUniqueCount = GetVisibleBufferUniqueColorCount(_frontBufferIndex, 128);
+        int frontDiscontinuityCount = GetVisibleBufferDiscontinuityCount(_frontBufferIndex);
         bool frontIsWhiteClearDominated =
             frontWhiteCount > 240_000 &&
             frontActiveCount < 32_000 &&
             (frontActiveCount <= 1024 || frontUniqueCount <= 8);
         bool frontIsLowDetailFill = frontUniqueCount <= 8 && frontActiveCount > 240_000;
         bool frontIsUsable = !frontIsWhiteClearDominated && frontCount > 1024 && frontActiveCount > 1024;
-        if (frontIsUsable)
+        bool frontMayBeCorrupt = frontDiscontinuityCount > 512;
+        if (frontIsUsable && !frontMayBeCorrupt)
             return _frontBufferIndex;
 
         int bestIndex = _frontBufferIndex;
         int bestCount = frontCount;
         int bestActiveCount = frontActiveCount;
         int bestUniqueCount = frontUniqueCount;
+        int bestDiscontinuityCount = frontDiscontinuityCount;
         int fallbackIndex = _backBufferIndex;
         int fallbackActiveCount = 0;
         int fallbackNonWhiteCount = 0;
@@ -37991,7 +38001,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             int candidateWhiteCount = GetVisibleBufferWhiteCount(i);
             int candidateNonWhiteCount = Math.Max(0, candidateCount - candidateWhiteCount);
             int candidateUniqueCount = GetVisibleBufferUniqueColorCount(i, 128);
+            int candidateDiscontinuityCount = GetVisibleBufferDiscontinuityCount(i);
             bool candidateIsLowDetailFill = candidateUniqueCount <= 8 && candidateActiveCount > 240_000;
+            bool candidateIsMoreCoherent =
+                frontMayBeCorrupt &&
+                candidateDiscontinuityCount * 2 + 128 < frontDiscontinuityCount;
             if (IsPendingClearBuffer(i) && candidateActiveCount <= 1024)
                 continue;
 
@@ -38009,7 +38023,8 @@ internal class VoodooBringupBackend : IVoodooBackend
 
             if (candidateCount > 1024 &&
                 candidateActiveCount > 1024 &&
-                (!frontIsUsable ||
+                (candidateIsMoreCoherent ||
+                 !frontIsUsable ||
                  frontIsLowDetailFill && candidateUniqueCount >= bestUniqueCount + 16 ||
                  !candidateIsLowDetailFill && candidateUniqueCount >= bestUniqueCount + 32 && candidateActiveCount >= bestActiveCount * 2 / 3 ||
                  !candidateIsLowDetailFill && candidateActiveCount > bestActiveCount + 32_768 ||
@@ -38021,8 +38036,10 @@ internal class VoodooBringupBackend : IVoodooBackend
                 bestCount = candidateCount;
                 bestActiveCount = candidateActiveCount;
                 bestUniqueCount = candidateUniqueCount;
+                bestDiscontinuityCount = candidateDiscontinuityCount;
                 frontIsWhiteClearDominated = false;
                 frontIsLowDetailFill = false;
+                frontMayBeCorrupt = bestDiscontinuityCount > 512;
             }
         }
 
@@ -43325,6 +43342,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             TraceTexturedTriangleReject("clip", a, b, c, fallbackColor, area, minX, maxX, minY, maxY, clipX0, clipX1, clipY0, clipY1);
             return false;
         }
+        TraceTexturedPixelTriangleCandidate(a, b, c, area, minX, maxX, minY, maxY);
         if (_experimentSuppressLargeNonFiniteSTextureTriangles &&
             !float.IsFinite(a.S) &&
             !float.IsFinite(b.S) &&
@@ -43764,6 +43782,44 @@ sampledTexel:
             $"buf={bufferIndex} color=0x{color:x4} depth=0x{currentDepth:x4}/0x{incomingDepth & 0xffff:x4} " +
             $"fbz=0x{fbzMode:x8} cmd=0x{_currentCommandFifoCommand:x8} " +
             $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8} pc=0x{pc:x16}");
+    }
+
+    private void TraceTexturedPixelTriangleCandidate(
+        SetupVertex a,
+        SetupVertex b,
+        SetupVertex c,
+        float area,
+        int minX,
+        int maxX,
+        int minY,
+        int maxY)
+    {
+        int x = _traceTexturedPixelX;
+        int y = _traceTexturedPixelY;
+        if (x < minX || x >= maxX ||
+            y < minY || y >= maxY ||
+            _texturedPixelCandidateTraceCount++ >= _traceTexturedPixelLimit)
+        {
+            return;
+        }
+
+        float px = x + 0.5f;
+        float py = y + 0.5f;
+        float e0 = Edge(b.X, b.Y, c.X, c.Y, px, py);
+        float e1 = Edge(c.X, c.Y, a.X, a.Y, px, py);
+        float e2 = Edge(a.X, a.Y, b.X, b.Y, px, py);
+        bool positive = area > 0;
+        bool inside = positive
+            ? e0 >= 0 && e1 >= 0 && e2 >= 0
+            : e0 <= 0 && e1 <= 0 && e2 <= 0;
+        ulong pc = CpuPcProvider?.Invoke() ?? 0;
+        Console.WriteLine(
+            $"[GAUNTDL:VOODOO-TEXPIXEL-CANDIDATE] n={_texturedPixelCandidateTraceCount} xy={x},{y} " +
+            $"screen={x},{GetRasterBufferY(y)} inside={(inside ? 1 : 0)} area={area:F3} " +
+            $"edge={e0:F3}/{e1:F3}/{e2:F3} bbox=({minX},{minY})-({maxX},{maxY}) " +
+            $"verts=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
+            $"cmd=0x{_currentCommandFifoCommand:x8} packet=0x{_currentCommandFifoPacketStart * 4:x8} " +
+            $"rd=0x{_cmdFifoReadIndex * 4:x8} pc=0x{pc:x16}");
     }
 
     private int ComputeAndTraceTexturedTriangleLod(
@@ -48201,6 +48257,34 @@ sampledTexel:
         }
 
         return colors.Count;
+    }
+
+    private int GetVisibleBufferDiscontinuityCount(int index)
+    {
+        if ((uint)index >= (uint)_colorBuffers.Length)
+            return int.MaxValue;
+
+        int width = _fixMameMediumResolutionOutput ? 512 : 640;
+        int height = _fixMameMediumResolutionOutput ? 384 : 480;
+        int count = 0;
+        ushort[] buffer = _colorBuffers[index];
+        for (int y = 0; y < height; y += 4)
+        {
+            int row = y * 1024;
+            for (int x = 0; x + 4 < width; x += 4)
+            {
+                ushort left = buffer[(row + x) & (LfbPixels - 1)];
+                ushort right = buffer[(row + x + 4) & (LfbPixels - 1)];
+                int delta =
+                    Math.Abs((left >> 11) - (right >> 11)) +
+                    Math.Abs(((left >> 5) & 0x3f) - ((right >> 5) & 0x3f)) +
+                    Math.Abs((left & 0x1f) - (right & 0x1f));
+                if (delta > 38)
+                    count++;
+            }
+        }
+
+        return count;
     }
 
     private void SwapBuffers(uint command)

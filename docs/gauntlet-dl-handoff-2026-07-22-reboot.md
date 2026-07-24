@@ -1958,3 +1958,97 @@ det äldre `SUPPRESS_WHITE_FASTFILL_AFTER_RASTER`-experimentet är också
 pixelidentiskt här. Nästa smala gräns är därför paket-/vertexsekvensen för
 geometrin runt öppningarna, inte clearfärg, depth-test eller de två
 triangel-suppressionsskydden.
+
+En kompletterande bbox/edge-trace runt samma punkt gav åtta kandidat-
+trianglar. De två slutliga intilliggande trianglarna möts vid ungefär
+`(86.25,270.94)`, men punkt `(80,272)` ligger matematiskt utanför båda:
+
+```text
+area=494.648 edge=-621.008/487.812/627.844
+verts=(72,384)/(86.25,270.938)/(67.625,384)
+
+area=-936.082 edge=-44.520/-1519.406/627.844
+verts=(72,384)/(86.25,270.938)/(93.812,276.625)
+```
+
+Det vita området är alltså öppen modell-/bakgrundsgeometri och inte en
+förlorad pixel. Fortsatt bringup ska inte lägga fler heuristiker på detta hål.
+
+#### Koherent bild finns kvar när frontbufferten blir brusig
+
+En fortsättning f1330--f1360 gav först den brusiga presenterade hashen
+`0x85246f1f`. En explicit dump av alla tre färgbuffertar visade den verkliga
+gränsen:
+
+```text
+front/back=1/0
+buffer 0: sammanhängande borggård, mark, väggar och objekt
+buffer 1: RGB-brus över grå mark
+buffer 2: tom
+```
+
+Buffer 0 ger `frameHash=0x01012c83` och finns sparad som:
+
+```text
+artifacts/gauntlet-probe/gauntdl-coherent-buffer-f1360-20260724.png
+sha256=d91d34eea78b8cb55ae0a0532e8664d6ad783f9ae04b3f5e6641665759ca05a1
+```
+
+Displayvalet mäter nu grova horisontella RGB565-språng på den verkliga
+512x384-ytan. Det behåller korrekt front 0 vid f1330 (`d289` mot `d5346`) och
+väljer den koherenta back 0 vid f1360 (`d380` mot `d1382`). Detta är ett
+skydd mot att publicera en uppenbart trasig sida, inte den slutliga lösningen:
+vid f1390 är buffer 0 fortfarande samma scen medan buffer 1 fortsätter ritas.
+
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX=0|1|2`
+kan användas för direkta buffer-A/B-dumpar.
+
+#### Type4-body-svans dekodades som ett nytt registerpaket
+
+Vid f1390 hade `lfbMode` blivit MIPS-instruktionsordet `0x8c241acf`.
+Packet-ownership-tracen lokaliserade den första felaktiga skrivningen:
+
+```text
+false header=0x07f3f9fc packet=0x0297d8a4
+real header=0x07ff964c, 13 words
+false header producer pc=0x800c6e10
+```
+
+`0x07f3f9fc` är ord 9 i den riktiga Type4-kroppen. En tillfällig ogiltig
+ringbufferlucka gjorde svansen läsbar som ett nytt paket innan dess riktiga
+header. Samma producent-body-skydd som redan används för Type3 finns för
+Type4 och är nu aktiverat i baseline:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER=1
+```
+
+På f1360--f1390 behåller det de giltiga registren:
+
+```text
+fbzMode=0x00000060
+lfbMode=0x0182a053
+false packet count removed from the path
+```
+
+Den framtvingade buffer-1-bilden får fler riktiga objekt och väggfragment,
+men övre bakgrunden är fortfarande RGB-brus. Nästa gräns är därför tidigare
+korruption/livslängd i buffer 1 före f1360, alternativt nästa återställning av
+den sidan. Fortsätt bakåt från den första koherensökningen eller framåt tills
+buffer 1 får en full clear; behåll Type4-skyddet och verifiera rörlig bild
+innan displayheuristiken betraktas som färdig.
+
+En fortsatt f1390--f1420-körning visar att Type4-skyddet är nödvändigt men
+inte tillräckligt. Ett senare gränstapp korrumperar åter registren:
+
+```text
+fbzMode=0x3b554890
+lfbMode=0x3ed54890
+front/back=1/0
+frameHash(buffer 1)=0x9cca3449
+```
+
+Nästa spårning ska därför rikta register `0x44,0x45` över just
+f1390--f1420 och identifiera den första falska packet-headern på samma sätt
+som `0x07f3f9fc`; anta inte att den kvarvarande korruptionen bara är gammal
+framebufferdata.
