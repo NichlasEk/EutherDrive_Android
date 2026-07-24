@@ -2289,3 +2289,27 @@ Nästa smala bildgräns är den separata ST1-arvsregeln: avgör per Type3-mask o
 TMU1 ska ärva Wb/W0/ST0 eller använda egna W1/ST1. Använd den blå sammanhängande
 markytan som kontroll och avvisa varianter som återinför de gula repetitiva
 grupperna.
+
+En efterföljande exakt golvtrace på packet `0x01c2a10b` bekräftar att bit 17
+verkligen bär separata ST1-värden och att de avkodas i samma ordning som MAME:
+
+```text
+pixel=(240,144)
+ST0/Q=(23.849,0.134,0.027587) ... (8.476,-7.210,0.014349)
+ST1/Q=(1.238,2.403,0.027587)  ... (1.851,0.863,0.014349)
+TMU0 lod2 addr=0x18b078 raw=0x7588
+TMU1 lod1 addr=0x5366f4 raw=0x002c
+combined rgba=00014677
+```
+
+TMU1-träffen är icke-noll och ger mörkblått resultat vid den riktade pixeln.
+Det räcker inte för att förklara eller avfärda alla gula grupper i den
+separata-ST-bilden. Två-TMU-tracen har därför fått valfria X/Y-filter:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_X=240
+EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_Y=144
+```
+
+Nästa pass bör rikta filtret mot en faktiskt gul pixel och jämföra dess
+TMU1-rawvärde och materialbas med en intilliggande blå pixel i samma triangel.

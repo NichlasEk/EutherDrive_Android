@@ -34042,6 +34042,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_MIN_FRAME"), 0);
     private readonly ulong? _traceTwoTmuSamplesTmu0Base =
         ParseOptionalHexUlong(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_TMU0_BASE"));
+    private readonly int _traceTwoTmuSamplesX =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_X"), -1);
+    private readonly int _traceTwoTmuSamplesY =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TWO_TMU_SAMPLES_Y"), -1);
     private readonly bool _traceTexturedTriangleSampleSummary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_TRIANGLE_SAMPLE_SUMMARY"));
     private readonly bool _traceTexturedTriangleSampleWriters =
@@ -43849,6 +43853,7 @@ sampledTexel:
             $"edge={e0:F3}/{e1:F3}/{e2:F3} bbox=({minX},{minY})-({maxX},{maxY}) " +
             $"verts=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
+            $"stq1=({a.S1:F3},{a.T1:F3},{a.Q1:F6})/({b.S1:F3},{b.T1:F3},{b.Q1:F6})/({c.S1:F3},{c.T1:F3},{c.Q1:F6}) " +
             $"cmd=0x{_currentCommandFifoCommand:x8} packet=0x{_currentCommandFifoPacketStart * 4:x8} " +
             $"rd=0x{_cmdFifoReadIndex * 4:x8} pc=0x{pc:x16}");
     }
@@ -45130,6 +45135,8 @@ sampledTexel:
     {
         if (!_traceTwoTmuSamples ||
             _renderFrame < _traceTwoTmuSamplesMinFrame ||
+            (_traceTwoTmuSamplesX >= 0 && x != _traceTwoTmuSamplesX) ||
+            (_traceTwoTmuSamplesY >= 0 && y != _traceTwoTmuSamplesY) ||
             _twoTmuSampleTraceCount >= _traceTwoTmuSamplesLimit)
         {
             return;
