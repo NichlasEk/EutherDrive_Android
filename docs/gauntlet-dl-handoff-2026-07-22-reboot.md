@@ -2842,3 +2842,36 @@ Nästa smala gräns är därför source-recordet som borde skriva TMU1:s lokala
 `base=0x000257b3`/source-root `0x805b40ec` tillbaka till sin resource- och
 QIO-proveniens, och jämför den med den saknade primära recordfamiljen.
 Behåll neutralvit och alla TMU-kopior default-off; de är endast oracles.
+
+Den riktiga TMU0-halvan är dessutom bunden ett steg upp från Type5. Source-
+root `0x805b40ec` ligger i mip-3-blocket vars selector är `0x805b3ec8`.
+Hela mipkedjan publiceras sammanhängande:
+
+```text
+mip 2  source=805b1ec8
+mip 3  source=805b3ec8  (Type5 root 805b40ec)
+mip 4  source=805b46c8
+mip 5  source=805b48c8
+mip 6  source=805b4948
+```
+
+Alla nivåer använder destinationsnyckel `0x001111f0`. Vid callsite
+`0x801096fc` är registerbilden:
+
+```text
+a0=0
+a1=001111f0
+a2=mipnivå 2..6
+a3=1
+s0=vald mip-source
+s6=001111f0
+s7=3
+t7=8c241009
+ra=801095c8
+```
+
+Det är alltså en enda normal sekundär/TMU0-assetgrupp, inte kvarvarande
+FIFO-data eller flera orelaterade scratchanvändningar. Nästa callertrace ska
+börja vid `0x801095c8` och jämföra hur denna grupp byggs mot en normal
+primär/TMU1-grupp. Där finns nu den närmaste observerbara punkten där den
+saknade companion-recorden antingen borde väljas eller redan saknas.
