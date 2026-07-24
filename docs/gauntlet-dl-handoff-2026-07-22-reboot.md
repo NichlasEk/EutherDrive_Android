@@ -2561,3 +2561,73 @@ riktiga gräns är companion-valet: följ den sekundära texture-set-post som
 byggs tillsammans med en `levelE1`-materialpost och avgör varför dess separata
 detail/lightmap-payload aldrig når TMU1:s lokala `0x20xxxx`-familj. Behåll
 neutralvit, bias och båda overlaykopiorna som default-off oracles.
+
+#### Objektposten är statisk och den saknade companionbanken är exakt avgränsad
+
+En trace av de sena registerpaketen visar att `0x1c31xx`-värdena skrivs till
+TMU1 av gästens vanliga descriptorloop:
+
+```text
+0x800c6c78  sw command header
+0x800c6c7c  sw mode   från record +0x10
+0x800c6c80  sw lod    från record +0x14
+0x800c6c84  sw base   från record +0x0c
+```
+
+Det aktiva `base=0x001c3104` kommer från `v1=0x804bc964`. Det är inte ett
+felbyggt runtime-record: samma ord finns byte-för-byte i
+`levelE1/objects.rom` vid filoffset `0x2a8e8`. Hela materialfamiljen ligger i
+statiska, normalt 0x7c byte långa objektposter:
+
+```text
+base       RAM         objects.rom
+001c0104   804bc7fc    0002a774
+001c1104   804bc878    0002a7f0
+001c2104   804bc8f4    0002a86c
+001c3104   804bc970    0002a8e8
+001c4104   804bc9ec    0002a964
+001c5104   804bca68    0002a9e0
+001c5504   804bcae4    0002aa5c
+001c6504   804bcb60    0002aad8
+001c7604   804bcd74    0002acec
+```
+
+Det avför en dynamisk texture-set-lookup som orsak till just dessa basvärden.
+Gästen publicerar det av spelet författade materialet oförändrat och väljer
+uttryckligen TMU1.
+
+Två kompletta Type5-spår av levelE1-vågen ger den motsatta sidan av gränsen:
+
+```text
+f1000--f1030:
+  TMU0  4510 sekvenser, phys word 0x074fb2..0x09ecd1
+  TMU1  1803 sekvenser, phys word 0x11bd80..0x126b61
+
+f1030--f1080:
+  TMU0   937 sekvenser, phys word 0x09a94a..0x09f0e5
+  TMU1 11480 sekvenser, phys word 0x121d80..0x15c6f9
+```
+
+Den viktiga korrelationen är exakt, inte bara ett närliggande
+allokeringsintervall. Med 4 MiB lokal TMU-wrap ger descriptorbas
+`0x1c3104` effektiv bas `0x43104`; scenens LOD2-samplingar ligger i lokala
+byteintervallet `0x22dxxx`. Den föregående uppladdningen
+`tmu=0/tbase=0x434a6` fyller fysiska word
+`0x8a94c..0x8be9f`, alltså lokala bytes
+`0x22a530..0x22fa7f`, från source-root `0x80599fb4`. Därmed är exakt samma
+lokala sampleområde:
+
+```text
+TMU0: materialiserat med varierande primärtextur
+TMU1: helt noll
+```
+
+Det förklarar också varför en linjär TMU0->TMU1-kopia visar enstaka riktiga
+fragment men är visuellt fel: den kopierar primärtexturen, inte den separata
+detail/lightmap-payload som två-TMU-materialet förväntar sig.
+
+Nästa smala gräns är nu source-root `0x80599fb4` och dess uploadsetup kring
+`0x800fe5d4`: följ posten som producerar den parade primäruppladdningen och
+identifiera grenen eller ägarfältet som skulle schemalägga motsvarande TMU1-
+payload. Ändra inte descriptorbasen, Type5-writepekaren, bankmasken eller
+rasteriseringen för denna familj.
