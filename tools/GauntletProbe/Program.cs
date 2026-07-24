@@ -343,22 +343,30 @@ static void ApplyRequestedTextureMemoryCopy(GauntletDarkLegacyAdapter adapter)
         throw new InvalidDataException("Texture memory copy range is outside texture memory");
 
     byte[] copy = new byte[checked((int)byteLength)];
+    bool zeroDestinationOnly =
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_COPY_ZERO_DESTINATION_ONLY") == "1";
     for (ulong i = 0; i < byteLength; i++)
     {
         ulong source = sourceAddress + i;
         uint word = textureMemory[(int)(source >> 2)];
         copy[(int)i] = (byte)(word >> ((int)(source & 3UL) * 8));
     }
+    ulong copiedBytes = 0;
     for (ulong i = 0; i < byteLength; i++)
     {
         ulong destination = destinationAddress + i;
         int word = (int)(destination >> 2);
         int shift = (int)(destination & 3UL) * 8;
+        if (zeroDestinationOnly && ((textureMemory[word] >> shift) & 0xffu) != 0)
+            continue;
+
         textureMemory[word] = (textureMemory[word] & ~(0xffu << shift)) | ((uint)copy[(int)i] << shift);
+        copiedBytes++;
     }
 
     Console.WriteLine(
-        $"textureMemoryCopy source=0x{sourceAddress:x8} destination=0x{destinationAddress:x8} bytes=0x{byteLength:x}");
+        $"textureMemoryCopy source=0x{sourceAddress:x8} destination=0x{destinationAddress:x8} " +
+        $"bytes=0x{byteLength:x} copied=0x{copiedBytes:x} zeroDestinationOnly={zeroDestinationOnly}");
 }
 
 static int StepCpu(Action step, int count, object? cpu = null, ulong? stopPc = null)

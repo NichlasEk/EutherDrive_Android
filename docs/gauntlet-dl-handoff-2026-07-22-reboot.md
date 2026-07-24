@@ -2623,16 +2623,16 @@ TMU1: helt noll
 ```
 
 Det förklarar också varför en linjär TMU0->TMU1-kopia visar enstaka riktiga
-fragment men är visuellt fel: den kopierar primärtexturen, inte den separata
-detail/lightmap-payload som två-TMU-materialet förväntar sig.
+fragment men är visuellt fel: den exponerar en verklig textur på ett
+sammanfallande lokalt adressintervall, men bevisar inte att detta är
+materialets separata TMU1-payload.
 
-Nästa smala gräns är nu source-root `0x80599fb4` och dess uploadsetup kring
-`0x800fe5d4`: följ posten som producerar den parade primäruppladdningen och
-identifiera grenen eller ägarfältet som skulle schemalägga motsvarande TMU1-
-payload. Ändra inte descriptorbasen, Type5-writepekaren, bankmasken eller
-rasteriseringen för denna familj.
+Nästa smala gräns är fördelningen av upload-recorden över guestens globala
+8 MiB-texturallokator och den saknade source-/recordfamiljen för det statiska
+TMU1-materialet. Ändra inte descriptorbasen, Type5-writepekaren, bankmasken
+eller rasteriseringen för denna familj.
 
-#### Companion-emitter finns, men levelE1-recordet gör bara TMU0-runnen
+#### LevelE-atlasen routas bara genom den sekundära/TMU0-vägen
 
 En source-filtrerad producenttrace binder primäruppladdningen till
 texture-recordet vid `0x804aaee8` (`objects.rom +0x18e60`):
@@ -2659,20 +2659,122 @@ source=80599fb4
 Det blir bara en TMU0-run. Inget senare target med TMU1-biten satt använder
 samma source-root.
 
-En verklig TMU1-kontroll i samma f1000--f1030-våg visar samtidigt att
-emitteraren kan göra det förväntade dubbelbanksarbetet. Source-root
-`0x80591e90` används först med TMU0-target `0x000a0000` och därefter med
-TMU1-target `0x00260000`:
+Den tidigare slutsatsen att source-roots `0x80591e90` och `0x80599fd8`
+bevisade parade TMU0/TMU1-uppladdningar var fel. Adresserna ligger i en
+återanvänd scratcharena. Exempelvis är användningen av `0x80599fd8` vid
+frame 1009 ett sekundärt anrop för record `0x804aaad8`, destination
+`0x205550` och `a0=0`, medan användningen vid frame 1034 är ett orelaterat
+primärt anrop för record `0x80569578`, selector `0x08f748` och `a0=1`.
+De två användningarna tillhör alltså olika assets.
+
+Den korrigerade slutsatsen är fortfarande att emitterarens bankrutning
+fungerar:
 
 ```text
-source=80591e90 targetBytes=000a0000 targetWord=028000
-source=80591e90 targetBytes=00260000 targetWord=098000
+a0=0 -> TMU0
+a0=1 -> TMU1
 ```
 
-Felet ligger alltså inte i att lågnivåemitteraren saknar TMU1-stöd.
-Den återstående beslutspunkten ligger i record-/flagghanteringen före
-`0x801096fc`, särskilt den sekundära selectorvägen
-`0x800a776c..0x800a77f4`. Jämför `0x804aaee8` mot ett record som faktiskt
-ger båda runnarna och följ testen av `byte[3]`, bit 0 och bit 1. Det är nu den
-minsta hårdvarunära fixytan; syntetisera inte en andra Type5-run innan
-flaggbetydelsen är verifierad.
+En exakt call/return-trace visar dessutom att levelE1-recordet väljs av den
+sekundära vägen vid `0x800a7764`, går in i upload-wrappern med `a0=0` och
+kommer tillbaka vid `0x800a776c`. Under anropet ändras recordhuvudet
+tillfälligt från `0x0c010601` till `0x04010601`; läsningen av `byte[3] == 4`
+efter returen är därför ett processerat/pending-tillstånd, inte en
+texturformats- eller TMU-selector.
+
+Den kompletta selector-matrisen för f1000--f1030 innehåller 93 anrop:
+
+```text
+primary   43 calls, selector 0x06f600..0x09a8c8, a0=1 -> TMU1
+secondary 50 calls, selector 0x1df778..0x279df8, a0=0 -> TMU0
+```
+
+Alla levelE-poster i det höga lokala intervallet, inklusive
+`0x804aaee8 -> 0x22a530`, förekommer bara i sekundärlistan. Det finns inget
+primärt anrop nära `0x22a530` i detta fönster. Den saknade TMU1-payloaden
+undertrycks alltså inte i lågnivåemitteraren och väljs inte bort av testerna
+efter `0x800a776c`; motsvarande primär record publiceras aldrig till
+selectorloopen.
+
+f1030--f1087 ger samma uppdelning:
+
+```text
+primary   507 calls, selector 0x087600..0x179b68
+secondary  29 calls, selector 0x26a528..0x27c348
+primary selectors >= 0x200000: 0
+```
+
+En full PC-trace av `0x800a7094..0x800a7890` korrigerar även
+tvåliststolkningen. Funktionen tar en enda recordbas i `a0`, ett count i
+`a3`, avancerar recordpekaren `s2` med `0x50` vid `0x800a7834` och väljer
+uploadväg efter en global 8 MiB-allokatoradress i `s0`:
+
+```text
+s0 <= 0x003fffff -> sekundär call 0x800a7764, a0=0, local=s0
+s0 >= 0x00400000 -> primär call 0x800a761c, a0=1, local=s0-0x400000
+```
+
+För levelE-gruppen är funktionsanropet
+`a0=0x8056173c, source=0x80591e90, count=26`. Dess första record får globala
+`s0=0x26a528` och gruppen gör 25 sekundära men noll primära uploads. Nästa
+anrop (`a0=0x80568f88, count=138`) börjar i stället på globala `0x487600`
+och gör 47 primära uploads, vars lokala selectors börjar på `0x087600`.
+Bankgränsen och subtraktionen är alltså guestberäknade och konsekventa.
+
+Det återstående felet är inte en tappad sekundär/primär listpublicering.
+Antingen saknas den separata TMU1-recordfamiljen före denna funktion, eller
+så har tidigare QIO-/assetlivstid lämnat den globala allokatorn med fel
+innehåll/ordning. Följ därför callern vid `0x800abe10..0x800abe54`, särskilt
+de dynamiska globala inputfälten `0x8020f154/0x8020f178..0x8020f184`, och
+bind det statiska TMU1-materialet till sin verkliga source-record. Tvinga
+inte `s0 += 0x400000`: det skulle bara lägga samma primärtextur i fel bank.
+
+#### Exakt och nollbevarande TMU-kopia avgränsar fel payload
+
+Den första overlaykontrollen råkade köras med en äldre Release-DLL än
+`GauntletProbe/Program.cs` och applicerade därför ingen kopia. Proben byggdes
+om innan följande resultat; loggen innehåller nu den explicita raden
+`textureMemoryCopy`.
+
+En exakt kopia av endast record `0x804aaee8` från TMU0
+`0x22a530..0x22fa7f` till samma lokala TMU1-intervall ändrar f1421:
+
+```text
+baseline:    frameHash=0xfbce28cc  zero=305770  colored=48309
+exact copy:  frameHash=0x3c1992d0  zero=304416  colored=49724
+```
+
+Den är kausal men visar bara fler feltexturerade fragment:
+
+```text
+artifacts/gauntlet-probe/gauntdl-exact-record-to-tmu1-f1421-20260724.png
+sha256=35cb03a26924ba86c61843470abfcbc9170c3d69d1c17a47811f93d5cbcd4c52
+```
+
+Probe-overlayn har nu en default-off zero-destination-variant:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_COPY_ZERO_DESTINATION_ONLY=1
+```
+
+Den bevarar redan residenta destinationbytes. En kontroll som fyller bara
+nollor i TMU1 `0x600000..0x6fffff` från motsvarande lokala TMU0-megabyte ger:
+
+```text
+frameHash=0x13761b53  zero=294513  colored=58892
+```
+
+Mer geometri blir synlig, men atlasinnehållet och den stora gröna rampen är
+fortfarande fel:
+
+```text
+artifacts/gauntlet-probe/gauntdl-tmu0-to-zero-tmu1-f1421-20260724.png
+sha256=32c5a71bea4def90e4d1a3b35691d2c43eddebce93ae6bf0a1fce8d05384e931
+```
+
+Det avför både en blind bankkopia och den breda kopians tidigare
+överskrivningsinvändning. Den lokala adressfamiljen är relevant, men
+TMU0-innehållet är inte materialets riktiga TMU1-payload. Nästa trace ska
+identifiera source-recordet som hör till Type4-materialkommandot
+`0x0082a10b` (`target=0x421`, chipmask TMU1) i stället för att återanvända
+TMU0-recordet.

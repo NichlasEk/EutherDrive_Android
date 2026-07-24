@@ -35,8 +35,11 @@ snapshot:
 ```sh
 EUTHERDRIVE_GAUNTDL_EXPERIMENT_DISK_TEXTURE_COPY=disk_offset:texture_offset:length
 EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_COPY=source_offset:destination_offset:length
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_TEXTURE_MEMORY_COPY_ZERO_DESTINATION_ONLY=1
 ```
 
 All fields are hexadecimal byte offsets. The first overlay reads the configured
 Gauntlet raw disk; the second copies within the probe's Voodoo texture memory.
-Both reject out-of-range requests and leave the saved snapshot unchanged.
+The optional third flag makes the texture-memory overlay preserve every
+already-populated destination byte. Both overlays reject out-of-range requests
+and leave the saved snapshot unchanged.
