@@ -2441,3 +2441,70 @@ Nästa riktiga fix ska därför återställa de höga TMU1-sidorna före
 renderfasen. Jämför kallstartens Type5/QIO-historik mot den första referensen
 till basefamiljen `0x1c3104` och dess efterföljare. Promotera inte
 neutralvit-proben och ändra inte MAME:s 4 MiB-minnesmask.
+
+#### MAME-writepekaren och en enkel TMU1-basförskjutning är avförda
+
+MAME:s `texture.write_ptr()` jämfördes mot bringup-backendens beräkning under
+två verkliga uploadfönster, f740--f741 och den aktiva f759--f763-vågen.
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_UPLOAD_MAME_WRITE_PTR=1` gav noll
+avvikelser. De höga sidorna skrivs alltså inte till fel adress av den lokala
+Type5-pekaren; paketen som skulle fylla dem saknas.
+
+Diskproveniensen kan nu följas ett steg längre. `death`-katalogblocket ligger
+vid rådiskoffset `0x12578c00` och innehåller:
+
+```text
+inode 0x01000435  textures.rom
+inode 0x01000436  anim.rom
+inode 0x01000434  objects.rom
+```
+
+`textures.rom` börjar direkt efter katalogblocket vid `0x12578e00`.
+`objects.rom` börjar vid `0x1257f200`; dess body vid `0x12580d08` motsvarar
+byte-för-byte den laddade `AAAWHITE`/`DEATH_ARC`-källan vid `0x80562cf0`.
+Materialtripplarna och texturfilen kommer alltså från samma riktiga
+death-assetfamilj.
+
+En komplett, ren f1030--f1080-Type5-trace fångade de senare
+death/world-uppladdningarna:
+
+```text
+TMU0:   937 sekvenser, physical word 0x09a94a..0x09f0e5
+TMU1: 11063 sekvenser, physical word 0x121d80..0x15a8e1
+```
+
+TMU1-data slutar därmed vid fysisk byteadress `0x56a387`, medan f1420-scenen
+samplar runt `0x62dxxx`. Uploaden är stor och verklig men når fortfarande
+inte materialfamiljen `0x1c3104/0x1c4104/0x1c5104/0x1c7604`.
+
+En strikt default-off diagnostik gör det möjligt att flytta endast TMU1:s
+samplebas utan att påverka TMU0 eller uploadminnet:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_TEXTURE_SAMPLE_BASE_BIAS=-786432
+```
+
+Tre uppmätta kandidater testades från samma f1400-snapshot och FIRE 3-puls:
+
+```text
+bias -0x080000  frameHash=0x1864283d colored=107983
+bias -0x0c0000  frameHash=0x16981f46 colored=111277
+bias -0x100000  frameHash=0xc9456311 colored=109662
+```
+
+Alla tre exponerar mer färg men lägger främmande, repetitiva texturer över den
+sammanhängande geometrin och lämnar stora vita hål. Den saknade residensen är
+alltså inte en enda konstant basallokeringsförskjutning. Proben ska förbli
+default-off.
+
+```text
+artifacts/gauntlet-probe/gauntdl-tmu1-bias-scan-f1420-20260724.png
+sha256=dc2d983b052e70c644f29daefc12fddabf972178817738e9c4e274372a43e5cb
+```
+
+Nästa riktiga gräns är nu death-texturfilens konsument: följ
+`textures.rom` från IDE/DMA-källan genom dekompression/allokering till de
+Type5-registerbaser som faktiskt blir `0x0000e4c0..0x00029889`, och jämför
+dem med objektrecordens `0x1c31xx`-familj. Reparera associationen mellan
+texture-set och object-set; kopiera inte en godtycklig lägre TMU1-sida och
+promotera inte biasproben.

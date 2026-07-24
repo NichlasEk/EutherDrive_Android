@@ -34791,6 +34791,10 @@ internal class VoodooBringupBackend : IVoodooBackend
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS") ??
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BASE_BIAS"),
             0);
+    private readonly int _experimentTmu1TextureSampleBaseBias =
+        ParseOptionalInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_TEXTURE_SAMPLE_BASE_BIAS"),
+            0);
     private readonly int _experimentTextureForceLod =
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_FORCE_LOD"), 0);
     private bool _suppressZeroTextureBytesForCurrentWrite;
@@ -47561,6 +47565,8 @@ sampledTexel:
         }
         if (_textureSampleBaseBias != 0)
             baseAddress = (uint)((baseAddress + _textureSampleBaseBias) & (TextureBytes - 1));
+        if (tmu == 1 && _experimentTmu1TextureSampleBaseBias != 0)
+            baseAddress = (uint)((baseAddress + _experimentTmu1TextureSampleBaseBias) & (TextureBytes - 1));
 
         int ownedLod = lodLimit;
         if (((lodMask >> ownedLod) & 1u) == 0 && ownedLod < 8)
