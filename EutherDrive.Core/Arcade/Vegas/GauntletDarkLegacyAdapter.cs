@@ -58,6 +58,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_STREAM", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_PARTIAL_INDEXED_SOURCE_PAYLOADS", "0"),
@@ -856,8 +857,13 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SOURCE_TABLE_STORE_SKIP_INDEX_MASK") ?? 0UL;
     private readonly bool _enableRuntimeBgLoadModelAssetNameExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
-    private readonly bool _experimentRuntimeTempleNaturalItemsAllocator =
+    private readonly bool _fixRuntimeTempleNaturalItemsAllocator =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR")) ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR"));
+    private readonly bool _traceRuntimeTempleItemsBoundary =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_ITEMS_BOUNDARY"));
+    private readonly bool _stopRuntimeTempleItemsBoundary =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_STOP_RUNTIME_TEMPLE_ITEMS_BOUNDARY"));
     private readonly bool _enableRuntimeBgLoadModelAssetStaticAliasSourceRepair =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_STATIC_ALIAS_SOURCE"));
     private readonly bool _experimentRuntimeBgLoadModelTextureSetDistinctSource =
@@ -1552,6 +1558,8 @@ internal sealed class MipsR5000Core
     private int _runtimeDiagnosticMenuScanFastPathTraceCount;
     private int _runtimeDiagnosticStateZeroMaskFastPathTraceCount;
     private int _runtimeStringCopyFastPathTraceCount;
+    private int _runtimeTempleItemsBoundaryTraceCount;
+    private int _runtimeTempleItemsStringTraceCount;
     private int _textureUploadPayloadTraceCount;
     private string? _runtimeBgLoadModelStateSnapshot;
     private bool _hasRd0CallbackRaRestore;
@@ -1603,6 +1611,7 @@ internal sealed class MipsR5000Core
     public ulong Cp0Cause => _cp0[13];
     public ulong Cp0Epc => _cp0[14];
     public ulong Cp0ErrorEpc => _cp0[30];
+    public bool RuntimeTempleItemsBoundaryReached { get; private set; }
     public ulong TileWriteCount => _tileWriteCount;
     public ulong TileWriteMin => _tileWriteMin;
     public ulong TileWriteMax => _tileWriteMax;
@@ -1627,6 +1636,7 @@ internal sealed class MipsR5000Core
         Pc = 0xffffffffbfc00000UL;
         LastFetchedInstruction = 0xffffffff;
         LastRuntimeText = "";
+        RuntimeTempleItemsBoundaryReached = false;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -2201,12 +2211,14 @@ internal sealed class MipsR5000Core
         const ulong descriptorStride = 0x30UL;
         const ulong allocatorOffsetAddress = 0xffffffff802280fcUL;
         const ulong allocatorBaseAddress = 0xffffffff80228104UL;
+        const ulong currentIndexAddress = 0xffffffff80228060UL;
         const ulong objectDiskOffset = 0x043f1330UL;
         const uint objectByteLength = 0x0000a240U;
         const ulong qio = 0xffffffff80217c58UL + 15UL * 0x118UL;
         bool atNativeProducer = Pc == powerupsLoadEntry;
         bool recoveringTempleCheckpoint =
-            ReadAsciiTraceString(0xffffffff8024fb60UL, 0x20) == "levels/levelE1";
+            ReadAsciiTraceString(0xffffffff8024fb60UL, 0x20) == "levels/levelE1" &&
+            _memory.Read32(currentIndexAddress) == uint.MaxValue;
         if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
             _runtimeTempleWeaponsLoadRequested ||
             _halted ||
@@ -2326,7 +2338,9 @@ internal sealed class MipsR5000Core
     {
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ulong pc = Pc;
-        ApplyKnownRuntimeTempleNaturalItemsAllocatorExperiment(pc);
+        if (TraceKnownRuntimeTempleItemsBoundary(pc))
+            return;
+        ApplyKnownRuntimeTempleNaturalItemsAllocatorRepair(pc);
         TraceMainRamValueTransition(pc);
         if (_profileHotPcs)
             CountHotPc(pc);
@@ -2872,17 +2886,17 @@ internal sealed class MipsR5000Core
         Pc = resolvedPc;
     }
 
-    private void ApplyKnownRuntimeTempleNaturalItemsAllocatorExperiment(ulong pc)
+    private void ApplyKnownRuntimeTempleNaturalItemsAllocatorRepair(ulong pc)
     {
-        const ulong resourceBuilderEntry = 0xffffffff800abd64UL;
-        const ulong currentIndexAddress = 0xffffffff80228060UL;
+        const ulong resourceParserCall = 0xffffffff800aae0cUL;
         const ulong assetTable = 0xffffffff8024f9a0UL;
         const ulong descriptorStride = 0x30UL;
         const uint itemsIndex = 16U;
-        if (!_experimentRuntimeTempleNaturalItemsAllocator ||
-            pc != resourceBuilderEntry ||
-            _memory.Read32(currentIndexAddress) != itemsIndex ||
-            ReadAsciiTraceString(assetTable + itemsIndex * descriptorStride + 0x10UL, 0x20) != "items/levelE")
+        if (!_fixRuntimeTempleNaturalItemsAllocator ||
+            pc != resourceParserCall ||
+            (uint)_gpr[16] != itemsIndex ||
+            !ReadAsciiTraceString(assetTable + itemsIndex * descriptorStride + 0x10UL, 0x20)
+                .StartsWith("items/levelE", StringComparison.Ordinal))
         {
             return;
         }
@@ -2897,8 +2911,59 @@ internal sealed class MipsR5000Core
         _memory.Write32(0xffffffff8020f130UL, 0x00322218U);
         _memory.Write32(0xffffffff8020f134UL, 0x00322218U);
         Console.WriteLine(
-            $"[GAUNTDL:EXPERIMENT] temple-natural-items-allocator " +
-            $"pc={pc:x16} index={itemsIndex} low={oldLow:x8}->00322218 high={oldHigh:x8}->00722218");
+            $"[GAUNTDL:FIX] temple-natural-items-allocator " +
+            $"pc={pc:x16} index={itemsIndex} source={_gpr[18]:x16} " +
+            $"low={oldLow:x8}->00322218 high={oldHigh:x8}->00722218");
+    }
+
+    private bool TraceKnownRuntimeTempleItemsBoundary(ulong pc)
+    {
+        const ulong resourceParserCall = 0xffffffff800aae0cUL;
+        const ulong currentIndexAddress = 0xffffffff80228060UL;
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong assetTable = 0xffffffff8024f9a0UL;
+        const ulong descriptorStride = 0x30UL;
+        if ((!_traceRuntimeTempleItemsBoundary && !_stopRuntimeTempleItemsBoundary) ||
+            pc != resourceParserCall)
+        {
+            return false;
+        }
+
+        uint currentIndex = _memory.Read32(currentIndexAddress);
+        uint publishedSource = _memory.Read32(sourceTable + 16UL * 4UL);
+        string asset = ReadAsciiTraceString(assetTable + 16UL * descriptorStride + 0x10UL, 0x20);
+
+        if (_traceRuntimeTempleItemsBoundary && _runtimeTempleItemsBoundaryTraceCount++ < 32)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:TEMPLE-ITEMS-BOUNDARY] instructions={_instructionCounter} " +
+                $"pc={pc:x16} ra={_gpr[31]:x16} currentIndex={currentIndex} " +
+                $"index={_gpr[16]} source={_gpr[18]:x16} publishedSource={publishedSource:x8} " +
+                $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+                $"asset=\"{asset}\" " +
+                $"alloc={_memory.Read32(0xffffffff8020f108UL):x8}/" +
+                $"{_memory.Read32(0xffffffff8020f10cUL):x8}/" +
+                $"{_memory.Read32(0xffffffff8020f110UL):x8}/" +
+                $"{_memory.Read32(0xffffffff8020f114UL):x8}/" +
+                $"{_memory.Read32(0xffffffff8020f120UL):x8}/" +
+                $"{_memory.Read32(0xffffffff8020f130UL):x8}/" +
+                $"{_memory.Read32(0xffffffff8020f134UL):x8}");
+        }
+
+        if (_stopRuntimeTempleItemsBoundary &&
+            (uint)_gpr[16] == 16U &&
+            asset.StartsWith("items/levelE", StringComparison.Ordinal))
+        {
+            RuntimeTempleItemsBoundaryReached = true;
+            _halted = true;
+            Console.WriteLine(
+                $"[GAUNTDL:TEMPLE-ITEMS-BOUNDARY] stop instructions={_instructionCounter} " +
+                $"pc={pc:x16} ra={_gpr[31]:x16} currentIndex={currentIndex} " +
+                $"index={_gpr[16]} source={_gpr[18]:x16} asset=\"{asset}\"");
+            return true;
+        }
+
+        return false;
     }
 
     private void TraceSuspiciousLowPcTransition(
@@ -16028,6 +16093,15 @@ internal sealed class MipsR5000Core
             !IsMainRamRange(destination, (ulong)length + 1UL))
         {
             return false;
+        }
+
+        if (_traceRuntimeTempleItemsBoundary &&
+            source == 0xffffffff8055c280UL &&
+            _runtimeTempleItemsStringTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:TEMPLE-ITEMS-STRING] instructions={_instructionCounter} " +
+                $"pc={pc:x16} ra={_gpr[31]:x16} dst={destination:x16} src={source:x16} len={length}");
         }
 
         for (uint offset = 0; offset <= length; offset++)

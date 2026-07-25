@@ -3110,3 +3110,255 @@ EUTHERDRIVE_GAUNTDL_TRACE_TMU1_SAMPLE_PAGES=1
 Den senare loggar nu även `writer`, `source`, `sourceBase` och
 `Type5TargetStart` för varje unik TMU1-sida. Checkpointen bygger utan fel;
 befintliga varningar kvarstår.
+
+### 2026-07-25: items-gränsen ligger före f1200, string-copy är inte ett hang
+
+Den tidigare f1200-körningen gav en missvisande bild av var items-kandidaten
+ska provas. En riktad observer visar att `runtime-string-copy` från
+`0x8055c280` är en vanlig runtime-loop:
+
+```text
+pc=ffffffff8011f7ac
+ra=ffffffff8003c50c
+dst=ffffffff807ffca8
+src=ffffffff8055c280
+len=3
+```
+
+Den återkommer ungefär var 10 000:e instruktion, men frame counter fortsätter
+genom f1300, f1310 och vidare. Källan innehåller strängen `SPECIAL`; detta är
+inte ett fastnat texture-QIO eller en items-builder.
+
+Viktigare: en full f1200--f1420-replay med
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR=1`
+nådde aldrig kandidatloggraden, eftersom snapshoten redan ligger efter den
+naturliga items-buildern. Vid f1420 finns:
+
+```text
+asset[16]    items/levelE
+source[16]   806a9d54
+resource[16] 806b3880
+```
+
+Körningen är därför en negativ snapshot-oracle, inte ett giltigt A/B-prov av
+allocatorn:
+
+```text
+frameHash=0x054f411a
+texWrites=3014476
+snapshot=artifacts/gauntlet-probe/gauntdl-temple-natural-items-f1420-20260725.warm
+```
+
+Tre bevarade f1030-snapshots ligger däremot före items-publiceringen:
+`source[16]`, `resource[16]` och descriptor 16 är fortfarande noll där. En
+replay från `gauntdl-temple-early-names-f1030-20260725.warm` fångade den
+tidiga builderordningen och sparade checkpoints vid f1100, f1180 och f1220.
+Den naturliga index-15-byggaren går mycket långsamt under den här äldre
+lineage:n på grund av den redan väntande interruptkontexten
+(`cause=0x8000`, `timerPending=1`); CPU-only drain visar samma beteende och
+är alltså inte en genväg. Ett försök att preservera den interna timer-latchen
+över context-preserving helpers ändrade inte f1040-PC eller counters och
+togs bort.
+
+Det finns nu en default-off, read-only observer:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_ITEMS_BOUNDARY=1
+```
+
+Den loggar builder-entryns instruktionstal, RA, index, assetnamn och alla sju
+allocatorcursors, samt de första 16 relevanta `SPECIAL`-kopiorna. Nästa
+smala steg är att lägga till ett villkorat probe-stop/snapshot exakt när
+`pc=0x800abd64`, `index=16` och assetnamnet är `items/levelE`. Kör därefter
+control och allocator-kandidaten från samma pre-entry-snapshot. Använd inte
+f1200 eller den nya negativa f1420-snapshoten som pre-entry-baslinje, och
+återinför inte den direkta items-buildern.
+
+### 2026-07-25: index-16-builderhypotesen är avförd på den korrigerade linjen
+
+Den föregående fortsättningspunkten var för snäv. Ett exakt probe-stop lades
+till för `pc=0x800abd64`, `index=16`, `asset=items/levelE`; probe-runnern
+sparar dessutom nu det faktiska frame-numret om ett sådant stopp sker mitt i
+en frame. En separat bugg i observatören rättades också: 32-radersgränsen för
+vanlig trace får inte längre stänga av själva stoppvillkoret.
+
+Första replayn från f1000 avslöjade samtidigt att
+`StartKnownRuntimeTempleWeaponsLoadPreservingContext()` kunde starta medan
+den naturliga levelE-kedjan stod på index 9. Recovery-villkoret kräver nu
+också `currentIndex == 0xffffffff`; den riktiga producenten vid `0x8003b198`
+är oförändrad. Efter rättningen går den naturliga ordningen åter genom
+`zom2`, `ice2`, `imp2`, `pla2`, `death`, `weapons` och `powerups`, och den
+direkta weapons-byggaren returnerar med count `0x32f`.
+
+En full replay f1000--f1250 med det reparerade stoppet gav ingen
+index-16-entry. Det är ett verkligt negativt resultat, inte längre ett
+trace-limitfel:
+
+```text
+f1000 currentIndex=9, nextIndex=16
+      asset[16]=hiscore/legends
+      source[16]=805b1370
+      resource[16]=805b1464
+
+f1150 currentIndex=ffffffff, nextIndex=17
+      asset[16]=items/levelE
+      source[16]=80723d04
+      resource[16]=8072d830
+```
+
+Disassemblyn bekräftar att `0x800abd64` verkligen läser index från
+`0x80228060`, men den observerade items-publiceringen sker alltså via en
+annan väg. Även descriptor-idén avfördes: strängen kopieras först som
+`items/levelE1` till `0x8024fcb0`, men när nästa CPU-step kan observera den
+är items-resursen redan publicerad och index återställt till `-1`.
+
+Den första items-recorden på den korrigerade linjen är:
+
+```text
+09010605 00080008 00000000 0007577f
+000001cf 0003d614 00000000 003c10f8
+```
+
+Detta ersätter den äldre recovery-linjens `0x000f0163`/`0x00396019` som
+aktuell oracle. MAME-värdena är fortfarande `0x000619a3` respektive
+`0x00322218`, men allocator-kandidaten träffar inte den verkliga producenten
+och får inte promoveras.
+
+Följande snapshots är post-publication-checkpoints trots sina historiska
+arbetsnamn:
+
+```text
+f1120  artifacts/gauntlet-probe/gauntdl-temple-items-descriptor-ready-v2-20260725.warm
+       sha256 90f43924ca68a687038ae9b6b19b90de953ee16954a00dd3e8016fcd07e94401
+f1150  artifacts/gauntlet-probe/gauntdl-temple-items-descriptor-ready-20260725.warm
+       sha256 f72119ed63ec20ad0c6ec63f53e1d673849e7f24007df21cf8a3f6ac55929196
+f1250  artifacts/gauntlet-probe/gauntdl-temple-items-pre-entry-v3-20260725.warm
+       sha256 9cf30d85a4cc9895e9af5b484abe363963b4a5324a53b2a47bd797d016426fa1
+```
+
+Använd ingen av dem som pre-entry-oracle. Nästa smala gräns är den faktiska
+skrivaren som ersätter `resourceTable[16]` vid `0x802545e0` (och motsvarande
+`sourceTable[16]` vid `0x802529e0`). Börja med write-watch över exakt dessa
+ord från f1000-linjen, fånga writer-PC/RA och flytta först därefter
+allocator-A/B till den bevisade producenten.
+
+#### Pauspunkt: faktisk items-writer och nästa pre-call
+
+Write-watch från den korrigerade f1000-linjen fångade nu den exakta
+publiceringen:
+
+```text
+pc=0xffffffff800aae64
+op=0xacc20000                  sw v0,0(a2)
+addr=0xffffffff802545e0
+old=0x805b1464
+new=0x8072d830
+ra=0xffffffff800aae68
+a2=0xffffffff802545e0
+v0=0xffffffff8072d830
+s0=0x10
+s2=0xffffffff80723d04
+```
+
+Detta är `resourceTable[16]`. Disassemblyn runt `0x800aadc0` visar att
+skrivningen ligger i delay-slotten till `jal 0x800b72fc` vid `0x800aae60`.
+Items-source laddas tidigare till `s2`, och parseranropet som ska få
+allocator-A/B ligger vid:
+
+```text
+0x800aae00  lui   a1,0x8014
+0x800aae04  addiu a1,a1,0xb024
+0x800aae08  move  a2,s1
+0x800aae0c  jal   0x800c8a5c
+0x800aae10  move  a3,s2
+```
+
+Första observerförsöket använde av misstag `0x800aae08`, alltså
+argumentflytten före själva `jal`, och träffade därför inte. Konstanten är
+korrigerad till `0x800aae0c`, men ingen ny runtime-körning har gjorts efter
+korrigeringen eftersom arbetet pausades här.
+
+Nästa fortsättning:
+
+1. Bygg proben och kör f1000-linjen med
+   `EUTHERDRIVE_GAUNTDL_STOP_RUNTIME_TEMPLE_ITEMS_BOUNDARY=1`.
+2. Verifiera stopp vid `pc=0x800aae0c`, `s0=16`, `s2=source[16]`, och spara
+   en neutral pre-call-snapshot.
+3. Kör control och
+   `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR=1`
+   från exakt samma snapshot.
+4. Jämför första recordens word 3/selector, `resource[16]`, texWrites och
+   TMU1:s återstående nollsidor. Promovera endast kandidaten om MAME-oraclen
+   förbättras utan count-korruption eller dubbel laddning.
+
+#### Verifierad fix: naturlig items-allokering kalibrerad vid parser-call
+
+Den korrigerade f1200-linjen nådde den verkliga gränsen vid frame 1264:
+
+```text
+pc=0xffffffff800aae0c
+s0/index=16
+s2/source=0x80723d04
+publishedSource=0x805b1370
+asset=items/levelE
+alloc=003c10f8/003c10f8/007c11b8/007c11b8/007c11b8/003c10f8/003c10f8
+```
+
+Det bekräftar varför den första observatören missade gränsen: den krävde att
+`s2` redan skulle vara lika med `sourceTable[16]`, men den gamla publicerade
+källan ersätts först efter parseranropet. Den neutrala pre-call-snapshoten är:
+
+```text
+artifacts/gauntlet-probe/gauntdl-temple-items-parser-precall-exact-20260725.warm
+frame=1264
+pc=0xffffffff800aae0c
+```
+
+Control och allocator-kandidaten kördes från exakt denna snapshot till f1420.
+Resurspekaren var stabil (`source[16]=0x80723d04`,
+`resource[16]=0x8072d830`) och ingen dubbel laddning eller count-korruption
+syntes. Första recorden blev:
+
+```text
+control    09010605 00080008 00000000 0007577f
+           000001cf 0003d614 00000000 003c10f8
+
+kalibrerad 09010605 00080008 00000000 000619a3
+           000001cf 0003d614 00000000 00322218
+
+MAME       word3=000619a3 selector=00322218
+```
+
+Kandidaten matchar alltså båda MAME-fälten exakt. Arbetsbuffer 1 visar också
+en kausal förbättring: den felaktiga stora mörkblå plattan i förgrunden
+försvinner och mer av den centrala Temple-gången får sammanhängande riktig
+textur. Enkel mängdstatistik är blandad (`TMU1 first-sample zero` 253 -> 261,
+`colored` i den nedsamplade arbetsbufferten 2254 -> 1584), men den statistiken
+räknar den felallokerade blå ytan som innehåll. Den exakta record-oraklen och
+bildens strukturella förbättring väger tyngre.
+
+Fixen är därför promoterad som
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR=1` i både
+bringup-preseten och probe-wrappern. Det gamla `EXPERIMENT_...`-namnet fungerar
+fortfarande som kompatibilitetsalias. Read-only stop/trace finns kvar för
+framtida lineage-kontroll:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_ITEMS_BOUNDARY=1
+EUTHERDRIVE_GAUNTDL_STOP_RUNTIME_TEMPLE_ITEMS_BOUNDARY=1
+```
+
+Verifieringsartifakter:
+
+```text
+artifacts/gauntlet-probe/gauntdl-items-control-f1420-20260725.warm
+artifacts/gauntlet-probe/gauntdl-items-allocator-f1420-20260725.warm
+artifacts/gauntlet-probe/gauntdl-items-control-f1420-buffer_buf1.png
+artifacts/gauntlet-probe/gauntdl-items-allocator-f1420-buffer_buf1.png
+```
+
+Nästa smala gräns är inte längre items-recordens allocator. Den återstående
+Temple-bilden har fortfarande många TMU1-sample utan registrerad writer.
+Fortsätt från den promoterade f1420-snapshoten och bind de kvarvarande
+nollsidorna till nästa naturliga resource-/Type5-producent; ändra inte
+sampler eller framebuffer-chooser utifrån dessa hål.

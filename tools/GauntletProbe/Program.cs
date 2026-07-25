@@ -594,6 +594,8 @@ static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, u
         ApplyInputFromEnvironment(adapter, frame);
         adapter.RunFrame();
         PrintFrameCheckpointIfRequested(adapter, frameCheckpoints, summaryContext);
+        if (TryStopAtRuntimeTempleItemsBoundary(adapter))
+            return;
         if (stopPc.HasValue && TryGetCpuPc(adapter, out ulong pc) && pc == stopPc.Value)
         {
             Console.Error.WriteLine($"stopPc=0x{pc:x16} frame={adapter.FrameCounter.GetValueOrDefault()}");
@@ -602,6 +604,20 @@ static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, u
         if (frame > 0 && frame % ParseProgressInterval() == 0)
             Console.Error.WriteLine($"progress frame={frame}");
     }
+}
+
+static bool TryStopAtRuntimeTempleItemsBoundary(GauntletDarkLegacyAdapter adapter)
+{
+    object machine = GetField(adapter, "_machine");
+    object cpu = GetProperty(machine, "Cpu");
+    if (!(bool)GetProperty(cpu, "RuntimeTempleItemsBoundaryReached"))
+        return false;
+
+    SetField(cpu, "_halted", false);
+    Console.Error.WriteLine(
+        $"templeItemsBoundaryStop=1 frame={adapter.FrameCounter.GetValueOrDefault()} " +
+        $"pc=0x{GetProperty(cpu, "Pc"):x16}");
+    return true;
 }
 
 static int[] ParseFrameCheckpoints(string? raw)
@@ -1142,7 +1158,8 @@ static void SaveRequestedFinalSnapshot(GauntletDarkLegacyAdapter adapter, int fr
     if (string.IsNullOrWhiteSpace(path))
         return;
 
-    SaveWarmupSnapshot(adapter, path, frames, cpuStepsPerFrame);
+    int actualFrames = checked((int)adapter.FrameCounter.GetValueOrDefault());
+    SaveWarmupSnapshot(adapter, path, actualFrames, cpuStepsPerFrame);
     Console.Error.WriteLine($"finalSnapshotSaved={path}");
 }
 
