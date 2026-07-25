@@ -3047,3 +3047,66 @@ som page-oracle.
 Bit 9 betyder uttryckligen att fronten inte roteras; att kopiera drawbuffer
 även i det fallet kunde ersätta en giltig presenterad bild med en
 övergångs-/clearbuffer.
+
+### 2026-07-25: kvarvarande TMU1-hål och naturlig items-allokering
+
+En ny rawdump av hela Voodoo-texturminnet och writer-proveniens för varje
+först samplad TMU1-sida smalnar av den återstående gränsen:
+
+```text
+f1420 unika samplade TMU1-sidor       285
+första sample raw=0                   98
+raw=0 med registrerad writer           0
+helt tomma 4 KiB-sidor                30
+delvis fyllda men oskrivna sample     68
+```
+
+Alla 98 nollsample saknar alltså writer. Det är verkligt saknad residens,
+inte svarta texlar eller ett samplerfel. Weapons-checkpointens 8 MiB-dump
+har SHA-256
+`7c31269cb21e94db168b331ce9cfcf6ace8d6973f177d3dd085696cf54b1452d`.
+Jämfört med den äldre f1400-dumpen har 334 tidigare helt tomma TMU0-sidor
+och 448 tidigare helt tomma TMU1-sidor fått data.
+
+Den naturliga `items/levelE`-resursen är samtidigt byggd exakt en gång i den
+giltiga f1400/f1420-kedjan. Dess första record är:
+
+```text
+09010605 00080008 00000000 000f0163
+000001cf 0003d614 00000000 00396019
+```
+
+Recordformen och huvuddelen av fälten stämmer med referensen, men både ord
+3 (`0x000f0163` mot MAME:s `0x000619a3`) och publicerad selector
+(`0x00396019` mot `0x00322218`) avviker. Vid f1420 har de relevanta
+allocatorglobalerna redan drivit till bland annat `0x003cd148`,
+`0x007ceb28` och `0x003960b0`. Nästa riktiga försök ska därför först prova
+allokatorkalibreringen precis när gästens naturliga builder `0x800abd64`
+går in för index 16 och namnet fortfarande är `items/levelE`, men även
+jämföra ord 3 efter försöket; den får inte anropa items-buildern separat.
+
+Det finns nu en default-off kandidat för just detta:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR=1
+```
+
+Kandidaten skriver endast de sju kända post-weapons-globala cursors vid den
+naturliga builder-entryn. Den är inte en accepterad fix ännu. Förenklade
+direktkörningar divergerade före items eftersom de saknade baseline-
+wrapperns source-owner/descriptor-skydd. Den korrekta wrapperkörningen från
+`/tmp/gauntlet-current-f1200-v12.warm` nådde f1300 men fastnade därefter i
+upprepade `runtime-string-copy` från `0x8055c280` innan hooken triggade och
+avbröts manuellt. Börja nästa pass med att fånga PC/RA och frame för den
+loopen eller med en snapshot närmare den första `items/levelE`-buildern.
+
+Två diagnostiska hjälpmedel är kvar default-off:
+
+```text
+EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_TEXTURE_RAW=/tmp/texture.bin
+EUTHERDRIVE_GAUNTDL_TRACE_TMU1_SAMPLE_PAGES=1
+```
+
+Den senare loggar nu även `writer`, `source`, `sourceBase` och
+`Type5TargetStart` för varje unik TMU1-sida. Checkpointen bygger utan fel;
+befintliga varningar kvarstår.

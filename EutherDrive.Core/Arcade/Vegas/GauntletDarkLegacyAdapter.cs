@@ -856,6 +856,8 @@ internal sealed class MipsR5000Core
         ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BGLOADMODEL_SOURCE_TABLE_STORE_SKIP_INDEX_MASK") ?? 0UL;
     private readonly bool _enableRuntimeBgLoadModelAssetNameExperiment =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES"));
+    private readonly bool _experimentRuntimeTempleNaturalItemsAllocator =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR"));
     private readonly bool _enableRuntimeBgLoadModelAssetStaticAliasSourceRepair =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_STATIC_ALIAS_SOURCE"));
     private readonly bool _experimentRuntimeBgLoadModelTextureSetDistinctSource =
@@ -2324,6 +2326,7 @@ internal sealed class MipsR5000Core
     {
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ulong pc = Pc;
+        ApplyKnownRuntimeTempleNaturalItemsAllocatorExperiment(pc);
         TraceMainRamValueTransition(pc);
         if (_profileHotPcs)
             CountHotPc(pc);
@@ -2867,6 +2870,35 @@ internal sealed class MipsR5000Core
             : _hasImmediatePcOverride ? _immediatePcOverride : nextPc;
         TraceSuspiciousLowPcTransition(pc, op, resolvedPc, branchFromPreviousInstruction, branchTarget);
         Pc = resolvedPc;
+    }
+
+    private void ApplyKnownRuntimeTempleNaturalItemsAllocatorExperiment(ulong pc)
+    {
+        const ulong resourceBuilderEntry = 0xffffffff800abd64UL;
+        const ulong currentIndexAddress = 0xffffffff80228060UL;
+        const ulong assetTable = 0xffffffff8024f9a0UL;
+        const ulong descriptorStride = 0x30UL;
+        const uint itemsIndex = 16U;
+        if (!_experimentRuntimeTempleNaturalItemsAllocator ||
+            pc != resourceBuilderEntry ||
+            _memory.Read32(currentIndexAddress) != itemsIndex ||
+            ReadAsciiTraceString(assetTable + itemsIndex * descriptorStride + 0x10UL, 0x20) != "items/levelE")
+        {
+            return;
+        }
+
+        uint oldLow = _memory.Read32(0xffffffff8020f130UL);
+        uint oldHigh = _memory.Read32(0xffffffff8020f110UL);
+        _memory.Write32(0xffffffff8020f108UL, 0x00322218U);
+        _memory.Write32(0xffffffff8020f10cUL, 0x00322218U);
+        _memory.Write32(0xffffffff8020f110UL, 0x00722218U);
+        _memory.Write32(0xffffffff8020f114UL, 0x00722218U);
+        _memory.Write32(0xffffffff8020f120UL, 0x00722218U);
+        _memory.Write32(0xffffffff8020f130UL, 0x00322218U);
+        _memory.Write32(0xffffffff8020f134UL, 0x00322218U);
+        Console.WriteLine(
+            $"[GAUNTDL:EXPERIMENT] temple-natural-items-allocator " +
+            $"pc={pc:x16} index={itemsIndex} low={oldLow:x8}->00322218 high={oldHigh:x8}->00722218");
     }
 
     private void TraceSuspiciousLowPcTransition(
@@ -45793,10 +45825,14 @@ sampledTexel:
                 uint localPage = (sampleAddress & (TextureBankBytes - 1u)) >> 12;
                 if (_tracedTmu1SamplePages.Add(localPage))
                 {
+                    TextureSampleWriterKey pageWriter = GetTextureSampleWriterKey(sampleAddress);
                     Console.WriteLine(
                         $"[GAUNTDL:TMU1-SAMPLE-PAGE] frame={_renderFrame} page=0x{localPage:X3} " +
                         $"address=0x{sampleAddress:X6} base=0x{ReadTextureRegisterForTmu(1, RegTextureBaseAddr):X8} " +
-                        $"lod={targetLod1} raw=0x{_lastTextureSampleRaw:X4}");
+                        $"lod={targetLod1} raw=0x{_lastTextureSampleRaw:X4} " +
+                        $"writer={(pageWriter.Equals(default(TextureSampleWriterKey)) ? 0 : 1)} " +
+                        $"source=0x{pageWriter.Source:X8} sourceBase=0x{pageWriter.SourceBase:X8} " +
+                        $"target=0x{pageWriter.Type5TargetStart:X8}");
                 }
             }
             if (_experimentTmu1ZeroAsNeutralWhite &&
