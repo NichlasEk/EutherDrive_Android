@@ -2976,3 +2976,74 @@ FIFO-data eller flera orelaterade scratchanvändningar. Nästa callertrace ska
 börja vid `0x801095c8` och jämföra hur denna grupp byggs mot en normal
 primär/TMU1-grupp. Där finns nu den närmaste observerbara punkten där den
 saknade companion-recorden antingen borde väljas eller redan saknas.
+
+### 2026-07-25: Temple weapons återställer en stor del av primär TMU1
+
+Den avbrutna Temple/QIO-kandidaten återhämtades och kördes först A/B mot
+pushad `dfa85c57` från exakt samma f1000-snapshot. Vid f1030 gav båda samma
+presenterade hash `0x6604904f`, men kandidaten gjorde betydligt mer verkligt
+texturarbete:
+
+```text
+                         pushad HEAD       Temple weapons
+texWrites                2240354           2500078
+intervall writes          495060           1533956
+intervall nonzero         434841            853806
+texture nonzero words     861477            953169
+texture last              0x52aa9c          0x65338c
+```
+
+Det nya arbetet kommer från den ROM-härledda `weapons`-containern och den
+vanliga guest-resursbyggaren vid `0x800abd64`. Första weapons-recordet
+matchar MAME-allokeringen vid `0x563000`; 57 animerade aliases återbinds till
+sin faktiska variant. Ingen MAME-TMU-dump eller neutralvit oracle används som
+runtime-data.
+
+Körningen fortsätter deterministiskt genom f1400:
+
+```text
+f1071  pc=0x800fe7c4 texWrites=2578121 texture nz=1025953 last=0x6a3c7c
+f1200  pc=0x800d1364 texWrites=2916631 texture nz=1352940 last=0x77bf00
+f1400  pc=0x800c6f00 texWrites=3032458 texture nz=1458348 last=0x7ceb24
+```
+
+Warmformat v12 sparar nu också Temple-laddningens fyra lifecycle-flaggor.
+En omedelbar omladdning av f1071 var byte-/hashstabil och körde inte om
+weapons-byggaren.
+
+#### Varför den vanliga f1400-bilden ser ut som en regression
+
+MAME-vblankspåret visar strikt senast presenterade buffer. Vid f1400 har
+gästen ännu inte gjort nästa swap, så den vanliga exporten håller korrekt
+kvar den äldre glesa bilden (`frameHash=0x6604904f`). Den aktuella
+backbufferten innehåller däremot den nya Temple-scenen. Det är därför
+missvisande att bedöma just denna mellanpunkt enbart från den presenterade
+PNG-filen.
+
+En read-only dump av arbetsbuffer 1 vid f1420, efter samma två-frame FIRE 3-
+puls som tidigare, ger:
+
+```text
+framebuffer=640x480 nonBlack=307200 colored=150556
+sha256=2552855de20dc76bbbe13a47707425ab32e323cddfb79634335f2458bd62c7db
+
+artifacts/gauntlet-probe/gauntdl-temple-weapons-working-f1420-20260725.png
+```
+
+Den gamla f1420-bilden hade stora sammanhängande vita hål och bara cirka
+48k färgpixlar. Weapons-kedjan fyller nu stora delar av golv, korridor och
+objekt med riktiga texturer. Neutralvit-oraklet är fortfarande mer komplett,
+så den återstående gränsen är alltjämt saknad primär TMU1-residens, men
+weapons är verifierat en riktig del av lösningen.
+
+Den naturliga gästprogressionen har vid f1420 redan publicerat
+`items/levelE` på index 16. Den experimentella direkta items-byggaren ska
+därför inte anropas: tidigare prov gav dubbel laddning, count-korruption och
+hang. Nästa pass ska i stället jämföra de fortfarande nollande TMU1-sidorna
+mot de 815 weapons-recorden och den naturliga items-resursen, med MAME endast
+som page-oracle.
+
+`swapbufferCMD.dontSwap` uppdaterar inte längre den presenterade kopian.
+Bit 9 betyder uttryckligen att fronten inte roteras; att kopiera drawbuffer
+även i det fallet kunde ersätta en giltig presenterad bild med en
+övergångs-/clearbuffer.

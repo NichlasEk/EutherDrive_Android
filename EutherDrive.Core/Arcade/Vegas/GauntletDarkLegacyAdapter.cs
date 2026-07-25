@@ -423,6 +423,8 @@ internal sealed class GauntletDarkLegacyMachine
                 _runtimeTimerTickAccumulator -= 60;
             }
         }
+        Cpu.StartKnownRuntimeTempleWeaponsLoadPreservingContext();
+        Cpu.ServiceKnownRuntimeTempleTextureQioPreservingContext();
         if (_enableRuntimeInputPollBridge)
             MemoryMap.RecordRuntimeInputPollEffects();
         if (_splitVblankCpu)
@@ -1580,6 +1582,10 @@ internal sealed class MipsR5000Core
     private ulong _tileWriteCount;
     private bool _timerInterruptPending;
     private bool _insideContextPreservingRuntimeTimerTick;
+    private bool _runtimeTempleWeaponsLoadRequested;
+    private bool _runtimeTempleWeaponsResourceBuilt;
+    private bool _runtimeTempleItemsLoadRequested;
+    private bool _runtimeTempleItemsResourceBuilt;
     private ulong _hi;
     private ulong _lo;
 
@@ -1785,8 +1791,538 @@ internal sealed class MipsR5000Core
         return returned;
     }
 
+    public bool ServiceKnownRuntimeTempleTextureQioPreservingContext()
+    {
+        const ulong qioBase = 0xffffffff80217c58UL;
+        const ulong qioStride = 0x118UL;
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong textureCallbackEntry = 0xffffffff800ab4e4UL;
+        const ulong objectCallbackEntry = 0xffffffff800ac11cUL;
+        const ulong returnSentinel = 0xffffffff80000000UL;
+        const ulong allocatorOffsetAddress = 0xffffffff802280fcUL;
+        const ulong allocatorLimitAddress = 0xffffffff80228100UL;
+        const ulong allocatorBaseAddress = 0xffffffff80228104UL;
+        const uint requestedBytes = 0x2000U;
+        const int maxSteps = 100_000;
+        if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
+            _halted ||
+            _insideContextPreservingRuntimeTimerTick ||
+            !IsRuntimeCodeAddress(Pc) ||
+            ReadAsciiTraceString(0xffffffff8024fb60UL, 0x20) != "levels/levelE1")
+        {
+            return false;
+        }
+
+        ulong qio = 0;
+        ulong source = 0;
+        ulong callbackEntry = textureCallbackEntry;
+        uint completedBytes = requestedBytes;
+        for (ulong index = 10; index <= 15; index++)
+        {
+            if (index == 14UL)
+                continue;
+            ulong candidateQio = qioBase + index * qioStride;
+            if (_memory.Read32(candidateQio + 0x04UL) != unchecked((uint)textureCallbackEntry) ||
+                _memory.Read32(candidateQio + 0x0cUL) != requestedBytes ||
+                _memory.Read32(candidateQio + 0x10UL) != 0 ||
+                _memory.Read32(candidateQio + 0x14UL) != 0)
+            {
+                continue;
+            }
+
+            ulong sourceSlot = sourceTable + index * 4UL;
+            TryEnsureKnownRuntimeTempleTextureContainer(index);
+            uint sourceWord = _memory.Read32(sourceSlot);
+            ulong candidateSource = SignExtend32(sourceWord);
+            ulong destination = SignExtend32(_memory.Read32(candidateQio + 0x08UL));
+            if (!IsMainRamRange(candidateSource, requestedBytes) ||
+                !IsMainRamRange(destination, requestedBytes))
+            {
+                continue;
+            }
+
+            for (uint offset = 0; offset < requestedBytes; offset++)
+                _memory.Write8(destination + offset, _memory.Read8(candidateSource + offset));
+            if (index == 15UL)
+                _memory.Write32(0xffffffff802545a0UL + index * 4UL, 0U);
+            _memory.Write32(candidateQio + 0x10UL, requestedBytes);
+            _memory.Write32(candidateQio + 0x14UL, 2U);
+            qio = candidateQio;
+            source = candidateSource;
+            break;
+        }
+        if (qio == 0)
+        {
+            ulong objectQio = qioBase + qioStride;
+            string path = ReadAsciiTraceString(objectQio + 0x18UL, 0x60);
+            (ulong Index, ulong DiskOffset, uint ByteLength) objectPayload = path switch
+            {
+                "/d0/monsters/zom2/objects.rom" => (10UL, 0x109560ecUL, 0x0002b7fcU),
+                "/d0/monsters/ice2/objects.rom" => (11UL, 0x1099b4a0UL, 0x00030e68U),
+                "/d0/monsters/imp2/objects.rom" => (12UL, 0x109d6940UL, 0x00023b7cU),
+                "/d0/monsters/pla2/objects.rom" => (13UL, 0x1257e45cUL, 0x000028acU),
+                _ => (0, 0, 0)
+            };
+            ulong allocatorBase = SignExtend32(_memory.Read32(allocatorBaseAddress));
+            uint allocatorOffset = _memory.Read32(allocatorOffsetAddress);
+            uint allocatorLimit = _memory.Read32(allocatorLimitAddress);
+            ulong alignedOffset = ((ulong)allocatorOffset + 3UL) & ~3UL;
+            ulong endOffset = alignedOffset + objectPayload.ByteLength;
+            ulong destination = allocatorBase + alignedOffset;
+            if (objectPayload.ByteLength != 0 &&
+                _memory.Read32(objectQio + 0x04UL) == unchecked((uint)objectCallbackEntry) &&
+                _memory.Read32(objectQio + 0x10UL) == 0 &&
+                _memory.Read32(objectQio + 0x14UL) == 0 &&
+                endOffset <= allocatorLimit &&
+                endOffset <= uint.MaxValue &&
+                IsMainRamRange(destination, objectPayload.ByteLength) &&
+                _memory.TryReadDiskByteOffsetToMemory(
+                    objectPayload.DiskOffset,
+                    destination,
+                    objectPayload.ByteLength,
+                    out uint firstWord,
+                    out string reason))
+            {
+                _memory.Write32(allocatorOffsetAddress, (uint)endOffset);
+                _memory.Write32(objectQio + 0x08UL, unchecked((uint)destination));
+                _memory.Write32(objectQio + 0x0cUL, objectPayload.ByteLength);
+                _memory.Write32(objectQio + 0x10UL, objectPayload.ByteLength);
+                _memory.Write32(objectQio + 0x14UL, 2U);
+                qio = objectQio;
+                source = destination;
+                callbackEntry = objectCallbackEntry;
+                completedBytes = objectPayload.ByteLength;
+                Console.WriteLine(
+                    $"[GAUNTDL:FIX] bgloadmodel-temple-object-payload path=\"{path}\" " +
+                    $"qio={qio:x16} dest={destination:x16} bytes={completedBytes:x8} " +
+                    $"disk={objectPayload.DiskOffset:x8} first={firstWord:x8} " +
+                    $"source[{objectPayload.Index}]={_memory.Read32(sourceTable + objectPayload.Index * 4UL):x8} " +
+                    $"heap={alignedOffset:x8}->{endOffset:x8}");
+            }
+        }
+        if (qio == 0)
+            return false;
+
+        ulong[] savedGpr = (ulong[])_gpr.Clone();
+        ulong[] savedCp0 = (ulong[])_cp0.Clone();
+        ulong[] savedFpr = (ulong[])_fpr.Clone();
+        uint[] savedFcr = (uint[])_fcr.Clone();
+        ulong savedPc = Pc;
+        uint savedLastFetchedInstruction = LastFetchedInstruction;
+        bool savedHalted = _halted;
+        bool savedHasPendingBranch = _hasPendingBranch;
+        ulong savedPendingBranchTarget = _pendingBranchTarget;
+        bool savedHasImmediatePcOverride = _hasImmediatePcOverride;
+        ulong savedImmediatePcOverride = _immediatePcOverride;
+        ulong savedHi = _hi;
+        ulong savedLo = _lo;
+        int savedRemainingProbeSteps = _remainingProbeSteps;
+        int savedProbeStepDebt = _probeStepDebt;
+        bool returned = false;
+
+        try
+        {
+            _insideContextPreservingRuntimeTimerTick = true;
+            _halted = false;
+            _hasPendingBranch = false;
+            _pendingBranchTarget = 0;
+            _hasImmediatePcOverride = false;
+            _immediatePcOverride = 0;
+            _gpr[4] = qio;
+            _gpr[31] = returnSentinel;
+            _gpr[0] = 0;
+            Pc = callbackEntry;
+            for (int i = 0; i < maxSteps && !_halted; i++)
+            {
+                if (Pc == returnSentinel)
+                {
+                    returned = true;
+                    break;
+                }
+                Step();
+            }
+        }
+        finally
+        {
+            Array.Copy(savedGpr, _gpr, _gpr.Length);
+            Array.Copy(savedCp0, _cp0, _cp0.Length);
+            Array.Copy(savedFpr, _fpr, _fpr.Length);
+            Array.Copy(savedFcr, _fcr, _fcr.Length);
+            Pc = savedPc;
+            LastFetchedInstruction = savedLastFetchedInstruction;
+            _halted = savedHalted;
+            _hasPendingBranch = savedHasPendingBranch;
+            _pendingBranchTarget = savedPendingBranchTarget;
+            _hasImmediatePcOverride = savedHasImmediatePcOverride;
+            _immediatePcOverride = savedImmediatePcOverride;
+            _hi = savedHi;
+            _lo = savedLo;
+            _remainingProbeSteps = savedRemainingProbeSteps;
+            _probeStepDebt = savedProbeStepDebt;
+            _insideContextPreservingRuntimeTimerTick = false;
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] bgloadmodel-temple-qio-callback qio={qio:x16} " +
+            $"source={source:x16} bytes={completedBytes:x8} callback={callbackEntry:x16} returned={returned}");
+        if (returned && qio == qioBase + 15UL * qioStride)
+            RunKnownRuntimeTempleResourceBuildPreservingContext(qio, 15UL);
+        return returned;
+    }
+
+    private bool RunKnownRuntimeTempleResourceBuildPreservingContext(ulong qio, ulong index)
+    {
+        const ulong entry = 0xffffffff800abd64UL;
+        const ulong returnSentinel = 0xffffffff80000000UL;
+        // The signed 0x8060 displacement from LUI 0x8023 resolves to 0x80228060.
+        const ulong currentIndex = 0xffffffff80228060UL;
+        const ulong recordBase = 0xffffffff80252da0UL;
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong streamSource = 0xffffffff8020f154UL;
+        const ulong streamCursor = 0xffffffff8020f178UL;
+        const ulong streamCount = 0xffffffff8020f17cUL;
+        const ulong streamOffset = 0xffffffff8020f180UL;
+        const ulong streamLimit = 0xffffffff8020f184UL;
+        const int maxSteps = 10_000_000;
+        bool alreadyBuilt = index == 15UL
+            ? _runtimeTempleWeaponsResourceBuilt
+            : _runtimeTempleItemsResourceBuilt;
+        if (alreadyBuilt || index is not (15UL or 17UL) || _insideContextPreservingRuntimeTimerTick)
+            return false;
+
+        ulong record = recordBase + index * 0x18UL;
+        uint savedCurrentIndex = _memory.Read32(currentIndex);
+        uint savedRecordQio = _memory.Read32(record + 0x04UL);
+        uint savedStreamSource = _memory.Read32(streamSource);
+        uint savedStreamCursor = _memory.Read32(streamCursor);
+        uint savedStreamCount = _memory.Read32(streamCount);
+        uint savedStreamOffset = _memory.Read32(streamOffset);
+        uint savedStreamLimit = _memory.Read32(streamLimit);
+        _memory.Write32(record + 0x04UL, unchecked((uint)qio));
+        _memory.Write32(qio + 0x14UL, 2U);
+        _memory.Write32(currentIndex, (uint)index);
+        ulong source = SignExtend32(_memory.Read32(sourceTable + index * 4UL));
+        uint count = _memory.Read32(source + 0x64UL);
+        uint tableIndex = _memory.Read32(source + 0x60UL);
+        ulong resource = source + 0x68UL + (ulong)tableIndex * 0x8cUL;
+        if (index == 15UL)
+        {
+            // MAME's first Temple weapons record publishes local TMU1 selector
+            // 0x163001, so the shared 8 MiB allocator must enter at 0x563000.
+            _memory.Write32(0xffffffff8020f110UL, 0x00563000U);
+            _memory.Write32(0xffffffff8020f120UL, 0x00563000U);
+        }
+        else
+        {
+            // Weapons advances this allocator to the MAME-observed items start.
+            // The first items record then publishes local selector 0x322218.
+            _memory.Write32(0xffffffff8020f108UL, 0x00322218U);
+            _memory.Write32(0xffffffff8020f10cUL, 0x00322218U);
+            _memory.Write32(0xffffffff8020f110UL, 0x00722218U);
+            _memory.Write32(0xffffffff8020f114UL, 0x00722218U);
+            _memory.Write32(0xffffffff8020f120UL, 0x00722218U);
+            _memory.Write32(0xffffffff8020f130UL, 0x00322218U);
+            _memory.Write32(0xffffffff8020f134UL, 0x00322218U);
+        }
+        _memory.Write32(streamSource, unchecked((uint)source));
+        _memory.Write32(streamCursor, 0U);
+        _memory.Write32(streamCount, count);
+        _memory.Write32(streamOffset, 0U);
+        _memory.Write32(streamLimit, uint.MaxValue);
+
+        ulong[] savedGpr = (ulong[])_gpr.Clone();
+        ulong[] savedCp0 = (ulong[])_cp0.Clone();
+        ulong[] savedFpr = (ulong[])_fpr.Clone();
+        uint[] savedFcr = (uint[])_fcr.Clone();
+        ulong savedPc = Pc;
+        uint savedLastFetchedInstruction = LastFetchedInstruction;
+        bool savedHalted = _halted;
+        bool savedHasPendingBranch = _hasPendingBranch;
+        ulong savedPendingBranchTarget = _pendingBranchTarget;
+        bool savedHasImmediatePcOverride = _hasImmediatePcOverride;
+        ulong savedImmediatePcOverride = _immediatePcOverride;
+        ulong savedHi = _hi;
+        ulong savedLo = _lo;
+        int savedRemainingProbeSteps = _remainingProbeSteps;
+        int savedProbeStepDebt = _probeStepDebt;
+        bool returned = false;
+
+        if (index == 15UL)
+            _runtimeTempleWeaponsResourceBuilt = true;
+        else
+            _runtimeTempleItemsResourceBuilt = true;
+        try
+        {
+            _insideContextPreservingRuntimeTimerTick = true;
+            _halted = false;
+            _hasPendingBranch = false;
+            _pendingBranchTarget = 0;
+            _hasImmediatePcOverride = false;
+            _immediatePcOverride = 0;
+            _gpr[31] = returnSentinel;
+            _gpr[0] = 0;
+            Pc = entry;
+            for (int i = 0; i < maxSteps && !_halted; i++)
+            {
+                if (Pc == returnSentinel)
+                {
+                    returned = true;
+                    break;
+                }
+                Step();
+            }
+        }
+        finally
+        {
+            Array.Copy(savedGpr, _gpr, _gpr.Length);
+            Array.Copy(savedCp0, _cp0, _cp0.Length);
+            Array.Copy(savedFpr, _fpr, _fpr.Length);
+            Array.Copy(savedFcr, _fcr, _fcr.Length);
+            Pc = savedPc;
+            LastFetchedInstruction = savedLastFetchedInstruction;
+            _halted = savedHalted;
+            _hasPendingBranch = savedHasPendingBranch;
+            _pendingBranchTarget = savedPendingBranchTarget;
+            _hasImmediatePcOverride = savedHasImmediatePcOverride;
+            _immediatePcOverride = savedImmediatePcOverride;
+            _hi = savedHi;
+            _lo = savedLo;
+            _remainingProbeSteps = savedRemainingProbeSteps;
+            _probeStepDebt = savedProbeStepDebt;
+            _insideContextPreservingRuntimeTimerTick = false;
+            _memory.Write32(currentIndex, savedCurrentIndex);
+            _memory.Write32(record + 0x04UL, savedRecordQio);
+            _memory.Write32(streamSource, savedStreamSource);
+            _memory.Write32(streamCursor, savedStreamCursor);
+            _memory.Write32(streamCount, savedStreamCount);
+            _memory.Write32(streamOffset, savedStreamOffset);
+            _memory.Write32(streamLimit, savedStreamLimit);
+            if (returned)
+            {
+                RepairKnownRuntimeTempleAnimatedTextureAliases(resource, count);
+                _memory.Write32(0xffffffff802545a0UL + index * 4UL, unchecked((uint)resource));
+                for (ulong offset = 0; offset <= 0x14UL; offset += 4UL)
+                    _memory.Write32(qio + offset, 0U);
+            }
+            else
+                _memory.Write32(qio + 0x14UL, uint.MaxValue);
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] temple-resource-build asset={(index == 15UL ? "weapons" : "items")} returned={returned} " +
+            $"index={_memory.Read32(currentIndex):x8} record={record:x16} qio={qio:x16} " +
+            $"source={source:x16} resource={resource:x16} count={count:x8}");
+        return returned;
+    }
+
+    private void RepairKnownRuntimeTempleAnimatedTextureAliases(ulong resource, uint count)
+    {
+        const ulong recordStride = 0x50UL;
+        int repaired = 0;
+        for (uint index = 0; index < count; index++)
+        {
+            ulong record = resource + index * recordStride;
+            uint textureState = _memory.Read32(record + 0x10UL);
+            if ((textureState & 0xff000000U) != 0x08000000U)
+                continue;
+
+            uint textureOffset = _memory.Read32(record + 0x08UL);
+            ulong candidate = 0;
+            for (uint candidateIndex = 0; candidateIndex < count; candidateIndex++)
+            {
+                if (candidateIndex == index)
+                    continue;
+                ulong candidateRecord = resource + candidateIndex * recordStride;
+                uint candidateState = _memory.Read32(candidateRecord + 0x10UL);
+                if ((candidateState & 0xff000000U) == 0x08000000U ||
+                    _memory.Read32(candidateRecord + 0x08UL) != textureOffset ||
+                    _memory.Read32(candidateRecord + 0x1cUL) == 0)
+                {
+                    continue;
+                }
+
+                candidate = candidateRecord;
+                break;
+            }
+
+            if (candidate == 0)
+                continue;
+
+            uint aliasType = _memory.Read32(record);
+            for (ulong offset = 0; offset < recordStride; offset += 4UL)
+                _memory.Write32(record + offset, _memory.Read32(candidate + offset));
+            _memory.Write32(record, aliasType);
+            repaired++;
+        }
+
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] temple-animated-texture-aliases resource={resource:x16} " +
+            $"count={count} repaired={repaired}");
+    }
+
+    public bool StartKnownRuntimeTempleItemsLoadPreservingContext()
+    {
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong itemsHandle = 0xffffffff80227cc0UL;
+        const ulong qio = 0xffffffff80217c58UL + 17UL * 0x118UL;
+        if (!_runtimeTempleWeaponsResourceBuilt ||
+            _runtimeTempleItemsLoadRequested ||
+            _insideContextPreservingRuntimeTimerTick ||
+            ReadAsciiTraceString(0xffffffff8024fb60UL, 0x20) != "levels/levelE1")
+        {
+            return false;
+        }
+
+        _runtimeTempleItemsLoadRequested = true;
+        _memory.Write32(sourceTable + 17UL * 4UL, 0U);
+        if (!TryEnsureKnownRuntimeTempleTextureContainer(17UL))
+            return false;
+
+        ulong source = SignExtend32(_memory.Read32(sourceTable + 17UL * 4UL));
+        _memory.Write32(itemsHandle, 17U);
+        _memory.Write32(qio + 0x00UL, 0U);
+        _memory.Write32(qio + 0x04UL, 0x800ab4e4U);
+        _memory.Write32(qio + 0x08UL, unchecked((uint)source));
+        _memory.Write32(qio + 0x0cUL, 0x2000U);
+        _memory.Write32(qio + 0x10UL, 0x2000U);
+        _memory.Write32(qio + 0x14UL, 2U);
+        return RunKnownRuntimeTempleResourceBuildPreservingContext(qio, 17UL);
+    }
+
+    public bool StartKnownRuntimeTempleWeaponsLoadPreservingContext()
+    {
+        const ulong powerupsLoadEntry = 0xffffffff8003b198UL;
+        const ulong weaponsHandle = 0xffffffff80227c00UL;
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong resourceTable = 0xffffffff802545a0UL;
+        const ulong assetTable = 0xffffffff8024f9a0UL;
+        const ulong descriptorStride = 0x30UL;
+        const ulong allocatorOffsetAddress = 0xffffffff802280fcUL;
+        const ulong allocatorBaseAddress = 0xffffffff80228104UL;
+        const ulong objectDiskOffset = 0x043f1330UL;
+        const uint objectByteLength = 0x0000a240U;
+        const ulong qio = 0xffffffff80217c58UL + 15UL * 0x118UL;
+        bool atNativeProducer = Pc == powerupsLoadEntry;
+        bool recoveringTempleCheckpoint =
+            ReadAsciiTraceString(0xffffffff8024fb60UL, 0x20) == "levels/levelE1";
+        if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
+            _runtimeTempleWeaponsLoadRequested ||
+            _halted ||
+            _insideContextPreservingRuntimeTimerTick ||
+            (!atNativeProducer && !recoveringTempleCheckpoint) ||
+            _memory.Read32(weaponsHandle) != uint.MaxValue)
+        {
+            return false;
+        }
+
+        _runtimeTempleWeaponsLoadRequested = true;
+        ulong weaponsDescriptor = assetTable + 15UL * descriptorStride;
+        ulong powerupsDescriptor = assetTable + 16UL * descriptorStride;
+        if (ReadAsciiTraceString(weaponsDescriptor + 0x10UL, 0x20) == "powerups")
+        {
+            for (ulong offset = 0; offset < descriptorStride; offset++)
+                _memory.Write8(powerupsDescriptor + offset, _memory.Read8(weaponsDescriptor + offset));
+            _memory.Write32(sourceTable + 16UL * 4UL, _memory.Read32(sourceTable + 15UL * 4UL));
+            _memory.Write32(resourceTable + 16UL * 4UL, _memory.Read32(resourceTable + 15UL * 4UL));
+        }
+
+        _memory.Write32(sourceTable + 15UL * 4UL, 0U);
+        _memory.Write32(resourceTable + 15UL * 4UL, 0U);
+        if (!TryEnsureKnownRuntimeTempleTextureContainer(15UL))
+            return false;
+
+        ulong source = SignExtend32(_memory.Read32(sourceTable + 15UL * 4UL));
+        ulong objectDestination = source + 0x0001f930UL;
+        if (!IsMainRamRange(objectDestination, objectByteLength) ||
+            !_memory.TryReadDiskByteOffsetToMemory(
+                objectDiskOffset,
+                objectDestination,
+                objectByteLength,
+                out uint objectFirst,
+                out _))
+        {
+            return false;
+        }
+        ulong allocatorBase = SignExtend32(_memory.Read32(allocatorBaseAddress));
+        ulong endOffset = (objectDestination + objectByteLength - allocatorBase + 3UL) & ~3UL;
+        if (objectDestination < allocatorBase || endOffset > uint.MaxValue)
+            return false;
+        _memory.Write32(allocatorOffsetAddress, (uint)endOffset);
+
+        _memory.Write32(weaponsDescriptor + 0x00UL, unchecked((uint)objectDestination));
+        _memory.Write32(weaponsDescriptor + 0x04UL, 0x0000007bU);
+        _memory.Write32(weaponsDescriptor + 0x08UL, 0U);
+        _memory.Write32(weaponsDescriptor + 0x0cUL, 0x00145d88U);
+        WriteAsciiTraceString(weaponsDescriptor + 0x10UL, "weapons", 0x20);
+        _memory.Write32(weaponsHandle, 15U);
+        _memory.Write32(qio + 0x00UL, 0U);
+        _memory.Write32(qio + 0x04UL, 0x800ab4e4U);
+        _memory.Write32(qio + 0x08UL, unchecked((uint)source));
+        _memory.Write32(qio + 0x0cUL, 0x2000U);
+        _memory.Write32(qio + 0x10UL, 0U);
+        _memory.Write32(qio + 0x14UL, 0U);
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] temple-weapons-direct-load source={source:x16} " +
+            $"object={objectDestination:x16}/{objectByteLength:x8}/first={objectFirst:x8} " +
+            $"heap={_memory.Read32(allocatorOffsetAddress):x8}");
+        return true;
+    }
+
+    private bool TryEnsureKnownRuntimeTempleTextureContainer(ulong index)
+    {
+        const ulong sourceTable = 0xffffffff802529a0UL;
+        const ulong allocatorOffsetAddress = 0xffffffff802280fcUL;
+        const ulong allocatorLimitAddress = 0xffffffff80228100UL;
+        const ulong allocatorBaseAddress = 0xffffffff80228104UL;
+        if (index is < 10UL or > 17UL || index is 14UL or 16UL)
+            return false;
+
+        ulong sourceSlot = sourceTable + index * 4UL;
+        uint oldSource = _memory.Read32(sourceSlot);
+        if (oldSource != 0 && oldSource != 0x805611e8U)
+            return true;
+
+        if (!TryGetKnownRuntimeBgLoadModelTexturePayload(
+                index,
+                out string code,
+                out _,
+                out uint textureByteLength))
+        {
+            return false;
+        }
+
+        ulong allocatorBase = SignExtend32(_memory.Read32(allocatorBaseAddress));
+        uint allocatorOffset = _memory.Read32(allocatorOffsetAddress);
+        uint allocatorLimit = _memory.Read32(allocatorLimitAddress);
+        ulong alignedOffset = ((ulong)allocatorOffset + 3UL) & ~3UL;
+        ulong endOffset = alignedOffset + textureByteLength;
+        ulong destination = allocatorBase + alignedOffset;
+        if (endOffset > allocatorLimit ||
+            endOffset > uint.MaxValue ||
+            !IsMainRamRange(destination, textureByteLength) ||
+            !TryHydrateKnownRuntimeBgLoadModelIndexedTextureSource(
+                index,
+                destination,
+                textureByteLength,
+                out _,
+                out ulong textureByteOffset,
+                out uint firstWord))
+        {
+            return false;
+        }
+
+        _memory.Write32(sourceSlot, unchecked((uint)destination));
+        _memory.Write32(allocatorOffsetAddress, (uint)endOffset);
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] bgloadmodel-temple-texture-container " +
+            $"index={index} code={code} source={oldSource:x8}->{(uint)destination:x8} bytes={textureByteLength:x8} " +
+            $"disk={textureByteOffset:x8} first={firstWord:x8} heap={alignedOffset:x8}->{endOffset:x8}");
+        return true;
+    }
+
     private void Step()
     {
+        StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ulong pc = Pc;
         TraceMainRamValueTransition(pc);
         if (_profileHotPcs)
@@ -1835,6 +2371,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelQioAliasRepair(pc);
         ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
+        ApplyKnownRuntimeBgLoadModelTempleAssetPathRepair(pc);
         ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(pc);
         TraceKnownRuntimeTextureSetLookup(pc);
         TraceKnownRuntimeRecordListState(pc);
@@ -8197,7 +8734,11 @@ internal sealed class MipsR5000Core
             return;
 
         ulong physicalPc = pc & 0x1fffffffUL;
-        if (physicalPc is not (0x001095c8UL or 0x001096fcUL))
+        if (physicalPc is not (
+            0x000a7364UL or
+            0x000a7590UL or 0x000a75a8UL or 0x000a7624UL or
+            0x000a76f4UL or 0x000a776cUL or
+            0x001094f4UL or 0x001095c8UL or 0x001096fcUL))
             return;
 
         _textureMipCallerTraceCount++;
@@ -8206,10 +8747,16 @@ internal sealed class MipsR5000Core
         Console.WriteLine(
             $"[GAUNTDL:TEXTURE-MIP-CALLER] n={_textureMipCallerTraceCount} pc=0x{pc:x16} op=0x{op:x8} " +
             $"ra=0x{_gpr[31]:x16} a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} " +
-            $"a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} s0=0x{source:x16} " +
-            $"s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
-            $"t7=0x{_gpr[15]:x16} sp18={ReadTraceWord(sp + 0x18UL):x8} " +
+            $"a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
+            $"v0=0x{_gpr[2]:x16} v1=0x{_gpr[3]:x16} s0=0x{source:x16} " +
+            $"s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
+            $"s6=0x{_gpr[22]:x16} s7=0x{_gpr[23]:x16} " +
+            $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t7=0x{_gpr[15]:x16} " +
+            $"sp10={ReadTraceWord(sp + 0x10UL):x8} sp14={ReadTraceWord(sp + 0x14UL):x8} " +
+            $"sp18={ReadTraceWord(sp + 0x18UL):x8} " +
             $"sp1c={ReadTraceWord(sp + 0x1cUL):x8} sp20={ReadTraceWord(sp + 0x20UL):x8} " +
+            $"sp30={ReadTraceWord(sp + 0x30UL):x8} sp34={ReadTraceWord(sp + 0x34UL):x8} " +
+            $"sp38={ReadTraceWord(sp + 0x38UL):x8} " +
             $"sourceWords={TraceKnownRuntimeBgLoadModelAssetParserWords(source)}");
     }
 
@@ -15712,7 +16259,11 @@ internal sealed class MipsR5000Core
     private void ApplyKnownRuntimeBgLoadModelAssetNameRepair(ulong pc)
     {
         if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
-            pc is not (0xffffffff800aacb4UL or 0xffffffff800aa958UL))
+            pc is not (
+                0xffffffff800aacb4UL or
+                0xffffffff800aa958UL or
+                0xffffffff800ac350UL or
+                0xffffffff800ac3a8UL))
         {
             return;
         }
@@ -15723,6 +16274,27 @@ internal sealed class MipsR5000Core
         uint staticAliasSource = IsMainRamRange(assetTable, 4UL) ? _memory.Read32(assetTable) : repeatedStaticSource;
 
         int repaired = 0;
+        if (ReadAsciiTraceString(assetTable + 9UL * descriptorStride + 0x10UL, 0x20) == "levels/levelE1")
+        {
+            string[] templeAssets =
+            [
+                "monsters/zom2",
+                "monsters/ice2",
+                "monsters/imp2",
+                "monsters/pla2"
+            ];
+            for (int templeIndex = 0; templeIndex < templeAssets.Length; templeIndex++)
+            {
+                ulong name = assetTable + (ulong)(10 + templeIndex) * descriptorStride + 0x10UL;
+                if (IsMainRamRange(name, 0x20UL) && _memory.Read8(name) == 0)
+                {
+                    WriteAsciiTraceString(name, templeAssets[templeIndex], 0x20);
+                    repaired++;
+                }
+            }
+
+        }
+
         for (ulong index = 1; index <= KnownRuntimeBgLoadModelTexturePayloadMaxIndex; index++)
         {
             ulong entry = assetTable + index * descriptorStride;
@@ -15775,6 +16347,74 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:FIX] bgloadmodel-asset-name-repair pc={pc:x16} repaired={repaired} " +
                 $"assetTable={TraceKnownRuntimeBgLoadModelAssetTableSummary(0)}");
+        }
+    }
+
+    private void ApplyKnownRuntimeBgLoadModelTempleAssetPathRepair(ulong pc)
+    {
+        const ulong fileLookupPc = 0xffffffff800ec7a0UL;
+        const ulong recordBase = 0xffffffff80252da0UL;
+        const ulong recordStride = 0x18UL;
+        const ulong assetTable = 0xffffffff8024f9a0UL;
+        const ulong descriptorStride = 0x30UL;
+        if (!_enableRuntimeBgLoadModelAssetNameExperiment || pc != fileLookupPc)
+            return;
+
+        ulong record = _gpr[16];
+        ulong path = _gpr[5];
+        string currentPath = ReadAsciiTraceString(path, 0x60);
+        string file = currentPath switch
+        {
+            "/d0//objects.rom" => "objects.rom",
+            "/d0//textures.rom" => "textures.rom",
+            _ => ""
+        };
+        if (file.Length == 0)
+            return;
+
+        int index = -1;
+        if (record >= recordBase + 10UL * recordStride &&
+            record <= recordBase + 13UL * recordStride &&
+            (record - recordBase) % recordStride == 0)
+        {
+            index = checked((int)((record - recordBase) / recordStride));
+        }
+
+        string[] templeAssets =
+        [
+            "monsters/zom2",
+            "monsters/ice2",
+            "monsters/imp2",
+            "monsters/pla2"
+        ];
+        if (index < 0 && file == "objects.rom")
+        {
+            for (int candidate = 10; candidate <= 13; candidate++)
+            {
+                ulong descriptor = assetTable + (ulong)candidate * descriptorStride;
+                string expectedName = templeAssets[candidate - 10];
+                if (_memory.Read32(descriptor) == 0 &&
+                    _memory.Read32(descriptor + 0x0cUL) != 0 &&
+                    ReadAsciiTraceString(descriptor + 0x10UL, 0x20) == expectedName)
+                {
+                    index = candidate;
+                    break;
+                }
+            }
+        }
+        if (index < 0)
+            return;
+
+        if (file == "textures.rom")
+            TryEnsureKnownRuntimeTempleTextureContainer((ulong)index);
+
+        string repairedPath = $"/d0/{templeAssets[index - 10]}/{file}";
+        WriteAsciiTraceString(path, repairedPath, 0x60);
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-temple-asset-path pc={pc:x16} " +
+                $"index={index} path=\"{currentPath}\"->\"{repairedPath}\"");
         }
     }
 
@@ -17740,6 +18380,41 @@ internal sealed class MipsR5000Core
 
             if (output.Count == 0x200 || !IsMainRamRange(source + sourceOffset - 1UL, 1UL))
                 return false;
+        }
+
+        if (_enableRuntimeBgLoadModelAssetNameExperiment &&
+            Encoding.ASCII.GetString(output.ToArray()) == "/d0//objects.rom")
+        {
+            const ulong assetTable = 0xffffffff8024f9a0UL;
+            const ulong descriptorStride = 0x30UL;
+            string[] templeAssets =
+            [
+                "monsters/zom2",
+                "monsters/ice2",
+                "monsters/imp2",
+                "monsters/pla2"
+            ];
+            for (int candidate = 10; candidate <= 13; candidate++)
+            {
+                ulong descriptor = assetTable + (ulong)candidate * descriptorStride;
+                string expectedName = templeAssets[candidate - 10];
+                if (_memory.Read32(descriptor) != 0 ||
+                    _memory.Read32(descriptor + 0x0cUL) == 0 ||
+                    ReadAsciiTraceString(descriptor + 0x10UL, 0x20) != expectedName)
+                {
+                    continue;
+                }
+
+                string repairedPath = $"/d0/{expectedName}/objects.rom";
+                output = new List<byte>(Encoding.ASCII.GetBytes(repairedPath));
+                if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:FIX] bgloadmodel-temple-formatted-asset-path pc={pc:x16} " +
+                        $"index={candidate} path=\"/d0//objects.rom\"->\"{repairedPath}\"");
+                }
+                break;
+            }
         }
 
         if (output.Count == 0x200 ||
@@ -21823,7 +22498,7 @@ internal sealed class MipsR5000Core
         }
     }
 
-    private static bool TryGetKnownRuntimeBgLoadModelTexturePayload(
+    private bool TryGetKnownRuntimeBgLoadModelTexturePayload(
         ulong qioIndex,
         out string code,
         out ulong byteOffset,
@@ -21859,6 +22534,19 @@ internal sealed class MipsR5000Core
             26 => ("sum", 0x13b4b600UL, 0x0000a37cU),
             _ => ("", 0, 0)
         };
+        if (ReadAsciiTraceString(0xffffffff8024f9a0UL + 9UL * 0x30UL + 0x10UL, 0x20) == "levels/levelE1")
+        {
+            entry = qioIndex switch
+            {
+                10 => ("zom2", 0x10a0fa00UL, 0x00027534U),
+                11 => ("ice2", 0x10956600UL, 0x0002b2e8U),
+                12 => ("imp2", 0x1099c600UL, 0x0002fd08U),
+                13 => ("pla2", 0x109d6e00UL, 0x000236bcU),
+                15 => ("weapons", 0x043d1a00UL, 0x0001f930U),
+                17 => ("items", 0x0513a200UL, 0x00022308U),
+                _ => entry
+            };
+        }
 
         if (entry.ByteOffset == 0 || entry.ByteLength == 0)
             return false;
@@ -33813,6 +34501,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         new ushort[LfbPixels],
         new ushort[LfbPixels]
     ];
+    private readonly ushort[] _presentedColorBuffer = new ushort[LfbPixels];
+    private bool _presentedColorBufferValid;
     private static readonly string[] FullrectWriterLayoutCandidateTransforms = ["linear", "row2x", "row4x", "tile4", "tile8"];
     private static readonly string[] FullrectWriterLayoutPacketLocalCandidateTransforms = ["packet8x8", "packet8x8t", "packet64x", "packet64y"];
     private static readonly string[] FullrectWriterLayoutTargetLocalCandidateTransforms = ["targetword", "targetlinear", "targetrow2x", "targetrow4x", "targettile4", "targettile8"];
@@ -37959,7 +38649,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         _lastRenderBufferIndex = renderBufferIndex;
         if (ShouldMaterializePendingClearForRender(renderBufferIndex))
             MaterializePendingClear(renderBufferIndex);
-        ushort[] front = _colorBuffers[renderBufferIndex];
+        ushort[] front = _fixMameVblankSwapTiming && _presentedColorBufferValid
+            ? _presentedColorBuffer
+            : _colorBuffers[renderBufferIndex];
         for (int y = 0; y < copyHeight; y++)
         {
             int sourceY = _fixMameMediumResolutionOutput ? y * 384 / copyHeight : y;
@@ -47997,8 +48689,8 @@ sampledTexel:
     private int MapDrawBufferSelect(int select)
         => select switch
         {
-            0 => _frontBufferIndex,
-            1 => _backBufferIndex,
+            0 => _fixMameVblankSwapTiming ? _backBufferIndex : _frontBufferIndex,
+            1 => _fixMameVblankSwapTiming ? _frontBufferIndex : _backBufferIndex,
             2 => GetAuxBufferIndex(),
             _ => _backBufferIndex
         };
@@ -48416,6 +49108,8 @@ sampledTexel:
 
         int previousFront = _frontBufferIndex;
         int previousBack = _backBufferIndex;
+        int completedBufferIndex = GetDrawBufferIndex();
+        MaterializePendingClear(completedBufferIndex);
         // Gauntlet's Voodoo 2 implements swapbufferCMD bit 9 regardless of
         // which command-FIFO bringup model is selected.
         bool dontSwap = ((command >> 9) & 1u) != 0;
@@ -48435,6 +49129,8 @@ sampledTexel:
         }
         else
         {
+            Array.Copy(_colorBuffers[completedBufferIndex], _presentedColorBuffer, LfbPixels);
+            _presentedColorBufferValid = true;
             int count = GetColorBufferCount();
             if (count >= 3)
             {

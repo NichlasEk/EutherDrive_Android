@@ -64,6 +64,7 @@ ApplyRequestedGuestTextureMemoryCopy(adapter);
 ApplyRequestedGuestMemoryWordPatch(adapter);
 ApplyRequestedDiskTextureMemoryCopy(adapter);
 ApplyRequestedTextureMemoryCopy(adapter);
+LoadRequestedVoodooTextureBanks(adapter);
 LoadRequestedTextureWriterSidecar(adapter);
 
 long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
@@ -402,6 +403,33 @@ static void ApplyRequestedTextureMemoryCopy(GauntletDarkLegacyAdapter adapter)
     Console.WriteLine(
         $"textureMemoryCopy source=0x{sourceAddress:x8} destination=0x{destinationAddress:x8} " +
         $"bytes=0x{byteLength:x} copied=0x{copiedBytes:x} zeroDestinationOnly={zeroDestinationOnly}");
+}
+
+static void LoadRequestedVoodooTextureBanks(GauntletDarkLegacyAdapter adapter)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_VOODOO_TEXTURE_BANKS");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    string[] paths = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (paths.Length != 2)
+        throw new InvalidDataException("EUTHERDRIVE_GAUNTDL_LOAD_VOODOO_TEXTURE_BANKS requires TMU0,TMU1 paths");
+
+    object machine = GetField(adapter, "_machine");
+    object voodoo = GetProperty(machine, "Voodoo");
+    uint[] textureMemory = GetFieldValue<uint[]>(GetField(voodoo, "_backend"), "_textureMemory");
+    const int bankBytes = 4 * 1024 * 1024;
+    if (textureMemory.Length * sizeof(uint) < bankBytes * 2)
+        throw new InvalidDataException("Voodoo texture memory is smaller than two 4 MiB banks");
+
+    for (int bank = 0; bank < paths.Length; bank++)
+    {
+        byte[] bytes = File.ReadAllBytes(paths[bank]);
+        if (bytes.Length != bankBytes)
+            throw new InvalidDataException($"TMU{bank} image must be exactly 4 MiB");
+        Buffer.BlockCopy(bytes, 0, textureMemory, bank * bankBytes, bankBytes);
+        Console.WriteLine($"voodooTextureBankLoad bank={bank} path={paths[bank]} bytes=0x{bankBytes:x}");
+    }
 }
 
 static int StepCpu(Action step, int count, object? cpu = null, ulong? stopPc = null)
@@ -1076,7 +1104,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(10);
+        writer.Write(12);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -1190,7 +1218,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version < 1 || version > 10)
+    if (magic != 0x314d5241574c4447UL || version < 1 || version > 12)
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1209,7 +1237,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     ReadByteArrayInto(reader, GetFieldValue<byte[]>(adapter, "_frameBuffer"));
 
     object machine = GetField(adapter, "_machine");
-    LoadCpu(reader, GetProperty(machine, "Cpu"));
+    LoadCpu(reader, GetProperty(machine, "Cpu"), version);
     LoadMemoryMap(reader, GetProperty(machine, "MemoryMap"), version);
     LoadDisk(reader, GetProperty(machine, "Disk"), version);
     LoadSio(reader, GetProperty(machine, "Sio"));
@@ -1237,9 +1265,13 @@ static void SaveCpu(BinaryWriter writer, object cpu)
     writer.Write(GetFieldValue<ulong>(cpu, "_lo"));
     writer.Write((ulong)GetProperty(cpu, "Pc"));
     writer.Write((uint)GetProperty(cpu, "LastFetchedInstruction"));
+    writer.Write(GetFieldValue<bool>(cpu, "_runtimeTempleWeaponsLoadRequested"));
+    writer.Write(GetFieldValue<bool>(cpu, "_runtimeTempleWeaponsResourceBuilt"));
+    writer.Write(GetFieldValue<bool>(cpu, "_runtimeTempleItemsLoadRequested"));
+    writer.Write(GetFieldValue<bool>(cpu, "_runtimeTempleItemsResourceBuilt"));
 }
 
-static void LoadCpu(BinaryReader reader, object cpu)
+static void LoadCpu(BinaryReader reader, object cpu, int version)
 {
     ReadULongArrayInto(reader, GetFieldValue<ulong[]>(cpu, "_gpr"));
     ReadULongArrayInto(reader, GetFieldValue<ulong[]>(cpu, "_cp0"));
@@ -1257,6 +1289,13 @@ static void LoadCpu(BinaryReader reader, object cpu)
     SetField(cpu, "_lo", reader.ReadUInt64());
     SetProperty(cpu, "Pc", reader.ReadUInt64());
     SetProperty(cpu, "LastFetchedInstruction", reader.ReadUInt32());
+    if (version >= 12)
+    {
+        SetField(cpu, "_runtimeTempleWeaponsLoadRequested", reader.ReadBoolean());
+        SetField(cpu, "_runtimeTempleWeaponsResourceBuilt", reader.ReadBoolean());
+        SetField(cpu, "_runtimeTempleItemsLoadRequested", reader.ReadBoolean());
+        SetField(cpu, "_runtimeTempleItemsResourceBuilt", reader.ReadBoolean());
+    }
 }
 
 static void SaveMemoryMap(BinaryWriter writer, object memory)
@@ -1452,6 +1491,8 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
     WriteBoolArrayArray(writer, GetFieldValue<bool[][]>(backend, "_tmuRegisterValid"));
     WriteUShortArrayArray(writer, GetFieldValue<ushort[][]>(backend, "_tmuPaletteRgb565"));
     WriteBoolArrayArray(writer, GetFieldValue<bool[][]>(backend, "_tmuPaletteValid"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(backend, "_presentedColorBuffer"));
+    writer.Write(GetFieldValue<bool>(backend, "_presentedColorBufferValid"));
 }
 
 static void LoadVoodoo(BinaryReader reader, object facade, int version)
@@ -1506,6 +1547,25 @@ static void LoadVoodoo(BinaryReader reader, object facade, int version)
         ReadBoolArrayArrayInto(reader, GetFieldValue<bool[][]>(backend, "_tmuRegisterValid"));
         ReadUShortArrayArrayInto(reader, GetFieldValue<ushort[][]>(backend, "_tmuPaletteRgb565"));
         ReadBoolArrayArrayInto(reader, GetFieldValue<bool[][]>(backend, "_tmuPaletteValid"));
+    }
+    bool hasPresentedColorBuffer = false;
+    if (version >= 11)
+    {
+        ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(backend, "_presentedColorBuffer"));
+        hasPresentedColorBuffer = reader.ReadBoolean();
+        SetField(backend, "_presentedColorBufferValid", hasPresentedColorBuffer);
+    }
+    if (!hasPresentedColorBuffer)
+    {
+        int frontBufferIndex = GetFieldValue<int>(backend, "_frontBufferIndex");
+        ushort[][] colorBuffers = GetFieldValue<ushort[][]>(backend, "_colorBuffers");
+        ushort[] presented = GetFieldValue<ushort[]>(backend, "_presentedColorBuffer");
+        if ((uint)frontBufferIndex < (uint)colorBuffers.Length &&
+            colorBuffers[frontBufferIndex].Length == presented.Length)
+        {
+            colorBuffers[frontBufferIndex].CopyTo(presented, 0);
+            SetField(backend, "_presentedColorBufferValid", true);
+        }
     }
 }
 
