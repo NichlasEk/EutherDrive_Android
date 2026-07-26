@@ -3362,3 +3362,65 @@ Temple-bilden har fortfarande många TMU1-sample utan registrerad writer.
 Fortsätt från den promoterade f1420-snapshoten och bind de kvarvarande
 nollsidorna till nästa naturliga resource-/Type5-producent; ändra inte
 sampler eller framebuffer-chooser utifrån dessa hål.
+
+### 2026-07-26: weapons-record 437 producerar en ofylld texelkälla
+
+Den första fokuserade TMU1-nollägaren är nu bunden hela vägen till sin
+guestproducent. Type5-serien skriver 32 gånger 16 nollord med:
+
+```text
+tbase=0x0004061e
+root source=0x80688f04
+first payload source=0x8068973c
+pc=0x800fe7cc
+```
+
+Den tidigare `imp2`-hypotesen är falsifierad. Nolluppladdningen sker mellan
+weapons-laddningen och weapons-resursbyggarens retur; `imp2` allokeras först
+senare. Att samma RAM-adress då råkar hamna i `imp2`-containern är bara
+efterföljande heapåteranvändning.
+
+Callkedjan är:
+
+```text
+0x800a761c/0x800a7764 -> 0x801094f4
+0x8010957c             läser descriptor+0x10
+0x801095c0             väljer sida
+0x801096ac             vidarebefordrar källan
+0x801096fc             anropar 0x800fe1fc
+0x800fe7cc             skriver Type5-payload
+```
+
+En exakt write-watch över descriptorfältet visar den verkliga producenten:
+
+```text
+pc=0x800a7344  sw v0,0x20(sp)
+record=0x805c7a40
+ordinal=0x1b5 (437)
+weapons base=0x805b93c4
+new source=0x80688f04
+source delta=0x000cfb40
+```
+
+Weapons-containern är bara `0x1f930` byte. Record 437 pekar alltså på en
+expanderad texeladress långt utanför den hydratiserade containern, där ingen
+tidigare main-RAM-writer finns. Sidväljaren och Type5-writern är nedströms
+och återger den redan felaktiga/ofyllda källan korrekt.
+
+Två negativa kontroller är stängda:
+
+1. En sen indexed-QIO-hydrering aktiverades inte, eftersom containern ännu
+   inte existerar när weapons-uploaden sker.
+2. En bred A/B som hoppade över de matchande nollpaketen minskade
+   `texWrites` från `2736773` till `2647485`, men f1080 förblev exakt
+   `frameHash=0x6604904f`. Nollpaket får därför inte undertryckas som fix.
+
+Nya default-off-diagnoser kan filtrera texture-record-anrop på `tbase` och
+Type5-sekvensloggen visar nu CPU:s `s0..s5/ra`. GauntletProbe rapporterar
+dessutom källproveniens och tidigare writers för efterfrågade texture words.
+
+Nästa smala gräns är `0x800a7094..0x800a7344`: avgör vilken weapons-
+dekomprimering/expansion som normalt ska fylla `base+0xcfb40`, eller vilken
+aliassemantik som ska återanvända en tidigare källa för record 437. Ändra
+inte `0x8010957c`, Type5-dekodern eller TMU-samplern innan denna producent är
+förklarad.

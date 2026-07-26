@@ -1148,6 +1148,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_RECORD_CALL"));
     private readonly int _traceRuntimeBgLoadModelTextureRecordCallLimit =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_RECORD_CALL_LIMIT", 96);
+    private readonly ulong? _traceRuntimeBgLoadModelTextureRecordTbase =
+        ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_TEXTURE_RECORD_TBASE");
     private readonly bool _traceRuntimeWorldTextureRecordSelection =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORLD_TEXTURE_RECORD_SELECTION"));
     private readonly int _traceRuntimeWorldTextureRecordSelectionLimit =
@@ -21376,6 +21378,12 @@ internal sealed class MipsR5000Core
         }
 
         ulong record = CanonicalizeTraceAddress(_gpr[16]);
+        if (_traceRuntimeBgLoadModelTextureRecordTbase.HasValue &&
+            ReadTraceWord(record + 0x0cUL) != (uint)_traceRuntimeBgLoadModelTextureRecordTbase.Value)
+        {
+            return;
+        }
+
         ulong tableEntry = CanonicalizeTraceAddress(_gpr[4]);
         ulong table = CanonicalizeTraceAddress(_gpr[30]);
         _runtimeBgLoadModelTextureRecordCallTraceCount++;
@@ -43148,12 +43156,18 @@ internal class VoodooBringupBackend : IVoodooBackend
         string sourceStatus = hasBulkSource
             ? $" source=0x{bulkSource.Source:x16}/root=0x{GetType5TextureUploadSequenceSourceRoot(bulkSource):x8}/base=0x{bulkSource.SourceBase:x8}/packetSource=0x{bulkSource.PacketSourceAddress:x8}/packet={bulkSource.Packet}/index={bulkSource.Index}/{bulkSource.Limit}"
             : " source=-";
+        string cpuStatus = CpuGprProvider is null
+            ? ""
+            : $" cpu=s0:0x{CpuGprProvider(16):x16}/s1:0x{CpuGprProvider(17):x16}/" +
+              $"s2:0x{CpuGprProvider(18):x16}/s3:0x{CpuGprProvider(19):x16}/" +
+              $"s4:0x{CpuGprProvider(20):x16}/s5:0x{CpuGprProvider(21):x16}/" +
+              $"ra:0x{CpuGprProvider(31):x16}";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TYPE5-TEXSEQ] n={_type5TextureUploadSequenceTraceCount} " +
             $"cmd=0x{command:X8} target=0x{targetStart:X6}-0x{targetStart + (uint)Math.Max(0, count - 1):X6} " +
             $"count={count} payload={payloadWords} nz={nonZero} hash=0x{hash:X8} first=0x{first:X8} last=0x{last:X8} " +
             $"{physicalSpan} packet=0x{_currentCommandFifoPacketStart * 4:X8} rd=0x{_currentType5TextureWriteReadIndex * 4:X8} " +
-            $"stream={(streaming ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{textureState}{sourceStatus}{storageWords}{rawWords}{pcStatus}");
+            $"stream={(streaming ? 1 : 0)} depth={_cmdFifoDepth} holes={_cmdFifoHoles}{textureState}{sourceStatus}{cpuStatus}{storageWords}{rawWords}{pcStatus}");
     }
 
     private static bool MatchesType5TextureUploadSequenceSource(

@@ -3514,6 +3514,8 @@ static void DumpRequestedTextureWordOwners(object voodoo)
 
     object backend = GetField(voodoo, "_backend");
     IDictionary owners = GetFieldValue<IDictionary>(backend, "_textureWordLastWriters");
+    IDictionary sources = GetFieldValue<IDictionary>(backend, "_textureWordSourceProvenance");
+    IDictionary previousWriters = GetFieldValue<IDictionary>(backend, "_textureWordPreviousWriters");
     foreach (ulong requestedWord in words)
     {
         if (requestedWord > int.MaxValue || !owners.Contains((int)requestedWord))
@@ -3523,6 +3525,21 @@ static void DumpRequestedTextureWordOwners(object voodoo)
         }
 
         object owner = owners[(int)requestedWord]!;
+        string sourceStatus = sources.Contains((int)requestedWord)
+            ? FormatTextureWordSource(sources[(int)requestedWord]!)
+            : "-";
+        string previousStatus = "-";
+        if (previousWriters.Contains((int)requestedWord))
+        {
+            object previous = previousWriters[(int)requestedWord]!;
+            object previousWriter = GetPropertyObject(previous, "Writer");
+            object previousSource = GetPropertyObject(previous, "Source");
+            previousStatus =
+                $"pc=0x{GetProperty(previousWriter, "Pc"):x16}/value=0x{GetProperty(previousWriter, "Value"):x8}/" +
+                $"base=0x{GetProperty(previousWriter, "TextureBase"):x8}/lod={GetProperty(previousWriter, "Lod")}/" +
+                $"target=0x{GetProperty(previousWriter, "Type5TargetStart"):x6}/" +
+                $"source={FormatTextureWordSource(previousSource)}";
+        }
         Console.WriteLine(
             $"textureWordOwner word=0x{requestedWord:x6} " +
             $"pc=0x{GetProperty(owner, "Pc"):x16} value=0x{GetProperty(owner, "Value"):x8} " +
@@ -3532,8 +3549,32 @@ static void DumpRequestedTextureWordOwners(object voodoo)
             $"type5={GetProperty(owner, "Type5")} cmd=0x{GetProperty(owner, "Type5Command"):x8} " +
             $"targetStart=0x{GetProperty(owner, "Type5TargetStart"):x6} target=0x{GetProperty(owner, "Type5TargetWord"):x6} " +
             $"index={GetProperty(owner, "Type5Index")}/{GetProperty(owner, "Type5Count")} " +
-            $"packet=0x{(int)GetProperty(owner, "PacketStart") * 4:x8} read=0x{(int)GetProperty(owner, "ReadIndex") * 4:x8}");
+            $"packet=0x{(int)GetProperty(owner, "PacketStart") * 4:x8} read=0x{(int)GetProperty(owner, "ReadIndex") * 4:x8} " +
+            $"source={sourceStatus} previous={previousStatus}");
     }
+}
+
+static object GetPropertyObject(object instance, string name)
+{
+    PropertyInfo? property = instance.GetType().GetProperty(
+        name,
+        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+    if (property is null)
+        throw new MissingMemberException(instance.GetType().FullName, name);
+    return property.GetValue(instance) ?? throw new InvalidOperationException($"{name} is null");
+}
+
+static string FormatTextureWordSource(object source)
+{
+    ulong address = (ulong)GetProperty(source, "Source");
+    if (address == 0)
+        return "-";
+
+    return
+        $"0x{address:x16}/base=0x{GetProperty(source, "SourceBase"):x8}/" +
+        $"packetSource=0x{GetProperty(source, "PacketSourceAddress"):x8}/" +
+        $"packet={GetProperty(source, "Packet")}/index={GetProperty(source, "Index")}/{GetProperty(source, "Limit")}/" +
+        $"frame={GetProperty(source, "RenderFrame")}";
 }
 
 static void DumpTextureOwnerTargets(object voodoo)
