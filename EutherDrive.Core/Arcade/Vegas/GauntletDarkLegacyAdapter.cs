@@ -45826,19 +45826,43 @@ sampledTexel:
         if (_fixTextureTOriginFlip)
             y0 = layout.Height - 1 - y0;
         TextureRgba c00 = ReadTextureRgbaAt(tmu, x0, y0, layout.Width, format, mode, layout.BaseAddress);
-        if (!filtered)
-            return c00;
+        uint byteAddress00 = _lastTextureSampleByteAddress;
+        uint raw00 = _lastTextureSampleRaw;
+        uint word00 = ReadTexture32(byteAddress00 & ~3u);
+        TextureRgba result = c00;
+        if (filtered)
+        {
+            int x1 = Coordinate24_8ToTexelIndex(s24_8 + (1 << (targetLod + 8)), layout.Width, targetLod, clampS);
+            int y1 = Coordinate24_8ToTexelIndex(t24_8 + (1 << (targetLod + 8)), layout.Height, targetLod, clampT);
+            if (_fixTextureTOriginFlip)
+                y1 = layout.Height - 1 - y1;
+            TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress);
+            TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress);
+            TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress);
+            int fx = (int)(Coordinate24_8Fraction(s24_8, targetLod) * 256.0f);
+            int fy = (int)(Coordinate24_8Fraction(t24_8, targetLod) * 256.0f);
+            result = BilinearTextureRgba(c00, c10, c01, c11, fx, fy);
+        }
 
-        int x1 = Coordinate24_8ToTexelIndex(s24_8 + (1 << (targetLod + 8)), layout.Width, targetLod, clampS);
-        int y1 = Coordinate24_8ToTexelIndex(t24_8 + (1 << (targetLod + 8)), layout.Height, targetLod, clampT);
-        if (_fixTextureTOriginFlip)
-            y1 = layout.Height - 1 - y1;
-        TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress);
-        TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress);
-        TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress);
-        int fx = (int)(Coordinate24_8Fraction(s24_8, targetLod) * 256.0f);
-        int fy = (int)(Coordinate24_8Fraction(t24_8, targetLod) * 256.0f);
-        return BilinearTextureRgba(c00, c10, c01, c11, fx, fy);
+        ushort rgb565 = result.Rgb565;
+        TrackZeroTextureSample(byteAddress00, rgb565);
+        TrackTextureSampleDebug(byteAddress00, raw00, rgb565);
+        TraceTextureSample(
+            s24_8 / 256.0f,
+            t24_8 / 256.0f,
+            layout.Width,
+            layout.Height,
+            x0,
+            y0,
+            mode,
+            textureLod,
+            textureBase,
+            layout.BaseAddress,
+            byteAddress00,
+            word00,
+            raw00,
+            rgb565);
+        return result;
     }
 
     private TextureRgba ReadTextureRgbaAt(int tmu, int x, int y, int width, int format, uint mode, uint baseAddress)
@@ -48749,7 +48773,19 @@ sampledTexel:
             return;
         }
 
-        int wordOffset = (int)((byteAddress & (TextureBytes - 1u)) >> 2);
+        uint wrappedByteAddress = byteAddress & (TextureBytes - 1u);
+        if (_traceTextureSampleWritersRangeMin.HasValue &&
+            wrappedByteAddress < _traceTextureSampleWritersRangeMin.Value)
+        {
+            return;
+        }
+        if (_traceTextureSampleWritersRangeMax.HasValue &&
+            wrappedByteAddress >= _traceTextureSampleWritersRangeMax.Value)
+        {
+            return;
+        }
+
+        int wordOffset = (int)(wrappedByteAddress >> 2);
         bool hasWriter = _textureWordLastWriters.TryGetValue(wordOffset, out TextureWordLastWriter writer);
         if (_traceTextureSampleWritersRequireWriter && !hasWriter)
             return;

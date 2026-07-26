@@ -3646,3 +3646,42 @@ svarta constant-color-val; den är inte bevis för fel bank eller saknad
 companion. Nästa kontroll ska binda en representativ noll-fetch till dess
 exakta TMU och texture-upload writer, eller visa vilken saknad yta som ger
 `empty-raster`, innan color combine ändras.
+
+#### Aktiv två-TMU-väg: noll-fetch-proveniens
+
+Den äldre `texzero`/`texsamp`-diagnostiken var blind för
+`SampleTextureMameFixedForTmu`, trots att rasterräknaren rapporterade 19135
+nollpixlar. Den aktiva fetchvägen matar nu samma default-off bucket- och
+writer-korrelation som single-TMU-vägen. Adressintervallet för
+`EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_SAMPLE_WRITERS_RANGE_MIN/MAX`
+filtrerar nu också själva samplertracen, inte bara insamlingen av framtida
+upload-writers.
+
+F1120--f1128 är fortfarande bitstabil med `frameHash=0x770ad7f8` och ger:
+
+```text
+TMU-fetches=67670
+local zero fetches=17401
+top zero buckets:
+  0x7fd000:1647  nonzeroWords=0 touchedWords=0 writers=0
+  0x7e1000:1334  nonzeroWords=0 touchedWords=0 writers=0
+  0x413000:1267  nonzeroWords=120 touchedWords=0 writers=0
+```
+
+Det största kalla fönstret är nu bundet till en riktig TMU1-fetch och dess
+Type3-producent:
+
+```text
+pc=0x800c7190 command=0x0182a0cb
+TMU1 mode/lod/base=8c241acf/00400410/001fe624
+resolved LOD base=0x7fdb20 size=4x16
+sample addr=0x7fdb82..0x7fdb92 raw=0x0000 result=0x0000 writer=none
+```
+
+Den parade TMU0-ytan i samma pixlar (`base=0x1c0100`, 16x16) läser varierande
+icke-noll texlar. Nollan skapas alltså inte av color combine och inte av en
+vit framebuffer-clear: Type3-recordet väljer en TMU1-LOD-yta som aldrig har
+fyllts. Tidigare TMU0-aliasprov visar redan att bankbyte kan ge orelaterat
+material av en slump, så nästa steg är record-/assetproveniensen för
+`001fe624/8c241acf/00400410`; ändra inte TMU-bankmappningen eller inför en
+zero-fallback.
