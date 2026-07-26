@@ -862,6 +862,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR"));
     private readonly bool _experimentRuntimeTempleResourcePreserveStreamOffset =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_RESOURCE_PRESERVE_STREAM_OFFSET"));
+    private readonly bool _experimentRuntimeTempleWeaponsTextureCompanion =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION"));
     private readonly bool _traceRuntimeTempleItemsBoundary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_ITEMS_BOUNDARY"));
     private readonly bool _stopRuntimeTempleItemsBoundary =
@@ -2027,6 +2029,21 @@ internal sealed class MipsR5000Core
         uint count = _memory.Read32(source + 0x64UL);
         uint tableIndex = _memory.Read32(source + 0x60UL);
         ulong resource = source + 0x68UL + (ulong)tableIndex * 0x8cUL;
+        ulong streamBuffer = source;
+        if (index == 15UL && _experimentRuntimeTempleWeaponsTextureCompanion)
+        {
+            const ulong weaponsObjectBodyOffset = 0x0001f930UL;
+            const ulong weaponsObjectBodyLength = 0x0000a240UL;
+            streamBuffer = (source + weaponsObjectBodyOffset + weaponsObjectBodyLength + 3UL) & ~3UL;
+            const ulong tracedRecordOffset = 0x000cfb40UL;
+            Console.WriteLine(
+                $"[GAUNTDL:EXPERIMENT] temple-weapons-texture-companion " +
+                $"stream={streamBuffer:x16} record437={streamBuffer + tracedRecordOffset:x16} " +
+                $"words={_memory.Read32(streamBuffer + tracedRecordOffset + 0x00UL):x8}/" +
+                $"{_memory.Read32(streamBuffer + tracedRecordOffset + 0x04UL):x8}/" +
+                $"{_memory.Read32(streamBuffer + tracedRecordOffset + 0x08UL):x8}/" +
+                $"{_memory.Read32(streamBuffer + tracedRecordOffset + 0x0cUL):x8}");
+        }
         if (index == 15UL)
         {
             // MAME's first Temple weapons record publishes local TMU1 selector
@@ -2046,7 +2063,7 @@ internal sealed class MipsR5000Core
             _memory.Write32(0xffffffff8020f130UL, 0x00322218U);
             _memory.Write32(0xffffffff8020f134UL, 0x00322218U);
         }
-        _memory.Write32(streamSource, unchecked((uint)source));
+        _memory.Write32(streamSource, unchecked((uint)streamBuffer));
         _memory.Write32(streamCursor, 0U);
         _memory.Write32(streamCount, count);
         _memory.Write32(streamOffset, _experimentRuntimeTempleResourcePreserveStreamOffset ? savedStreamOffset : 0U);
@@ -2128,12 +2145,33 @@ internal sealed class MipsR5000Core
             }
             else
                 _memory.Write32(qio + 0x14UL, uint.MaxValue);
+
+            if (index == 15UL && _experimentRuntimeTempleWeaponsTextureCompanion)
+            {
+                const ulong allocatorOffsetAddress = 0xffffffff802280fcUL;
+                const ulong allocatorBaseAddress = 0xffffffff80228104UL;
+                const ulong textureByteLength = 0x00145d88UL;
+                ulong allocatorBase = SignExtend32(_memory.Read32(allocatorBaseAddress));
+                ulong transientOffset = streamBuffer - allocatorBase;
+                ulong transientEndOffset = transientOffset + textureByteLength;
+                if (streamBuffer >= allocatorBase &&
+                    transientOffset <= uint.MaxValue &&
+                    transientEndOffset <= uint.MaxValue &&
+                    _memory.Read32(allocatorOffsetAddress) == (uint)transientEndOffset)
+                {
+                    _memory.Write32(allocatorOffsetAddress, (uint)transientOffset);
+                    Console.WriteLine(
+                        $"[GAUNTDL:EXPERIMENT] temple-weapons-texture-companion-release " +
+                        $"stream={streamBuffer:x16} bytes={textureByteLength:x8} " +
+                        $"heap={transientEndOffset:x8}->{transientOffset:x8}");
+                }
+            }
         }
 
         Console.WriteLine(
             $"[GAUNTDL:FIX] temple-resource-build asset={(index == 15UL ? "weapons" : "items")} returned={returned} " +
             $"index={_memory.Read32(currentIndex):x8} record={record:x16} qio={qio:x16} " +
-            $"source={source:x16} resource={resource:x16} count={count:x8}");
+            $"source={source:x16} stream={streamBuffer:x16} resource={resource:x16} count={count:x8}");
         return returned;
     }
 
@@ -2220,10 +2258,13 @@ internal sealed class MipsR5000Core
         const ulong assetTable = 0xffffffff8024f9a0UL;
         const ulong descriptorStride = 0x30UL;
         const ulong allocatorOffsetAddress = 0xffffffff802280fcUL;
+        const ulong allocatorLimitAddress = 0xffffffff80228100UL;
         const ulong allocatorBaseAddress = 0xffffffff80228104UL;
         const ulong currentIndexAddress = 0xffffffff80228060UL;
         const ulong objectDiskOffset = 0x043f1330UL;
         const uint objectByteLength = 0x0000a240U;
+        const ulong textureDiskOffset = 0x043f2800UL;
+        const uint textureByteLength = 0x00145d88U;
         const ulong qio = 0xffffffff80217c58UL + 15UL * 0x118UL;
         bool atNativeProducer = Pc == powerupsLoadEntry;
         bool recoveringTempleCheckpoint =
@@ -2269,8 +2310,31 @@ internal sealed class MipsR5000Core
         }
         ulong allocatorBase = SignExtend32(_memory.Read32(allocatorBaseAddress));
         ulong endOffset = (objectDestination + objectByteLength - allocatorBase + 3UL) & ~3UL;
-        if (objectDestination < allocatorBase || endOffset > uint.MaxValue)
+        uint allocatorLimit = _memory.Read32(allocatorLimitAddress);
+        if (objectDestination < allocatorBase ||
+            endOffset > uint.MaxValue)
             return false;
+        ulong textureDestination = 0;
+        uint textureFirst = 0;
+        if (_experimentRuntimeTempleWeaponsTextureCompanion)
+        {
+            textureDestination = allocatorBase + endOffset;
+            ulong textureEndOffset = endOffset + textureByteLength;
+            if (textureEndOffset > uint.MaxValue ||
+                textureEndOffset > allocatorLimit ||
+                !IsMainRamRange(textureDestination, textureByteLength) ||
+                !_memory.TryReadDiskByteOffsetToMemory(
+                    textureDiskOffset,
+                    textureDestination,
+                    textureByteLength,
+                    out textureFirst,
+                    out _))
+            {
+                return false;
+            }
+
+            endOffset = textureEndOffset;
+        }
         _memory.Write32(allocatorOffsetAddress, (uint)endOffset);
 
         _memory.Write32(weaponsDescriptor + 0x00UL, unchecked((uint)objectDestination));
@@ -2288,6 +2352,7 @@ internal sealed class MipsR5000Core
         Console.WriteLine(
             $"[GAUNTDL:FIX] temple-weapons-direct-load source={source:x16} " +
             $"object={objectDestination:x16}/{objectByteLength:x8}/first={objectFirst:x8} " +
+            $"texture={textureDestination:x16}/{(_experimentRuntimeTempleWeaponsTextureCompanion ? textureByteLength : 0U):x8}/first={textureFirst:x8} " +
             $"heap={_memory.Read32(allocatorOffsetAddress):x8}");
         return true;
     }

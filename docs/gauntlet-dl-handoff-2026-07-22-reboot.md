@@ -3476,3 +3476,68 @@ normaliseringen och den matchande texelkroppen måste återställas tillsammans.
 Nästa pass ska spåra vilka QIO/body-steg som normalt gör
 `source + priorOffset - streamOffset` resident; fler allocator-, sampler- och
 zero-skip-experiment är nu avvisade.
+
+### 2026-07-26: weapons companion hittad, korrekt men ännu default-off
+
+FSYS-gränsen bakom record 437 är nu löst. `0x043d1800` är extentheadern för
+`weapons/objects.rom`; dess payload börjar vid `0x043d1a00` och innehåller
+recordtabellen. Nästa relevanta extentheader ligger vid `0x043f2600` och
+deklarerar `0x00145d88` byte. Den tillhör `weapons/textures.rom`, vars payload
+börjar vid:
+
+```text
+disk base = 0x043f2800
+bytes     = 0x00145d88
+```
+
+Record 437:s ackumulerade texeloffset `0x000cfb40` ryms i denna companion.
+Diskorden vid `0x043f2800 + 0xcfb40 = 0x044c2340` är verkliga texeldata:
+
+```text
+22012201 22003301 22013301 22013301
+```
+
+Den manuella Temple-vägen hade i stället satt både record-owner och
+`streamSource` till `objects.rom`-basen `0x805b93c4`. Det gav den tidigare
+nollkällan `0x80688f04`. En ny default-off-kandidat,
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION=1`,
+läser den riktiga texture-extenten till en separat transient streambuffer och
+låter den vanliga guest-buildern behålla offsetsemantiken. Efter buildern
+återställs heapmarkören; nästa `zom2`-allocation återanvänder exakt
+streambufferadressen, så companionen blir inte ett permanent heapobjekt.
+
+F1080 från exakt samma f1000-snapshot gav:
+
+```text
+                                      tidigare control    companion
+texture-map nonzero writes                 926391          1499200
+texture-map zero writes                   1554345           387192
+```
+
+Källmodellen är alltså kausalt riktig och återställer mycket faktisk
+weapons-textur. Den får ändå inte promoteras ännu. Både en permanent och en
+transient full-companion-körning når senare f1264/f1420 med en
+timing-/FIFO-korruption där värdet `0x4b16` sprids över Voodoo-register.
+Den transienta varianten bevisar att detta inte beror på permanent
+heapförskjutning:
+
+```text
+companion heap 0x00307af4 -> 0x0044d87c
+release        0x0044d87c -> 0x00307af4
+zom2 dest      0x805e2f34
+f1264/f1420    pc=0x800aace4/0x800aad00, frameHash=0xbb62299d
+```
+
+Verifieringsartefakter:
+
+```text
+/tmp/gaunt-weapons-texture-stream-f1080.warm
+/tmp/gaunt-weapons-texture-stream-f1420.warm
+/tmp/gaunt-weapons-texture-stream-f1420-buffer_buf0.ppm
+```
+
+Nästa smala gräns är den första FIFO-/registeravvikelsen mellan control och
+companion efter weapons-uploaden men före f1264. Börja från f1080 och jämför
+första ändringen i command-FIFO generation/read pointer eller den första
+oväntade `0x4b16`-skrivningen. Ändra inte companionens diskbas, recordoffset,
+Type5-dekoder eller sampler; de är nu bundna till riktig FSYS-data.
