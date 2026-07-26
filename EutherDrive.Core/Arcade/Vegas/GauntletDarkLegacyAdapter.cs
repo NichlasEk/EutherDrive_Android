@@ -59,6 +59,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_STREAM", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH", "1"),
@@ -864,7 +865,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR"));
     private readonly bool _experimentRuntimeTempleResourcePreserveStreamOffset =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_RESOURCE_PRESERVE_STREAM_OFFSET"));
-    private readonly bool _experimentRuntimeTempleWeaponsTextureCompanion =
+    private readonly bool _enableRuntimeTempleWeaponsTextureCompanion =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION") ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION"));
     private readonly bool _traceRuntimeTempleItemsBoundary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_ITEMS_BOUNDARY"));
@@ -2039,14 +2041,14 @@ internal sealed class MipsR5000Core
         uint tableIndex = _memory.Read32(source + 0x60UL);
         ulong resource = source + 0x68UL + (ulong)tableIndex * 0x8cUL;
         ulong streamBuffer = source;
-        if (index == 15UL && _experimentRuntimeTempleWeaponsTextureCompanion)
+        if (index == 15UL && _enableRuntimeTempleWeaponsTextureCompanion)
         {
             const ulong weaponsObjectBodyOffset = 0x0001f930UL;
             const ulong weaponsObjectBodyLength = 0x0000a240UL;
             streamBuffer = (source + weaponsObjectBodyOffset + weaponsObjectBodyLength + 3UL) & ~3UL;
             const ulong tracedRecordOffset = 0x000cfb40UL;
             Console.WriteLine(
-                $"[GAUNTDL:EXPERIMENT] temple-weapons-texture-companion " +
+                $"[GAUNTDL:FIX] temple-weapons-texture-companion " +
                 $"stream={streamBuffer:x16} record437={streamBuffer + tracedRecordOffset:x16} " +
                 $"words={_memory.Read32(streamBuffer + tracedRecordOffset + 0x00UL):x8}/" +
                 $"{_memory.Read32(streamBuffer + tracedRecordOffset + 0x04UL):x8}/" +
@@ -2155,7 +2157,7 @@ internal sealed class MipsR5000Core
             else
                 _memory.Write32(qio + 0x14UL, uint.MaxValue);
 
-            if (index == 15UL && _experimentRuntimeTempleWeaponsTextureCompanion)
+            if (index == 15UL && _enableRuntimeTempleWeaponsTextureCompanion)
             {
                 const ulong allocatorOffsetAddress = 0xffffffff802280fcUL;
                 const ulong allocatorBaseAddress = 0xffffffff80228104UL;
@@ -2170,7 +2172,7 @@ internal sealed class MipsR5000Core
                 {
                     _memory.Write32(allocatorOffsetAddress, (uint)transientOffset);
                     Console.WriteLine(
-                        $"[GAUNTDL:EXPERIMENT] temple-weapons-texture-companion-release " +
+                        $"[GAUNTDL:FIX] temple-weapons-texture-companion-release " +
                         $"stream={streamBuffer:x16} bytes={textureByteLength:x8} " +
                         $"heap={transientEndOffset:x8}->{transientOffset:x8}");
                 }
@@ -2325,7 +2327,7 @@ internal sealed class MipsR5000Core
             return false;
         ulong textureDestination = 0;
         uint textureFirst = 0;
-        if (_experimentRuntimeTempleWeaponsTextureCompanion)
+        if (_enableRuntimeTempleWeaponsTextureCompanion)
         {
             textureDestination = allocatorBase + endOffset;
             ulong textureEndOffset = endOffset + textureByteLength;
@@ -2361,7 +2363,7 @@ internal sealed class MipsR5000Core
         Console.WriteLine(
             $"[GAUNTDL:FIX] temple-weapons-direct-load source={source:x16} " +
             $"object={objectDestination:x16}/{objectByteLength:x8}/first={objectFirst:x8} " +
-            $"texture={textureDestination:x16}/{(_experimentRuntimeTempleWeaponsTextureCompanion ? textureByteLength : 0U):x8}/first={textureFirst:x8} " +
+            $"texture={textureDestination:x16}/{(_enableRuntimeTempleWeaponsTextureCompanion ? textureByteLength : 0U):x8}/first={textureFirst:x8} " +
             $"heap={_memory.Read32(allocatorOffsetAddress):x8}");
         return true;
     }

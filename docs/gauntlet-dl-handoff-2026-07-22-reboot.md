@@ -3477,7 +3477,7 @@ Nästa pass ska spåra vilka QIO/body-steg som normalt gör
 `source + priorOffset - streamOffset` resident; fler allocator-, sampler- och
 zero-skip-experiment är nu avvisade.
 
-### 2026-07-26: weapons companion hittad, korrekt men ännu default-off
+### 2026-07-26: weapons companion och descriptorgrind promoterade till baseline
 
 FSYS-gränsen bakom record 437 är nu löst. `0x043d1800` är extentheadern för
 `weapons/objects.rom`; dess payload börjar vid `0x043d1a00` och innehåller
@@ -3515,10 +3515,9 @@ texture-map zero writes                   1554345           387192
 ```
 
 Källmodellen är alltså kausalt riktig och återställer mycket faktisk
-weapons-textur. Companionen är fortfarande default-off, men den tidigare
-tolkningen av f1264/f1420 som timing-/FIFO-korruption var fel. Den transienta
-varianten bevisar samtidigt att förloppet inte beror på permanent
-heapförskjutning:
+weapons-textur. Den tidigare tolkningen av f1264/f1420 som
+timing-/FIFO-korruption var fel. Den transienta varianten bevisar samtidigt
+att förloppet inte beror på permanent heapförskjutning:
 
 ```text
 companion heap 0x00307af4 -> 0x0044d87c
@@ -3566,6 +3565,30 @@ texture-map writes=4401400 nonzero=2649115 zero=1752285
 Ingen skrivning träffade parserkodfönstret med grinden aktiv, och bringup gick
 vidare genom `ice2`, `imp2` och `pla2`.
 
+En ren guarded snapshot skapades därefter och verifierades genom återladdning:
+
+```text
+/tmp/gaunt-weapons-texture-guarded-f1080.warm
+/tmp/gaunt-weapons-texture-guarded-f1120.warm
+/tmp/gaunt-weapons-texture-guarded-f1120.ppm
+```
+
+Vid f1112 lämnar bilden den statiska vita fasen. F1120 visar en faktisk
+3D-scen med golv, arkitektur och karaktärsgeometri:
+
+```text
+f1120 frameHash=0xaec7381d pc=0x80102f08
+drawPackets=176787 lfbWrites=85402145 swaps=7055
+textured triangles=1926 accepted=1582 rejected=344
+framebuffer colored=160638
+texture-map writes=457832 nonzero=407533 zero=50299
+```
+
+Scenen har ännu feltexturer och vita hål, men companionen är nu verifierad
+hela vägen genom riktig geometri. Den har därför promoterats till baseline som
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION=1`.
+Den gamla experimentflaggan stöds fortfarande för enskilda körningar.
+
 Verifieringsartefakter:
 
 ```text
@@ -3574,8 +3597,8 @@ Verifieringsartefakter:
 /tmp/gaunt-weapons-texture-stream-f1420-buffer_buf0.ppm
 ```
 
-Nästa smala gräns är den första visuella/progressmässiga skillnaden efter
-f1080 med descriptorgrinden aktiv. Skapa en ny guarded snapshot i stället för
-att fortsätta från de gamla korrupta f1080/f1420-filerna. Ändra inte
-companionens diskbas, recordoffset, Type5-dekoder eller sampler; de är nu
+Nästa smala gräns är den första felaktiga textur-/vit-hålsproveniensen i den
+riktiga f1120-scenen. Fortsätt från den guarded f1120-snapshoten och bind en
+synlig felpatch till dess Type3-record, TMU-val och texture base innan någon
+sampler ändras. Ändra inte companionens diskbas eller recordoffset; de är nu
 bundna till riktig FSYS-data.
