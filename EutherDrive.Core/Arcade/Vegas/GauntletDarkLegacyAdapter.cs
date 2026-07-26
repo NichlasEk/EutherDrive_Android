@@ -860,6 +860,8 @@ internal sealed class MipsR5000Core
     private readonly bool _fixRuntimeTempleNaturalItemsAllocator =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR")) ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR"));
+    private readonly bool _experimentRuntimeTempleResourcePreserveStreamOffset =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_RESOURCE_PRESERVE_STREAM_OFFSET"));
     private readonly bool _traceRuntimeTempleItemsBoundary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_ITEMS_BOUNDARY"));
     private readonly bool _stopRuntimeTempleItemsBoundary =
@@ -1978,7 +1980,13 @@ internal sealed class MipsR5000Core
 
         Console.WriteLine(
             $"[GAUNTDL:FIX] bgloadmodel-temple-qio-callback qio={qio:x16} " +
-            $"source={source:x16} bytes={completedBytes:x8} callback={callbackEntry:x16} returned={returned}");
+            $"source={source:x16} bytes={completedBytes:x8} callback={callbackEntry:x16} returned={returned} " +
+            $"post={_memory.Read32(qio + 0x00UL):x8}/{_memory.Read32(qio + 0x04UL):x8}/" +
+            $"{_memory.Read32(qio + 0x08UL):x8}/{_memory.Read32(qio + 0x0cUL):x8}/" +
+            $"{_memory.Read32(qio + 0x10UL):x8}/{_memory.Read32(qio + 0x14UL):x8} " +
+            $"stream={_memory.Read32(0xffffffff8020f154UL):x8}/" +
+            $"{_memory.Read32(0xffffffff8020f178UL):x8}/{_memory.Read32(0xffffffff8020f17cUL):x8}/" +
+            $"{_memory.Read32(0xffffffff8020f180UL):x8}/{_memory.Read32(0xffffffff8020f184UL):x8}");
         if (returned && qio == qioBase + 15UL * qioStride)
             RunKnownRuntimeTempleResourceBuildPreservingContext(qio, 15UL);
         return returned;
@@ -2041,7 +2049,7 @@ internal sealed class MipsR5000Core
         _memory.Write32(streamSource, unchecked((uint)source));
         _memory.Write32(streamCursor, 0U);
         _memory.Write32(streamCount, count);
-        _memory.Write32(streamOffset, 0U);
+        _memory.Write32(streamOffset, _experimentRuntimeTempleResourcePreserveStreamOffset ? savedStreamOffset : 0U);
         _memory.Write32(streamLimit, uint.MaxValue);
 
         ulong[] savedGpr = (ulong[])_gpr.Clone();

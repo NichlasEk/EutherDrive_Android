@@ -3449,3 +3449,30 @@ naturliga callbackkedjan expanderar eller publicerar texelkroppen innan
 `0x800abd64`. En korrekt kandidat ska fylla `base+0xcfb40` genom guestens
 stream/dekomprimeringssemantik; den ska inte syntetiskt hoppa över nollpaket
 eller remappa record 437.
+
+QIO-poststaten visar att callbacken faktiskt publicerar
+`streamOffset=0x00191e00`, medan den manuella weapons-byggaren historiskt
+nollställde värdet. En default-off-kontroll,
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_RESOURCE_PRESERVE_STREAM_OFFSET`,
+bevarar detta guestvärde. Den är tekniskt stark men visuellt negativ:
+
+```text
+f1080 control texWrites=2736773 nz=926391  zero=1554345
+f1080 preserve texWrites=2707167 nz=1075793 zero=1286519
+f1420 preserve texWrites=3056512 nz=1831132 zero=1928560
+frameHash=0x6604904f
+```
+
+Fullkörningen passerar items-gränsen och behåller den korrekta naturliga
+allokeringen, men arbetsbuffer 1 får ett stort vitt hål i förgrunden jämfört
+med den pushade allocator-baslinjen:
+
+```text
+/tmp/gaunt-weapons-stream-offset-f1420-buffer_buf1.png
+```
+
+Offsetbevarandet får därför inte promoteras ensamt. Det visar att
+normaliseringen och den matchande texelkroppen måste återställas tillsammans.
+Nästa pass ska spåra vilka QIO/body-steg som normalt gör
+`source + priorOffset - streamOffset` resident; fler allocator-, sampler- och
+zero-skip-experiment är nu avvisade.
