@@ -900,6 +900,7 @@ static void DumpVoodoo(object facade)
     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_LAST_WRITERS") == "1")
     {
         PrintWhitePixelLastWriterSamples(backend);
+        PrintWrittenPixelLastWriterSamples(backend);
         PrintRequestedPixelLastWriterSample(backend);
     }
     Console.WriteLine("voodoo texture=" + FormatTextureStats((uint[])GetField(backend, "_textureMemory")));
@@ -969,6 +970,42 @@ static void PrintWhitePixelLastWriterSamples(object backend)
 
     Console.WriteLine(
         "voodoo whitePixelWriters=" +
+        (samples.Count == 0 ? "none" : string.Join("|", samples.Take(80))));
+}
+
+static void PrintWrittenPixelLastWriterSamples(object backend)
+{
+    const int columns = 20;
+    const int rows = 15;
+    const int cellWidth = 32;
+    const int cellHeight = 32;
+    const int samplesPerBuffer = columns * rows;
+    var buffers = (ushort[][])GetField(backend, "_colorBuffers");
+    var writerIds = (int[])GetField(backend, "_pixelLastWriterSampleIds");
+    var writerKeys = (IList)GetField(backend, "_pixelLastWriterKeys");
+    var samples = new List<string>();
+    for (int bufferIndex = 0; bufferIndex < Math.Min(3, buffers.Length); bufferIndex++)
+    {
+        ushort[] buffer = buffers[bufferIndex];
+        for (int row = 0; row < rows; row++)
+        {
+            int y = row * cellHeight + cellHeight / 2;
+            for (int column = 0; column < columns; column++)
+            {
+                int x = column * cellWidth + cellWidth / 2;
+                int writerId = writerIds[bufferIndex * samplesPerBuffer + row * columns + column];
+                if (writerId <= 0 || writerId > writerKeys.Count)
+                    continue;
+
+                string writer = writerKeys[writerId - 1]?.ToString() ?? "missing";
+                ushort color = buffer[y * 1024 + x];
+                samples.Add($"b{bufferIndex}@{x},{y}=c{color:X4}:id{writerId}:{writer}");
+            }
+        }
+    }
+
+    Console.WriteLine(
+        "voodoo writtenPixelWriters=" +
         (samples.Count == 0 ? "none" : string.Join("|", samples.Take(80))));
 }
 

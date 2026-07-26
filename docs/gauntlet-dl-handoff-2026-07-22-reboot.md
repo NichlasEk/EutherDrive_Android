@@ -3602,3 +3602,47 @@ riktiga f1120-scenen. Fortsätt från den guarded f1120-snapshoten och bind en
 synlig felpatch till dess Type3-record, TMU-val och texture base innan någon
 sampler ändras. Ändra inte companionens diskbas eller recordoffset; de är nu
 bundna till riktig FSYS-data.
+
+#### F1120--f1128 pixelproveniens
+
+`EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_LAST_WRITERS=1` skriver nu även
+`voodoo writtenPixelWriters=` med färg, koordinat och full
+`PixelLastWriterKey` för alla 32x32-provpunkter som faktiskt skrevs under
+körningen. Det kompletterar den äldre listan som bara visade vita pixlar.
+
+Åtta frames från guarded f1120 gav:
+
+```text
+textured triangles=932 accepted=711 rejected=221
+textured pixels=33835 zero=19135
+white framebuffer samples: writer=none
+```
+
+De stora rena vita hålen är alltså clear-bakgrund som ingen triangel skriver
+till, inte vita texlar från en felaktig texture fetch. Samtidigt blir ungefär
+56 procent av de rasteriserade texelpixlarna noll, så båda problemen finns men
+har olika proveniens.
+
+En skriven golvpunkt `b0@400,48` bands till `pc=0x800c6324`,
+Type3 `0x00c2a0cb/0x01c2a10b`. Dess TMU0-fetches var verkliga och icke-noll:
+
+```text
+tmode=0x8c22410f tlod=0x00002604/0x00202604
+tbase=0x000424a7/0x00043f51
+addr=0x227a50..0x22a34a raw=0x7c/0x70/0x6d
+```
+
+En nästan svart skriven punkt `b0@176,48` hämtade också verklig data:
+
+```text
+pc=0x800c7190 cmd=0x0082a0cb
+tmode=0x8c22490f tlod=0x06002604 tbase=0x0001e23e
+addr=0x11bbf0 raw=0xfe99 rgb565=0x69c2 final=0x0001
+fbzColorPath=0x0c60743a color0=color1=0xff000000
+```
+
+Den mörka slutprodukten kan därmed förklaras av den aktuella color-pathens
+svarta constant-color-val; den är inte bevis för fel bank eller saknad
+companion. Nästa kontroll ska binda en representativ noll-fetch till dess
+exakta TMU och texture-upload writer, eller visa vilken saknad yta som ger
+`empty-raster`, innan color combine ändras.
