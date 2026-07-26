@@ -3515,10 +3515,9 @@ texture-map zero writes                   1554345           387192
 ```
 
 Källmodellen är alltså kausalt riktig och återställer mycket faktisk
-weapons-textur. Den får ändå inte promoteras ännu. Både en permanent och en
-transient full-companion-körning når senare f1264/f1420 med en
-timing-/FIFO-korruption där värdet `0x4b16` sprids över Voodoo-register.
-Den transienta varianten bevisar att detta inte beror på permanent
+weapons-textur. Companionen är fortfarande default-off, men den tidigare
+tolkningen av f1264/f1420 som timing-/FIFO-korruption var fel. Den transienta
+varianten bevisar samtidigt att förloppet inte beror på permanent
 heapförskjutning:
 
 ```text
@@ -3528,6 +3527,45 @@ zom2 dest      0x805e2f34
 f1264/f1420    pc=0x800aace4/0x800aad00, frameHash=0xbb62299d
 ```
 
+En ny snapshot-säker trace finns för parserloopen:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_DESCRIPTOR_LOOP=1
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_DESCRIPTOR_LOOP_INDEX=a
+EUTHERDRIVE_GAUNTDL_TRACE_BGLOADMODEL_DESCRIPTOR_LOOP_LIMIT=32
+```
+
+Den visar den riktiga kedjan. `zom2`-texturekällan `0x80591e90` innehåller råa
+texlar och ger därför det orimliga descriptorantalet `0x2056ff66` vid
+`source+0x64`. Parsern fortsätter då med 8 MiB RAM-wrap och skriver själv via
+`sb/sh` över sin kod:
+
+```text
+pc=0x800aace4  addr=0x800aacfb  sb zero
+pc=0x800aacf0  addr=0x800aacfc  sh a0
+0x800aacfc     0x0082102a -> 0x00824b16
+```
+
+`0x4b16` var alltså parserns eget loopindex, inte ett Voodoo-registerfel.
+Samma råa `zom2`-källa finns i control utan companion. Companionen skapade
+inte felet; den längre körningen gjorde det bara synligt.
+
+Den redan avgränsade descriptorgrinden har därför promoterats till baseline
+som
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH=1`.
+Den verkar bara vid den intakta `slt`-instruktionen `0x800aacfc`, kräver att
+registerantalet är exakt samma som `source+0x64`, och avvisar endast antal över
+`0x10000`. F1000--f1080 med både baseline och companion gav exakt en reject:
+
+```text
+index=10 source=0x80591e90 count=0x2056ff66->0 completed=1
+f1080 pc=0x800c9cc4 swaps=5230 texWrites=3216939
+texture-map writes=4401400 nonzero=2649115 zero=1752285
+```
+
+Ingen skrivning träffade parserkodfönstret med grinden aktiv, och bringup gick
+vidare genom `ice2`, `imp2` och `pla2`.
+
 Verifieringsartefakter:
 
 ```text
@@ -3536,8 +3574,8 @@ Verifieringsartefakter:
 /tmp/gaunt-weapons-texture-stream-f1420-buffer_buf0.ppm
 ```
 
-Nästa smala gräns är den första FIFO-/registeravvikelsen mellan control och
-companion efter weapons-uploaden men före f1264. Börja från f1080 och jämför
-första ändringen i command-FIFO generation/read pointer eller den första
-oväntade `0x4b16`-skrivningen. Ändra inte companionens diskbas, recordoffset,
-Type5-dekoder eller sampler; de är nu bundna till riktig FSYS-data.
+Nästa smala gräns är den första visuella/progressmässiga skillnaden efter
+f1080 med descriptorgrinden aktiv. Skapa en ny guarded snapshot i stället för
+att fortsätta från de gamla korrupta f1080/f1420-filerna. Ändra inte
+companionens diskbas, recordoffset, Type5-dekoder eller sampler; de är nu
+bundna till riktig FSYS-data.
