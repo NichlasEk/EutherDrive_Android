@@ -6720,14 +6720,14 @@ internal sealed class MipsR5000Core
 
         uint sourceWord = ReadTraceWord(sp + 0x6cUL);
         ulong source = SignExtend32(sourceWord);
-        if (!AllowsTextureUploadRunSourceTrace(source))
+        uint priorOffset = ReadTraceWord(sp + 0x20UL);
+        uint subtractOffset = ReadTraceWord(sp + 0x70UL);
+        uint computedSource = unchecked(sourceWord + priorOffset - subtractOffset);
+        if (!AllowsTextureUploadRunSourceTrace(SignExtend32(computedSource)))
             return;
         if (_runtimeBgLoadModelTextureSourceOffsetsTraceCount >= _traceRuntimeBgLoadModelTextureSourceOffsetsLimit)
             return;
 
-        uint priorOffset = ReadTraceWord(sp + 0x20UL);
-        uint subtractOffset = ReadTraceWord(sp + 0x70UL);
-        uint computedSource = unchecked(sourceWord + priorOffset - subtractOffset);
         string key = $"{priorOffset:x8}:{subtractOffset:x8}:{_gpr[4]:x16}:{_gpr[5]:x16}:{_gpr[6]:x16}:{_gpr[7]:x16}:" +
                      $"{_gpr[16]:x16}:{_gpr[17]:x16}:{_gpr[18]:x16}:{_gpr[19]:x16}";
         if (!_runtimeBgLoadModelTextureSourceOffsetTraceKeys.Add(key))

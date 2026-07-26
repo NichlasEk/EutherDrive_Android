@@ -3424,3 +3424,28 @@ dekomprimering/expansion som normalt ska fylla `base+0xcfb40`, eller vilken
 aliassemantik som ska återanvända en tidigare källa för record 437. Ändra
 inte `0x8010957c`, Type5-dekodern eller TMU-samplern innan denna producent är
 förklarad.
+
+Den efterföljande source-formula-tracen stänger aliasfrågan ytterligare:
+
+```text
+pc=0x800a7338
+source=805b93c4
+priorOffset=000cfb40
+subtract=00000000
+computed=80688f04
+record=805c7a40
+limit=1
+```
+
+Grannrecorden avancerar den ackumulerade offseten normalt; record 437 ökar
+den bara från `0x0cfa40` till `0x0cfb40`, alltså `0x100` byte. Det stora
+spannet är den redan ackumulerade expanderade texellayouten, inte ett trasigt
+fält i just record 437. Den direkta weapons-vägen har samtidigt endast låtit
+QIO-callbacken rapportera den första `0x2000`-byteschunkens completion innan
+resursbyggaren körs mot den råhydratiserade `0x1f930`-bytescontainern.
+
+Nästa kausala gräns är därför weapons-QIO:s body/continuation: bevisa hur den
+naturliga callbackkedjan expanderar eller publicerar texelkroppen innan
+`0x800abd64`. En korrekt kandidat ska fylla `base+0xcfb40` genom guestens
+stream/dekomprimeringssemantik; den ska inte syntetiskt hoppa över nollpaket
+eller remappa record 437.
