@@ -38,6 +38,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BILINEAR_FILTER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_COORDINATE_CLAMP", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_T_ORIGIN_FLIP", "0"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_ZERO_TEXTURE_TRANSPARENCY", "0"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_8BIT_TEXTURE_SAMPLE_REVERSE_LANES", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_GAUNTLET_RASTER_Y_ORIGIN", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS", "0"),
@@ -44501,6 +44502,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     continue;
 
                 int pixel = (row + x) & (LfbPixels - 1);
+                TraceTexturedPixel("coverage", x, y, bufferIndex, buffer[pixel], _auxBuffer[pixel], 0, fbzMode);
                 int depthValue = 0;
                 if (useMameAuxDepth)
                 {
@@ -44672,6 +44674,7 @@ sampledTexel:
                     {
                         if (!_visualizeZeroTextureFallback)
                         {
+                            TraceTexturedPixel("zero-transparent", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                             coveredAny = true;
                             continue;
                         }
@@ -44680,6 +44683,7 @@ sampledTexel:
 
                 if (_experimentMameTwoTmuCombine && (fbzMode & 0x2000u) != 0 && (textureAlpha & 1) == 0)
                 {
+                    TraceTexturedPixel("alpha-bit-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                     coveredAny = true;
                     continue;
                 }
@@ -44692,6 +44696,7 @@ sampledTexel:
                     int alpha = Rgb565ToGrayscale8(texel);
                     if (alpha == 0)
                     {
+                        TraceTexturedPixel("alpha8-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                         coveredAny = true;
                         continue;
                     }
@@ -44707,6 +44712,10 @@ sampledTexel:
                     if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
                         _rasterBufferPixelCounts[bufferIndex]++;
                     _lfbWriteCount++;
+                }
+                else
+                {
+                    TraceTexturedPixel("rgb-mask-disabled", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                 }
                 if (mameAuxMask)
                     _auxBuffer[pixel] = mameAlphaPlanes ? (ushort)(texel >> 8) : (ushort)depthValue;

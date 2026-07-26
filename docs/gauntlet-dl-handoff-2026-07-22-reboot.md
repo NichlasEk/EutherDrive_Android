@@ -3685,3 +3685,68 @@ fyllts. Tidigare TMU0-aliasprov visar redan att bankbyte kan ge orelaterat
 material av en slump, så nästa steg är record-/assetproveniensen för
 `001fe624/8c241acf/00400410`; ändra inte TMU-bankmappningen eller inför en
 zero-fallback.
+
+#### Nolltransparens var ett bringup-hack, inte Voodoo-beteende
+
+Den stora vita patchen vid PNG-pixel `(352,304)`, rasterpixel `(352,80)`,
+spårades genom hela pixelvägen. Flera stora trianglar täcker punkten, TMU0
+läser varierande riktiga texlar, och TMU1 -> TMU0-kombineringen ger ibland
+exakt noll:
+
+```text
+TMU0  8c22410f/00002608/00027d06  addr=0x1532f8 raw=0x0065 rgba=53637dff
+TMU1  8c241acf/0030030c/001f67c4  addr=0x7c8ebe raw=0x0000 rgba=000000ff
+final combined=000000ff
+```
+
+Den tidigare bringup-regeln
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_ZERO_TEXTURE_TRANSPARENCY` kastade därefter
+pixeln och lämnade framebuffer-clearen `0xffff` synlig. Det är inte
+hårdvarubeteende i denna draw. `fbzMode=0x00000460` har varken chroma-key
+(bit 1) eller alpha-mask (bit 13) aktiv, och RGB-masken är aktiv. En
+RGB-nollpixel ska därför skrivas, inte bli implicit transparent.
+
+En strikt A/B från samma guarded f1080-snapshot till f1120 med endast regeln
+avstängd gav:
+
+```text
+baseline med gammal regel  pixel(352,304)=ffffff
+regel av                   pixel(352,304)=000000
+frameHash=0xa6f86452
+```
+
+En fortsatt f1120--f1128-replay är stabil:
+
+```text
+frameHash=0xdcdf3c32
+textured triangles=932 accepted=711 rejected=221
+textured pixels=33835 zero=19135
+framebuffer colored=148746
+```
+
+Preseten sätter nu uttryckligen
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_ZERO_TEXTURE_TRANSPARENCY=0`, så
+`BRINGUP_FAST` kan inte återaktivera den historiska fallbacken implicit.
+Default-off-pixeltracen rapporterar samtidigt `coverage`,
+`zero-transparent`, `alpha-bit-reject`, `alpha8-reject` och
+`rgb-mask-disabled`, vilket gör framtida bortfall direkt klassificerbara.
+
+Två närliggande sidospår är också stängda:
+
+1. Alla 217 `empty-raster`-rejects i f1120--f1128 är genuina subpixel- eller
+   tunna slivertrianglar; de förklarar inte de stora vita ytorna.
+2. FSYS-headern vid `0x0515c800` deklarerar visserligen en separat
+   `0x0006fb64`-bytespayload vid `0x0515ca00`, men den hör inte till den
+   aktiva natural-items-parsern. Vid dess exakta pre-call-gräns matchar
+   `source=0x80723d04` redan rådisken från `0x045335d0` genom de sista
+   `0x4fb8` byten av `weapons/textures.rom`; guestparsern omvandlar denna
+   källa in-place till samtliga 247 records. Ett items-companion-experiment
+   nådde därför inte den aktiva index-16-vägen och behölls inte.
+
+Den statiska materialproveniensen är samtidigt bekräftad: det omgivande
+`0x280`-bytesblocket för `001fe624/8c241acf/00400410` förekommer oförändrat
+på rådisken vid `0x099eae78`, alltså
+`levelE1/objects.rom + 0x4b878`. Nästa riktiga gräns är därför fortfarande
+vilken naturlig primär/TMU1-residens som MAME har för de höga
+`0x7cxxxx..0x7fxxxx`-ytorna. Återinför inte nolltransparens, bankalias eller
+en syntetisk companion för att dölja den gränsen.
