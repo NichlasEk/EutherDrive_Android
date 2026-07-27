@@ -4226,3 +4226,65 @@ Nästa smala gräns ligger därför ovanför Voodoo: spåra state-`0x8008`-ägar
 som ska avsluta den långa depth-only-passen och publicera nästa world/RGB-pass.
 Ändra inte RGB-masken, buffer 2-valet, diagnostic-exit-latchen eller
 null-textposterna utan ny kausal evidens.
+
+#### State 0x8008 fortsätter legitimt men publicerar inget RGB-pass genom f2300
+
+Den dynamiska state-`0x8008`-vägen är inte låst. Dispatchern anropar
+`0x80018800`, som uppdaterar HUD-/spelardata och avslutar normalt. Den tagna
+grenen vid `0x80018d2c` skapar två riktiga textobjekt via `0x8004ca84` och
+`0x8004c93c`. Strängtabellen vid `0x80129df0` innehåller bland annat
+`CREDITS`, `PLAYTIME` och `FINAL STATS`; träffen på `CREDITS` är därför
+UI/HUD-data och inte bevis för en null body eller en fastnad state-dispatch.
+
+En ren fullrenderad f2140--f2180-fortsättning förblev på state `0x8008` och
+`frameHash=0xe50a1c19`. Räknaren vid `0x80227b74` gick från `0x62` till
+`0x66`, medan inga nya swaps skedde. Ett default-off Type3-rasterdiscard
+användes därefter enbart som CPU/FIFO-sond från den rena f2180-checkpointen.
+Vid f2300 hade gästen avancerat till:
+
+```text
+swaps             2722 -> 2730
+fastfills         488 -> 494
+front/back/count  2/0/3
+draw packets      391658
+fbzMode           0x460
+```
+
+Alla åtta swaps inträffade vid frame 2202. De var samma legitima,
+heltalsbaserade resetfamilj som tidigare: direkta writes vid `0x80102a80`
+varvade med Type1 `target=0x4a` vid `0x80102ab4`. En exakt replay med
+`fbzMode`- och swapfilter fångade 120 registerskrivningar genom intervallet.
+Varje värde var `0x60` eller `0x460`; RGB-maskbit `0x200` förekom aldrig,
+inte ens kort mellan swaparna. Presentation eller sampling av slutregistret
+kan därför inte förklara den uteblivna färgen.
+
+Gästkoden har en riktig RGB-initierare vid `0x801028f8`:
+
+```text
+state = (state & 0xfffdffff) | 0x200
+store state at object + 0x26c
+```
+
+Ett PC-spår över hela f2180--f2204-resetfönstret gav noll träffar i
+`0x80102880..0x80102920`; resetsekvensen anropar alltså inte initieraren.
+De senare FIFO-publicerarna kring `0x80103030`/`0x80103190` kopierar redan
+byggda stateord till Type1-paket och är inte källan som rensar RGB-biten.
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-clean-f2180.warm
+/tmp/gaunt-clean-f2140-f2180.log
+/tmp/gaunt-discard-f2300.warm
+/tmp/gaunt-discard-f2180-f2300-fbz-swaps.log
+/tmp/gaunt-rgb-init-f2180-f2204.log
+/tmp/gaunt-fbz-publishers-f2140-f2141.log
+/tmp/gaunt-state8008-handler-full-f2140-f2141.log
+/tmp/gaunt-state8008-strings.log
+```
+
+Nästa smala gräns är RGB-stateobjektets livscykel före publiceringen: hitta
+callern som normalt går genom `0x801028f8`, jämför den med resetvägen vid
+f2202 och identifiera vilken legitim renderfas som väljer depth-only-
+initialisering. Forcera fortfarande inte bit `0x200`; vi har nu bevis för
+att avvikelsen ligger före FIFO-publiceringen.
