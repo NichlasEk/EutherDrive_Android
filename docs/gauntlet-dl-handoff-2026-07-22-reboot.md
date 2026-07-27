@@ -4344,6 +4344,28 @@ gästen endast publicerar depth-only-state `0x60`/`0x460` i den här fasen, och
 varför den avsedda RGB-passen inte följer. Behåll flaggan default-off och
 använd den som en visuell provenance-sond.
 
+Den explicita råbuffertsonden
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX` valde
+tidigare rätt index men `TryRenderLfb` läste ändå den frusna
+`_presentedColorBuffer` när MAME-vblank-timing var aktiv. Den vägen hoppar nu
+över swapkopian endast när ett explicit giltigt råbuffertindex anges. Normal
+presentation är oförändrad. Från den sparade force-checkpointen gav
+`FORCE_RENDER_BUFFER_INDEX=2`:
+
+```text
+frameHash=0x0dc6a910
+framebuffer nonBlack=307200 colored=216273
+chosen buffer=2
+```
+
+Utan explicit buffertval är den tidigare vblank-presentationen fortfarande
+`frameHash=0xd0bd343b` och `colored=21937`. Den exporterade 640x480-bilden
+finns i:
+
+```text
+artifacts/gauntlet-probe/gauntdl-rgb-mask-forced-presented-f2204-20260727.png
+```
+
 Reproducerbara filer:
 
 ```text
@@ -4351,8 +4373,9 @@ Reproducerbara filer:
 /tmp/gaunt-rgb-ab-release-force.log
 /tmp/gaunt-rgb-clean-f2180-f2204.log
 /tmp/gaunt-rgb-force-f2180-f2204.log
-/tmp/gaunt-rgb-clean-f2204.warm
 /tmp/gaunt-rgb-force-f2204.warm
 /tmp/gaunt-rgb-clean-f2204_buf2.ppm
 /tmp/gaunt-rgb-force-f2204_buf2.ppm
+/tmp/gaunt-rgb-force-f2204-raw-present.log
+/tmp/gaunt-rgb-force-f2204-default-present.log
 ```

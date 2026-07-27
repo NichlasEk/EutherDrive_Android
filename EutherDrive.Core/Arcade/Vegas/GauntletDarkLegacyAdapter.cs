@@ -39060,7 +39060,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         _lastRenderBufferIndex = renderBufferIndex;
         if (ShouldMaterializePendingClearForRender(renderBufferIndex))
             MaterializePendingClear(renderBufferIndex);
-        ushort[] front = _fixMameVblankSwapTiming && _presentedColorBufferValid
+        bool forceRawRenderBuffer =
+            (uint)_experimentForceRenderBufferIndex < (uint)_colorBuffers.Length;
+        ushort[] front = _fixMameVblankSwapTiming &&
+                         _presentedColorBufferValid &&
+                         !forceRawRenderBuffer
             ? _presentedColorBuffer
             : _colorBuffers[renderBufferIndex];
         for (int y = 0; y < copyHeight; y++)
