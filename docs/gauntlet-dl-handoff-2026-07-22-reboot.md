@@ -3824,3 +3824,71 @@ Det bekräftar att allocatorbasen är kausal och återställer den dominerande
 residensen. Nästa smala steg är att få aliasposterna efter cirka record 51
 att konsumera samma cursorutrymme som MAME, därefter köra om exakt
 fetchjämförelse. Lägg inte in den post-upload-blockflytten som runtimefix.
+
+#### Korrigering: natural powerups före weapons
+
+Den föregående `0x805b93c4/0x805beddc`-tabellen var inte natural powerups.
+Warm-fallbacken startade weapons innan slot 15 hade byggts och lät därefter
+weapons-källan passera som en artificiell powerups-tabell. Den tidigare
+`0x000a94b8`-kalibreringen och påståendet att de första 51 selectors matchade
+MAME gäller därför inte den riktiga natural-kedjan.
+
+Den verifierade natural-tabellen är:
+
+```text
+source   = 0x80563570
+resource = 0x80568f88
+count    = 0x220
+```
+
+Dess första allocatorpass går in med
+`s0/s3=0x00487600/0x00487b50`. Baselinefixen flyttar dessa med
+`+0x00214aa8` till `0x0069c0a8/0x0069c5f8`, varefter record 0 publicerar
+MAME:s selector `0x0029c0a9`. Records `0`, `1`, `2` och `4..8` matchar MAME
+exakt. Record 3 är ett delat alias som inte ska konsumera egen yta. Den första
+nya metadata-/geometriavvikelsen i natural-tabellen börjar vid record 9, inte
+record 0x37; ingen record-hårdkodning har införts för den.
+
+Weapons-fallbacken kräver nu att slot 15 faktiskt heter `powerups`, har både
+source och resource och att den naturliga parsern har återgått till idle.
+Powerups kopieras då undan till slot 17, weapons tar slot 15 och guest får
+fortsätta sin naturliga items-load i slot 16. Den ordningen är avsiktligt
+guest-kompatibel; ett försök att lägga powerups i slot 16 och items i slot 17
+gjorde att guest därefter skrev över slot 16 med sin egen items-callback.
+
+Efter natural powerups saknades `0x145c4` bytes för den transienta
+`0x00145d88`-bytes weapons-texturströmmen i den gamla 8 MiB-heapen.
+RAM-fönstret `0x80800000..0x80945d88` var helt tomt före injektionen och
+används nu endast som default-on companionens transienta parserström när den
+ordinarie heapen inte räcker. Objektkropp, resource records och den synliga
+guest-heapens cursor ligger kvar i sina ordinarie områden.
+
+En ren f1000--f1120-replay med samma `200000` CPU-steg/frame som den äldre
+guarded-referensen verifierade hela kedjan utan overlays eller MAME-bytes:
+
+```text
+powerups first selector = 0x0029c0a9
+weapons first selector  = 0x00163001
+weapons stream          = 0x80800000
+weapons returned        = True
+items first selector    = 0x00322218
+
+frameHash                = 0x391954c5
+framebuffer colored      = 205387
+swaps                     = 2713
+rasterized texture pixels = 284297
+```
+
+Verifieringsloggar och RAM-dumpar:
+
+```text
+/tmp/gaunt-natural-powerups-trace-f1000-f1080.log
+/tmp/gaunt-natural-powerups-calibrated-f1080-mainram.bin
+/tmp/gaunt-powerups-weapons-ordered-f1120-mainram.bin
+/tmp/gaunt-temple-guest-ordered-200k-f1000-f1120.log
+```
+
+Nästa smala gräns är record 9:s natural-metadata och dess alternativa
+allokeringsgeometri. Använd den default-off riktade tracen
+`EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_POWERUPS_RECORD_LOOP=1`; återanvänd
+inte den artificiella `0x805beddc`-tabellen som selector-orakel.

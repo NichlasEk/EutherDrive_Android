@@ -875,6 +875,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION"));
     private readonly bool _traceRuntimeTempleItemsBoundary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_ITEMS_BOUNDARY"));
+    private readonly bool _traceRuntimeTemplePowerupsRecordLoop =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_POWERUPS_RECORD_LOOP"));
     private readonly bool _stopRuntimeTempleItemsBoundary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_STOP_RUNTIME_TEMPLE_ITEMS_BOUNDARY"));
     private readonly bool _enableRuntimeBgLoadModelAssetStaticAliasSourceRepair =
@@ -1581,6 +1583,7 @@ internal sealed class MipsR5000Core
     private int _runtimeDiagnosticStateZeroMaskFastPathTraceCount;
     private int _runtimeStringCopyFastPathTraceCount;
     private int _runtimeTempleItemsBoundaryTraceCount;
+    private int _runtimeTemplePowerupsRecordLoopTraceCount;
     private int _runtimeTempleItemsStringTraceCount;
     private int _textureUploadPayloadTraceCount;
     private string? _runtimeBgLoadModelStateSnapshot;
@@ -1616,6 +1619,7 @@ internal sealed class MipsR5000Core
     private bool _insideContextPreservingRuntimeTimerTick;
     private bool _runtimeTempleWeaponsLoadRequested;
     private bool _runtimeTempleWeaponsResourceBuilt;
+    private ulong _runtimeTempleWeaponsTextureStream;
     private bool _runtimeTempleItemsLoadRequested;
     private bool _runtimeTempleItemsResourceBuilt;
     private ulong _hi;
@@ -2050,7 +2054,9 @@ internal sealed class MipsR5000Core
         {
             const ulong weaponsObjectBodyOffset = 0x0001f930UL;
             const ulong weaponsObjectBodyLength = 0x0000a240UL;
-            streamBuffer = (source + weaponsObjectBodyOffset + weaponsObjectBodyLength + 3UL) & ~3UL;
+            streamBuffer = _runtimeTempleWeaponsTextureStream != 0
+                ? _runtimeTempleWeaponsTextureStream
+                : (source + weaponsObjectBodyOffset + weaponsObjectBodyLength + 3UL) & ~3UL;
             const ulong tracedRecordOffset = 0x000cfb40UL;
             Console.WriteLine(
                 $"[GAUNTDL:FIX] temple-weapons-texture-companion " +
@@ -2282,14 +2288,23 @@ internal sealed class MipsR5000Core
         const ulong textureDiskOffset = 0x043f2800UL;
         const uint textureByteLength = 0x00145d88U;
         const ulong qio = 0xffffffff80217c58UL + 15UL * 0x118UL;
+        ulong weaponsDescriptor = assetTable + 15UL * descriptorStride;
+        const ulong preservedPowerupsIndex = 17UL;
+        ulong powerupsDescriptor = assetTable + preservedPowerupsIndex * descriptorStride;
+        bool powerupsReady =
+            ReadAsciiTraceString(weaponsDescriptor + 0x10UL, 0x20) == "powerups" &&
+            _memory.Read32(sourceTable + 15UL * 4UL) != 0U &&
+            _memory.Read32(resourceTable + 15UL * 4UL) != 0U;
         bool atNativeProducer = Pc == powerupsLoadEntry;
         bool recoveringTempleCheckpoint =
             ReadAsciiTraceString(0xffffffff8024fb60UL, 0x20) == "levels/levelE1" &&
-            _memory.Read32(currentIndexAddress) == uint.MaxValue;
+            _memory.Read32(currentIndexAddress) == uint.MaxValue &&
+            powerupsReady;
         if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
             _runtimeTempleWeaponsLoadRequested ||
             _halted ||
             _insideContextPreservingRuntimeTimerTick ||
+            !powerupsReady ||
             (!atNativeProducer && !recoveringTempleCheckpoint) ||
             _memory.Read32(weaponsHandle) != uint.MaxValue)
         {
@@ -2297,14 +2312,12 @@ internal sealed class MipsR5000Core
         }
 
         _runtimeTempleWeaponsLoadRequested = true;
-        ulong weaponsDescriptor = assetTable + 15UL * descriptorStride;
-        ulong powerupsDescriptor = assetTable + 16UL * descriptorStride;
-        if (ReadAsciiTraceString(weaponsDescriptor + 0x10UL, 0x20) == "powerups")
+        if (powerupsReady)
         {
             for (ulong offset = 0; offset < descriptorStride; offset++)
                 _memory.Write8(powerupsDescriptor + offset, _memory.Read8(weaponsDescriptor + offset));
-            _memory.Write32(sourceTable + 16UL * 4UL, _memory.Read32(sourceTable + 15UL * 4UL));
-            _memory.Write32(resourceTable + 16UL * 4UL, _memory.Read32(resourceTable + 15UL * 4UL));
+            _memory.Write32(sourceTable + preservedPowerupsIndex * 4UL, _memory.Read32(sourceTable + 15UL * 4UL));
+            _memory.Write32(resourceTable + preservedPowerupsIndex * 4UL, _memory.Read32(resourceTable + 15UL * 4UL));
         }
 
         _memory.Write32(sourceTable + 15UL * 4UL, 0U);
@@ -2334,10 +2347,12 @@ internal sealed class MipsR5000Core
         uint textureFirst = 0;
         if (_enableRuntimeTempleWeaponsTextureCompanion)
         {
-            textureDestination = allocatorBase + endOffset;
             ulong textureEndOffset = endOffset + textureByteLength;
+            bool useTransientHighRam = textureEndOffset > allocatorLimit;
+            textureDestination = useTransientHighRam
+                ? 0xffffffff80800000UL
+                : allocatorBase + endOffset;
             if (textureEndOffset > uint.MaxValue ||
-                textureEndOffset > allocatorLimit ||
                 !IsMainRamRange(textureDestination, textureByteLength) ||
                 !_memory.TryReadDiskByteOffsetToMemory(
                     textureDiskOffset,
@@ -2349,7 +2364,9 @@ internal sealed class MipsR5000Core
                 return false;
             }
 
-            endOffset = textureEndOffset;
+            if (!useTransientHighRam)
+                endOffset = textureEndOffset;
+            _runtimeTempleWeaponsTextureStream = textureDestination;
         }
         _memory.Write32(allocatorOffsetAddress, (uint)endOffset);
 
@@ -2429,6 +2446,7 @@ internal sealed class MipsR5000Core
     {
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ulong pc = Pc;
+        TraceKnownRuntimeTemplePowerupsRecordLoop(pc);
         if (TraceKnownRuntimeTempleItemsBoundary(pc))
             return;
         ApplyKnownRuntimeTempleNaturalPowerupsAllocatorRepair(pc);
@@ -3009,6 +3027,41 @@ internal sealed class MipsR5000Core
             $"low={oldLow:x8}->00322218 high={oldHigh:x8}->00722218");
     }
 
+    private void TraceKnownRuntimeTemplePowerupsRecordLoop(ulong pc)
+    {
+        const ulong callerMin = 0xffffffff800a7280UL;
+        const ulong callerMax = 0xffffffff800a7800UL;
+        const ulong resource = 0xffffffff80568f88UL;
+        const ulong recordStride = 0x50UL;
+        if (!_traceRuntimeTemplePowerupsRecordLoop ||
+            _runtimeTemplePowerupsRecordLoopTraceCount >= 2048 ||
+            pc < callerMin ||
+            pc > callerMax)
+        {
+            return;
+        }
+
+        ulong record = _gpr[18];
+        if (record < resource ||
+            (record - resource) % recordStride != 0)
+        {
+            return;
+        }
+
+        ulong index = (record - resource) / recordStride;
+        if (index != 0UL && (index < 7UL || index >= 12UL))
+            return;
+        _runtimeTemplePowerupsRecordLoopTraceCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:TRACE] temple-powerups-record-loop n={_runtimeTemplePowerupsRecordLoopTraceCount} " +
+            $"pc={pc:x16} op={_memory.Read32(pc):x8} index={index} record={record:x16} " +
+            $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+            $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} t0={_gpr[8]:x16} t1={_gpr[9]:x16} " +
+            $"t2={_gpr[10]:x16} ra={_gpr[31]:x16} " +
+            $"words={FormatTraceWords(record, 8)}");
+    }
+
     private void ApplyKnownRuntimeTempleNaturalPowerupsAllocatorRepair(ulong pc)
     {
         const ulong primarySelectorWriter = 0xffffffff800a75c8UL;
@@ -3016,7 +3069,7 @@ internal sealed class MipsR5000Core
         const ulong sourceTable = 0xffffffff802529a0UL;
         const ulong resourceTable = 0xffffffff802545a0UL;
         const uint powerupsIndex = 15U;
-        const uint selectorDelta = 0x000a94b8U;
+        const uint selectorAdjustment = 0x00214aa8U;
         if (!_fixRuntimeTempleNaturalPowerupsAllocator ||
             pc is not (primarySelectorWriter or primarySelectorStored))
         {
@@ -3030,31 +3083,35 @@ internal sealed class MipsR5000Core
         if (pc == primarySelectorStored)
         {
             if (_gpr[18] == resource &&
-                _memory.Read32(resource + 0x1cUL) == 0x00345560U &&
+                source == 0xffffffff80563570UL &&
+                resource == 0xffffffff80568f88UL &&
+                _memory.Read32(resource + 0x1cUL) == 0x00087600U &&
                 current == 0x0069c0a8U &&
                 next == 0x0069c5f8U)
             {
                 _memory.Write32(resource + 0x1cUL, 0x0029c0a8U);
                 Console.WriteLine(
                     $"[GAUNTDL:FIX] temple-natural-powerups-first-selector " +
-                    $"pc={pc:x16} resource={resource:x16} selector=00345560->0029c0a8");
+                    $"pc={pc:x16} resource={resource:x16} selector=00087600->0029c0a8");
             }
             return;
         }
 
         if (_gpr[18] != resource ||
+            source != 0xffffffff80563570UL ||
+            resource != 0xffffffff80568f88UL ||
             _memory.Read32(resource + 0x1cUL) != 0U ||
             !IsMainRamRange(source + 0x60UL, 8UL) ||
             _memory.Read32(source + 0x60UL) != 0x000000a4U ||
             _memory.Read32(source + 0x64UL) != 0x00000220U ||
-            current != 0x00745560U ||
-            next != 0x00745ab0U)
+            current != 0x00487600U ||
+            next != 0x00487b50U)
         {
             return;
         }
 
-        _gpr[16] = current - selectorDelta;
-        _gpr[19] = next - selectorDelta;
+        _gpr[16] = current + selectorAdjustment;
+        _gpr[19] = next + selectorAdjustment;
         Console.WriteLine(
             $"[GAUNTDL:FIX] temple-natural-powerups-allocator " +
             $"pc={pc:x16} index={powerupsIndex} source={source:x16} resource={resource:x16} " +
