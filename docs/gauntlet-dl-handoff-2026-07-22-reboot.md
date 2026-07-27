@@ -4578,3 +4578,13 @@ Reproducerbara filer:
 /tmp/gaunt-rgb-winopen-fix-f450.warm
 /tmp/gaunt-rgb-winopen-fix-f450-extra1m.log
 ```
+
+Den kallstartade kandidatgrenen fortsattes därefter från f450 till f600 utan
+gästminnespatch, backend-force eller extra CPU-serie. Resultatet behöll
+`fbzMode=0x660` genom 120 swaps och 248045 texturwrites. Den rena
+fortsättningscheckpointen är:
+
+```text
+/tmp/gaunt-rgb-winopen-fix-f600.warm
+/tmp/gaunt-rgb-winopen-fix-f450-f600.log
+```
