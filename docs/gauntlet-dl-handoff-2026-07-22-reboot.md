@@ -3916,17 +3916,57 @@ low-cursororden är exakt `0x0029ef58` och kalibrerar dem till
 `0x002b4448` vid samma hårt guardade första selectorwriter som high-cursorn.
 Ingen record, metadata eller texturpayload skrivs direkt.
 
-En full jämförelse av alla `0x220` natural-records vid f1080 gav:
+Den korta f1080-dumpen gav först:
 
 ```text
 före low-cursorfix:  selectors/metadata lika MAME = 51 / 544
 efter fix:           selectors/metadata lika MAME = 348 / 544
 ```
 
-Alla normala records genom 367 följer nu MAME. De separata `01...`-aliasen
-vid bland annat 3, 23, 34 och 50 är fortfarande tomma i Euther och räknas
-inte som lösta av allocatorfixen. Nästa sammanhängande avvikelse börjar vid
-record 368 och ska spåras som en ny parser-/aliasgräns.
+Den senare 200k/f1120-kontrollen korrigerar tolkningen av detta resultat.
+Record 368 var bara mitt i sin upload när f1080 stoppades; det fanns inget
+felaktigt R5000-returhopp där. När gästens natural-builder är helt färdig
+matchar 511 av 544 records MAME ord för ord. Exakt 33 `01/00...`-aliasrecords
+har då fortfarande rå owner `0x0824191f` och nollselector.
+
+Den befintliga guest-härledda
+`RepairKnownRuntimeTempleAnimatedTextureAliases` kördes tidigare endast
+efter context-preserving weapons/items. Natural-kedjan anropar den nu också,
+men först när:
+
+```text
+currentIndex = 0xffffffff
+source       = 0x80563570
+resource     = 0x80568f88
+table/count  = 0x000000a4 / 0x00000220
+```
+
+Reparationen hittar en redan färdig record i samma natural-tabell med samma
+texturoffset, kopierar endast guestens producerade record och återställer
+aliasets ursprungliga typord. Inga MAME-bytes används. Därefter bevaras
+powerups i slot 17 och weapons får ta slot 15.
+
+Full A/B gav:
+
+```text
+före aliasreparation: ordexakta records = 511 / 544
+efter aliasreparation: ordexakta records = 536 / 544
+reparerade aliasrecords                         = 33
+nollselectors efter reparation                   = 0
+råa alias-owners efter reparation                = 0
+```
+
+De återstående åtta MAME-skillnaderna är fullt processade records i samma
+sammanhängande animationsgrupp, inte tomma alias. Reparationen väljer
+gruppens första frame medan MAME-snapshoten oftast visar frame +1 och i ett
+fall frame +7. Dessa ögonblicksfaser ska inte hårdkodas.
+
+En senare f1260-kontroll hade fler totala guestinstruktioner än
+200k/f1120. Natural-tabellen ändrade då noll metadata-/selectorposter,
+source-headerns count var fortsatt `0x220`, weapons-QIO var helt nollställd
+och weapons-buildern hade returnerat `True`. Den äldre count/QIO-regressionen
+från syntetisk items-prebuild reproduceras alltså inte på denna naturliga
+ordning.
 
 Slutverifieringen kördes från samma f1000-snapshot med `200000`
 CPU-steg/frame till f1120. Weapons-buildern returnerade `True`, items-kedjan
@@ -3946,4 +3986,8 @@ Verifieringsartefakter:
 /tmp/gaunt-natural-powerups-lowtarget-f1080-mainram.bin
 /tmp/gaunt-natural-powerups-lowtarget-200k-f1000-f1120.log
 /tmp/gaunt-natural-powerups-lowtarget-200k-f1120-mainram.bin
+/tmp/gaunt-natural-powerups-aliasfix-200k-f1000-f1120.log
+/tmp/gaunt-natural-powerups-aliasfix-200k-f1120-mainram.bin
+/tmp/gaunt-natural-powerups-aliasfix-f1000-f1260.log
+/tmp/gaunt-natural-powerups-aliasfix-f1260-mainram.bin
 ```

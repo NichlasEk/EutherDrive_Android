@@ -2291,14 +2291,15 @@ internal sealed class MipsR5000Core
         ulong weaponsDescriptor = assetTable + 15UL * descriptorStride;
         const ulong preservedPowerupsIndex = 17UL;
         ulong powerupsDescriptor = assetTable + preservedPowerupsIndex * descriptorStride;
+        bool powerupsBuilderIdle = _memory.Read32(currentIndexAddress) == uint.MaxValue;
         bool powerupsReady =
             ReadAsciiTraceString(weaponsDescriptor + 0x10UL, 0x20) == "powerups" &&
             _memory.Read32(sourceTable + 15UL * 4UL) != 0U &&
-            _memory.Read32(resourceTable + 15UL * 4UL) != 0U;
+            _memory.Read32(resourceTable + 15UL * 4UL) != 0U &&
+            powerupsBuilderIdle;
         bool atNativeProducer = Pc == powerupsLoadEntry;
         bool recoveringTempleCheckpoint =
             ReadAsciiTraceString(0xffffffff8024fb60UL, 0x20) == "levels/levelE1" &&
-            _memory.Read32(currentIndexAddress) == uint.MaxValue &&
             powerupsReady;
         if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
             _runtimeTempleWeaponsLoadRequested ||
@@ -2314,6 +2315,16 @@ internal sealed class MipsR5000Core
         _runtimeTempleWeaponsLoadRequested = true;
         if (powerupsReady)
         {
+            ulong powerupsSource = SignExtend32(_memory.Read32(sourceTable + 15UL * 4UL));
+            ulong powerupsResource = SignExtend32(_memory.Read32(resourceTable + 15UL * 4UL));
+            if (powerupsSource == 0xffffffff80563570UL &&
+                powerupsResource == 0xffffffff80568f88UL &&
+                _memory.Read32(powerupsSource + 0x60UL) == 0x000000a4U &&
+                _memory.Read32(powerupsSource + 0x64UL) == 0x00000220U)
+            {
+                RepairKnownRuntimeTempleAnimatedTextureAliases(powerupsResource, 0x220U);
+            }
+
             for (ulong offset = 0; offset < descriptorStride; offset++)
                 _memory.Write8(powerupsDescriptor + offset, _memory.Read8(weaponsDescriptor + offset));
             _memory.Write32(sourceTable + preservedPowerupsIndex * 4UL, _memory.Read32(sourceTable + 15UL * 4UL));
