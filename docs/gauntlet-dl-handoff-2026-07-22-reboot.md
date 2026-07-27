@@ -3750,3 +3750,77 @@ på rådisken vid `0x099eae78`, alltså
 vilken naturlig primär/TMU1-residens som MAME har för de höga
 `0x7cxxxx..0x7fxxxx`-ytorna. Återinför inte nolltransparens, bankalias eller
 en syntetisk companion för att dölja den gränsen.
+
+### 2026-07-27: MAME-Temple-orakel och powerups-residens
+
+Det officiella Temple-oraklet är återställt från en normal MAME-savekedja
+(initialer `SJB`, lösenord `964`, Temple-valet) utan runtime-overlay. En
+GDB-dump vid stabil Temple-gameplay matchar de tidigare dokumenterade
+bankhasharna exakt:
+
+```text
+TMU0 c1356470f8be70d533b867041830b644eaa0a90293cc36c1c2852fb1dcfc9899
+TMU1 26aa29820758aa421017e1ab01d4530b84ac982d2ff0e872f46dd7f6a9e22d0d
+```
+
+Det avförde först ett falskt mål: MAME har också noll vid TMU1-local
+`0x3c8ebe` och i den aktiva `001fe624`-familjens exakta fetchadresser.
+Nolltexeln där är legitim; den bevisar inte saknad upload.
+
+En full exakt fetchjämförelse från guarded f1120 hittade däremot en verklig
+powerups-familj. Euther hade 9 895 fetches där Euther var noll och MAME
+icke-noll, fördelade över 1 800 unika adresser. De största sidorna låg vid
+TMU1-local `0x2dccxx`, `0x2e47xx`, `0x2f89xx`, `0x2e63xx` och `0x2c80xx`.
+Exakta 256-bytesblock från MAME förekommer i powerups-filen på rådisken.
+
+En 32 MiB MAME-RAM-dump stängde allocatorgränsen:
+
+```text
+MAME   weapons slot 15, powerups slot 16
+MAME   powerups first selector = 0x0029c0a9
+Euther powerups slot 15
+Euther powerups first selector = 0x00345561
+delta                           = 0x000a94b8
+```
+
+Writer-watch på Euther visade den verkliga producenten, inte den vanliga
+resource-parsern:
+
+```text
+0x800a75c8 record+0x1c = 0x00345560
+0x800a7638 record+0x1c = 0x00345561
+s0/s3 före store       = 0x00745560 / 0x00745ab0
+```
+
+Baselinefixen
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_NATURAL_POWERUPS_ALLOCATOR=1`
+grindas på exakt PC, slot 15:s source/resource, header
+`table=0xa4,count=0x220`, tomt första selectorord och de två observerade
+cursorvärdena. Den flyttar endast första loopens `s0/s3` med `0x000a94b8`
+och korrigerar det redan materialiserade första råordet på nästa PC.
+Experimentflaggan
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_NATURAL_POWERUPS_ALLOCATOR`
+stöds fortfarande separat.
+
+De första 51 selectorposterna följer därefter MAME; de första 16 normala
+recorden matchar ord för ord. Senare aliasrecords driver fortfarande isär
+eftersom Euther lämnar flera `0x08xxxxxx`-alias ofärdiga. Det är nästa
+guestparsergräns och ska inte döljas med MAME-data.
+
+Ett strikt post-upload-A/B flyttade endast Euthers egna TMU1-powerupsbytes
+från `0x745560` till `0x69c0a8`; inga MAME-bytes användes. Samma guarded
+f1120-state, samma 52 166 fetches, framehash och triangelantal gav:
+
+```text
+                                      control   flyttad powerups
+Euther zero / MAME nonzero              7 528              1 480
+unika saknade adresser                   1 130                420
+rasteriserade nolltexlar                16 711             11 804
+TMU1-local sida 0x2dc000                   382                  0
+TMU1-local sida 0x2f8000                   766                  0
+```
+
+Det bekräftar att allocatorbasen är kausal och återställer den dominerande
+residensen. Nästa smala steg är att få aliasposterna efter cirka record 51
+att konsumera samma cursorutrymme som MAME, därefter köra om exakt
+fetchjämförelse. Lägg inte in den post-upload-blockflytten som runtimefix.
