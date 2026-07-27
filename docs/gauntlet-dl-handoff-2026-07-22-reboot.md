@@ -4406,3 +4406,99 @@ Reproducerbara filer:
 /tmp/gaunt-rgb-force-f2220.warm
 /tmp/gaunt-rgb-force-f2220-f2224.log
 ```
+
+#### Gästens cached RGB-bit är den kausala gränsen
+
+En allmän, default-off och exakt PC-watch finns nu för smala caller-spår:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_WATCH_PCS=80102ad0,80102adc,8010281c,80106028
+EUTHERDRIVE_GAUNTDL_TRACE_CPU_WATCH_LIMIT=128
+```
+
+Den jämför fysisk PC och loggar frame, instruktion, `ra`, argument-, retur-,
+saved- och stackregister utan att aktivera den betydligt dyrare breda
+CPU-tracen. En f2180--f2204-körning träffade `0x80102ad0` fyra gånger men
+aldrig `0x80102adc`, `0x8010281c` eller `0x80106028`. Samtliga fyra
+resetanrop såg alltså stateobjektets `+0x394` som noll och grenade runt
+RGB-initieraren.
+
+Den andra direkta callern till initieraren ligger vid `0x80106028` i
+funktionen `0x80105fd0`. Den funktionen sätter eller rensar RGB-bit `0x200`
+i cached state vid `+0x26c` och publicerar ändringen när det behövs. Den enda
+direkta callern till `0x80105fd0` som hittats i spelbinären är
+`0x80105980`, inne i den stora Glide-/window-initieringen som börjar vid
+`0x8010520c`.
+
+Direkt avläsning av gästens cached state vid `0x80262fd0` visar att den
+saknade RGB-biten föregår den senare bringupen:
+
+```text
+f600   0x460
+f1320  0x460
+f1520  0x460
+f1720  0x460
+f1920  0x460
+f1943  0x060
+f1980  0x460
+```
+
+Den äldre synliga f1320-bilden motsäger inte detta. När den skapades var
+MAME-kompatibel aux/depth-maskning avstängd, och setup-rasteriseraren skrev
+då RGB utan att kräva gästens bit `0x200`. När korrekt aux/depth-maskning
+aktiverades blev den redan existerande cached-state-avvikelsen synlig som
+depth-only-rendering.
+
+Den kausala A/B:n gjordes från samma rena f2180-checkpoint. Endast ett
+gästminnesord ändrades före fortsättningen:
+
+```text
+0xffffffff80262fd0: 0x460 -> 0x660
+```
+
+Backendens RGB-force var inte aktiv. Vid f2202 publicerade gästen själv
+`0x660` från `0x80102b40` och `0x801034ac`. Följande paket växlade sedan
+legitimt mellan `0x260` och `0x660`, bland annat från `0x80103544` och
+`0x80103030`: aux-biten ändrades medan RGB-biten bevarades. Resultatet vid
+f2204 blev:
+
+```text
+frameHash                  0x0dc6a910
+slutligt fbzMode           0x660
+texturedRasterPixels       263804
+raster buffers             0/0/263804
+presenterad colored pixels 216273
+```
+
+Den presenterade PPM-filen är byte för byte identisk med backend-force-
+resultatet:
+
+```text
+sha256  da9cfd705743658599cfdff06ca3ee07fade3610e9e1a94f8a513f78dcaeea76
+cmp     identisk
+ImageMagick AE  0
+```
+
+Detta isolerar felet till initiering eller bevarande av gästens cached
+`fbzMode`, före FIFO-publiceringen. Backend-force ska förbli en diagnostisk
+sond. Nästa riktiga fix ska sätta den initiala RGB-biten vid den verifierade
+Glide-initgränsen, inte OR:a `0x200` på varje senare paket eftersom spelet
+har legitima depth-only-lägen.
+
+Den gäststate-reparerade bilden finns i:
+
+```text
+artifacts/gauntlet-probe/gauntdl-rgb-state660-presented-f2204-20260727.png
+```
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-rgb-watch-f2180-f2204.log
+/tmp/gaunt-f600-rgbstate-patch-f601.log
+/tmp/gaunt-f600-rgbstate-patch-f610.log
+/tmp/gaunt-rgb-state660-f2180-f2204.log
+/tmp/gaunt-rgb-state660-f2204.warm
+/tmp/gaunt-rgb-state660-f2204-presented.ppm
+/tmp/gaunt-rgb-state660-f2204-presented.png
+```

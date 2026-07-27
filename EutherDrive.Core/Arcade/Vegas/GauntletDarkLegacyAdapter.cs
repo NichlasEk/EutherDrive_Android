@@ -729,6 +729,10 @@ internal sealed class MipsR5000Core
     private readonly ulong? _tracePcMax = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_PC_MAX");
     private readonly ulong? _traceRa = ParseOptionalHexUlong("EUTHERDRIVE_GAUNTDL_TRACE_CPU_RA");
     private readonly int _traceInstructionLimit = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_CPU_LIMIT", int.MaxValue);
+    private readonly ulong[] _traceWatchPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU_WATCH_PCS"));
+    private readonly int _traceWatchPcLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_CPU_WATCH_LIMIT", 128);
     private readonly bool _traceCpuFprs =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU_FPRS"));
     private readonly bool _traceRuntimeLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOG") == "1";
@@ -739,6 +743,7 @@ internal sealed class MipsR5000Core
                                              GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_RENDER_TILE_BOOT_SURFACE");
     private int _remainingProbeSteps;
     private int _probeStepDebt;
+    private int _traceWatchPcCount;
     private bool _isContinuingKnownRuntimeTileLoop;
     private int _bootGlideStateEmitTraceCount;
     private readonly bool _traceBootGlideStateEmit = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BOOT_GLIDE_STATE_EMIT") == "1";
@@ -2460,6 +2465,7 @@ internal sealed class MipsR5000Core
     {
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ulong pc = Pc;
+        TraceWatchedPc(pc);
         TraceKnownRuntimeTemplePowerupsRecordLoop(pc);
         if (TraceKnownRuntimeTempleItemsBoundary(pc))
             return;
@@ -28575,6 +28581,33 @@ internal sealed class MipsR5000Core
             $"s3={_gpr[19]:x16} s4={_gpr[20]:x16} s5={_gpr[21]:x16} s6={_gpr[22]:x16} s7={_gpr[23]:x16} ra={_gpr[31]:x16} " +
             $"t5={_gpr[13]:x16} t6={_gpr[14]:x16} t7={_gpr[15]:x16} t8={_gpr[24]:x16} gp={_gpr[28]:x16} sp={_gpr[29]:x16} fp={_gpr[30]:x16} " +
             $"st={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} errorepc={_cp0[30]:x16}{fprSummary}");
+    }
+
+    private void TraceWatchedPc(ulong pc)
+    {
+        if (_traceWatchPcCount >= _traceWatchPcLimit || _traceWatchPcs.Length == 0)
+            return;
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        bool watchedPc = false;
+        for (int i = 0; i < _traceWatchPcs.Length; i++)
+        {
+            if ((_traceWatchPcs[i] & 0x1fffffffUL) != physicalPc)
+                continue;
+            watchedPc = true;
+            break;
+        }
+        if (!watchedPc)
+            return;
+
+        uint op = _memory.Read32(pc);
+        _traceWatchPcCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:CPU-WATCH] n={_traceWatchPcCount} frame={_memory.VoodooRenderFrameCount} " +
+            $"pc={pc:x16} op={op:x8} {DisassembleBrief(op)} " +
+            $"ra={_gpr[31]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
+            $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} " +
+            $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} sp={_gpr[29]:x16}");
     }
 
     private bool ShouldTrace(ulong pc)
