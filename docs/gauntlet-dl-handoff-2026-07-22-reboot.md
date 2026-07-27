@@ -4366,6 +4366,30 @@ finns i:
 artifacts/gauntlet-probe/gauntdl-rgb-mask-forced-presented-f2204-20260727.png
 ```
 
+En fortsatt fullrenderad force-replay till f2220 bekräftar att bilden inte är
+en statisk buffertrest. Med samma råa frontbuffer 2 ändrades framehashen:
+
+```text
+f2205  0x6d2f6f93  drawPackets=374572
+f2208  0x8db79678  drawPackets=375365
+f2212  0xdcea7f9b  drawPackets=376108
+f2216  0x62e4700f  drawPackets=377113
+f2224  0x53118bb5  drawPackets=377249
+```
+
+Vid f2220 hade force-passen skrivit ytterligare `233619` texturerade pixlar
+till buffer 2 och den exporterade bilden innehöll `276706` färgade pixlar.
+Värld, objekt och diagnostiköverlägg förändras alltså över tid. Den korta
+platån f2216--f2223 var en normal FIFO-väntan: CPU:n rörde sig genom flera
+gästfunktioner och Type3-publiceringen återupptogs vid f2224. Den ska inte
+behandlas som ett nytt stall.
+
+Den senare bilden finns i:
+
+```text
+artifacts/gauntlet-probe/gauntdl-rgb-mask-forced-presented-f2220-20260727.png
+```
+
 Reproducerbara filer:
 
 ```text
@@ -4378,4 +4402,7 @@ Reproducerbara filer:
 /tmp/gaunt-rgb-force-f2204_buf2.ppm
 /tmp/gaunt-rgb-force-f2204-raw-present.log
 /tmp/gaunt-rgb-force-f2204-default-present.log
+/tmp/gaunt-rgb-force-f2204-f2220.log
+/tmp/gaunt-rgb-force-f2220.warm
+/tmp/gaunt-rgb-force-f2220-f2224.log
 ```
