@@ -790,6 +790,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SCRATCH_RELOCATION_OWNERSHIP");
     private readonly bool _enableRuntimeBgLoadModelDispatchFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISPATCH");
     private readonly bool _enableRuntimeVertexFifoEmitFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT");
+    private readonly bool _enableRuntimeGlideWinOpenRgbMaskRepair =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GLIDE_WINOPEN_RGB_MASK");
     private readonly bool _fixRuntimeVertexFifoFullrectSFromX =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_FULLRECT_S_FROM_X"));
     private readonly bool _experimentRuntimeVertexFifoFullrectSFromX =
@@ -2466,6 +2468,7 @@ internal sealed class MipsR5000Core
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ulong pc = Pc;
         TraceWatchedPc(pc);
+        RepairKnownGauntletGlideWinOpenRgbMask(pc);
         TraceKnownRuntimeTemplePowerupsRecordLoop(pc);
         if (TraceKnownRuntimeTempleItemsBoundary(pc))
             return;
@@ -5200,6 +5203,42 @@ internal sealed class MipsR5000Core
         Pc = _gpr[31];
         CompleteFastPathStep();
         return true;
+    }
+
+    private void RepairKnownGauntletGlideWinOpenRgbMask(ulong pc)
+    {
+        const ulong entry = 0xffffffff8010520cUL;
+        if (!_enableRuntimeGlideWinOpenRgbMaskRepair ||
+            pc != entry ||
+            _memory.Read32(entry + 0x00UL) != 0x27bdfeb8U ||
+            _memory.Read32(entry + 0x04UL) != 0xafbe0140U ||
+            _memory.Read32(entry + 0x08UL) != 0x8fbe015cU ||
+            _memory.Read32(entry + 0x0cUL) != 0x3c048026U)
+        {
+            return;
+        }
+
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(sp + 0x10UL, 4))
+            return;
+
+        uint colorBufferCount = _memory.Read32(sp + 0x10UL);
+        if (colorBufferCount is 0 or > 3)
+            return;
+
+        ulong state = SignExtend32(_memory.Read32(0xffffffff80262c8cUL));
+        if (state != 0xffffffff80262d64UL || !IsMainRamRange(state + 0x26cUL, 4))
+            return;
+
+        uint fbzMode = _memory.Read32(state + 0x26cUL);
+        uint repairedFbzMode = fbzMode | 0x200U;
+        if (repairedFbzMode == fbzMode)
+            return;
+
+        _memory.Write32(state + 0x26cUL, repairedFbzMode);
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] glide-winopen-rgb-mask pc={pc:x16} state={state:x16} " +
+            $"colorBuffers={colorBufferCount} fbz={fbzMode:x8}->{repairedFbzMode:x8}");
     }
 
     private bool TryFastPathKnownGlideWinOpenPostInit(ulong pc)
@@ -28601,13 +28640,16 @@ internal sealed class MipsR5000Core
             return;
 
         uint op = _memory.Read32(pc);
+        string stackArguments = IsMainRamRange(_gpr[29] + 0x10UL, 0x10UL)
+            ? FormatTraceWords(_gpr[29] + 0x10UL, 4)
+            : "unmapped";
         _traceWatchPcCount++;
         Console.WriteLine(
             $"[GAUNTDL:CPU-WATCH] n={_traceWatchPcCount} frame={_memory.VoodooRenderFrameCount} " +
             $"pc={pc:x16} op={op:x8} {DisassembleBrief(op)} " +
             $"ra={_gpr[31]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
             $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} " +
-            $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} sp={_gpr[29]:x16}");
+            $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} sp={_gpr[29]:x16} stack10={stackArguments}");
     }
 
     private bool ShouldTrace(ulong pc)

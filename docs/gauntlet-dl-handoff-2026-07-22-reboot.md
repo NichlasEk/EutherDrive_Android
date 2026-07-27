@@ -4502,3 +4502,79 @@ Reproducerbara filer:
 /tmp/gaunt-rgb-state660-f2204-presented.ppm
 /tmp/gaunt-rgb-state660-f2204-presented.png
 ```
+
+#### Kallspår isolerar och reparerar den uteblivna WinOpen-RGB-initen
+
+En kallkörning med exakt PC-watch nådde den laddade WinOpen-funktionen
+`0x8010520c` vid Voodoo-frame 416. Callern vid `0x800e1b50` skickade:
+
+```text
+a0/a1/a2/a3       0/7/0/0
+stack +0x10..1c   1/2/1/0x802954b0
+```
+
+Det första stackargumentet är alltså `nColorBuffers=1`; den uteblivna
+RGB-masken beror inte på ett trasigt callerargument. Binärkoden senare i
+samma WinOpen-funktion laddar detta ord vid `0x80105978` och anropar
+RGB-maskfunktionen `0x80105fd0`, men kallspåret nådde aldrig den sena delen.
+Bringupens WinOpen-felåterhämtning låter spelet fortsätta efter den partiella
+initen utan att återskapa denna avsedda stateeffekt.
+
+En exakt skrivvakt på `0x80262fd0` visade kontrollens statekedja:
+
+```text
+loader  0x800103a4   0x00000 -> 0x00000
+state   0x801033e8   0x00000 -> 0x00060
+state   0x80103478   0x00060 -> 0x10078
+state   0x80103510   0x10078 -> 0x10478
+reset   0x80103478   0x10478 -> 0x00460
+```
+
+Resetanropet kommer från `0x801035a8` med `a0=0`. Funktionen maskar om flera
+andra `fbzMode`-fält men bevarar bit `0x200`. Den skapar därför `0x660` om
+RGB-biten redan finns och `0x460` om den saknas.
+
+Den nya bringup-fixen:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GLIDE_WINOPEN_RGB_MASK=1
+```
+
+är guardad på exakt WinOpen-entry, dess verifierade prolog, statepekaren
+`0x80262d64` och ett rimligt faktiskt `nColorBuffers`-argument. Den sätter
+endast bit `0x200` en gång när WinOpen begär minst en färgbuffer.
+`run-gauntdl-baseline.sh` aktiverar den som default men accepterar explicit
+`=0` för kontrollkörningar.
+
+Kall kandidat-A/B till f450 gav:
+
+```text
+frame 416 fix        0x00000 -> 0x00200
+gäststate            0x00260 -> 0x10278 -> 0x10678
+f450 cached fbzMode  0x10678
+f450 Voodoo reg 0x44 0x10678
+```
+
+En fortsättning med en miljon CPU-steg tog sedan samma resetväg som
+kontrollen:
+
+```text
+kontroll  0x10478 -> 0x00460
+kandidat  0x10678 -> 0x00660
+```
+
+Kandidatens Voodoo-register `0x44` slutade också på `0x660`. Detta binder
+samman kall WinOpen-init, gästsidans bevarande, FIFO-publiceringen och den
+tidigare byte-identiska f2204-bilden. Backendens force-RGB-flagga behövs inte
+för fixvägen och förblir default-off.
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-stop-winopen.log
+/tmp/gaunt-rgb-state-write-cold-f450.log
+/tmp/gaunt-rgb-state-write-f450.warm
+/tmp/gaunt-rgb-winopen-fix-cold-f450.log
+/tmp/gaunt-rgb-winopen-fix-f450.warm
+/tmp/gaunt-rgb-winopen-fix-f450-extra1m.log
+```
