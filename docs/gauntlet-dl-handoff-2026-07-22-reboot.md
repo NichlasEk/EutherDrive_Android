@@ -4158,3 +4158,71 @@ Android, desktop och probe använder samma packet-ownershipmodell.
 Nästa pass ska fortsätta framåt från den rena f1943-checkpointen och söka
 första riktiga RGB-pass/swap. Behandla fortsatt flyttalsliknande Type4-header
 eller swapvärde som packet-ownershipbevis, inte som en giltig bildgräns.
+
+#### Ren f1943--f2140-fortsättning når en legitim depth-only-menypass
+
+Den reparerade Type3-gränsen håller genom den fortsatta körningen. f1943--f1980
+ger inga nya swaps och behåller den presenterade Temple-framen med
+`frameHash=0x27f2f065`. Vid f2003/f2005 sker däremot en trovärdig
+Voodoo-omkonfigurering:
+
+```text
+f2003: fyra direkta swapbufferCMD value=0 vid pc=0x80102a80
+f2005: fyra Type1-paket cmd=0x00010251 target=0x4a value=0
+front/back/count efter sekvensen: 0/1/3
+swaps: 2722
+frameHash: 0xe50a1c19
+```
+
+Det jämna antalet swaps och de rena heltalsvärdena skiljer sekvensen från den
+falska f1942-swappen. Efter reseten är rå buffer 0 och 1 nästan svarta med en
+tunn äldre remsa överst. Buffer 2 behåller den riktiga, tidigare renderade
+Temple-scenen men är inte aktuell frontbuffer. Den ska därför användas som
+bevis på riktig bilddata, inte väljas artificiellt som presentation.
+
+Alla efterföljande `fbzMode`-paket genom f2140 är exakt `0x60` eller `0x460`.
+Packet-ownership och CPU-trace visar hela gästkedjan:
+
+```text
+Type1 header writer: 0x80103540
+Type1 value writer:  0x80103544
+state word:          0x80262d64 + 0x26c = 0x80262fd0
+clear aux mask:      caller 0x800b91c0, delay-slot a0=0
+set aux mask:        return address 0x800b9b18, a0=1
+```
+
+Funktionen laddar stateordet, rensar eller sätter bit `0x400`, skriver tillbaka
+det och publicerar därefter Type1-paketet. Ett RAM-watchpoint från f1980 till
+f2006 visar bara gästskrivare vid `0x80103510`, `0x80102b40` och `0x80103478`;
+inga värden med RGB-maskbit `0x200` förekommer. MAME-referensen bekräftar att
+bit 9 är `rgb_buffer_mask`, så den fortsatta rasteriseringen är avsiktligt
+aux/depth-only och färgskrivning ska inte forceras.
+
+Vid f2141 finns 32 render-records: 21 tomma textfält och 11 giltiga strängar,
+bland annat `Code version`, `FOG`, `render Mask` och `render mode`. De loggade
+`render-record-null-body`-träffarna är alltså de tomma menyfälten och inte
+modellbodies som ska syntetiseras. RAM-state `0x80227ab0=0x8008` bekräftar
+samtidigt att körningen redan är efter den riktiga diagnostikexiten; exit-latch
+`0x80227ec8` är noll och ska inte återassertas i state `0x8008`.
+
+Reproducerbara checkpoint- och verifieringsfiler:
+
+```text
+/tmp/gaunt-clean-f1980.warm
+/tmp/gaunt-clean-f2020.warm
+/tmp/gaunt-clean-f2100.warm
+/tmp/gaunt-clean-f2140.warm
+/tmp/gaunt-clean-f2030-buffer_buf0.ppm
+/tmp/gaunt-clean-f2030-buffer_buf1.ppm
+/tmp/gaunt-clean-f2030-buffer_buf2.ppm
+/tmp/gaunt-fbz-builder-f2020-f2060.log
+/tmp/gaunt-fbz-caller91-f2020-f2030.log
+/tmp/gaunt-fbz-state-owner-f1980-f2006.log
+/tmp/gaunt-clean-f2140-render-records.log
+/tmp/gaunt-fire3-exit-state-trace-f2140-f2142.log
+```
+
+Nästa smala gräns ligger därför ovanför Voodoo: spåra state-`0x8008`-ägaren
+som ska avsluta den långa depth-only-passen och publicera nästa world/RGB-pass.
+Ändra inte RGB-masken, buffer 2-valet, diagnostic-exit-latchen eller
+null-textposterna utan ny kausal evidens.
