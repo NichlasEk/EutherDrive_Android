@@ -34980,6 +34980,14 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int[] _pixelLastWriterSampleIds = new int[3 * PixelLastWriterSampleCount];
     private readonly Dictionary<PixelLastWriterKey, int> _pixelLastWriterIds = [];
     private readonly List<PixelLastWriterKey> _pixelLastWriterKeys = [];
+    private readonly int _requestedPixelLastWriterBuffer =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_BUFFER"), -1);
+    private readonly int _requestedPixelLastWriterX =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_X"), -1);
+    private readonly int _requestedPixelLastWriterY =
+        ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_SAMPLE_Y"), -1);
+    private int _requestedPixelLastWriterId;
+    private int _presentedRequestedPixelLastWriterId;
     private readonly bool[] _pendingClearValid = new bool[3];
     private readonly int[] _pendingClearX0 = new int[3];
     private readonly int[] _pendingClearX1 = new int[3];
@@ -35955,6 +35963,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_MIN_RENDER_FRAME"), 0);
     private readonly bool _traceFastFillSwapOrderSwapsOnly =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_SWAPS_ONLY"));
+    private readonly bool _traceFastFillSwapOrderCommandsOnly =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_FASTFILL_SWAP_ORDER_COMMANDS_ONLY"));
     private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
     private readonly string[] _recentVoodooEvents = new string[64];
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
@@ -41570,6 +41580,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_traceFastFillSwapOrderSwapsOnly && !kind.StartsWith("swap", StringComparison.Ordinal))
             return;
 
+        if (_traceFastFillSwapOrderCommandsOnly && kind == "reg")
+            return;
+
         if (kind == "reg" && !IsFastFillSwapOrderRegister(register))
             return;
 
@@ -42311,6 +42324,13 @@ internal class VoodooBringupBackend : IVoodooBackend
             (uint)y >= 480u)
         {
             return;
+        }
+
+        if (bufferIndex == _requestedPixelLastWriterBuffer &&
+            x == _requestedPixelLastWriterX &&
+            y == _requestedPixelLastWriterY)
+        {
+            _requestedPixelLastWriterId = writerId;
         }
 
         int sampleX = x - PixelLastWriterSampleCellWidth / 2;
@@ -48885,6 +48905,10 @@ sampledTexel:
         string pcStatus = pc != 0 ? $" pc=0x{pc:x16}" : "";
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-SETUP] color=0x{color:X4} tex={(textured ? 1 : 0)} " +
+            $"vertexColors=0x{_setupVertices[0].Color:X4}/0x{_setupVertices[1].Color:X4}/0x{_setupVertices[2].Color:X4} " +
+            $"iterRgb=0x{_registers[0x08]:X6}/0x{_registers[0x09]:X6}/0x{_registers[0x0A]:X6} " +
+            $"dRgbDx=0x{_registers[0x10]:X6}/0x{_registers[0x11]:X6}/0x{_registers[0x12]:X6} " +
+            $"dRgbDy=0x{_registers[0x18]:X6}/0x{_registers[0x19]:X6}/0x{_registers[0x1A]:X6} " +
             $"xy=({_setupVertices[0].X:F3},{_setupVertices[0].Y:F3})/({_setupVertices[1].X:F3},{_setupVertices[1].Y:F3})/({_setupVertices[2].X:F3},{_setupVertices[2].Y:F3}) " +
             $"st=({_setupVertices[0].S:F3},{_setupVertices[0].T:F3})/({_setupVertices[1].S:F3},{_setupVertices[1].T:F3})/({_setupVertices[2].S:F3},{_setupVertices[2].T:F3}) " +
             $"rawxy=0x{_registers[0x99]:X8}/0x{_registers[0x9A]:X8} rawfloat=({FloatFromRegister(_registers[0x99]):F3},{FloatFromRegister(_registers[0x9A]):F3}) " +
@@ -49612,6 +49636,10 @@ sampledTexel:
 
             MaterializePendingClear(_frontBufferIndex);
             Array.Copy(_colorBuffers[_frontBufferIndex], _presentedColorBuffer, LfbPixels);
+            _presentedRequestedPixelLastWriterId =
+                _frontBufferIndex == _requestedPixelLastWriterBuffer
+                    ? _requestedPixelLastWriterId
+                    : 0;
             _presentedColorBufferValid = true;
         }
 

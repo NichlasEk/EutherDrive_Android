@@ -1018,23 +1018,13 @@ static void PrintRequestedPixelLastWriterSample(object backend)
         return;
     }
 
-    const int columns = 20;
-    const int rows = 15;
-    const int cellWidth = 32;
-    const int cellHeight = 32;
-    const int samplesPerBuffer = columns * rows;
     var buffers = (ushort[][])GetField(backend, "_colorBuffers");
-    var writerIds = (int[])GetField(backend, "_pixelLastWriterSampleIds");
+    var presented = (ushort[])GetField(backend, "_presentedColorBuffer");
     var writerKeys = (IList)GetField(backend, "_pixelLastWriterKeys");
     bool valid =
         (uint)bufferIndex < (uint)Math.Min(3, buffers.Length) &&
-        x >= cellWidth / 2 &&
-        y >= cellHeight / 2 &&
-        (x - cellWidth / 2) % cellWidth == 0 &&
-        (y - cellHeight / 2) % cellHeight == 0;
-    int column = valid ? (x - cellWidth / 2) / cellWidth : -1;
-    int row = valid ? (y - cellHeight / 2) / cellHeight : -1;
-    valid = valid && (uint)column < columns && (uint)row < rows;
+        (uint)x < 640u &&
+        (uint)y < 480u;
     if (!valid)
     {
         Console.WriteLine($"voodoo pixelWriterSample=invalid:b{bufferIndex}@{x},{y}");
@@ -1042,11 +1032,18 @@ static void PrintRequestedPixelLastWriterSample(object backend)
     }
 
     ushort color = buffers[bufferIndex][y * 1024 + x];
-    int writerId = writerIds[bufferIndex * samplesPerBuffer + row * columns + column];
+    ushort presentedColor = presented[y * 1024 + x];
+    int writerId = GetFieldValue<int>(backend, "_requestedPixelLastWriterId");
+    int presentedWriterId = GetFieldValue<int>(backend, "_presentedRequestedPixelLastWriterId");
     string writer = writerId > 0 && writerId <= writerKeys.Count
         ? writerKeys[writerId - 1]?.ToString() ?? "missing"
         : "none";
-    Console.WriteLine($"voodoo pixelWriterSample=b{bufferIndex}@{x},{y}:c{color:X4}:id{writerId}:{writer}");
+    string presentedWriter = presentedWriterId > 0 && presentedWriterId <= writerKeys.Count
+        ? writerKeys[presentedWriterId - 1]?.ToString() ?? "missing"
+        : "none";
+    Console.WriteLine(
+        $"voodoo pixelWriterSample=b{bufferIndex}@{x},{y}:c{color:X4}:id{writerId}:{writer}:" +
+        $"presented={presentedColor:X4}:id{presentedWriterId}:{presentedWriter}");
 }
 
 static string FormatTextureStats(uint[] texture)

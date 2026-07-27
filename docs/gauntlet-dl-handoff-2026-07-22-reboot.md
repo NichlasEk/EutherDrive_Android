@@ -4055,3 +4055,59 @@ Nästa smala gräns är inte längre displaybuffer-valet. Spåra de kvarvarande
 vita toppradernas sista RGB-skrivare och jämför deras color-combine/textur-
 proveniens med MAME; återinför inte inverterad draw-buffer-mappning eller
 presentation av buffer 2.
+
+#### Exakt toppradsskrivare och fortsatt depth-pass
+
+En godtycklig pixel-proveniensmätare ersatte den tidigare fasta 32x32-gridens
+begränsning. Den kan nu följa exakt råpixel och fryser även writer-ID:t som
+hör till den presenterade snapshotten. Pixeln i den vita toppraden som
+motsvarar rå `buffer 0 @ 400,6` var fortfarande `0xffff`, men hade ingen
+skrivare vare sig under f1080--f1120 eller f1120--f1320:
+
+```text
+voodoo pixelWriterSample=b0@400,6:cFFFF:id0:none:presented=FFFF:id0:none
+```
+
+Den vita pixeln är alltså äldre bufferinnehåll, inte resultatet av en
+post-f1120-textur- eller color-combine-write.
+
+En ny command-only-variant av fastfill/swap-spåret reproducerade den exakta
+f1320-bilden utan att tömma loggbudgeten på passiva registerrader:
+
+```text
+PPM sha256 = 04cf3567fa13db339091ebb533dfe4879435311108582a9f5dd7aadf8075d283
+frameHash  = 0x27f2f065
+```
+
+Ordningen kring swapen var:
+
+1. svart fastfill och nästa draws byggde buffer 1 medan swapen väntade;
+2. vblank roterade `front/back` från `1/0` till `0/1`;
+3. buffer 0 presenterades korrekt;
+4. efterföljande arbete fortsatte med bufferrollerna intakta.
+
+Det finns därför inget stöd för att flytta clearen över swapen eller välja
+buffer 2. f1320 är den första presenterade buffer-0-scenen och bär äldre vitt
+innehåll i pixlar som aldrig täcktes.
+
+Fortsättningen f1320--f1520 gav ingen ny swap. Gäst/FIFO fortsatte aktivt från
+208 192 till 248 147 draw-paket, men alla 24 604 rasteriserade trianglar låg
+i `fbzMode=0x460/0x60` med endast aux/depth-write. RGB-statistiken stod helt
+stilla och ett separat f1520--f1525-spår såg ingen `fbzMode`-skrivning.
+Snapshotten och dess hash förblev därför identiska med f1320.
+
+Verifieringsfiler:
+
+```text
+/tmp/gaunt-fill-swap-commands-f1120-f1320.log
+/tmp/gaunt-fill-swap-commands-f1320.warm
+/tmp/gaunt-topwhite-writer-f1080-f1120-current.log
+/tmp/gaunt-next-swap-f1320-f1520.log
+/tmp/gaunt-next-swap-f1520.warm
+/tmp/gaunt-fbz-writes-f1520-f1525.log
+```
+
+Nästa smala gräns är att fortsätta från f1520 till nästa render-stateövergång
+och avgöra varför det långa aux/depth-passet inte följs av RGB-pass/swap.
+Ändra inte RGB-maskbiten, draw-buffer-mappningen eller presentationsbufferten
+för att syntetisera en ljusare frame.
