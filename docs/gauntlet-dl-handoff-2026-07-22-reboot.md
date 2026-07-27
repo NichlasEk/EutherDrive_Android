@@ -3892,3 +3892,58 @@ Nästa smala gräns är record 9:s natural-metadata och dess alternativa
 allokeringsgeometri. Använd den default-off riktade tracen
 `EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_POWERUPS_RECORD_LOOP=1`; återanvänd
 inte den artificiella `0x805beddc`-tabellen som selector-orakel.
+
+#### Natural powerups low-cursor kalibrerad mot record 55
+
+Den riktade tracen över `0x800a7100..0x800a7800` visar att record 9 inte
+kommer från en felaktig lookup eller cacheträff. Gästens egen
+allocatorgräns vid `0x800a7264..0x800a7278` räknade:
+
+```text
+record 8:  0x0069e9f0 - 0x00400000 = 0x0029e9f0 < 0x0029ef58 -> primary
+record 9:  0x0069f1f0 - 0x00400000 = 0x0029f1f0 < 0x0029ef58 -> false
+```
+
+Den äldre natural-fixen flyttade high-cursorn till rätt selectorlinje men
+lämnade low-cursorparet `0x8020f108/0x8020f10c` på `0x0029ef58`. Bara
+`0x2eb0` bytes återstod därför och gästen valde secondary/reuse redan vid
+record 9.
+
+MAME-oraklet ger en exakt, senare gräns: record 54 är fortfarande primary
+med selector `0x002b4371`, medan record 55 ska växla till secondary på
+`0x002b4448`. Natural-powerups-fixen kräver nu dessutom att båda gamla
+low-cursororden är exakt `0x0029ef58` och kalibrerar dem till
+`0x002b4448` vid samma hårt guardade första selectorwriter som high-cursorn.
+Ingen record, metadata eller texturpayload skrivs direkt.
+
+En full jämförelse av alla `0x220` natural-records vid f1080 gav:
+
+```text
+före low-cursorfix:  selectors/metadata lika MAME = 51 / 544
+efter fix:           selectors/metadata lika MAME = 348 / 544
+```
+
+Alla normala records genom 367 följer nu MAME. De separata `01...`-aliasen
+vid bland annat 3, 23, 34 och 50 är fortfarande tomma i Euther och räknas
+inte som lösta av allocatorfixen. Nästa sammanhängande avvikelse börjar vid
+record 368 och ska spåras som en ny parser-/aliasgräns.
+
+Slutverifieringen kördes från samma f1000-snapshot med `200000`
+CPU-steg/frame till f1120. Weapons-buildern returnerade `True`, items-kedjan
+fortsatte, och renderpumpen rapporterade:
+
+```text
+frameHash                 = 0xd5af7199
+framebuffer colored       = 211685
+swaps                      = 2713
+rasterized texture pixels = 296262
+```
+
+Verifieringsartefakter:
+
+```text
+/tmp/gaunt-natural-powerups-record7-11-producer2-f1000-f1080.log
+/tmp/gaunt-natural-powerups-lowtarget-f1080-mainram.bin
+/tmp/gaunt-natural-powerups-lowtarget-200k-f1000-f1120.log
+/tmp/gaunt-natural-powerups-lowtarget-200k-f1120-mainram.bin
+```

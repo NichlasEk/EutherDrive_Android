@@ -3029,7 +3029,7 @@ internal sealed class MipsR5000Core
 
     private void TraceKnownRuntimeTemplePowerupsRecordLoop(ulong pc)
     {
-        const ulong callerMin = 0xffffffff800a7280UL;
+        const ulong callerMin = 0xffffffff800a7100UL;
         const ulong callerMax = 0xffffffff800a7800UL;
         const ulong resource = 0xffffffff80568f88UL;
         const ulong recordStride = 0x50UL;
@@ -3042,6 +3042,24 @@ internal sealed class MipsR5000Core
         }
 
         ulong record = _gpr[18];
+        if (record < resource ||
+            (record - resource) % recordStride != 0)
+        {
+            // The function prologue can still hold the exact record pointer in
+            // an argument or another saved register before assigning s2.
+            record = 0;
+            for (int register = 1; register < _gpr.Length; register++)
+            {
+                ulong candidate = _gpr[register];
+                if (candidate >= resource &&
+                    (candidate - resource) % recordStride == 0)
+                {
+                    record = candidate;
+                    break;
+                }
+            }
+        }
+
         if (record < resource ||
             (record - resource) % recordStride != 0)
         {
@@ -3058,7 +3076,10 @@ internal sealed class MipsR5000Core
             $"s0={_gpr[16]:x16} s1={_gpr[17]:x16} s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
             $"a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
             $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} t0={_gpr[8]:x16} t1={_gpr[9]:x16} " +
-            $"t2={_gpr[10]:x16} ra={_gpr[31]:x16} " +
+            $"t2={_gpr[10]:x16} t3={_gpr[11]:x16} t4={_gpr[12]:x16} " +
+            $"t5={_gpr[13]:x16} t6={_gpr[14]:x16} t7={_gpr[15]:x16} " +
+            $"s4={_gpr[20]:x16} s5={_gpr[21]:x16} s6={_gpr[22]:x16} s7={_gpr[23]:x16} " +
+            $"t8={_gpr[24]:x16} t9={_gpr[25]:x16} sp={_gpr[29]:x16} ra={_gpr[31]:x16} " +
             $"words={FormatTraceWords(record, 8)}");
     }
 
@@ -3068,8 +3089,12 @@ internal sealed class MipsR5000Core
         const ulong primarySelectorStored = 0xffffffff800a75ccUL;
         const ulong sourceTable = 0xffffffff802529a0UL;
         const ulong resourceTable = 0xffffffff802545a0UL;
+        const ulong lowCurrentAddress = 0xffffffff8020f108UL;
+        const ulong lowNextAddress = 0xffffffff8020f10cUL;
         const uint powerupsIndex = 15U;
         const uint selectorAdjustment = 0x00214aa8U;
+        const uint expectedLowCursor = 0x0029ef58U;
+        const uint lowCursorTarget = 0x002b4448U;
         if (!_fixRuntimeTempleNaturalPowerupsAllocator ||
             pc is not (primarySelectorWriter or primarySelectorStored))
         {
@@ -3080,6 +3105,8 @@ internal sealed class MipsR5000Core
         ulong resource = SignExtend32(_memory.Read32(resourceTable + powerupsIndex * 4UL));
         uint current = (uint)_gpr[16];
         uint next = (uint)_gpr[19];
+        uint oldLowCurrent = _memory.Read32(lowCurrentAddress);
+        uint oldLowNext = _memory.Read32(lowNextAddress);
         if (pc == primarySelectorStored)
         {
             if (_gpr[18] == resource &&
@@ -3105,17 +3132,22 @@ internal sealed class MipsR5000Core
             _memory.Read32(source + 0x60UL) != 0x000000a4U ||
             _memory.Read32(source + 0x64UL) != 0x00000220U ||
             current != 0x00487600U ||
-            next != 0x00487b50U)
+            next != 0x00487b50U ||
+            oldLowCurrent != expectedLowCursor ||
+            oldLowNext != expectedLowCursor)
         {
             return;
         }
 
         _gpr[16] = current + selectorAdjustment;
         _gpr[19] = next + selectorAdjustment;
+        _memory.Write32(lowCurrentAddress, lowCursorTarget);
+        _memory.Write32(lowNextAddress, lowCursorTarget);
         Console.WriteLine(
             $"[GAUNTDL:FIX] temple-natural-powerups-allocator " +
             $"pc={pc:x16} index={powerupsIndex} source={source:x16} resource={resource:x16} " +
-            $"current={current:x8}->{(uint)_gpr[16]:x8} next={next:x8}->{(uint)_gpr[19]:x8}");
+            $"current={current:x8}->{(uint)_gpr[16]:x8} next={next:x8}->{(uint)_gpr[19]:x8} " +
+            $"low={oldLowCurrent:x8}->{lowCursorTarget:x8} lowNext={oldLowNext:x8}->{lowCursorTarget:x8}");
     }
 
     private bool TraceKnownRuntimeTempleItemsBoundary(ulong pc)
