@@ -35887,6 +35887,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_ZERO_AS_NEUTRAL_WHITE"));
     private readonly bool _experimentSetupMameAuxDepth =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH"));
+    // Diagnostic only: reveal the color contribution of passes whose guest
+    // fbzMode has RGB writes masked while preserving their normal depth path.
+    private readonly bool _experimentSetupForceRgbMask =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_FORCE_RGB_MASK"));
     private readonly bool _fixDropLeakedType5RegisterHeaders =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DROP_LEAKED_TYPE5_HEADERS");
     private readonly bool _treatZeroTextureTexelAsTransparent =
@@ -44663,7 +44667,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool useMameAuxDepth = _experimentSetupMameAuxDepth;
         bool mameRgbMask =
             IsColorDrawBufferSelected(fbzMode) &&
-            (!useMameAuxDepth || (fbzMode & 0x200u) != 0);
+            (_experimentSetupForceRgbMask || !useMameAuxDepth || (fbzMode & 0x200u) != 0);
         bool mameAuxMask = useMameAuxDepth && (fbzMode & 0x400u) != 0;
         bool mameDepthTest = useMameAuxDepth && (fbzMode & 0x10u) != 0;
         bool mameAlphaPlanes = useMameAuxDepth && (fbzMode & 0x40000u) != 0;

@@ -4288,3 +4288,71 @@ callern som normalt går genom `0x801028f8`, jämför den med resetvägen vid
 f2202 och identifiera vilken legitim renderfas som väljer depth-only-
 initialisering. Forcera fortfarande inte bit `0x200`; vi har nu bevis för
 att avvikelsen ligger före FIFO-publiceringen.
+
+#### Isolerad RGB-masksond bevisar komplett scenrendering bakom depth-passen
+
+Den riktiga funktionsgränsen för RGB-initieraren är `0x8010281c`. Dess två
+direkta callers är `0x80102adc` och `0x80106028`. I resetvägen laddar
+`0x80102ad0` pekaren vid `0x80262d64 + 0x394`; den är noll i samtliga
+kontrollerade checkpoints från f1080 till f2180, så grenen vid `0x80102ad4`
+hoppar normalt över initieraren och anropar `0x80105ea0`. Den uteblivna
+initierarkörningen är därmed inte i sig en ny regression.
+
+För att se vad den verifierade depth-only-passen faktiskt bär infördes den
+default-off diagnostiska flaggan:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_FORCE_RGB_MASK=1
+```
+
+Flaggan påverkar endast setup-rasteriserarens färgmask. Aux-write,
+depth-test, gäststate, FIFO och swaplogik lämnas orörda. En viktig
+reproducerbarhetsdetalj är att `run-gauntdl-baseline.sh` kör den befintliga
+`Release`-DLL:n; ett vanligt Debug-bygge uppdaterar inte proben.
+
+Efter ett korrekt `Release`-bygge gav en enda f2140--f2141-frame:
+
+```text
+ren:    texturedRasterPixels=0       buffer0 nz=8960
+force:  texturedRasterPixels=267     buffer0 nz=9168
+CPU/FIFO/trianglar: identiska
+```
+
+En full A/B-replay från den gemensamma rena f2180-checkpointen genom swaparna
+vid f2202 till f2204 gav identiska CPU-, FIFO-, triangel- och swapräknare.
+Endast färgskrivningen skilde:
+
+```text
+ren:    texturedRasterPixels=0       raster buffers=0/0/0
+force:  texturedRasterPixels=269188  raster buffers=5384/0/263804
+front/back/count:                     2/0/3 i båda grenarna
+```
+
+Den tvingade buffer 2 visar en verklig Gauntlet Dark Legacy-scen med
+texturerad värld, objekt, diagnostiktext och Gauntlet-logotyp. Assetkedjan,
+Type3-geometrin, textursamplingen och stora delar av färgkombineringen är
+alltså verkliga och sammanhängande. Den rena buffer 2 är samtidigt nästan
+helt vit. A/B-bilden ligger här:
+
+```text
+artifacts/gauntlet-probe/gauntdl-rgb-mask-ab-f2204-20260727.png
+```
+
+Force-resultatet innehåller överritning och är inte en kandidat för
+produktionsdefault. Det bevisar i stället att nästa kausala gräns är varför
+gästen endast publicerar depth-only-state `0x60`/`0x460` i den här fasen, och
+varför den avsedda RGB-passen inte följer. Behåll flaggan default-off och
+använd den som en visuell provenance-sond.
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-rgb-ab-release-clean.log
+/tmp/gaunt-rgb-ab-release-force.log
+/tmp/gaunt-rgb-clean-f2180-f2204.log
+/tmp/gaunt-rgb-force-f2180-f2204.log
+/tmp/gaunt-rgb-clean-f2204.warm
+/tmp/gaunt-rgb-force-f2204.warm
+/tmp/gaunt-rgb-clean-f2204_buf2.ppm
+/tmp/gaunt-rgb-force-f2204_buf2.ppm
+```
