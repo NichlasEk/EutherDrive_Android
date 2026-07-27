@@ -4111,3 +4111,50 @@ Nästa smala gräns är att fortsätta från f1520 till nästa render-stateöver
 och avgöra varför det långa aux/depth-passet inte följs av RGB-pass/swap.
 Ändra inte RGB-maskbiten, draw-buffer-mappningen eller presentationsbufferten
 för att syntetisera en ljusare frame.
+
+#### Ny Type3-emitter stoppar den falska f1942-swappen
+
+En passiv f1920--f1943-fortsättning hittade att nästa swap inte heller var
+ett trovärdigt spelkommando:
+
+```text
+frame=1942
+packet=0x03b1af8c
+false Type4 header=0x4358920c
+false swap value=0x43bff874
+producer pc=0x800c5bd4..0x800c5bdc
+```
+
+Packet-ownership-spåret visade den riktiga packetgränsen åtta byte tidigare:
+
+```text
+real Type3 header=0x01c0a8cb
+packet=0x03b1af80
+producer pc=0x800c5b80
+false header offset=3 words
+```
+
+`0x4358920c` och `0x43bff874` är alltså vertexpayload under en riktig
+Type3-header. Type3-producentfiltret kände bara emittrarna `0x800bc8ec` och
+`0x800bc91c`, så body-ägarskapet startade aldrig för familjen vid
+`0x800c5b80`.
+
+Ett exakt A/B från samma f1920-state, med `0x800c5b80` tillagd i
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE3_PRODUCER_HEADER_PCS`, gav:
+
+```text
+false Type4 ownership hits = 0
+swaps                      = 2714  (ingen ny swap)
+frameHash                  = 0x27f2f065
+front/back                 = 0/1
+```
+
+Utan den nya header-PC:n blev resultatet `swaps=2715`,
+`frameHash=0x392437d8` och `front/back=1/0`. Den verifierade Type3-headern
+ingår nu i både probe-scriptet och apparnas baselineprofil. Baselineprofilen
+aktiverar samtidigt de redan verifierade Type3-/Type4-body-advance-skydden så
+Android, desktop och probe använder samma packet-ownershipmodell.
+
+Nästa pass ska fortsätta framåt från den rena f1943-checkpointen och söka
+första riktiga RGB-pass/swap. Behandla fortsatt flyttalsliknande Type4-header
+eller swapvärde som packet-ownershipbevis, inte som en giltig bildgräns.
