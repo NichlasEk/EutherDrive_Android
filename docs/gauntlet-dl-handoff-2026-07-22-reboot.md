@@ -3991,3 +3991,67 @@ Verifieringsartefakter:
 /tmp/gaunt-natural-powerups-aliasfix-f1000-f1260.log
 /tmp/gaunt-natural-powerups-aliasfix-f1260-mainram.bin
 ```
+
+#### MAME-korrekta RGB/depth-masker och bufferroller
+
+Det första visuella 200k/f1120-passet efter natural-aliasreparationen
+bekräftade en riktig Temple-scen i den presenterade framebuffern:
+
+```text
+frameHash                 = 0xd5af7199
+framebuffer colored       = 211685
+swaps                     = 2713
+rasterized texture pixels = 296262
+```
+
+Råbuffertarna visade samtidigt att buffer 1 bar scenen medan buffer 0 och 2
+var vitdominerade. Jämförelse med MAME:s `voodoo.cpp`,
+`voodoo_regs.h` och `voodoo_render.cpp` hittade fyra lokala
+buffersemantikfel:
+
+1. RGB-write-mask är `fbzMode` bit 9 (`0x200`), inte aux-maskens bit 10
+   (`0x400`).
+2. draw-buffer-select `0/1` betyder alltid front/back; vblank-timing ska inte
+   invertera mappningen.
+3. När `fbiInit2` går från tre till två RGB-buffertar måste front/back-index
+   2 normaliseras till 0, eftersom den tredje ytan då är aux.
+4. En swap presenterar den nya frontbufferten efter rotationen. Den ska inte
+   snapshotta den yta som råkade vara aktiv före rotationen.
+
+Draw-buffer-select 2/3 saknar dessutom RGB-destination i MAME och får inte
+skriva färg till den lokala aux-slotten.
+
+Ett checkpointat f1120--f1200-A/B gav 1 152 484 täckta texturpixlar. Den
+gamla vägen skrev 572 667 av dem som RGB i buffer 1 trots att det dominerande
+`fbzMode=0x460` var aux-only. Med MAME-mask/depth-vägen skrevs noll av dessa
+som RGB och gäst-/paketflödet var identiskt.
+
+Den första f1320-fortsättningen avslöjade att dess f1200-checkpoint redan bar
+ett ogiltigt `front/back=1/2` från tiden före indexnormaliseringen. En ren
+f1120--f1320-replay lät därför den nya koden observera `fbiInit2`-skrivningen
+innan nästa swap. Resultatet:
+
+```text
+frameHash                  = 0x27f2f065
+swaps                      = 2714
+front/back/count           = 0/1/2
+textured triangles         = 22062
+covered/rejected           = 18420/3642
+textured pixels            = 4896782
+raster RGB pixels          = 106855/0/0
+```
+
+Den presenterade bilden är åter en komplett, igenkännbar Temple-frame, men
+har fortfarande mörka ytor, vita topprader och felaktiga texturer:
+
+```text
+artifacts/gauntlet-probe/gauntdl-mame-buffer-roles-depth-f1320-20260727.png
+/tmp/gaunt-clean-mame-buffers-depth-f1120-f1320.log
+/tmp/gaunt-clean-mame-buffers-depth-f1320.warm
+```
+
+Baseline-preseten aktiverar nu RGB-mask och MAME aux/depth tillsammans.
+Nästa smala gräns är inte längre displaybuffer-valet. Spåra de kvarvarande
+vita toppradernas sista RGB-skrivare och jämför deras color-combine/textur-
+proveniens med MAME; återinför inte inverterad draw-buffer-mappning eller
+presentation av buffer 2.

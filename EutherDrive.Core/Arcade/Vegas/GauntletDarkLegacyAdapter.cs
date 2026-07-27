@@ -36282,6 +36282,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             RecordVoodooEvent($"reg[{register:x3}]=0x{value:x8}");
         switch (register)
         {
+            case RegFbiInit2:
+                NormalizeColorBufferIndices();
+                break;
             case RegCmdFifoBaseAddr:
                 if (_fixMameCommandFifoModel && _experimentMameCommandFifoRegisterWindow)
                     ApplyMameCommandFifoRegisterWindow();
@@ -39308,7 +39311,7 @@ internal class VoodooBringupBackend : IVoodooBackend
              color == 0xffff &&
              (uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length &&
              _rasterBufferPixelCounts[bufferIndex] > 0) ||
-            (_fixFastFillColorWriteMask && (_registers[RegFbzMode] & 0x400U) == 0) ||
+            (_fixFastFillColorWriteMask && (_registers[RegFbzMode] & 0x200U) == 0) ||
             ShouldSuppressRgbBufferWrite())
         {
             TraceFastFillSwapOrder("fastfill-suppressed", RegFastfillCommand, color);
@@ -44021,7 +44024,11 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private bool ShouldSuppressRgbBufferWrite()
-        => _fixRgbBufferMask && (_registers[RegFbzMode] & 0x400u) == 0;
+        => !IsColorDrawBufferSelected(_registers[RegFbzMode]) ||
+           _fixRgbBufferMask && (_registers[RegFbzMode] & 0x200u) == 0;
+
+    private static bool IsColorDrawBufferSelected(uint fbzMode)
+        => ((fbzMode >> 14) & 0x03u) <= 1u;
 
     private bool ShouldCullSetupTriangle()
     {
@@ -44631,7 +44638,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         int setupAy = unchecked((short)(int)(a.Y * 16.0f)) >> 4;
         uint fbzMode = _registers[RegFbzMode];
         bool useMameAuxDepth = _experimentSetupMameAuxDepth;
-        bool mameRgbMask = !useMameAuxDepth || (fbzMode & 0x200u) != 0;
+        bool mameRgbMask =
+            IsColorDrawBufferSelected(fbzMode) &&
+            (!useMameAuxDepth || (fbzMode & 0x200u) != 0);
         bool mameAuxMask = useMameAuxDepth && (fbzMode & 0x400u) != 0;
         bool mameDepthTest = useMameAuxDepth && (fbzMode & 0x10u) != 0;
         bool mameAlphaPlanes = useMameAuxDepth && (fbzMode & 0x40000u) != 0;
@@ -49134,8 +49143,8 @@ sampledTexel:
     private int MapDrawBufferSelect(int select)
         => select switch
         {
-            0 => _fixMameVblankSwapTiming ? _backBufferIndex : _frontBufferIndex,
-            1 => _fixMameVblankSwapTiming ? _frontBufferIndex : _backBufferIndex,
+            0 => _frontBufferIndex,
+            1 => _backBufferIndex,
             2 => GetAuxBufferIndex(),
             _ => _backBufferIndex
         };
@@ -49190,6 +49199,20 @@ sampledTexel:
 
     private int GetColorBufferCount()
         => ((_registers[RegFbiInit2] >> 4) & 1u) != 0 ? 3 : 2;
+
+    private void NormalizeColorBufferIndices()
+    {
+        if (GetColorBufferCount() >= 3)
+            return;
+
+        // MAME drops RGB buffer 2 when fbiInit2 switches back to the
+        // double-buffered layout. Keep the logical front/back selectors out
+        // of the slot that is now occupied by the aux buffer.
+        if (_frontBufferIndex == 2)
+            _frontBufferIndex = 0;
+        if (_backBufferIndex == 2)
+            _backBufferIndex = 0;
+    }
 
     private string GetBufferCountDebugStatus()
         => _debugBufferCounts
@@ -49551,6 +49574,7 @@ sampledTexel:
         _swapBufferCount++;
         _lastSwapCommand = command;
 
+        NormalizeColorBufferIndices();
         int previousFront = _frontBufferIndex;
         int previousBack = _backBufferIndex;
         int completedBufferIndex = GetDrawBufferIndex();
@@ -49574,8 +49598,6 @@ sampledTexel:
         }
         else
         {
-            Array.Copy(_colorBuffers[completedBufferIndex], _presentedColorBuffer, LfbPixels);
-            _presentedColorBufferValid = true;
             int count = GetColorBufferCount();
             if (count >= 3)
             {
@@ -49587,6 +49609,10 @@ sampledTexel:
                 _frontBufferIndex = _backBufferIndex == 0 ? 0 : 1;
                 _backBufferIndex = 1 - _frontBufferIndex;
             }
+
+            MaterializePendingClear(_frontBufferIndex);
+            Array.Copy(_colorBuffers[_frontBufferIndex], _presentedColorBuffer, LfbPixels);
+            _presentedColorBufferValid = true;
         }
 
         TraceFastFillSwapOrder(
