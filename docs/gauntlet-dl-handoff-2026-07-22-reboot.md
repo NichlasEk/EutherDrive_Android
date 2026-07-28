@@ -4776,3 +4776,57 @@ sha256=404a9dbcc1974db568e5af87a000357080f8c26429b03c83035e25a34a98a246
 Nästa gräns är nu diagnostik-/objektöverläggets livscykel och fortsatt
 normal state-`0x8008`-progression, inte RGB-init, grön color-combine eller
 den nästan försvunna övergångsbandningen.
+
+#### Isolerad diagnostic-enable A/B visar den rena world-scenen
+
+Det kvarvarande kod-/objekttextlagret styrs fortfarande av guestordet
+`0x80227b9c`. Renderaren läser ordet vid `0x800c7a64`; guest-PC
+`0x80019ef0` återassertar värde ett. Den redan befintliga default-off-sonden
+blockerar endast exakt denna adress/PC/värde-kombination.
+
+En en-frame A/B var hashneutral eftersom inga nya trianglar ritades och den
+gamla frontbufferten låg kvar. En 20-frame A/B från den rena +200m-snapshoten
+gjorde däremot rendergränsen synlig:
+
+```text
+kontroll:
+  Type3-delta=1028
+  textured pixels=429056
+  frameHash=0xa4bb2452
+
+diagnostic-enable undertryckt:
+  fyra verifierade träffar vid pc=0x80019ef0
+  Type3-delta=592
+  textured pixels=805408
+  frameHash=0xe69ba51a
+```
+
+I sondgrenen försvinner `Code version`, fog-/renderinställningarna,
+`No Nodes have this object` och `Extra Info`. Den underliggande bilden visar
+samtidigt en sammanhängande world-scen med fyra figurer, perspektivgolv,
+dimma och den gröna ljus-/partikeleffekten. `Version DL 2.4` ligger kvar som
+ett separat lager.
+
+Detta bevisar att de stora bildfelen vid +200m inte kommer från
+world-renderern. De återstående textraderna är ett separat
+diagnostik-/objektlager ovanpå en fungerande scen. Sonden ska ändå förbli
+default-off: den ändrar drawlistan och därmed CPU/FIFO-arbetet, och tidigare
+tester visar att undertryckning ensam inte ändrar huvudstate. Nästa riktiga
+gräns är varför `0x80019ef0` fortsätter återasserta enable i state `0x8008`,
+inte att permanent blockera skrivningen.
+
+Visuellt orakel:
+
+```text
+artifacts/gauntlet-probe/gauntdl-clean-world-without-diagnostic-overlay-f2224-20260728.png
+sha256=d0ba40c583964fd4d3c74703ac5e68b3cf0d4f12bddbc9d815e96abda575da73
+```
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-rgb-winopen-fix-extra200m-overlay-control-f2224.log
+/tmp/gaunt-rgb-winopen-fix-extra200m-overlay-control-f2224.png
+/tmp/gaunt-rgb-winopen-fix-extra200m-overlay-suppress-f2224.log
+/tmp/gaunt-rgb-winopen-fix-extra200m-overlay-suppress-f2224.png
+```
