@@ -5355,3 +5355,58 @@ artifacts/gauntlet-probe/gaunt-f3690-plus1m-type3-ready-fixed-v13.warm
 Nästa gräns är att fortsätta från v13-checkpointen till nästa naturliga swap
 och jämföra den nya presenterade world-framen. Återöppna inte den falska
 Type5-headern eller buffer-valet.
+
+#### Type4-proveniens passerar nästa falska Type5-header
+
+Fortsättningen från v13 nådde read-head `0x14115e5`, där `0x00052345`
+fristående såg ut som en Type5-header med 42 090 ord. Probens första
+FIFO-dump maskade den logiska adressen direkt mot framebufferstorleken och
+visade därför fel lagringsfönster. Diagnostiken och legacy-rekonstruktionen
+använder nu backendens riktiga `CommandFifoReadStorageIndex`, inklusive
+MAME-window-normalisering.
+
+Det korrigerade fönstret visade en exakt Type4-gräns:
+
+```text
+header 0x00059604  writer PC=0x800bd18c  packetWords=4
+body   0x8c24110f  writer PC=0x800bd190
+body   0x00002608  writer PC=0x800bd194
+read   0x00052345  writer PC=0x800bd19c  offset=3
+next   0x07ff964c  writer PC=0x800bd1bc
+```
+
+Type4-trackern hade tidigare misstolkat en Type3-vertexfloat vars låga bitar
+råkade vara fyra som Type4-header. Det gjorde att den riktiga headern i
+stället märktes som gammal kropp. Type4-headerresynk är nu begränsad till de
+tre observerade headerinstruktionerna `0x80103190`, `0x800bd18c` och
+`0x800bd1bc`. Readiness släpper verifierad Type4-kropp till advance-grenen
+före vanlig paketlängdsvalidering.
+
+Snapshotformat v14 sparar Type4 body/end-arrayerna och producentens pågående
+packet-state. Vid laddning av v13 återskapades just detta fyrords-paket från
+header, exakt packet-end och nästa giltiga Type4-header.
+
+A/B från samma f3704 +1m v13-stopp med ytterligare en miljon CPU-steg:
+
+```text
+före  rd=0x14115e5  packets=2563878  Type3=481170  setupTriangles=2
+efter rd=0x141e94e  packets=2568020  Type3=482660  setupTriangles=3
+```
+
+Det är +4 142 paket, +1 490 Type3-draws, +1 860 447 LFB-skrivningar, en
+fastfill och en ny setup-triangel. Ingen ny swap kom ännu, så den presenterade
+hashen är fortsatt `0xbd21f8ae`. En ren v14-reload behöll read-index,
+räknare och framehash utan legacy-rekonstruktion.
+
+Ny bästa fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gaunt-f3704-plus2m-type4-ready-fixed-v14.warm
+/tmp/gaunt-f3704-plus2m-type4-ready-fix.log
+/tmp/gaunt-f3704-plus2m-type4-ready-v14-reload.log
+```
+
+Nästa gräns är lagringsgenerationen vid read-head `0x141e94e`: det synliga
+ordet är `0x42200000`, men slotten bär en äldre logisk generation. Fortsätt
+med generation/window-proveniens därifrån; återöppna inte Type3-, Type4-
+eller display-bufferfixarna.

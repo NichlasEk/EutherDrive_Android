@@ -35691,6 +35691,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE4_PRODUCER_BODY_HEADER"));
     private readonly bool _experimentCommandFifoAdvanceType4ProducerBodyHeader =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER"));
+    private readonly ulong[] _experimentCommandFifoType4ProducerHeaderPcs =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE4_PRODUCER_HEADER_PCS"));
     private readonly bool _experimentCommandFifoGateType5ProducerBodyHeader =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE5_PRODUCER_BODY_HEADER"));
     private readonly bool _experimentCommandFifoAdvanceType5ProducerBodyHeader =
@@ -37068,19 +37070,25 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
 
         int normalized = CommandFifoStorageIndex(storageIndex);
+        bool type4Header = (value & 7u) == 4u;
+        ulong writePc = CpuPcProvider?.Invoke() ?? 0;
+        bool explicitHeaderPc = _experimentCommandFifoType4ProducerHeaderPcs.Length == 0 ||
+                                _experimentCommandFifoType4ProducerHeaderPcs.Any(
+                                    candidate => (candidate & 0xffffffffUL) == (writePc & 0xffffffffUL));
+        bool resyncHeader = type4Header && explicitHeaderPc;
         bool body = normalized == _cmdFifoType4ProducerNextStorageIndex &&
                     _cmdFifoType4ProducerBodyWordsRemaining > 0;
-        if (body)
-        {
-            _cmdFifoStorageType4Body[normalized] = true;
-            _cmdFifoStorageType4PacketEnd[normalized] = _cmdFifoType4ProducerPacketEnd;
-            _cmdFifoType4ProducerBodyWordsRemaining--;
-        }
-        else if ((value & 7u) == 4u)
+        if (resyncHeader)
         {
             _cmdFifoStorageType4Body[normalized] = false;
             _cmdFifoType4ProducerBodyWordsRemaining = GetFifoPacketWordsNeeded(value) - 1;
             _cmdFifoType4ProducerPacketEnd = CommandFifoStorageIndex(normalized + _cmdFifoType4ProducerBodyWordsRemaining);
+        }
+        else if (body)
+        {
+            _cmdFifoStorageType4Body[normalized] = true;
+            _cmdFifoStorageType4PacketEnd[normalized] = _cmdFifoType4ProducerPacketEnd;
+            _cmdFifoType4ProducerBodyWordsRemaining--;
         }
         else
         {
@@ -40263,6 +40271,13 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoStorageType3Body[readStorageIndex])
         {
             CountCommandFifoReadyPc(true, "type3-producer-body");
+            return true;
+        }
+        if ((_experimentCommandFifoGateType4ProducerBodyHeader ||
+             _experimentCommandFifoAdvanceType4ProducerBodyHeader) &&
+            _cmdFifoStorageType4Body[readStorageIndex])
+        {
+            CountCommandFifoReadyPc(true, "type4-producer-body");
             return true;
         }
 
