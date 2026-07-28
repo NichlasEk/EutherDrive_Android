@@ -5265,3 +5265,40 @@ Ny bästa fortsättningspunkt:
 /tmp/gaunt-f3656-f3676-world-list-repaired-clean.log
 /tmp/gaunt-f3676-world-list-repaired_buf0.png
 ```
+
+#### World-buffern publiceras naturligt efter ytterligare 750k CPU-steg
+
+Ingen ny display- eller swapreparation behövdes efter listfixen.
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_VBLANK_SWAP_TIMING` visar avsiktligt
+den senast faktiskt swappade frontbuffern, så den gamla overlayn vid f3676
+var korrekt för det dåvarande Voodoo-tillståndet.
+
+Ett Release-pass från f3676 med kontrollpunkter vid +250k, +500k, +750k och
++1m CPU-steg visade den naturliga gränsen:
+
+```text
++500k  draw packets=480979  swaps=3352
++750k  den legitima 0x80102a80-resetfamiljen börjar swappa
++1m    swaps=3368  frameHash=0xbd21f8ae  colored=300130
+```
+
+Alla 16 swappar var gästinitierade direkta `swapbufferCMD=0`, alternerade
+front/back `0/1` enligt den redan verifierade dubbelbufferlogiken och
+publicerade slutligen rå buffer 0. Den presenterade bilden och rå buffer 0
+visar då samma nya world-frame. Bilden består av verkliga perspektiviska
+ytor med textur-/färgvariation, men trianglarna är fortfarande kraftigt
+överdimensionerade och överlappar fel.
+
+Detta avgränsar nästa fel till world-rastrets vertex-/projektiondata före
+Voodoo-publiceringen. Tvinga inte `ChooseRenderBufferIndex`, dränera inte
+pending swaps från host-`RenderFrame` och ändra inte det legitima
+`0x80102a80`/Type1-0x4a-paret.
+
+Ny bästa fortsättningspunkt:
+
+```text
+/tmp/gaunt-f3676-plus1m-natural-swaps.warm
+/tmp/gaunt-f3676-plus1m-natural-swaps-save.log
+/tmp/gaunt-f3676-plus1m-swap-trace.log
+/tmp/gaunt-f3676-plus1m-presented.png
+```
