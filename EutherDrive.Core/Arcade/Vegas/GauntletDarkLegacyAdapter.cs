@@ -38335,11 +38335,26 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     public void OnVblankStart()
     {
-        if (!_fixMameVblankSwapTiming || _pendingSwapCount <= 0)
+        if (!_fixMameVblankSwapTiming)
             return;
 
-        ExecuteSwapBuffers(DequeuePendingSwapCommand());
-        RecordVoodooEvent($"vblank swap-drain pend={_pendingSwapCount}");
+        if (_pendingSwapCount > 0)
+        {
+            ExecuteSwapBuffers(DequeuePendingSwapCommand());
+            RecordVoodooEvent($"vblank swap-drain pend={_pendingSwapCount}");
+        }
+
+        if (GetDrawBufferIndex() == _frontBufferIndex)
+        {
+            MaterializePendingClear(_frontBufferIndex);
+            Array.Copy(_colorBuffers[_frontBufferIndex], _presentedColorBuffer, LfbPixels);
+            _presentedRequestedPixelLastWriterId =
+                _frontBufferIndex == _requestedPixelLastWriterBuffer
+                    ? _requestedPixelLastWriterId
+                    : 0;
+            _presentedColorBufferValid = true;
+            RecordVoodooEvent($"vblank front-capture front={_frontBufferIndex}");
+        }
     }
 
     private uint DequeuePendingSwapCommand()
@@ -39280,13 +39295,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             MaterializePendingClear(renderBufferIndex);
         bool forceRawRenderBuffer =
             (uint)_experimentForceRenderBufferIndex < (uint)_colorBuffers.Length;
-        bool directFrontBufferDraw =
-            renderBufferIndex == _frontBufferIndex &&
-            GetDrawBufferIndex() == _frontBufferIndex;
         ushort[] front = _fixMameVblankSwapTiming &&
                          _presentedColorBufferValid &&
-                         !forceRawRenderBuffer &&
-                         !directFrontBufferDraw
+                         !forceRawRenderBuffer
             ? _presentedColorBuffer
             : _colorBuffers[renderBufferIndex];
         for (int y = 0; y < copyHeight; y++)

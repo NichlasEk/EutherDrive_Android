@@ -5469,3 +5469,56 @@ artifacts/gauntlet-probe/gaunt-f3725-direct-front-v14.warm
 Nästa visuella gräns är textur-/depth-fidelitet i den nu korrekt levande
 frontbuffern. Återinför inte krav på swap när `fbzMode` väljer front som
 drawbuffer.
+
+#### Direkt frontbuffer fångas atomiskt vid VBlank
+
+Fortsatt körning från f3725 visade att den levande frontbuffern ändrades
+naturligt utan nya swappar. Mellan f3730 och f3820 avancerade FIFO:n från
+`2605892` till `2617842` paket och Type3 från `496363` till `500748`.
+Bildinnehållet växlade samtidigt mellan debugtext, stora world-polygoner,
+glesa gångytor och vit fastfill-bakgrund.
+
+Detta var två skilda presentationskrav. Den tidigare direkt-frontfixen gjorde
+de nya pixlarna synliga, men `TryRenderLfb` läste den råa frontbuffern efter
+ett godtyckligt CPU-steg. När gästen ritar direkt till front kan den läsningen
+ligga mitt mellan clear och sista draw. Voodoo-backenden kopierar nu den
+aktuella frontbuffern till `_presentedColorBuffer` vid `OnVblankStart` när
+drawbuffer och frontbuffer är samma. Den vanliga renderingsvägen visar därefter
+den stabila VBlank-kopian. Pending riktiga swaps dräneras först och behåller
+samma befintliga rotationssemantik.
+
+Fem riktiga frames från samma f3760-snapshot gav efter ändringen:
+
+```text
+frame=3765
+frameHash=0xba45a267
+fifoPackets=2609786
+Type3=498014
+fastFills=889
+swaps=3368
+```
+
+Bilden visar en atomisk kombination av versions-/fogtext, world-objekt och
+Gauntlet-loggan i den aktiva renderfasen. En ren v14-reload behöll exakt
+`frameHash=0xba45a267` och samtliga räknare.
+
+Huvudstate lästes samtidigt direkt ur RAM:
+
+```text
+0x80227ab0 = 0x00008008
+0x80227ec8 = 0x00000000
+```
+
+FIRE3 hade alltså redan lämnat diagnostikstate `0x8007`; exit-latchen är
+rensad. Skicka inte ännu en FIRE3-puls för att förklara den nuvarande
+objektmixen. Nästa gräns är state-`0x8008`:s world-/kamerapublicering eller
+frame completion, inte FIFO-, culling-, TMU-combine- eller buffer-val.
+
+Ny bästa fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gaunt-f3765-vblank-front-capture-v14.warm
+/tmp/gaunt-f3765-vblank-front-capture.png
+/tmp/gaunt-f3765-vblank-front-capture.log
+/tmp/gaunt-f3765-vblank-front-capture-reload.log
+```
