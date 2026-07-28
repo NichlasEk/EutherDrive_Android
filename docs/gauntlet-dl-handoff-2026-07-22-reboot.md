@@ -5522,3 +5522,57 @@ artifacts/gauntlet-probe/gaunt-f3765-vblank-front-capture-v14.warm
 /tmp/gaunt-f3765-vblank-front-capture.log
 /tmp/gaunt-f3765-vblank-front-capture-reload.log
 ```
+
+#### Type3-raster använder nu Voodoo 2:s W-baserade fogtabell
+
+En writer-profil av en vit pixel i den stabila VBlank-bilden pekade på
+Type3-paket `0x0180a853` vid gäst-PC `0x800bcaa8`. Paketet fortsätter en
+strip med vertex `(0,0)` och läser en verklig Alpha-8-texel `0xff` från
+TMU0; MAME:s packet-, strip-, TMU- och base-address-semantik gav samma
+resultat. Den vita texeln ska därför inte filtreras bort som diagnostikhack.
+
+Den saknade hårdvarudelen låg senare i pixelkedjan. Snapshotten bar:
+
+```text
+fogMode  = 0x000000c1
+fogColor = 0x00000000
+alphaMode= 0x00040400
+```
+
+Fogtabell, fog-zoner och 4x4-fogdither var aktiva medan backenden inte
+applicerade fog alls. Alpha-test och alpha-blend var däremot avstängda, så
+det finns ingen grund för att göra Alpha-8-passet transparent.
+
+Setup-rastret följer nu MAME:s Voodoo 2-ordning efter color combine:
+
+1. interpolera separat framebuffer-W (`Wb`), utan att blanda ihop den med
+   TMU0/TMU1-W,
+2. konvertera W till Voodoos 16-bitars pseudo-float,
+3. slå upp blend/delta i de 64 fogtabellposterna,
+4. applicera fog-zontecken och 4x4-dither,
+5. blanda med gästens fogColor.
+
+Ett strikt f3820 A/B från samma sparade f3785-state gav identisk
+CPU/FIFO/raster-telemetri men skilda bilder:
+
+```text
+fog av: frameHash=0xdd7e7069
+fog på: frameHash=0xf40cc539
+```
+
+Fogskillnaden ligger över perspektivytan och ändrar inte geometri,
+texeladresser, FIFO-räknare eller swapantal. f3785 med fog sparades och
+laddades om med exakt samma `frameHash=0xc44fefbf` och byteidentisk PPM.
+
+Ny bästa fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gaunt-f3820-mame-fog-v14.warm
+/tmp/gaunt-f3820-mame-fog.ppm
+/tmp/gaunt-f3820-mame-fog.log
+/tmp/gaunt-f3785-mame-fog-wb-reload.log
+```
+
+Nästa visuella gräns är de stora stripparnas geometri/vertexinnehåll och
+återstående pixelsteg (itererad färg/alpha, chroma och blending), inte
+single-TMU-val, displaybuffer eller ett påhittat transparent Alpha-8-pass.

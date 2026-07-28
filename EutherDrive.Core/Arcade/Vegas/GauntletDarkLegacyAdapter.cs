@@ -51,6 +51,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SEPARATE_TMU_TEXTURE_MEMORY", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TWO_TMU_COMBINE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_FOG", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_TMU_ST", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS", "1"),
@@ -35053,6 +35054,9 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int RegFastfillCommand = 0x124 >> 2;
     private const int RegSwapbufferCommand = 0x128 >> 2;
     private const int RegZaColor = 0x130 >> 2;
+    private const int RegFogMode = 0x108 >> 2;
+    private const int RegFogColor = 0x12c >> 2;
+    private const int RegFogTable = 0x160 >> 2;
     private const int RegColor0 = 0x144 >> 2;
     private const int RegColor1 = 0x148 >> 2;
     private const int RegFstartR = 0x0a0 >> 2;
@@ -36099,6 +36103,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_ZERO_AS_NEUTRAL_WHITE"));
     private readonly bool _experimentSetupMameAuxDepth =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH"));
+    private readonly bool _experimentSetupMameFog =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_FOG"));
     // Diagnostic only: reveal the color contribution of passes whose guest
     // fbzMode has RGB writes masked while preserving their normal depth path.
     private readonly bool _experimentSetupForceRgbMask =
@@ -43117,6 +43123,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         float s1 = 0;
         float t1 = 0;
         float q1 = 1;
+        float fogW = 0;
         bool hasTmu0Texture = false;
         bool hasTexture = ((command >> 15) & 1u) != 0 || ((command >> 17) & 1u) != 0;
         bool hasNonFiniteTextureCoordinate = false;
@@ -43181,10 +43188,10 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
             if (((command >> 13) & 1u) != 0)
             {
-                if (!TryReadFloat(wordsNeeded, ref source, out float wb))
+                if (!TryReadFloat(wordsNeeded, ref source, out fogW))
                     return;
-                q0 = wb;
-                q1 = wb;
+                q0 = fogW;
+                q1 = fogW;
             }
             if (((command >> 14) & 1u) != 0)
             {
@@ -43260,6 +43267,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     s1,
                     t1,
                     q1,
+                    fogW,
                     hasTexture),
                 code,
                 vertex,
@@ -44221,6 +44229,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             s,
             t,
             q,
+            q,
             _registers[RegFstartS] != 0 || _registers[RegFstartT] != 0 || _registers[0xa3] != 0 || _registers[0xa4] != 0);
     }
 
@@ -44885,6 +44894,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         long textureStartW = MameSetupCastToInt64(a.Q * TextureSetupScale);
         long textureDwDx = MameSetupCastToInt64(((a.Q - b.Q) * dx1 - (a.Q - c.Q) * dx2) * TextureSetupScale * setupDivisor);
         long textureDwDy = MameSetupCastToInt64(((a.Q - c.Q) * dy1 - (a.Q - b.Q) * dy2) * TextureSetupScale * setupDivisor);
+        long fogStartW = MameSetupCastToInt64(a.FogW * TextureSetupScale);
+        long fogDwDx = MameSetupCastToInt64(((a.FogW - b.FogW) * dx1 - (a.FogW - c.FogW) * dx2) * TextureSetupScale * setupDivisor);
+        long fogDwDy = MameSetupCastToInt64(((a.FogW - c.FogW) * dy1 - (a.FogW - b.FogW) * dy2) * TextureSetupScale * setupDivisor);
         float textureS1A = _experimentType3SeparateTmuSt ? a.S1 : a.S;
         float textureT1A = _experimentType3SeparateTmuSt ? a.T1 : a.T;
         float textureQ1A = _experimentType3SeparateTmuSt ? a.Q1 : a.Q;
@@ -44949,14 +44961,15 @@ internal class VoodooBringupBackend : IVoodooBackend
 
                 int pixel = (row + x) & (LfbPixels - 1);
                 TraceTexturedPixel("coverage", x, y, bufferIndex, buffer[pixel], _auxBuffer[pixel], 0, fbzMode);
+                int setupDx = x - setupAx;
+                int setupDy = y - setupAy;
+                int setupIterZ = unchecked(setupStartZ + (int)((long)setupDy * setupDzDy) + (int)((long)setupDx * setupDzDx));
+                long fogIterW = unchecked(fogStartW + setupDy * fogDwDy + setupDx * fogDwDx);
                 int depthValue = 0;
                 if (useMameAuxDepth)
                 {
-                    int setupDx = x - setupAx;
-                    int setupDy = y - setupAy;
-                    int iterZ = unchecked(setupStartZ + (int)((long)setupDy * setupDzDy) + (int)((long)setupDx * setupDzDx));
                     long iterW = unchecked(setupStartW + setupDy * setupDwDy + setupDx * setupDwDx);
-                    depthValue = ComputeMameSetupDepthValue(fbzMode, _registers[RegFbzColorPath], iterZ, iterW, zaColor);
+                    depthValue = ComputeMameSetupDepthValue(fbzMode, _registers[RegFbzColorPath], setupIterZ, iterW, zaColor);
                     int depthSource = (fbzMode & 0x100000u) == 0 ? depthValue : zaColor;
                     if (mameDepthTest && !MameDepthTest(fbzMode, _auxBuffer[pixel], depthSource))
                     {
@@ -45136,6 +45149,8 @@ sampledTexel:
 
                 if (_experimentFbzColorPathRgbCombine)
                     texel = ApplyFbzColorPathRgb(texel, fallbackColor, textureAlpha);
+                if (_experimentSetupMameFog)
+                    texel = ApplyMameSetupFog(texel, fogIterW, setupIterZ, x, y);
 
                 if (alpha8Mask)
                 {
@@ -50146,6 +50161,98 @@ sampledTexel:
             ? ApplyFbzColorPathRgbMame(texel, iteratedColor, textureAlpha)
             : ApplyFbzColorPathRgbLegacy(texel, iteratedColor);
 
+    private ushort ApplyMameSetupFog(ushort color, long iterW, int iterZ, int x, int y)
+    {
+        uint fogMode = _registers[RegFogMode];
+        if ((fogMode & 1u) == 0)
+            return color;
+
+        ushort fogColor = ArgbToRgb565(_registers[RegFogColor]);
+        if ((fogMode & 0x20u) != 0)
+            return (fogMode & 0x04u) == 0
+                ? AddFogColors(color, fogColor)
+                : fogColor;
+
+        int fogBlend;
+        switch ((fogMode >> 3) & 0x03u)
+        {
+            case 0:
+            {
+                int fogDepth = ComputeMameWFloat(iterW);
+                uint tableWord = _registers[RegFogTable + (fogDepth >> 11)];
+                int tableShift = ((fogDepth >> 10) & 1) * 16;
+                int delta = (int)((tableWord >> tableShift) & 0xffu);
+                int blend = (int)((tableWord >> (tableShift + 8)) & 0xffu);
+                int deltaValue = (delta & 0xfc) * ((fogDepth >> 2) & 0xff);
+                if ((fogMode & 0x80u) != 0 && (delta & 2) != 0)
+                    deltaValue = -deltaValue;
+                deltaValue >>= 6;
+                if ((fogMode & 0x40u) != 0)
+                    deltaValue += MameFogDither4x4(x, y);
+                fogBlend = blend + (deltaValue >> 4);
+                break;
+            }
+            case 2:
+                fogBlend = MameClampedZ(iterZ, _registers[RegFbzColorPath]) >> 8;
+                break;
+            case 3:
+                fogBlend = ClampMameSetupW(iterW, _registers[RegFbzColorPath]);
+                break;
+            default:
+                // Iterated alpha is not yet carried by SetupVertex.
+                return color;
+        }
+
+        return ApplyFogEquation(
+            color,
+            (fogMode & 0x02u) != 0 ? (ushort)0 : fogColor,
+            fogBlend + 1,
+            multiplyOnly: (fogMode & 0x04u) != 0);
+    }
+
+    private static ushort ApplyFogEquation(ushort color, ushort fogColor, int factor, bool multiplyOnly)
+    {
+        Rgb565ToBytes(color, out int r, out int g, out int b);
+        Rgb565ToBytes(fogColor, out int fr, out int fg, out int fb);
+        if (multiplyOnly)
+            return BytesToRgb565(fr * factor >> 8, fg * factor >> 8, fb * factor >> 8);
+        return BytesToRgb565(
+            r + (((fr - r) * factor) >> 8),
+            g + (((fg - g) * factor) >> 8),
+            b + (((fb - b) * factor) >> 8));
+    }
+
+    private static ushort AddFogColors(ushort color, ushort fogColor)
+    {
+        Rgb565ToBytes(color, out int r, out int g, out int b);
+        Rgb565ToBytes(fogColor, out int fr, out int fg, out int fb);
+        return BytesToRgb565(r + fr, g + fg, b + fb);
+    }
+
+    private static int ClampMameSetupW(long iterW, uint fbzColorPath)
+    {
+        if ((fbzColorPath & (1u << 27)) != 0)
+            return Math.Clamp((int)(iterW >> 48), 0, 0xff);
+        uint value = (uint)(unchecked((ulong)iterW) >> 48);
+        if (value == 0xffffu)
+            return 0;
+        if (value == 0x100u)
+            return 0xff;
+        return (int)(value & 0xffu);
+    }
+
+    private static int MameFogDither4x4(int x, int y)
+    {
+        ReadOnlySpan<byte> matrix =
+        [
+            0, 8, 2, 10,
+            12, 4, 14, 6,
+            3, 11, 1, 9,
+            15, 7, 13, 5
+        ];
+        return matrix[((y & 3) << 2) | (x & 3)];
+    }
+
     private ushort ApplyFbzColorPathRgbLegacy(ushort texel, ushort iteratedColor)
     {
         uint fbzcp = _registers[RegFbzColorPath];
@@ -50623,10 +50730,11 @@ sampledTexel:
         float S1,
         float T1,
         float Q1,
+        float FogW,
         bool HasTexture)
     {
         public SetupVertex(float x, float y, ushort color, float s, float t, float q, bool hasTexture)
-            : this(x, y, color, s, t, q, s, t, q, hasTexture)
+            : this(x, y, color, s, t, q, s, t, q, q, hasTexture)
         {
         }
     }
