@@ -5683,3 +5683,53 @@ artifacts/gauntlet-probe/gaunt-f3850-zero-write-v14.warm
 Den tidigare f3850-bilden är fortfarande användbar för geometrifasens
 proveniens, men inte som pixelkorrekt baseline. Fortsatta wrapperreplays ska
 behålla `ZERO_TEXTURE_TRANSPARENCY=0`.
+
+#### Den randiga panelen är riktig A8-diagnostik och state 0x8008 avancerar
+
+En atomisk VBlank-bild vid f3907 visar den läsbara objektvyn med
+`Code version`, `No Nodes have this object`, Gauntlet-loggan och en stor
+svartvit panel. Explicit writer-proveniens för presenterad pixel `(450,250)`,
+råpixel `b0@(360,200)`, pekar på Type3-paketet vid FIFO `0x053553e4` och
+gäst-PC `0x800c5be0`.
+
+Pixeltracen följer paketet hela vägen:
+
+```text
+tmode = 0x8c2412cf
+tlod  = 0x00002104
+tbase = 0xffffe000
+addr  = 0x001980
+raw   = 0xff
+out   = 0xc618
+```
+
+Det är den redan auktoritativa record-0-basen och en riktig Alpha-8-texel.
+Den vita texeln moduleras till det presenterade gråvita värdet; panelen är
+alltså inte en saknad texture page, fel vald TMU eller ett skäl att återinföra
+nolltransparens.
+
+Fortsatt naturlig körning med 600 000 CPU-steg per frame växlar mellan
+objektvyn och world-/kamerafaser. Huvudstate, completion och latch förblir
+korrekta samtidigt som state-räknaren avancerar:
+
+```text
+f3927  state=0x8008  counter=0x2c  load-complete=1  exit-latch=0
+f3947  state=0x8008  counter=0x36  load-complete=1  exit-latch=0
+f3987  state=0x8008  counter=0x4a  load-complete=1  exit-latch=0
+```
+
+En två-frame coin-puls vid f3917 och efterföljande två-frame startpuls var
+byte- och hashidentiska med respektive no-input-kontroll. Ingen ny FIRE3-,
+coin-, start- eller RAM-patch ska därför användas för att forcera denna fas.
+Nästa kontroll ska fortsätta samma rena state-`0x8008`-sekvens mot den
+tidigare observerade räknarregionen `0x62..0x68` och avgöra om gästen själv
+publicerar nästa stabila worldkamera.
+
+Senaste lokala fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gaunt-f3987-600k-control-v14.warm
+/tmp/gaunt-f3987-600k-control.log
+/tmp/gaunt-f3987-600k-control.png
+/tmp/gaunt-f3907-white-panel-pixel-trace.log
+```
