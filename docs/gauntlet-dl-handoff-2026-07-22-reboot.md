@@ -4892,3 +4892,76 @@ Reproducerbara filer:
 /tmp/gaunt-rgb-winopen-fix-extra200m-state8001-latch-f2364.warm
 /tmp/gaunt-rgb-winopen-fix-extra200m-state8001-latch-f2364-buffer0.png
 ```
+
+#### State 0x8001 är en tidsstyrd copyright-fas, inte en input-blockering
+
+Dispatchen för huvudstate `0x8001` och `0x8002` går till
+`0x800823fc`. Handlern visar copyright-/versionsidan och läser
+`0x80227ec8` som sin exit-latch. Den accepterar input-edge via
+`0x80081cc8(0)` med mask `0x06aa`, men endast i development-läge.
+`0x80227a68=1` kommer från `0x800c80b4` och betyder produktionsläge
+(`Version`, inte `Development Version`); i detta läge är sidan avsiktligt
+inte knappskippbar.
+
+En sen Fight-puls bevisar att inputkedjan fram till handlern fungerar:
+
+```text
+0x80019b9c normaliserar pulsen
+0x80227ba4: 0x00000000 -> 0x00000200
+0x800823fc kör direkt därefter i state 0x8001
+```
+
+Handlern väntar i stället på fade-/timer-maskinen `0x80054960`.
+Dess objektläge i `0x8019d328..0x8019d33c` avancerar naturligt:
+
+```text
+timer  0x8019d330: 0x000000a8 -> 0x000000aa
+fas    0x8019d334: 0x00000053 -> 0x00000054
+hold-mål från tabellen: 0x18f
+fade-out-längd:          0x00dc
+```
+
+Vid nuvarande 60000-step-cadence anropas state-handlern ungefär var nionde
+Voodoo-renderbild. Den kvarvarande hold- och fade-tiden motsvarar därför
+ungefär 2800 emulerade bilder från +200m-checkpointen. Timern är långsam men
+inte frusen.
+
+Två default-off RAM-patcher användes endast som kausala tidsbrackets:
+
+```text
+0x8019d330=0x031e:
+  hold-målet nås och fade-state går 2 -> 3
+
+0x8019d330=0x03fa:
+  fade-out blir klar
+  0x80054960 returnerar 2
+  0x80082940 skriver exit-latch 1
+  huvudstate går naturligt 0x8001 -> 0x8007
+```
+
+Detta är en starkare gräns än den tidigare direkta latchpatchen: spelets egen
+timer, fade-funktion och handler producerar övergången. Ingen inputbrygga,
+state-guard eller produktionsfix ska utökas för state `0x8001`.
+
+Fortsättning från den nya state-`0x8007`-snapshoten visar en riktig tung
+player-/model-load. Loggen innehåller `ResetModels Timeout`,
+`players/%s/%s` och flera `/d0/%s/%s`-laddningar. Till f2284 har swaps gått
+`924 -> 1092`, texture writes under passet är `630088`, och CPU:n arbetar vid
+`0x801093dc`. Råbufferten är helvit medan laddningen pågår; dispatchen har
+ännu inte hunnit tillbaka till state-`0x8007`-handlern `0x80082e1c`.
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-state8001-fight-late-f2224.log
+/tmp/gaunt-state8001-timer-trace-f2215.log
+/tmp/gaunt-state8001-timer-threshold-f2244.log
+/tmp/gaunt-state8001-timer-complete-f2244.log
+/tmp/gaunt-state8001-timer-complete-f2244.warm
+/tmp/gaunt-state8007-natural-f2284.log
+/tmp/gaunt-state8007-natural-f2284.warm
+```
+
+Nästa gräns är att fortsätta state-`0x8007`-asset-loaden tills
+`0x80082e1c` körs, och därefter avgöra om dess befintliga latch fullbordar
+övergången eller om player-/model-livscykeln har en ny konkret blockerare.
