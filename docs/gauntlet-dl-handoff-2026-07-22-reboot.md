@@ -4965,3 +4965,75 @@ Reproducerbara filer:
 Nästa gräns är att fortsätta state-`0x8007`-asset-loaden tills
 `0x80082e1c` körs, och därefter avgöra om dess befintliga latch fullbordar
 övergången eller om player-/model-livscykeln har en ny konkret blockerare.
+
+#### State 0x8007 når naturligt loader state 11 och en riktig färgbuffert
+
+Fortsättningen från f2284 visar att `0x80082e1c` återkommer och att den gamla
+exit-latchen rensas korrekt `1 -> 0`. Handlern väntar därefter på
+load-complete-flaggan `0x8020c54c`, inte på en fastlåst state-latch.
+
+Den första QIO-slotten (`0x80252da0`, stride `0xd8`) stannade länge i
+substate 6, men dess interna streamvärden fortsatte att ändras. Detta var
+verklig aktivitet, inte en utebliven callback:
+
+```text
+f2376  0x8020f178/17c = <tidigare fas>/0x17
+f2416  0x8020f178/17c = 0x3c/0x0f
+f2456  0x8020f178/17c = 0x63/0x06
+```
+
+Vid f2510 fullbordades QIO-steget och den övergripande loader-maskinen vid
+`0x8019ccb0` gick därefter naturligt:
+
+```text
+f2510..f2536  state 1 -> 2 -> 3
+f2544..f2569  state 3 -> 4 -> 5 -> 10 -> 11
+```
+
+State 11 anropar `0x800ac2b4` och går vidare till state 12 först när
+funktionen returnerar icke-noll. En mikrokörning från f2616 fångade en riktig
+QIO-completion vid `0x800ac128`; den andra record-slotten nollställdes och
+den aktuella resursen var:
+
+```text
+/d0/monsters/zom2/objects.rom
+```
+
+Bildsidan är samtidigt klart förbi den helvita laddningsbufferten. Vid f2536
+rapporterar Voodoo buffer 0 cirka `163210` färgade pixlar, och vid f2616
+cirka `156194`. Detta är riktig renderad färgdata medan den synkrona
+modell-/objektbyggaren arbetar.
+
+Efter f2616 återkommer dock inte main-state-handlern inom ett
+9,6-miljonersinstruktionsfönster. CPU:n är inte statisk: endpoint-PC flyttar
+`0x800ef628 -> 0x800efb74`, och en hot-PC-sond visar fortsatt arbete genom
+`0x800efb1c`, `0x800de4fc`, `0x800d13c8` och status-helpern
+`0x800111c8`. Kontexten har samma redan kända långsamma timerläge som den
+äldre levelE-buildern:
+
+```text
+cp0 cause       = 0x00008000
+timerPending    = 1
+cp0 status      = 0x34007f01
+loader state    = 11
+load complete   = 0
+main state      = 0x8007
+```
+
+Detta ska behandlas som nästa konkreta bringup-gräns. Fortsätt inte med en
+syntetisk state-11- eller completion-patch. Nästa smala pass ska avgöra varför
+den väntande timerkontexten gör den naturliga `0x800ac2b4`-kedjan extremt
+långsam och jämföra interrupt-/schedulerbeteendet precis före och efter
+`zom2`-completion.
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-state8007-streamtrace-f2376.warm
+/tmp/gaunt-state8007-natural-f2456.warm
+/tmp/gaunt-state8007-natural-f2536.warm
+/tmp/gaunt-state8007-natural-f2616.warm
+/tmp/gaunt-state8007-natural-f2856.warm
+/tmp/gaunt-f2617-probe.log
+/tmp/gaunt-f2857-hotpc.log
+```
