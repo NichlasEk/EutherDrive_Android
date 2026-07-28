@@ -5410,3 +5410,62 @@ Nästa gräns är lagringsgenerationen vid read-head `0x141e94e`: det synliga
 ordet är `0x42200000`, men slotten bär en äldre logisk generation. Fortsätt
 med generation/window-proveniens därifrån; återöppna inte Type3-, Type4-
 eller display-bufferfixarna.
+
+#### Direkt frontbuffer-rendering presenteras nu utan påhittad swap
+
+Generationsgränsen vid `0x141e94e` var inte ett nytt stopp. Fortsatt naturlig
+produktion flyttade read-headen genom flera generationer och gav tiotusentals
+nya paket. Efter ytterligare drygt tjugo miljoner CPU-steg och riktiga frames
+var FIFO:n fortsatt aktiv:
+
+```text
+packets=2603524  Type3=495889  fastFills=888  swaps=3368
+```
+
+Vertexpasset matchade samtidigt MAME:s Type3-dekoder: packet code,
+strip/fan-reset, X/Y samt W/S/T låg på samma ord och nya koordinater var
+normala 512x384-skärmkoordinater. Ändra därför inte vertexformatet för att
+förklara den frusna presenterade bilden.
+
+En registerordnings-trace runt två nya fastfills visade i stället:
+
+```text
+fbzMode=0x00000660  front=0  back=1  draw=0
+kind=fastfill       swaps=3368
+```
+
+Gästen ritade alltså avsiktligt direkt till den aktuella frontbuffern.
+Voodoo-scanout ska då visa minnesändringarna utan `swapbufferCMD`, men
+`TryRenderLfb` valde alltid den senaste `_presentedColorBuffer`-kopian när
+vblank-swap-timingfixen var aktiv. Den kopian uppdateras bara vid swap och
+frös därför UI:n trots miljontals nya frontbufferpixlar.
+
+Presentationsvägen använder nu den levande råa frontbuffern när både vald
+renderbuffer och aktuell drawbuffer är front. Vanlig backbuffer-rendering
+behåller den senast swappade presenterade kopian, och ingen swap eller
+bufferrotation forceras.
+
+A/B från samma f3724 +10m v14-snapshot med ett riktigt frame-anrop:
+
+```text
+före  swaps=3368  frameHash=0xbd21f8ae
+efter swaps=3368  frameHash=0xf78ff636
+```
+
+Den nya bilden visar aktuell debugtext och levande worldgeometri. Den är
+fortfarande feltexturerad och ofärdig, men är inte längre en gammal
+swap-kopia. En v14-reload behöll exakt `frameHash=0xf78ff636`, read-head
+`0x1481def` och samtliga Voodoo-räknare.
+
+Ny bästa fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gaunt-f3725-direct-front-v14.warm
+/tmp/gaunt-f3725-direct-front-frame.png
+/tmp/gaunt-f3725-direct-front-present.log
+/tmp/gaunt-f3725-direct-front-v14-reload.log
+```
+
+Nästa visuella gräns är textur-/depth-fidelitet i den nu korrekt levande
+frontbuffern. Återinför inte krav på swap när `fbzMode` väljer front som
+drawbuffer.
