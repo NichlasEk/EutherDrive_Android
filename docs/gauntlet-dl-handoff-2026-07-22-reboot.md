@@ -5037,3 +5037,67 @@ Reproducerbara filer:
 /tmp/gaunt-f2617-probe.log
 /tmp/gaunt-f2857-hotpc.log
 ```
+
+#### Temple-katalogens livscykel löser state 11 naturligt
+
+Ett kausalt pass 2026-07-28 spårade den gamla nollängdsrequesten bakåt från
+QIO-deskriptorn. `0x800c9810` skrev inte över en giltig längd med noll; gästen
+fick redan noll från sidotabellen `0x802549a0 + index*4`. Den tabellen fylldes
+vid `0x800aac28` med resultatet från filstorlekshjälparen `0x800c8e24`.
+
+För Temple-index 10--13 fick hjälparen en tom transient katalogsträng och
+formaterade därför `/d0//objects.rom`. Uppslaget fungerade korrekt för den
+felaktiga sökvägen och returnerade noll. Katalogen var redan tom när
+asset-ägaren gick genom `0x800aab8c`; de fyra stabila asset-nycklarna var:
+
+```text
+index 10  key 0x80231444  monsters/zom2
+index 11  key 0x80231450  monsters/ice2
+index 12  key 0x8023146c  monsters/imp2
+index 13  key 0x80231448  monsters/pla2
+```
+
+Den befintliga `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_ASSET_NAMES`
+reparerar nu den tomma, ägda stacksträngen exakt vid `0x800aab8c`. Reparationen
+är begränsad av PC, instruktionssignatur, index, förväntad nyckel och tom
+destination. Den patchar varken filstorlekstabellen, QIO-längden eller loader
+state.
+
+Replay från den orörda f2284-snapshoten gav därefter gästens naturliga
+FSYS-resultat:
+
+```text
+index 10  /d0/monsters/zom2/objects.rom  = 0x27558
+index 11  /d0/monsters/ice2/objects.rom  = 0x2b354
+index 12  /d0/monsters/imp2/objects.rom  = 0x2fd2c
+index 13  /d0/monsters/pla2/objects.rom  = 0x23770
+```
+
+Samma fyra värden skrevs av gästen till sidotabellen. En ny kausal checkpoint
+vid f2324 fortsatte till f2616 med hash `0xe9b8da99`. Där arbetade QIO med
+`/d0/monsters/zom2/textures.rom` och verkliga streamlängder `0x20/0x8020`.
+Vid f2696 hade loadern naturligt lämnat state 11 och nått state 13:
+
+```text
+f2616  loader state 11, zom2 textures.rom aktiv
+f2696  loader state 13, main state 0x8007
+```
+
+Ett ytterligare 80-rutorspass till f2776 fullbordades utan gästavbrott och
+slutade i den tunga modellbyggaren vid `0x8006eb28`; snapshot-skrivningen
+misslyckades endast därför att `/tmp`-kvoten var full. Nästa konkreta gräns är
+att fortsätta från den fungerande f2696-checkpointen tills index 10 avslutas
+och asset-loopen väljer index 11. Ingen syntetisk state-11- eller
+completion-patch behövs.
+
+Verifierbara filer:
+
+```text
+/tmp/gaunt-f2284-f2324-temple-directory-owner-fix.log
+/tmp/gaunt-f2324-temple-directory-owner-fixed.warm
+/tmp/gaunt-f2324-f2616-temple-directory-owner-fixed.log
+/tmp/gaunt-f2616-temple-directory-owner-fixed.warm
+/tmp/gaunt-f2616-f2696-temple-directory-owner-fixed.log
+/tmp/gaunt-f2696-temple-directory-owner-fixed.warm
+/tmp/gaunt-f2696-f2776-temple-directory-owner-fixed.log
+```

@@ -2521,6 +2521,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeBgLoadModelQioAliasRepair(pc);
         ApplyKnownRuntimeBgLoadModelAssetPointerNormalize(pc);
         ApplyKnownRuntimeBgLoadModelAssetNameRepair(pc);
+        ApplyKnownRuntimeBgLoadModelTempleAssetDirectoryRepair(pc);
         ApplyKnownRuntimeBgLoadModelTempleAssetPathRepair(pc);
         ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(pc);
         TraceKnownRuntimeTextureSetLookup(pc);
@@ -16817,6 +16818,55 @@ internal sealed class MipsR5000Core
         }
     }
 
+    private void ApplyKnownRuntimeBgLoadModelTempleAssetDirectoryRepair(ulong pc)
+    {
+        const ulong directoryOwnerPc = 0xffffffff800aab8cUL;
+        if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
+            pc != directoryOwnerPc ||
+            _memory.Read32(directoryOwnerPc - 0x04UL) != 0x8c518068U ||
+            _memory.Read32(directoryOwnerPc) != 0xafb3001cU ||
+            _memory.Read32(directoryOwnerPc + 0x04UL) != 0xafbf0020U ||
+            ReadAsciiTraceString(_gpr[4], 2).Length != 0)
+        {
+            return;
+        }
+
+        ulong index = _gpr[17] & 0xffffffffUL;
+        if (index is < 10UL or > 13UL)
+            return;
+
+        string[] templeAssets =
+        [
+            "monsters/zom2",
+            "monsters/ice2",
+            "monsters/imp2",
+            "monsters/pla2"
+        ];
+        string expectedDirectory = templeAssets[checked((int)index - 10)];
+        uint[] expectedKeys =
+        [
+            0x80231444U,
+            0x80231450U,
+            0x8023146cU,
+            0x80231448U
+        ];
+        uint expectedKey = expectedKeys[checked((int)index - 10)];
+        ulong directory = _gpr[4];
+        if ((uint)_gpr[5] != expectedKey ||
+            !IsMainRamRange(directory, 0x20UL))
+        {
+            return;
+        }
+
+        WriteAsciiTraceString(directory, expectedDirectory, 0x20);
+        if (_runtimeBgLoadModelKnownMissingTextureLookupTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] bgloadmodel-temple-asset-directory pc={pc:x16} " +
+                $"index={index} key={expectedKey:x8} directory={directory:x16}/\"\"->\"{expectedDirectory}\"");
+        }
+    }
+
     private void ApplyKnownRuntimeBgLoadModelTextureSetDistinctSource(ulong pc)
     {
         const ulong textureSetDescriptorLoadPc = 0xffffffff800aae3cUL;
@@ -21329,6 +21379,9 @@ internal sealed class MipsR5000Core
             0xffffffff800c8928UL => "file-stat-return",
             0xffffffff800c8938UL => "file-stat-status",
             0xffffffff800c893cUL => "file-size-result-load",
+            0xffffffff800c8e24UL => "asset-file-size-entry",
+            0xffffffff800c8e68UL => "asset-file-size-path",
+            0xffffffff800c8f60UL => "asset-file-size-return",
             0xffffffff800ec748UL => "file-open-dispatch-entry",
             0xffffffff800ec7a0UL => "file-open-path-lookup-call",
             0xffffffff800ec7a8UL => "file-open-path-lookup-return",
@@ -21349,6 +21402,31 @@ internal sealed class MipsR5000Core
         };
         if (label.Length == 0)
             return;
+        if (pc is 0xffffffff800c8e24UL or 0xffffffff800c8e68UL or 0xffffffff800c8f60UL)
+        {
+            ulong frame = pc == 0xffffffff800c8e24UL ? 0 : _gpr[30];
+            ulong directory = pc == 0xffffffff800c8e24UL
+                ? _gpr[4]
+                : SignExtend32(ReadTraceWord(frame + 0x68UL));
+            ulong filename = pc == 0xffffffff800c8e24UL
+                ? _gpr[5]
+                : SignExtend32(ReadTraceWord(frame + 0x6cUL));
+            if ((pc == 0xffffffff800c8e24UL && _gpr[31] != 0xffffffff800aabdcUL) ||
+                (pc != 0xffffffff800c8e24UL &&
+                 ReadAsciiTraceString(filename, 16) != "objects.rom"))
+            {
+                return;
+            }
+
+            _runtimeBgLoadModelLookupHelperTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] bgloadmodel-lookup-helper {label} pc={pc:x16} " +
+                $"index={_gpr[17] & 0xffffffffUL:x8} directory={directory:x16}/\"{ReadAsciiTraceString(directory, 64)}\" " +
+                $"filename={filename:x16}/\"{ReadAsciiTraceString(filename, 32)}\" " +
+                $"path=\"{ReadAsciiTraceString(0xffffffff80218530UL, 96)}\" " +
+                $"result={_gpr[2] & 0xffffffffUL:x8} ra={_gpr[31]:x16} sp={_gpr[29]:x16} fp={_gpr[30]:x16}");
+            return;
+        }
         if (pc == 0xffffffff800b72fcUL &&
             _gpr[31] is not (0xffffffff800aad84UL or 0xffffffff800aae68UL))
         {
@@ -21380,7 +21458,7 @@ internal sealed class MipsR5000Core
             }
         }
         if (pc is >= 0xffffffff800c9088UL and <= 0xffffffff800c90d4UL &&
-            _gpr[31] != 0xffffffff800aade4UL)
+            _gpr[31] is not (0xffffffff800aabc8UL or 0xffffffff800aade4UL))
         {
             return;
         }
