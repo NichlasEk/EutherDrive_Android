@@ -5302,3 +5302,56 @@ Ny bästa fortsättningspunkt:
 /tmp/gaunt-f3676-plus1m-swap-trace.log
 /tmp/gaunt-f3676-plus1m-presented.png
 ```
+
+#### Type3-proveniens överlever nu warm-snapshot round-trip
+
+Efter den naturliga world-swappen stod command-FIFO-read-headen vid
+`0x1400904` framför ordet `0x3c455205`. Tolkat fristående ser det ut som en
+Type5 space-3-header med 43 584 payloadord, men en rå FIFO-fönsterdump visade
+att ordet återkom mellan vertexfloatar som `0x43935bad`, `0x436aaaa7` och
+`0x42cc0000`.
+
+Den riktiga Type3-headern låg fyra ord tidigare:
+
+```text
+header 0x0080a8cb  vertices=3  packetWords=19
+read   0x3c455205  offset=4 i packet body
+next   0x0080a853  exakt vid packet-end + 1
+```
+
+Runtime-trackern hade redan en signaturvaktad
+`FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER`-väg, men probe-snapshot v12 sparade
+FIFO-data och logiska generationer utan Type3 body/end-metadata. Efter reload
+stoppade dessutom readiness-kontrollen på den falska Type5-längden innan
+body-advance-grenen kunde nås.
+
+Snapshotformat v13 sparar nu Type3 body/end-arrayerna och producentens
+pågående packet-state. Äldre snapshots får en smal engångsrekonstruktion
+endast när en tidigare giltig Type3-header matematiskt spänner över
+read-headen och exakt följs av ytterligare en giltig Type3-header.
+Readiness låter därefter den bevisade body-proveniensen nå den befintliga
+advance-grenen före vanlig paketlängdsvalidering.
+
+A/B från samma v12-snapshot till f3690 +1m:
+
+```text
+före  rd=0x1400904  packets=2563521  Type3=480979
+efter rd=0x140ff47  packets=2563620  Type3=481034
+```
+
+Efter fixen konsumerades 99 nya paket och 55 nya Type3-draws. Vertextracen
+återkom och visade efter de första stripresterna normala små trianglar kring
+bland annat `(68,310)` och `(480,318)`. En v13-save/reload behöll exakt
+read-index, räknare och `frameHash=0xbd21f8ae` utan legacy-rekonstruktion.
+
+Ny bästa fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gaunt-f3690-plus1m-type3-ready-fixed-v13.warm
+/tmp/gaunt-f3676-f3690-plus1m-type3-ready-fixed-save.log
+/tmp/gaunt-f3690-plus1m-type3-ready-fixed-v13-reload.log
+```
+
+Nästa gräns är att fortsätta från v13-checkpointen till nästa naturliga swap
+och jämföra den nya presenterade world-framen. Återöppna inte den falska
+Type5-headern eller buffer-valet.

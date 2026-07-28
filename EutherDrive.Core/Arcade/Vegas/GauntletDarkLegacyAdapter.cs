@@ -40257,6 +40257,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             return false;
         }
 
+        int readStorageIndex = CommandFifoReadStorageIndex(_cmdFifoReadIndex);
+        if ((_experimentCommandFifoGateType3ProducerBodyHeader ||
+             _experimentCommandFifoAdvanceType3ProducerBodyHeader) &&
+            _cmdFifoStorageType3Body[readStorageIndex])
+        {
+            CountCommandFifoReadyPc(true, "type3-producer-body");
+            return true;
+        }
+
         if (_experimentMameCommandFifoReadyValidPacketWindow)
         {
             uint command = PeekCommandFifoWord();

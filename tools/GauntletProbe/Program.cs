@@ -173,6 +173,7 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_SCAN_FIFO_BUILDERS")
     ScanFifoCommandBuilders(GetProperty(machine, "MemoryMap"));
 
 object voodoo = GetProperty(machine, "Voodoo");
+DumpRequestedCommandFifoWindow(voodoo);
 DumpVoodoo(voodoo);
 DumpRequestedVoodooTextureRaw(voodoo);
 DumpRequestedTextureWordOwners(voodoo);
@@ -1169,7 +1170,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(12);
+        writer.Write(13);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -1284,7 +1285,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version < 1 || version > 12)
+    if (magic != 0x314d5241574c4447UL || version < 1 || version > 13)
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1663,6 +1664,11 @@ static void WriteStandardFifoGenerationState(BinaryWriter writer, object backend
 
     WriteCommandFifoBulkWriteSources(writer, GetFieldValue<IDictionary>(backend, "_cmdFifoStorageBulkWriteSources"));
     WriteCommandFifoBulkWriteSources(writer, GetFieldValue<IDictionary>(backend, "_cmdFifoLogicalPacketBulkWriteSources"));
+    WriteBoolArray(writer, GetFieldValue<bool[]>(backend, "_cmdFifoStorageType3Body"));
+    WriteIntArray(writer, GetFieldValue<int[]>(backend, "_cmdFifoStorageType3PacketEnd"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoType3ProducerNextStorageIndex"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoType3ProducerBodyWordsRemaining"));
+    writer.Write(GetFieldValue<int>(backend, "_cmdFifoType3ProducerPacketEnd"));
 }
 
 static void ReadStandardFifoGenerationState(BinaryReader reader, object backend, int version)
@@ -1707,6 +1713,81 @@ static void ReadStandardFifoGenerationState(BinaryReader reader, object backend,
         ReadCommandFifoBulkWriteSources(reader, GetFieldValue<IDictionary>(backend, "_cmdFifoStorageBulkWriteSources"));
         ReadCommandFifoBulkWriteSources(reader, GetFieldValue<IDictionary>(backend, "_cmdFifoLogicalPacketBulkWriteSources"));
     }
+    if (version >= 13)
+    {
+        ReadBoolArrayInto(reader, GetFieldValue<bool[]>(backend, "_cmdFifoStorageType3Body"));
+        ReadIntArrayInto(reader, GetFieldValue<int[]>(backend, "_cmdFifoStorageType3PacketEnd"));
+        SetField(backend, "_cmdFifoType3ProducerNextStorageIndex", reader.ReadInt32());
+        SetField(backend, "_cmdFifoType3ProducerBodyWordsRemaining", reader.ReadInt32());
+        SetField(backend, "_cmdFifoType3ProducerPacketEnd", reader.ReadInt32());
+    }
+    else
+    {
+        RebuildCurrentType3BodyMetadata(backend);
+    }
+}
+
+static void RebuildCurrentType3BodyMetadata(object backend)
+{
+    uint[] ram = GetFieldValue<uint[]>(backend, "_cmdFifoRam");
+    bool[] valid = GetFieldValue<bool[]>(backend, "_cmdFifoValid");
+    bool[] body = GetFieldValue<bool[]>(backend, "_cmdFifoStorageType3Body");
+    int[] packetEnds = GetFieldValue<int[]>(backend, "_cmdFifoStorageType3PacketEnd");
+    int read = GetFieldValue<int>(backend, "_cmdFifoReadIndex");
+    int mask = ram.Length - 1;
+    for (int distance = 1; distance <= 128; distance++)
+    {
+        int header = read - distance;
+        uint command = ram[header & mask];
+        int words = GetProbeType3WordsNeeded(command);
+        if (words <= distance || (command & 7u) != 3u)
+            continue;
+
+        int nextHeader = header + words;
+        uint nextCommand = ram[nextHeader & mask];
+        if (!valid[nextHeader & mask] || GetProbeType3WordsNeeded(nextCommand) == 0)
+            continue;
+
+        int endStorage = (nextHeader - 1) & mask;
+        for (int logical = header + 1; logical < nextHeader; logical++)
+        {
+            int storage = logical & mask;
+            body[storage] = true;
+            packetEnds[storage] = endStorage;
+        }
+        Console.Error.WriteLine(
+            $"legacyType3BodyMetadataRebuilt read=0x{read * 4:x8} header=0x{header * 4:x8} " +
+            $"next=0x{nextHeader * 4:x8} words={words}");
+        return;
+    }
+}
+
+static int GetProbeType3WordsNeeded(uint command)
+{
+    if ((command & 7u) != 3u ||
+        ((command >> 3) & 7u) > 2u ||
+        ((command >> 6) & 0xfu) == 0)
+        return 0;
+    int wordsPerVertex = 2;
+    if (((command >> 28) & 1u) != 0)
+    {
+        if (((command >> 10) & 3u) != 0)
+            wordsPerVertex++;
+    }
+    else
+    {
+        if (((command >> 10) & 1u) != 0)
+            wordsPerVertex += 3;
+        if (((command >> 11) & 1u) != 0)
+            wordsPerVertex++;
+    }
+    if (((command >> 12) & 1u) != 0) wordsPerVertex++;
+    if (((command >> 13) & 1u) != 0) wordsPerVertex++;
+    if (((command >> 14) & 1u) != 0) wordsPerVertex++;
+    if (((command >> 15) & 1u) != 0) wordsPerVertex += 2;
+    if (((command >> 16) & 1u) != 0) wordsPerVertex++;
+    if (((command >> 17) & 1u) != 0) wordsPerVertex += 2;
+    return 1 + wordsPerVertex * (int)((command >> 6) & 0xfu) + (int)(command >> 29);
 }
 
 static void WriteCommandFifoBulkWriteSources(BinaryWriter writer, IDictionary sources)
@@ -2146,6 +2227,31 @@ static void DumpCommandState(object memory)
     })
     {
         DumpWords(memory, address, 16);
+    }
+}
+
+static void DumpRequestedCommandFifoWindow(object facade)
+{
+    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_CMD_FIFO_WINDOW") != "1")
+        return;
+
+    object backend = GetField(facade, "_backend");
+    uint[] ram = GetFieldValue<uint[]>(backend, "_cmdFifoRam");
+    bool[] valid = GetFieldValue<bool[]>(backend, "_cmdFifoValid");
+    int[] logical = GetFieldValue<int[]>(backend, "_cmdFifoStorageLogicalIndex");
+    bool[] type3Body = GetFieldValue<bool[]>(backend, "_cmdFifoStorageType3Body");
+    int[] type3End = GetFieldValue<int[]>(backend, "_cmdFifoStorageType3PacketEnd");
+    int read = GetFieldValue<int>(backend, "_cmdFifoReadIndex");
+    int mask = ram.Length - 1;
+    Console.WriteLine($"cmdFifoWindow read=0x{read * 4:x8} storage=0x{(read & mask) * 4:x5}");
+    for (int offset = -8; offset <= 24; offset++)
+    {
+        int index = read + offset;
+        int storage = index & mask;
+        Console.WriteLine(
+            $" fifo[{offset,3}] logical=0x{index * 4:x8} storage=0x{storage * 4:x5} " +
+            $"value=0x{ram[storage]:x8} valid={(valid[storage] ? 1 : 0)} stored=0x{logical[storage] * 4:x8} " +
+            $"t3body={(type3Body[storage] ? 1 : 0)} t3end=0x{type3End[storage] * 4:x5}");
     }
 }
 
