@@ -16767,6 +16767,7 @@ internal sealed class MipsR5000Core
         {
             "/d0//objects.rom" => "objects.rom",
             "/d0//textures.rom" => "textures.rom",
+            "/d0//anim.rom" => "anim.rom",
             _ => ""
         };
         if (file.Length == 0)
@@ -16787,6 +16788,25 @@ internal sealed class MipsR5000Core
             "monsters/imp2",
             "monsters/pla2"
         ];
+        uint[] templeAssetKeys =
+        [
+            0x80231444U,
+            0x80231450U,
+            0x8023146cU,
+            0x80231448U
+        ];
+        if (index < 0)
+        {
+            uint activeKey = unchecked((uint)_gpr[17]);
+            for (int candidate = 0; candidate < templeAssetKeys.Length; candidate++)
+            {
+                if (activeKey == templeAssetKeys[candidate])
+                {
+                    index = 10 + candidate;
+                    break;
+                }
+            }
+        }
         if (index < 0 && file == "objects.rom")
         {
             for (int candidate = 10; candidate <= 13; candidate++)

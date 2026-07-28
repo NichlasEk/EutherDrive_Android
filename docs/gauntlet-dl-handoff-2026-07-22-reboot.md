@@ -5101,3 +5101,44 @@ Verifierbara filer:
 /tmp/gaunt-f2696-temple-directory-owner-fixed.warm
 /tmp/gaunt-f2696-f2776-temple-directory-owner-fixed.log
 ```
+
+#### Temple-animationerna och hela fyrgruppen går nu naturligt vidare
+
+Den kvarvarande modellbyggarloopen vid `0x8006eb04..0x8006eb30` var inte en
+ny schedulerblockering. Modellbufferten innehöll fortfarande initmönstret
+`0x01010101`, eftersom animationen öppnades som `/d0//anim.rom` och därför
+fick längd noll. Vid animationsöppningen är `s0` filnamnspekaren
+`0x8012eb2c`, inte BGLoadModel-recordet; `s1` bär däremot samma stabila
+asset-nyckel som katalogreparationen ovan.
+
+Den befintliga, default-påslagna Temple-reparationen känner därför även igen
+`anim.rom` och väljer katalog från exakt de fyra kända `s1`-nycklarna. Den
+ändrar bara den tomma sökvägen före FSYS-uppslaget och patchar fortfarande
+varken QIO-längd, completionflagga eller loader state.
+
+Fokuserade replaypass från f2616 till f3016 verifierade hela kedjan:
+
+```text
+index 10  /d0/monsters/zom2/anim.rom  = 0x04ec  -> status 2
+index 11  /d0/monsters/ice2/anim.rom  = 0x10f0  -> status 2
+index 12  /d0/monsters/imp2/anim.rom  = 0x0494  -> status 2
+index 13  /d0/monsters/pla2/anim.rom  = 0x0cec  -> status 2
+```
+
+Mellan animationerna strömmades respektive `textures.rom` och `objects.rom`
+med verkliga offsetsteg och slutlängder. Vid f3016 hade loopen lämnat hela
+Temple-fyrgruppen och arbetade naturligt på index 14,
+`/d0/monsters/death/objects.rom`. Samtliga checkpointpass gav
+`frameHash=0xe9b8da99`; den patologiska `0x01010101`-loopen återkom inte.
+
+Senaste fortsättningspunkt:
+
+```text
+/tmp/gaunt-f3016-temple-four-assets-fixed.warm
+/tmp/gaunt-f2936-f3016-temple-pla2-anim-trace.log
+```
+
+Nästa smala gräns är att fortsätta från f3016 genom de efterföljande
+indexposterna och observera när BGLoadModel lämnar asset-loopen och
+`0x8020c54c` sätts. Reparationen ska inte breddas till fler asset-familjer
+utan en ny spårad tomkataloghändelse.
