@@ -4718,3 +4718,61 @@ Nästa bildgräns är nu de horisontella banden och den gröna
 färg-/blenddominansen i world-bilden. RGB-state, scene progression,
 buffertval, assetkedja och grundläggande textursampling är verifierade och
 ska inte öppnas igen utan ny motsägande evidens.
+
+#### Naturlig state-0x8008-progression rensar world-bilden
+
+FIRE 3 når fortfarande runtime-inputbryggan korrekt i den sena checkpointen:
+
+```text
+kontroll p1=0x00000000
+FIRE 3  p1=0x00000800
+```
+
+Två- och tio-frame-pulser gav ändå identiska CPU-, FIFO-, swap- och
+bildresultat. Detta är korrekt för denna fas: huvudstate är redan `0x8008`,
+medan den kodsignaturbevakade diagnostic-exit-bryggan avsiktligt gäller
+`0x8000` och `0x8007`. Latchen ska inte forceras igen efter genomförd exit.
+
+Den rena +180m-snapshoten fortsattes därför utan input i ytterligare 20m
+fullrenderade CPU-steg:
+
+```text
+total extra 185m  Type3=380917 swaps=860
+total extra 190m  Type3=385591 swaps=860
+total extra 195m  Type3=390177 swaps=860
+total extra 200m  Type3=394803 swaps=860
+fbzMode=0x660
+```
+
+Vid +200m har den tidigare kraftiga horisontella bandningen nästan helt
+försvunnit. Buffer 0 visar sammanhängande golvperspektiv, flera figurer,
+miljötexturer och en mjuk grön ljus-/partikeleffekt. Den gröna dominansen vid
++180m var därför huvudsakligen en pågående animerad world-effekt, inte ett
+globalt RGB- eller color-combine-fel.
+
+Den äldre sena referensen låg kring 391000 Type3-paket men hade fler swaps
+från en annan frame-/CPU-cadence. Den rena +200m-körningen når nu samma
+Type3-klass och en starkare world-bild; swap-totalen ska inte längre användas
+ensam som fasidentifierare.
+
+Verifierad bild:
+
+```text
+artifacts/gauntlet-probe/gauntdl-winopen-rgb-clean-world-extra200m-20260728.png
+sha256=f6b8b9ebd6a71fc77255f20c77595e8f133862182bd2153be34085a85e3dcab4
+```
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-rgb-winopen-fix-f2204-extra200m.warm
+sha256=404a9dbcc1974db568e5af87a000357080f8c26429b03c83035e25a34a98a246
+/tmp/gaunt-rgb-winopen-fix-f2204-extra180m-to200m.log
+/tmp/gaunt-rgb-winopen-fix-f2204-extra200m-buffer0.png
+/tmp/gaunt-rgb-winopen-fix-extra180m-inputtrace-off.log
+/tmp/gaunt-rgb-winopen-fix-extra180m-inputtrace-on.log
+```
+
+Nästa gräns är nu diagnostik-/objektöverläggets livscykel och fortsatt
+normal state-`0x8008`-progression, inte RGB-init, grön color-combine eller
+den nästan försvunna övergångsbandningen.
