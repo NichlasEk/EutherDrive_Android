@@ -4588,3 +4588,72 @@ fortsättningscheckpointen är:
 /tmp/gaunt-rgb-winopen-fix-f600.warm
 /tmp/gaunt-rgb-winopen-fix-f450-f600.log
 ```
+
+#### Ren WinOpen-kedja bevarar RGB genom f2300
+
+Den kallstartade kandidatgrenen fortsattes fullrenderad, utan gästminnespatch,
+backendens force-RGB eller extra CPU-serie:
+
+```text
+f600 -> f900 -> f1200 -> f1500 -> f1800 -> f2000 -> f2204
+slutligt fbzMode vid varje checkpoint: 0x660
+f2204 Type3=135176 swaps=400
+```
+
+Rå buffer 0 vid både f900 och f1200 innehåller riktig Gauntlet-grafik:
+diagnostik-/objektvyn har läsbar text, modeller och bakgrund. Detta är den
+första fulla kallkedjan som visar att WinOpen-fixen ensam bevarar RGB långt
+efter initieringen; den diagnostiska backend-forcen behövs inte.
+
+Frame-numret är däremot inte fas-ekvivalent med den äldre f2204-referensen.
+Den här vanliga fast-cadencen har vid f2204 bara 400 swaps och 135176
+Type3-paket, medan den äldre scenreferensen låg kring 2730 swaps och 391000
+Type3-paket. Den rena kedjan är alltså fortfarande tidigare i guestens
+CPU/FIFO-fas trots samma frame counter.
+
+En två-frame `INPUT_C`/FIRE 3-puls vid f2204--f2206 gav en riktig
+gästreaktion: till f2224 ökade swaps med 56, Type5-uppladdningar återupptogs
+och frontbufferten blev vit under övergången. Fortsättning till f2300 gav:
+
+```text
+fbzMode=0x660
+swaps=850
+Type3=165229
+Type5=29643
+texture writes=835109
+buffer 0 colored pixels=302221
+```
+
+Rå buffer 0 visar fortfarande diagnostik-/objektvyn, inte den senare
+dungeon-scenen. FIRE 3-resultatet ska därför inte användas som bevis för att
+den rena fast-cadencen redan nått samma spelstate som den äldre scenreferensen.
+Nästa pass ska nå den senare CPU/FIFO-fasen reproducerbart och därefter göra
+inputprovet där.
+
+Verifierad bild:
+
+```text
+artifacts/gauntlet-probe/gauntdl-winopen-rgb-clean-fire3-f2300-20260728.png
+sha256=43eed62e34f817bed1587eae6f7a7c493fd4c2d8381bae720eeaff3bb00b5221
+```
+
+Reproducerbara checkpointar och loggar:
+
+```text
+/tmp/gaunt-rgb-winopen-fix-f900.warm
+/tmp/gaunt-rgb-winopen-fix-f1200.warm
+/tmp/gaunt-rgb-winopen-fix-f1500.warm
+/tmp/gaunt-rgb-winopen-fix-f1800.warm
+/tmp/gaunt-rgb-winopen-fix-f2000.warm
+/tmp/gaunt-rgb-winopen-fix-f2204.warm
+/tmp/gaunt-rgb-winopen-fix-fire3-f2224.warm
+/tmp/gaunt-rgb-winopen-fix-fire3-f2300.warm
+/tmp/gaunt-rgb-winopen-fix-f600-f900.log
+/tmp/gaunt-rgb-winopen-fix-f900-f1200.log
+/tmp/gaunt-rgb-winopen-fix-f1200-f1500.log
+/tmp/gaunt-rgb-winopen-fix-f1500-f1800.log
+/tmp/gaunt-rgb-winopen-fix-f1800-f2000.log
+/tmp/gaunt-rgb-winopen-fix-f2000-f2204.log
+/tmp/gaunt-rgb-winopen-fix-fire3-f2204-f2224.log
+/tmp/gaunt-rgb-winopen-fix-fire3-f2224-f2300.log
+```
