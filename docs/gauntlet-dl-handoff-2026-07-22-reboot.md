@@ -5650,3 +5650,36 @@ artifacts/gauntlet-probe/gaunt-f3820-mame-color1-fastfill-v14.warm
 Nästa visuella gräns ligger åter i worldytornas rasterfidelitet och
 kamerainnehåll. Den svarta bakgrunden är nu gästens verkliga clear och ska
 inte ersättas av `color0` eller `zaColor`.
+
+#### Baseline-wrappern återaktiverar inte längre nolltransparens
+
+En pixeltrace av det randiga worldgolvet vid f3850 visade flera
+`zero-transparent`-rejects trots att den accepterade presetens
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_ZERO_TEXTURE_TRANSPARENCY` är `0`.
+Orsaken var att `run-gauntdl-baseline.sh` sätter `BRINGUP_FAST=1` men inte
+exporterade det explicita nollvärdet. Den generiska bringup-fallbacken gjorde
+därför nolltexlar transparenta igen i wrapperkörningar och lämnade äldre
+polygonlager synliga.
+
+Wrappern exporterar nu hårdvarukorrekt default `0`, men tillåter fortfarande
+ett explicit env-override för diagnostiska A/B-körningar. Samma
+f3830-till-f3850-state och identisk rastertelemetri gav:
+
+```text
+gammal wrapper: frameHash=0xb838f67d
+zero write:     frameHash=0xb458dedf
+Type3=502044  textured=499  pixels=1814636  zero=970417
+```
+
+Ny state och bild:
+
+```text
+artifacts/gauntlet-probe/gaunt-f3850-zero-write-v14.warm
+/tmp/gaunt-f3850-zero-write.ppm
+/tmp/gaunt-f3850-zero-write.png
+/tmp/gaunt-f3850-zero-write.log
+```
+
+Den tidigare f3850-bilden är fortfarande användbar för geometrifasens
+proveniens, men inte som pixelkorrekt baseline. Fortsatta wrapperreplays ska
+behålla `ZERO_TEXTURE_TRANSPARENCY=0`.
