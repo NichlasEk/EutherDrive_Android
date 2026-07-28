@@ -5733,3 +5733,47 @@ artifacts/gauntlet-probe/gaunt-f3987-600k-control-v14.warm
 /tmp/gaunt-f3987-600k-control.png
 /tmp/gaunt-f3907-white-panel-pixel-trace.log
 ```
+
+#### Räknaren klassar HUD-tid och probe-watch accepterar nu hexlängd
+
+Fullrenderad progression nådde f4047 utan input eller RAM-patch:
+
+```text
+state=0x8008  counter=0x68  load-complete=1  exit-latch=0
+frameHash=0xafeda57c  Type3=576283
+```
+
+Räknarens riktiga skrivare är gäst-PC `0x800188d0`. Den adderar det
+16-bitars tickvärdet `0x80227b48=2` till `0x80227b74` och anropar därefter
+hjälpfunktionen vid `0x800187b0`. Disassemblyn visar klassgränser vid
+`1`, `0x41` och `0xc1`; `0x68` är alltså inte en state- eller kameratröskel.
+En separat default-off sond satte endast räknaren till `0xbe` och verifierade
+naturliga writes `0xc0 -> 0xc2 -> 0xc4` utan ändring av huvudstate,
+load-complete eller exit-latch. Sonden ska inte promoveras.
+
+De stora screenytorna flyttar sig samtidigt mjukt mellan frames, till exempel
+den undertryckta setup-triangeln `x=-611.938 -> -599.938 -> -588.250 ->
+-576.812`. Det är deterministisk gästgeometri/kamera, inte återanvänd
+FIFO-payload. `fbzMode=0x660` har enligt Voodoo 2-semantiken RGB- och
+aux-write på men depth-test av; backenden följer detta och ska inte tvinga
+depth-test för att dölja ytorna.
+
+Minneswatchen avslöjade också ett verkligt observabilitetsfel. Dokumenterade
+filter som `EUTHERDRIVE_GAUNTDL_TRACE_MEM_ADDRESS=...:0xc` accepterade hex i
+adressen men bara decimal i längden och föll tyst tillbaka till en byte.
+Längdparsern accepterar nu både decimal och `0x`-prefixad hex, så befintliga
+recept bevakar avsett intervall.
+
+Reproducerbara filer:
+
+```text
+artifacts/gauntlet-probe/gaunt-f4047-600k-control-v14.warm
+artifacts/gauntlet-probe/gaunt-f4059-counter-be-probe-v14.warm
+/tmp/gaunt-f4027-f4039-state-counter-owner-corrected.log
+/tmp/gaunt-f4047-f4059-counter-be-probe.log
+/tmp/gaunt-f4059-counter-be-probe.png
+```
+
+Nästa bildgräns är fortsatt ägarskap för world-/kameradata före
+vertexemittern. Lägg inte till en `0x68`/`0xc1`-statepatch, tvingat depth-test
+eller bredare triangelundertryckning.

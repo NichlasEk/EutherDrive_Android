@@ -32260,10 +32260,25 @@ internal sealed class VegasMemoryMap
             return null;
 
         ulong byteLength = 1;
-        if (parts.Length > 1 && ulong.TryParse(parts[1], out ulong parsedLength) && parsedLength > 0)
+        if (parts.Length > 1 && TryParseTraceLength(parts[1], out ulong parsedLength) && parsedLength > 0)
             byteLength = parsedLength;
 
         return new TraceAddressFilter(address, byteLength);
+    }
+
+    private static bool TryParseTraceLength(string raw, out ulong parsed)
+    {
+        raw = raw.Trim();
+        if (raw.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            return ulong.TryParse(
+                raw[2..],
+                System.Globalization.NumberStyles.HexNumber,
+                null,
+                out parsed);
+        }
+
+        return ulong.TryParse(raw, out parsed);
     }
 
     private static bool TryParseTraceHexUlong(string raw, out ulong parsed)
