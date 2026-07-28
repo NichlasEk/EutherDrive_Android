@@ -5171,3 +5171,48 @@ Ny bästa fortsättningspunkt:
 Nästa pass ska börja från f3256 och observera vad state-`0x8007` gör efter
 load-complete, särskilt nästa huvudstate och den första stabila scenbilden.
 Asset-path- eller completionreparationen ska inte breddas.
+
+#### FIRE3 lämnar state 0x8007 och återstartar world/render-fasen
+
+Efter load-complete stannade huvudstate på `0x8007` och den presenterade
+diagnostikbilden på `frameHash=0xf1cbbd0f`. Draw-paket fortsatte produceras,
+men inga nya swapkommandon kom. En fyrarutors FIRE3/Turbo-puls via den normala
+inputbryggan vid f3417--f3420 gav den avsedda kausala kedjan:
+
+```text
+p1 input bitfield = 0x00000800
+diagnostic exit latch 0x80227ec8 = 1
+pc 0x80081bec writes main state 0x80227ab0 = 0x8008
+```
+
+Ingen direkt state- eller latchpatch användes. Vid f3496 var state `0x8008`,
+load-complete fortfarande `1` och latchen rensades därefter naturligt.
+
+Fortsättning till f3576 körde den redan kända legitima resetfamiljen med
+direkta `swapbufferCMD=0` vid `0x80102a80` varvade med Type1 target `0x4a`
+vid `0x80102ab4`. Swapcount gick `1764 -> 3352`, Type5-upload återkom och
+hashen blev `0xe9b8da99`. Detta par ska inte undertryckas; äldre MAME-grundade
+pass har redan klassificerat det som state-`0x8008`:s depth-only-reset.
+
+Den vanliga presenterade kopian visar ännu den gamla korrupta overlayn, men
+rå Voodoo-buffer 0 innehåller nu gles, tydlig perspektivisk worldgeometri.
+Buffer 1 och 2 är tomma. Det bevisar att world-rendering har börjat, men att
+en komplett RGB-frame ännu inte publicerats.
+
+State-räknaren vid `0x80227b74` gick `0 -> 2` mellan f3496 och f3576. Fram
+till f3656 kom ingen ny räknar- eller state-skrivning och Voodoo förblev
+stilla, medan hot-PC-profilen visade fortsatt CPU-side world/modelarbete i
+`0x800af794..0x800afa80` och `0x800ca58c`.
+
+Ny bästa fortsättningspunkt:
+
+```text
+/tmp/gaunt-f3656-state8008-counter.warm
+/tmp/gaunt-f3576-f3656-state8008-counter.log
+/tmp/gaunt-f3656-f3657-hotpc.log
+```
+
+Nästa smala gräns är ägarskapet för world/model-fasen kring
+`0x800af794..0x800afa80`: avgör vilken completion eller listpublicering som
+ska återvända till state-`0x8008`-handlern och nästa RGB-pass. Ändra inte
+swap-paret, RGB-masken eller buffer-valet utan ny kausal evidens.
