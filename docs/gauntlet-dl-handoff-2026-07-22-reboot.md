@@ -4657,3 +4657,64 @@ Reproducerbara checkpointar och loggar:
 /tmp/gaunt-rgb-winopen-fix-fire3-f2204-f2224.log
 /tmp/gaunt-rgb-winopen-fix-fire3-f2224-f2300.log
 ```
+
+#### Ren senfas visar riktig world-grafik utan RGB-force
+
+Frame counter var inte rätt mått för att nå den äldre world-referensen.
+Fortsättningen gjordes därför från den rena pre-input-snapshoten vid f2204
+med full rasterisering och mätta extra CPU-steg. Ingen guest-patch,
+backend-force eller input var aktiv.
+
+Från den tidigare sparade +20m-checkpointen gav ytterligare 100m steg:
+
+```text
+total extra 45m   Type3=200457 swaps=400
+total extra 70m   Type3=236647 swaps=400
+total extra 95m   Type3=272869 swaps=400
+total extra 120m  Type3=309107 swaps=400
+```
+
+Rå buffer 0 vid total +120m visar en stor färgad Gauntlet-figur,
+miljödetaljer och diagnostiktext. Den korrekta RGB-biten producerar alltså
+verklig texturerad grafik långt in i objektpasset.
+
+Nästa fullrenderade 60m-intervall träffade den sena fasgränsen:
+
+```text
+total extra 140m  Type3=338291 swaps=400
+total extra 160m  Type3=357516 swaps=860 Type5=31227
+total extra 180m  Type3=376255 swaps=860 Type5=36232
+```
+
+Vid total +180m innehåller rå buffer 0 en sammanhängande dungeon/world-bild:
+golv och väggar, flera figurer och en stor grön effekt är synliga under
+diagnostiköverlägget. Buffer 1 och 2 är tomma i denna exakta fas. Bilden har
+fortfarande horisontella band och stora färg-/blendfel, men den kommer från
+den rena kallstartade WinOpen-fixkedjan. Detta sluter den tidigare saknade
+kausala länken från WinOpen-init till verklig world-rendering utan
+`SETUP_FORCE_RGB_MASK` eller minnespatch.
+
+Verifierad bild:
+
+```text
+artifacts/gauntlet-probe/gauntdl-winopen-rgb-clean-world-extra180m-20260728.png
+sha256=0037cbd065b7ee57f4da6c91b53782311af50bfef7536d54f987d69bb652f180
+```
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-rgb-winopen-fix-f2204-extra120m.warm
+sha256=2e1b1ba02710eb18bddce995a61481083a1597ccf989ff111824dd01700ac315
+/tmp/gaunt-rgb-winopen-fix-f2204-extra180m.warm
+sha256=542a638cab9ec70d8882b940a4137d9a72791198401205a231b8d8c12961a5dc
+/tmp/gaunt-rgb-winopen-fix-f2204-extra20m-to120m.log
+/tmp/gaunt-rgb-winopen-fix-f2204-extra120m-to180m.log
+/tmp/gaunt-rgb-winopen-fix-f2204-extra120m-buffer0.png
+/tmp/gaunt-rgb-winopen-fix-f2204-extra180m-buffer0.png
+```
+
+Nästa bildgräns är nu de horisontella banden och den gröna
+färg-/blenddominansen i world-bilden. RGB-state, scene progression,
+buffertval, assetkedja och grundläggande textursampling är verifierade och
+ska inte öppnas igen utan ny motsägande evidens.
