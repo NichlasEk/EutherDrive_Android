@@ -4830,3 +4830,65 @@ Reproducerbara filer:
 /tmp/gaunt-rgb-winopen-fix-extra200m-overlay-suppress-f2224.log
 /tmp/gaunt-rgb-winopen-fix-extra200m-overlay-suppress-f2224.png
 ```
+
+#### Korrigering: den rena +200m-punkten är state 0x8001
+
+En direkt RAM-dump korrigerar antagandet ovan: little-endian-ordet vid
+`0x80227ab0` är `0x00008001`, inte `0x8008`. FIRE 3 når runtime-record 0
+som current/latch `0x0800/0x0800`, medan edgefältet förblir noll.
+Exit-bryggan ska ändå inte utökas till `0x8001` utan mer evidens.
+
+En kausal A/B satte endast spelets egen exit-latch `0x80227ec8` till ett:
+
+```text
+kontroll f2224:
+  Type3-delta=1028
+  buffer 0 behåller den färgade world-/object-vyn
+
+latch f2224:
+  Type3-delta=0
+  buffer 0 blir helvit
+  swaps fortsätter 860 -> 924
+```
+
+Latchgrenen fortsattes därefter naturligt. Till f2304 var bufferten
+fortfarande vit medan Type5 och swaps fortsatte. Mellan f2304 och f2324
+startade en ny renderer; vid f2364 var resultatet:
+
+```text
+swaps=1394
+Type3-delta=3665
+textured pixels=8354568
+frameHash=0xe9b8da99
+```
+
+Rå buffer 0 visar då en annan diagnostiksida med brun panelmosaik, upprepade
+glypher och de gamla diagnostiktexterna. Latchen lämnar alltså den färgade
+object-vyn men går inte till gameplay. `0x8001` får därför inte läggas till i
+`FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE`.
+
+Callerspåret visar samtidigt:
+
+```text
+inputnormalisering  0x80014cc0 -> 0x80019b9c
+statisk debuglista  0x800157fc -> 0x800b36bc
+object-viewer       0x800b39c4 -> 0x800b2904 (index 0x22)
+```
+
+`0x80227b9c=1` skrivs ovillkorligt av den generella inputnormaliseringen och
+är inte en state-specifik debugflagga. Den befintliga suppressionen ska
+förbli en visuell accelerator/sond. Den riktiga fortsättningen är
+diagnostikens state-/sidlivscykel som håller statiska record 0x22 aktivt,
+inte inputpolaritets-, RGB- eller render-enable-heuristik.
+
+Reproducerbara filer:
+
+```text
+/tmp/gaunt-rgb-winopen-fix-extra200m-mainram.bin
+/tmp/gaunt-rgb-winopen-fix-extra200m-input-callers-diagrender-f2204-f2224.log
+/tmp/gaunt-rgb-winopen-fix-extra200m-object-viewer-callers-f2204-f2224.log
+/tmp/gaunt-rgb-winopen-fix-extra200m-state8001-control-f2224.log
+/tmp/gaunt-rgb-winopen-fix-extra200m-state8001-latch-f2224.log
+/tmp/gaunt-rgb-winopen-fix-extra200m-state8001-latch-f2364.warm
+/tmp/gaunt-rgb-winopen-fix-extra200m-state8001-latch-f2364-buffer0.png
+```
