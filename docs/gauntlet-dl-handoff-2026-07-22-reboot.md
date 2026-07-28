@@ -5777,3 +5777,60 @@ artifacts/gauntlet-probe/gaunt-f4059-counter-be-probe-v14.warm
 Nästa bildgräns är fortsatt ägarskap för world-/kameradata före
 vertexemittern. Lägg inte till en `0x68`/`0xc1`-statepatch, tvingat depth-test
 eller bredare triangelundertryckning.
+
+#### Sena checkpoints regenererade utan fbiInit3-förorening
+
+En jämförelse av sparade Voodoo-register hittade en verklig skillnad som de
+sena checkpointsen hade dolt:
+
+```text
+f3676 gammal ren state       fbiInit3=0x00110001
+f3690 v13                    fbiInit3=0x00110001
+f3704 gammal plus1m v13      fbiInit3=0x428137da
+f3704 gammal plus2m v14      fbiInit3=0x43a0afac
+f3765..f4047 gamla states    fbiInit3=0x43a0afac
+```
+
+De floatlika värdena uppstod i det gamla Type3/Type4-recoveryfönstret och
+ärvdes därefter av alla sena snapshots. En register-`0x87`-trace från en
+gammal sen state gav inga nya writes; föroreningen fanns redan i snapshotten.
+
+Samma f3690-till-f3704/+1m-väg med nuvarande FIFO-recovery konsumerar
+paketströmmen utan någon write till `0x87` och behåller:
+
+```text
+fbiInit3=0x00110001
+packets=2565606
+Type3=481946
+read=0x14167e9
+```
+
+Vägen regenererades därför fullrenderad från sista rena f3690-v13-staten och
+fortsattes med riktig 60k/VBlank-cadence. `fbiInit3` förblev exakt
+`0x00110001` genom samtliga nya kontrollpunkter:
+
+```text
+f3704  Type3=481946  frameHash=0x7d4fbf45
+f3765  Type3=485021  frameHash=0xe6c0d2b5
+f3820  Type3=487889  frameHash=0x4c47ea75
+f4020  Type3=497639  frameHash=0x2803cbae
+f4080  Type3=500773  frameHash=0x9c89e0cb
+f4225  Type3=508177  frameHash=0xbfc81d3d
+```
+
+Vid ungefär samma Type3-nivå som den gamla f3820-referensen visar nya f4080
+samma sammanhängande perspektivgolv, vilket bekräftar att den rena FIFO-vägen
+fortsätter rendera normalt. Vid f4225 visar den fortfarande en extrem
+world-/kamerafas; korrekt `fbiInit3` löser alltså inte ensamt de stora
+screenytorna. Jämför framåt endast inom den regenererade kedjan och använd
+inte gammal f3704--f4047-state som registeroracle.
+
+Ny ren fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gaunt-f4225-fbi3-clean-60k-current-v14.warm
+/tmp/gaunt-f4080-fbi3-clean-60k-current.png
+/tmp/gaunt-f4225-fbi3-clean-60k-current.png
+/tmp/gaunt-f3690-f3704-plus1m-fbi3-clean-current.log
+/tmp/gaunt-f4080-f4225-fbi3-clean-60k-current.log
+```
