@@ -39539,17 +39539,15 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         x1 = Math.Min(x1, 1024);
         y1 = Math.Min(y1, LfbRows);
+        // Voodoo fastfill always sources RGB from color1. Black is a valid
+        // clear color and must not fall through to color0 or zaColor.
         ushort color = ArgbToRgb565(_registers[RegColor1]);
-        if (color == 0)
-            color = ArgbToRgb565(_registers[RegColor0]);
-        if (color == 0)
+        if (color == 0 &&
+            _fixDropLeakedType5RegisterHeaders &&
+            IsType5TexturePacketHeader(_registers[RegZaColor]))
         {
-            if (_fixDropLeakedType5RegisterHeaders && IsType5TexturePacketHeader(_registers[RegZaColor]))
-            {
-                RecordVoodooEvent($"drop leaked type5 fastfill za=0x{_registers[RegZaColor]:x8}");
-                return;
-            }
-            color = (ushort)_registers[RegZaColor];
+            RecordVoodooEvent($"drop leaked type5 fastfill za=0x{_registers[RegZaColor]:x8}");
+            return;
         }
 
         TraceDraw($"fastfill clip=({x0},{y0})-({x1},{y1}) color=0x{color:X4} c0=0x{_registers[RegColor0]:X8} c1=0x{_registers[RegColor1]:X8} fbz=0x{_registers[RegFbzMode]:X8}");

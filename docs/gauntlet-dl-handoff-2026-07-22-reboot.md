@@ -5606,3 +5606,47 @@ ren observabilitet och påverkar inte rasterresultatet.
 Den vita luckan ska nu behandlas som en verklig clear-/framefas, inte som
 ett fel i det äldre Type3-paketets textur- eller fogkedja. Nästa kontroll är
 ordningen mellan fastfill, färdig world-raster och VBlank-kopian.
+
+#### Fastfill använder nu Voodoos auktoritativa color1 även när den är svart
+
+Den korrekta pixelproveniensen gjorde nästa fel direkt synligt. Fastfillen
+vid gäst-PC `0x801027cc`, FIFO `0x14a23af`, kördes med:
+
+```text
+color0 = 0xffffffff
+color1 = 0x00000000
+zaColor= 0x00ffffff
+fbzMode= 0x00000660
+```
+
+Backenden läste först `color1`, men behandlade RGB565-värdet noll som om
+registret saknades och föll tillbaka till `color0`, sedan `zaColor`. Därmed
+blev gästens avsiktliga svarta clear vit. Voodoos fastfill-RGB kommer
+ovillkorligen från `color1`; `zaColor` hör till aux/depth-clearen. Fallbacken
+är borttagen. Det befintliga skyddet mot läckta Type5-headerord är kvar.
+
+Strikt replay från samma f3785-state till f3820:
+
+```text
+före: frameHash=0xf40cc539  pixel b0@(120,144)=0xffff
+efter:frameHash=0x9daad2a0  pixel b0@(120,144)=0x0000
+FIFO packets=2617842  Type3=500748  fastfills=891  swaps=3368
+```
+
+Den nya bilden har svart bakgrund i stället för de stora vita luckorna och
+visar den riktiga perspektiviska worldgeometrin betydligt tydligare. En
+sparad v14-state laddades om med exakt samma hash och byteidentisk PPM.
+
+Ny bästa fortsättningspunkt:
+
+```text
+artifacts/gauntlet-probe/gaunt-f3820-mame-color1-fastfill-v14.warm
+/tmp/gaunt-f3820-mame-color1-fastfill.ppm
+/tmp/gaunt-f3820-mame-color1-fastfill.log
+/tmp/gaunt-f3820-mame-color1-fastfill-save.log
+/tmp/gaunt-f3820-mame-color1-fastfill-reload.log
+```
+
+Nästa visuella gräns ligger åter i worldytornas rasterfidelitet och
+kamerainnehåll. Den svarta bakgrunden är nu gästens verkliga clear och ska
+inte ersättas av `color0` eller `zaColor`.
