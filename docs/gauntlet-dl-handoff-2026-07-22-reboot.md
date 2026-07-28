@@ -5142,3 +5142,32 @@ Nästa smala gräns är att fortsätta från f3016 genom de efterföljande
 indexposterna och observera när BGLoadModel lämnar asset-loopen och
 `0x8020c54c` sätts. Reparationen ska inte breddas till fler asset-familjer
 utan en ny spårad tomkataloghändelse.
+
+#### BGLoadModel sätter load-complete naturligt vid f3256
+
+Fortsättningen efter Temple-gruppen behövde ingen ytterligare pathfix.
+Index 14 (`monsters/death`) och index 15 (`powerups`) strömmade sina verkliga
+textur-, objekt- och animationsfiler. För `powerups/objects.rom` var den
+fullbordade längden `0x1fee0`; den efterföljande `powerups/anim.rom` gick
+också till QIO-status 2.
+
+Direkt efter modellbyggaren skrev spelets egen main-state-handler:
+
+```text
+[GAUNTDL:MEM] pc=ffffffff80082e74 write32 ffffffff8020c54c 00000001 mainram
+```
+
+Detta är den tidigare väntade load-complete-flaggan. Ingen RAM-, state- eller
+completionpatch var aktiv. Samma pass nådde f3256 med en ny naturlig
+`frameHash=0xf1cbbd0f`, jämfört med `0xe9b8da99` under asset-loopen.
+
+Ny bästa fortsättningspunkt:
+
+```text
+/tmp/gaunt-f3256-post-temple-assets.warm
+/tmp/gaunt-f3176-f3256-post-temple-trace.log
+```
+
+Nästa pass ska börja från f3256 och observera vad state-`0x8007` gör efter
+load-complete, särskilt nästa huvudstate och den första stabila scenbilden.
+Asset-path- eller completionreparationen ska inte breddas.
