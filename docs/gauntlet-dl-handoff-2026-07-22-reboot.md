@@ -5216,3 +5216,52 @@ Nästa smala gräns är ägarskapet för world/model-fasen kring
 `0x800af794..0x800afa80`: avgör vilken completion eller listpublicering som
 ska återvända till state-`0x8008`-handlern och nästa RGB-pass. Ändra inte
 swap-paret, RGB-masken eller buffer-valet utan ny kausal evidens.
+
+#### Den ogiltiga world-listcykeln är avslutad vid f3668
+
+En fokuserad CPU-watch vid loophuvudet `0x800af794` och loopslutet
+`0x800afa78` visade att den stillastående fasen inte traverserade verkliga
+world-noder. `s0` växlade deterministiskt mellan sentinelvärdet
+`0xffffffffffffffff` och `0x00000000165cf000`. Det senare ligger utanför
+32 MiB main RAM och uppstår när sentinel-adressens nästa-pekare läses genom
+den fysiska adressmasken.
+
+Den nya, signaturvaktade bringup-reparationen
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_LIST_INVALID_SENTINEL_END` känner bara
+igen exakt funktionen `0x800af794..0x800afa8b`, de två observerade ogiltiga
+nodvärdena och hoppar då till funktionens befintliga epilog. Den patchar
+varken listminne, main state eller Voodoo-register.
+
+Ett rent Debug-replay från f3656 till f3676 verifierade:
+
+```text
+fixträffar                         2
+PC                                0x800ad3a8
+gamla hot-PC-listcykeln            borta ur hot-PC-toppen
+draw packets                       480103 -> 480714
+LFB writes                         253525185 -> 253912190
+Type 0/1/3/4-paket                 åter aktiva
+main state 0x80227ab0              0x8008
+state-räknare 0x80227b74           2
+```
+
+Ett separat Release-A/B-pass från samma f3656-snapshot till f3670 gav samma
+kausala gräns. Med fixen avstängd låg PC kvar i `0x800af794..0x800afa80`,
+draw packets stod kvar på 480103 och LFB writes på 253525185. Med baseline-
+fixen på gick PC vidare till `0x800ba3dc`, draw packets till 480529 och LFB
+writes till 253690347.
+
+Rå Voodoo-buffer 0 innehöll efter passet 6 254 färgade samplingspixlar och
+613 unika färger, med tätare perspektivisk worldgeometri. Den presenterade
+640x480-kopian är fortfarande den gamla korrupta diagnostikoverlayn och
+swapcount låg kvar på 3352 under de 20 ramstegen. Nästa smala gräns är därför
+publiceringen/valet av den aktiva RGB-buffern efter det nu återupptagna
+world-rastret, inte ytterligare förändringar av world-listan.
+
+Ny bästa fortsättningspunkt:
+
+```text
+/tmp/gaunt-f3676-world-list-repaired.warm
+/tmp/gaunt-f3656-f3676-world-list-repaired-clean.log
+/tmp/gaunt-f3676-world-list-repaired_buf0.png
+```

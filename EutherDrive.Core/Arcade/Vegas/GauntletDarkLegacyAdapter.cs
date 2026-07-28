@@ -788,6 +788,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeByteMoveFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE");
     private readonly bool _fixWorldScratchRelocationOwnership =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_SCRATCH_RELOCATION_OWNERSHIP");
+    private readonly bool _enableRuntimeWorldListInvalidSentinelEnd =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_LIST_INVALID_SENTINEL_END");
     private readonly bool _enableRuntimeBgLoadModelDispatchFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_DISPATCH");
     private readonly bool _enableRuntimeVertexFifoEmitFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_VERTEX_FIFO_EMIT");
     private readonly bool _enableRuntimeGlideWinOpenRgbMaskRepair =
@@ -2583,6 +2585,8 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownRd0HomeSecondCounterWait(pc))
             return;
+        if (TryRepairKnownRuntimeWorldListInvalidSentinelEnd(pc))
+            return;
         if (TryFastPathKnownGauntletGlideHotPath(pc))
             return;
         if (TryFastPathKnownRd0BootHeaderRead(pc))
@@ -3293,6 +3297,39 @@ internal sealed class MipsR5000Core
             $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
             $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
             $"status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16}");
+    }
+
+    private bool TryRepairKnownRuntimeWorldListInvalidSentinelEnd(ulong pc)
+    {
+        const ulong loopHeader = 0xffffffff800af794UL;
+        const ulong loopTail = 0xffffffff800afa78UL;
+        const ulong epilogue = 0xffffffff800afa84UL;
+        if (!_enableRuntimeWorldListInvalidSentinelEnd || pc != loopHeader)
+            return false;
+
+        if (_memory.Read32(loopHeader + 0x00UL) != 0x8e030004U ||
+            _memory.Read32(loopHeader + 0x04UL) != 0x30620002U ||
+            _memory.Read32(loopHeader + 0x08UL) != 0x144000b6U ||
+            _memory.Read32(loopTail + 0x00UL) != 0x8e100020U ||
+            _memory.Read32(loopTail + 0x04UL) != 0x1600ff45U ||
+            _memory.Read32(loopTail + 0x08UL) != 0x00000000U ||
+            _memory.Read32(epilogue + 0x00UL) != 0x0000102dU ||
+            _memory.Read32(epilogue + 0x04UL) != 0x8fbf0078U)
+        {
+            return false;
+        }
+
+        ulong node = _gpr[16];
+        if (node != ulong.MaxValue && node != 0x00000000165cf000UL)
+            return false;
+
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] world-list-invalid-sentinel-end pc={pc:x16} node={node:x16} " +
+            $"ra={_gpr[31]:x16} next=epilogue");
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = epilogue;
+        return true;
     }
 
     private bool TryFastPathKnownGauntletGlideHotPath(ulong pc)
