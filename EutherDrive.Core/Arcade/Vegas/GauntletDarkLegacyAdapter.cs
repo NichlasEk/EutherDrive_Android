@@ -42646,6 +42646,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (x1 <= x0 || y1 <= y0)
             return;
 
+        if (bufferIndex == _requestedPixelLastWriterBuffer &&
+            _requestedPixelLastWriterX >= x0 &&
+            _requestedPixelLastWriterX < x1 &&
+            _requestedPixelLastWriterY >= y0 &&
+            _requestedPixelLastWriterY < y1)
+        {
+            _requestedPixelLastWriterId = writerId;
+        }
+
         for (int row = 0; row < PixelLastWriterSampleRows; row++)
         {
             int y = row * PixelLastWriterSampleCellHeight + PixelLastWriterSampleCellHeight / 2;

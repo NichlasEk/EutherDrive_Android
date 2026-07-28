@@ -5576,3 +5576,33 @@ artifacts/gauntlet-probe/gaunt-f3820-mame-fog-v14.warm
 Nästa visuella gräns är de stora stripparnas geometri/vertexinnehåll och
 återstående pixelsteg (itererad färg/alpha, chroma och blending), inte
 single-TMU-val, displaybuffer eller ett påhittat transparent Alpha-8-pass.
+
+#### Explicit pixelsond följer nu även rektangulära fastfills
+
+En fokuserad replay av den vita outputpixeln `(150,180)`, råpixel
+`b0@(120,144)`, visade först en motsägelse: det spårade Type3-paketet vid
+FIFO `0x149d28e` skrev foggad mörkgrön `0x2fe0`, medan slutpixeln var vit.
+En senare vit fastfill fanns vid gäst-PC `0x801027cc` och FIFO `0x14a23af`.
+
+Motsägelsen låg bara i profilen. `TrackPixelLastWriterRect` uppdaterade de
+ordinarie rutnätsproven men inte den explicit begärda pixeln. Den begärda
+punkten uppdateras nu också när den ligger inuti rektangeln. Samma
+f3785-till-f3820-replay ger:
+
+```text
+frameHash=0xf40cc539
+pixelWriterSample=b0@120,144:cFFFF
+writer=PC 0x801027cc fill fastfill FIFO 0x14a23af
+```
+
+PPM-filen är byteidentisk med föregående fogreferens. Ändringen är alltså
+ren observabilitet och påverkar inte rasterresultatet.
+
+```text
+/tmp/gaunt-f3820-pixel-rect-fix.log
+/tmp/gaunt-f3820-pixel-rect-fix.ppm
+```
+
+Den vita luckan ska nu behandlas som en verklig clear-/framefas, inte som
+ett fel i det äldre Type3-paketets textur- eller fogkedja. Nästa kontroll är
+ordningen mellan fastfill, färdig world-raster och VBlank-kopian.
