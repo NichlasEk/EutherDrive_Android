@@ -14123,3 +14123,72 @@ sha256=a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8
 The f4820 image is a clean black transition frame. Continue naturally through
 state `0x8005`; do not discard the fullscreen Type3 family or rewrite its
 coherent TMU1 surface.
+
+#### State 0x8005 continuation checkpoint
+
+The verified FIRE3 bridge boundary was saved as:
+
+```text
+artifacts/gauntlet-probe/gaunt-f4820-state8005-fire3-bridge.warm
+frameHash=0x30e41dc5
+main state=0x8005
+swaps=3876
+```
+
+Natural continuation stays black while the transition uploads assets. By
+f4900, swaps have advanced to `4254` and texture writes to `4898176`, while
+the framebuffer remains fully black. Draw work resumes at f4920. At f5000:
+
+```text
+frameHash=0xb13dff4e
+drawPackets=542505
+textureWrites=4963970
+swaps=4256
+main state=0x8005
+nonBlack=27203
+colored=27127
+```
+
+The resulting image is another live diagnostic page with the familiar
+`DIAGNOSTIC MENU` / `Exit menu (FIRE 3)` text and a small animated central
+object. It is not a character-selection screen. The reusable checkpoint is:
+
+```text
+artifacts/gauntlet-probe/gaunt-f5000-post-state8005.warm
+```
+
+Short COIN and START pulses correctly left this page unchanged. Disassembly
+of the state-`0x8005` handler at `0x8008393c` shows that it consumes FIRE3
+itself: it reads `0x80227ba4 & 0x0800`, sets internal flag
+`0x8021c5a4`, and owns the following exit lifecycle. No input bridge should be
+added for state `0x8005`.
+
+Runtime tracing verifies both halves of the real input path while FIRE3 is
+held:
+
+```text
+runtime record 0x80262b90 = 0x00000800
+normalized word 0x80227ba4 = 0x00000800
+```
+
+A four-frame pulse and a later 30-frame pulse did not change state because
+the handler-entry boundary was not observed during those windows. A
+stop-at-PC run from f5000 toward `0x8008393c` was intentionally interrupted
+after the completed f5400 checkpoint:
+
+```text
+f5100 drawPackets=551418 hash=0x537e69b1
+f5200 drawPackets=560377 hash=0xce7eb4b4
+f5300 drawPackets=569291 hash=0x4dc7da24
+f5400 drawPackets=578248 hash=0x9915338a
+swaps remained 4256
+texture writes remained 4963970
+```
+
+The diagnostic renderer remains alive and changing, but the exact
+`0x8008393c` entry was not caught through f5400. Resume from the f5000
+checkpoint and trace the main dispatch around `0x80013c30..0x80013d68`
+together with calls to `0x8008393c`; determine whether the old page lifecycle
+has not returned yet or whether an existing helper bypasses the expected
+entry. Do not add another latch, state patch, COIN/START shortcut, or Voodoo
+workaround before that control-flow boundary is explicit.
