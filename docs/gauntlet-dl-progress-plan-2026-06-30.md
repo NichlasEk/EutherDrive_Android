@@ -14363,3 +14363,54 @@ Reusable checkpoints and frame dumps:
 Continue from f6740 through guest states 34 and 40. Do not patch these states:
 they are later, native level-builder phases reached only after the four-entry
 zero-length block was cleared.
+
+#### The later loader completes and publishes a real world frame
+
+Continuation from f6740 passed state 34, state 40, and state 41 without a
+state patch. At f6800 the loader word at `0x8019ccb0` was naturally
+`0xffffffff`, `0x8020c54c` was 1, and main state `0x80227ab0` was `0x8008`.
+The final asset work included the existing `powerups`, `warning`, and
+`items/levelF` families.
+
+```text
+f6770 loader=41 texWrites=6150558 hash=0xb6842278
+f6800 loader=-1 texWrites=6161444 hash=0xa751c88d
+```
+
+A real four-frame FIRE3/Turbo edge at f6801..f6804 reached the runtime input
+record as `p1=0x0800`. Write tracing proves that the diagnostic-exit bridge
+set `0x80227ec8=1`; guest code later cleared it at `0x80082a18`. This early
+state-`0x8008` owner did not write a new main state. It restarted the
+world/model phase and then legitimately remained in state `0x8008`.
+
+The restart produced the first unmistakable level images in this continuation:
+
+```text
+f6840 nonBlack=103969 colored=103883 hash=0x5ba54a6d
+f6900 nonBlack=132305 colored=131407 hash=0x8c2c2c7d
+f6920 nonBlack=133565 colored=132553 hash=0xd7320642
+```
+
+These frames contain perspective-correct textured level surfaces, lava,
+walls, columns, and other world objects. Polygon ordering/clipping remains
+bad and makes the scene look exploded, but this is real Gauntlet world
+geometry rather than the diagnostic overlay or a probe-generated surface.
+At f6920 main state is still `0x8008`, load-complete remains 1, the exit latch
+is zero, and the HUD/state counter at `0x80227b74` is 8.
+
+Reusable continuation:
+
+```text
+/tmp/gaunt-f6800-fsys-zero-read.warm
+/tmp/gaunt-f6840-post-fire3.warm
+/tmp/gaunt-f6900-post-fire3.warm
+/tmp/gaunt-f6920-post-fire3.warm
+/tmp/gaunt-f6840-post-fire3.png
+/tmp/gaunt-f6900-post-fire3.png
+/tmp/gaunt-f6920-post-fire3.png
+```
+
+Continue state `0x8008` naturally until its object/menu presentation is
+stable before applying another FIRE3 edge. The first edge was valid input but
+arrived during the early world-build owner; do not replace it with a direct
+main-state or latch patch.
