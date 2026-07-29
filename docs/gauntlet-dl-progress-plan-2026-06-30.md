@@ -13895,3 +13895,65 @@ stream. The next ownership boundary is the normal stream advancement at
 `0x800bbdf8` (six-byte records), together with the two-byte material advance at
 `0x800bd898`; repair their caller/record sequencing instead of suppressing
 polygons or clamping TMU state.
+
+### Correction: the model body is overwritten after a correct disk load
+
+The command/payload pointer gap is not a fixed invariant. A full write trace
+shows that it changes with packet type, so the earlier apparent `+0x12` drift
+is not by itself proof that the two cursors advanced out of phase. The nested
+model call instead initializes both pointers consistently from one object
+entry at `0x8065cba0`:
+
+```text
+entry +0x0c = 0x00015ab0 -> payload 0x80672650
+entry +0x14 = 0x00015a38 -> command 0x806725d8
+```
+
+That exact 32-byte entry also occurs in the MAME Temple RAM oracle at
+`0x0062ed58`. More importantly, it occurs on the local Gauntlet raw disk at
+`0x043d4030`, which is `weapons/objects.rom + 0x2630`. The compact command
+body selected by the entry occurs byte-for-byte both in MAME at `0x00644790`
+and on the same raw disk at:
+
+```text
+weapons/objects.rom base = 0x043d1a00
+command-body offset      = 0x00018068
+disk command body        = 0x043e9a68
+```
+
+Euther's corresponding file arena starts at `0x8065a570`; therefore the same
+relative offsets resolve exactly to the intact entry at `0x8065cba0` and the
+malformed body at `0x806725d8`. This removes the temporal MAME snapshot as a
+required assumption: the expected bytes are owned by the game's own local
+disk and the object entry still points to their native file-relative offset.
+
+A comparison of the `0x20c00`-byte arena against the raw file is identical
+through offset `0x5dee`. The first mismatch is at `+0x5def`; by f4419,
+69,368 bytes differ in 9,478 disjoint runs. The bad body begins with
+matrix/record data (`00000000 ffff0b91 3f800000...`) instead of the disk's
+compact stream (`3fffffff 910bffff 01000000...`). This is a selective
+post-load in-place overwrite, not a bad extent, short QIO read, pointer-add
+error, or FIFO decode error.
+
+The probe now has a generic, default-off file-to-guest-RAM copy oracle:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_GUEST_MEMORY_FILE_PATCH=
+  path:fileOffset:guestAddress:length
+```
+
+A strict f4400-to-f4440 A/B restored only the raw-disk-owned suffix, from the
+aligned byte before the first mismatch:
+
+```text
+disk  0x043d77e0 -> guest 0x80660350, bytes 0x1ae20
+before frameHash = 0xe21b32ec, nonBlack = 67666
+after  frameHash = 0xa2e45d3e, nonBlack = 15732, colored = 15728
+```
+
+The diagnostic menu, text and Gauntlet logo remain, while both the central
+white trapezoids and lower-left green wedge disappear. Restoring only the
+four-byte command header, or only a short prefix, produces much worse world
+geometry; no late RAM copy is promoted. The correct runtime repair must stop
+the source/destination alias or lifetime violation at its first writer and
+preserve the guest's original `weapons/objects.rom` body naturally.

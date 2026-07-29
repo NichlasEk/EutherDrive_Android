@@ -43,3 +43,15 @@ Gauntlet raw disk; the second copies within the probe's Voodoo texture memory.
 The optional third flag makes the texture-memory overlay preserve every
 already-populated destination byte. Both overlays reject out-of-range requests
 and leave the saved snapshot unchanged.
+
+A third default-off diagnostic can copy an exact file range into guest main
+RAM immediately after a warm snapshot is loaded:
+
+```sh
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_GUEST_MEMORY_FILE_PATCH=path:file_offset:guest_address:length
+```
+
+The three numeric fields are hexadecimal byte values. The probe validates both
+the source-file and main-RAM ranges before copying. This is intended for narrow
+causal replay against an owned disk or RAM oracle; it is not part of the
+runtime baseline.

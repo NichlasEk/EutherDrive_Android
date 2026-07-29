@@ -63,6 +63,7 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
 
 ApplyRequestedGuestTextureMemoryCopy(adapter);
 ApplyRequestedGuestMemoryWordPatch(adapter);
+ApplyRequestedGuestMemoryFilePatch(adapter);
 ApplyRequestedDiskTextureMemoryCopy(adapter);
 ApplyRequestedTextureMemoryCopy(adapter);
 LoadRequestedVoodooTextureBanks(adapter);
@@ -246,6 +247,44 @@ static void ApplyRequestedGuestMemoryWordPatch(GauntletDarkLegacyAdapter adapter
         ?? throw new MissingMethodException(memory.GetType().FullName, "Write32");
     write32.Invoke(memory, new object[] { address, (uint)value });
     Console.WriteLine($"guestMemoryWordPatch address=0x{address:x16} value=0x{value:x8}");
+}
+
+static void ApplyRequestedGuestMemoryFilePatch(GauntletDarkLegacyAdapter adapter)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_GUEST_MEMORY_FILE_PATCH");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    string[] parts = raw.Split(':', StringSplitOptions.TrimEntries);
+    if (parts.Length != 4 ||
+        string.IsNullOrWhiteSpace(parts[0]) ||
+        !TryParseHexUlong(parts[1], out ulong fileOffset) ||
+        !TryParseHexUlong(parts[2], out ulong guestAddress) ||
+        !TryParseHexUlong(parts[3], out ulong byteLength) ||
+        byteLength == 0 ||
+        byteLength > int.MaxValue)
+    {
+        throw new InvalidDataException(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_GUEST_MEMORY_FILE_PATCH must be path:fileOffset:guestAddress:length");
+    }
+
+    string path = parts[0];
+    if (!File.Exists(path))
+        throw new FileNotFoundException("Guest memory patch source is unavailable", path);
+
+    object memory = GetProperty(GetField(adapter, "_machine"), "MemoryMap");
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    ulong guestOffset = guestAddress & (ulong)(mainRam.Length - 1);
+    long fileLength = new FileInfo(path).Length;
+    if (fileOffset + byteLength > (ulong)fileLength || guestOffset + byteLength > (ulong)mainRam.Length)
+        throw new InvalidDataException("Guest memory file patch range is outside source file or main RAM");
+
+    using FileStream source = File.OpenRead(path);
+    source.Position = checked((long)fileOffset);
+    source.ReadExactly(mainRam.AsSpan((int)guestOffset, (int)byteLength));
+    Console.WriteLine(
+        $"guestMemoryFilePatch path={path} fileOffset=0x{fileOffset:x} " +
+        $"guest=0x{guestAddress:x16}/off=0x{guestOffset:x8} bytes=0x{byteLength:x}");
 }
 
 static void ApplyRequestedGuestTextureMemoryCopy(GauntletDarkLegacyAdapter adapter)
