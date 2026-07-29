@@ -14511,3 +14511,45 @@ renderer. Continue its real loader from the final checkpoint; do not add an
 /tmp/gaunt-f7040-post-diagnostic.png
 /tmp/gaunt-f7100-plus5m-state8007.png
 ```
+
+#### The fresh state-8007 loader continues naturally through state 11
+
+Successive CPU micro-windows from the f7100 checkpoint show forward loader
+progress without another input edge or any guest-memory patch:
+
+```text
+window    loader state    main state    latch    complete    frame hash
++5M       1               0x8007        0        0           0x11878b29
++10M      1               0x8007        0        0           0xe342df7c
++20M      2               0x8007        0        0           0xa3481592
++25M      11              0x8007        0        0           0x1ea712bb
++30M      11              0x8007        0        0           0x9a64ba3c
++40M      11              0x8007        0        0           0x08488c31
++50M      12              0x8007        0        0           0x1ea712bb
++60M      12              0x8007        0        0           0xb5ed2c69
+```
+
+State 11 is active rather than wedged. Between +30M and +40M the probe reaches
+781555 Type3 packets, 428515547 LFB writes, 7063813 texture writes, and 10496
+swaps. At +50M it naturally advances to loader state 12 with 795866 Type3
+packets, 449373619 LFB writes, and 7068568 texture writes. All three color
+buffers remain populated throughout. This reproduces the expected long
+asset-streaming behavior already seen in the older Temple loader path and
+confirms that the current zero-length FSYS handling lets state 11 finish.
+The following +10M window remains in state 12 while advancing to 810229 Type3
+packets, 469191891 LFB writes, and 7079418 texture writes, so state 12 is also
+active rather than a new wait loop.
+
+Continue from the latest snapshot until the loader reaches its next stable
+state or sets load-complete. Do not restore the rejected state/latch patches
+and do not inject FIRE3 while load-complete is zero:
+
+```text
+/tmp/gaunt-f7100-plus10m-state8007.warm
+/tmp/gaunt-f7100-plus20m-state8007.warm
+/tmp/gaunt-f7100-plus25m-state8007.warm
+/tmp/gaunt-f7100-plus30m-state8007.warm
+/tmp/gaunt-f7100-plus40m-state8007.warm
+/tmp/gaunt-f7100-plus50m-state8007.warm
+/tmp/gaunt-f7100-plus60m-state8007.warm
+```
