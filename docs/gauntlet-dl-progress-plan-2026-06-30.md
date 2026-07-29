@@ -14034,6 +14034,40 @@ The new state-`0x8002` frame is not yet correct gameplay. It is a red
 panel/gradient scene with repeated `GetMemBase() called while mem reserved`
 text. This is nevertheless a real renderer restart with new Type5 uploads,
 draw packets and swaps, not the white state-`0x8001` diagnostic regression.
-The next narrow boundary is the reserved-memory lifecycle that state `0x8002`
-enters after the diagnostic exit; do not suppress the error text or remap its
-red polygons before the allocator owner is traced.
+The next narrow boundary is the state-`0x8002` draw owner; do not suppress the
+error text or remap its red polygons.
+
+#### Correction: reservation warnings are not the allocator target
+
+Earlier corrected arena traces already proved that the reservation flag is
+intentional long-lived guest state: base, cursor and limit are initialized,
+the second reservation publishes the record table, and allocations continue
+to advance the cursor despite the warnings. The state-`0x8002` follow-up must
+therefore not clear the reservation flag.
+
+A natural f4700-to-f4800 continuation keeps swaps at `3820`, but continues
+Type3 work, LFB writes, texture uploads and fast fills. The diagnostic text
+changes and the red geometry is redrawn in buffer 0; buffers 1 and 2 remain
+empty. Neither the exact PC-gated diagnostic-enable suppression nor a
+one-word `0x80227b9c=0` oracle changes the f4720 hash or image. The red region
+is not the old diagnostic-enable layer and is not a display-buffer mistake.
+
+Pixel-last-writer profiling binds a representative red pixel at `(350,200)`
+to:
+
+```text
+producer pc = 0x800c4e5c
+Type3 cmd   = 0x0180a8cb
+packet      = 0x059d3658
+fbzMode     = 0x00000660
+colorPath   = 0x0c482435
+```
+
+This is the normal paired glyph/setup producer already used by the readable
+diagnostic menu, not a new malformed FIFO family. A default-off discard of
+only `0x0180a8cb` freezes f4800's image and hash through f4820 while the rest
+of the workload continues, proving ownership but not correctness. Keep that
+discard diagnostic-only. The next trace should compare the descriptor,
+coordinates and texture state entering `0x800c4e5c` for a normal readable
+glyph pair versus one of the giant red pairs; do not suppress the shared
+producer or alter Voodoo setup decoding.
