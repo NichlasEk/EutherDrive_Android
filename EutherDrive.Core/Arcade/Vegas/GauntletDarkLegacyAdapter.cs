@@ -36392,6 +36392,10 @@ internal class VoodooBringupBackend : IVoodooBackend
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_SAMPLE_BASE_BIAS") ??
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_BASE_BIAS"),
             0);
+    private readonly int _experimentTmu0TextureSampleBaseBias =
+        ParseOptionalInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU0_TEXTURE_SAMPLE_BASE_BIAS"),
+            0);
     private readonly int _experimentTmu1TextureSampleBaseBias =
         ParseOptionalInt(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU1_TEXTURE_SAMPLE_BASE_BIAS"),
@@ -41420,6 +41424,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private void WriteCmdFifoRegister(uint target, uint value)
     {
         uint register = target & 0xffu;
+        value = ApplyRegisterWriteMask(register, value);
         if (_experimentStandardCommandFifoGenerations && IsCommandFifoControlRegister(register))
         {
             CountCommandFifoTargetRegisterPc(register, value);
@@ -46924,10 +46929,12 @@ sampledTexel:
 
         uint fbzMode = _registers[RegFbzMode];
         uint fbzColorPath = _registers[RegFbzColorPath];
+        uint trexInit1Tmu0 = ReadTextureRegisterForTmu(0, RegTrexInit1);
+        uint trexInit1Tmu1 = ReadTextureRegisterForTmu(1, RegTrexInit1);
         _twoTmuSampleTraceCount++;
         Console.WriteLine(
             $"[GAUNTDL:VOODOO-TWO-TMU-SAMPLE] n={_twoTmuSampleTraceCount} frame={_renderFrame} buf={bufferIndex} xy={x},{y} " +
-            $"fbz=0x{fbzMode:X8} colorPath=0x{fbzColorPath:X8} " +
+            $"fbz=0x{fbzMode:X8} colorPath=0x{fbzColorPath:X8} trex1=0x{trexInit1Tmu0:X8}/0x{trexInit1Tmu1:X8} " +
             $"tmu0={mode0:X8}/{lod0:X8}/{base0:X8}:lod{targetLod0}:iter{iterS0}/{iterT0}/{iterW0}:addr0x{address0:X6}:raw0x{raw0:X4}:rgba{local0.R:X2}{local0.G:X2}{local0.B:X2}{local0.A:X2} " +
             $"writer0={FormatTextureSampleWriterKey(writer0)} " +
             $"tmu1={mode1:X8}/{lod1:X8}/{base1:X8}:lod{targetLod1}:iter{iterS1}/{iterT1}/{iterW1}:addr0x{address1:X6}:raw0x{raw1:X4}:rgba{local1.R:X2}{local1.G:X2}{local1.B:X2}{local1.A:X2} " +
@@ -49319,6 +49326,8 @@ sampledTexel:
         }
         if (_textureSampleBaseBias != 0)
             baseAddress = (uint)((baseAddress + _textureSampleBaseBias) & (TextureBytes - 1));
+        if (tmu == 0 && _experimentTmu0TextureSampleBaseBias != 0)
+            baseAddress = (uint)((baseAddress + _experimentTmu0TextureSampleBaseBias) & (TextureBytes - 1));
         if (tmu == 1 && _experimentTmu1TextureSampleBaseBias != 0)
             baseAddress = (uint)((baseAddress + _experimentTmu1TextureSampleBaseBias) & (TextureBytes - 1));
 

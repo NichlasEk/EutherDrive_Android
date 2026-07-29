@@ -13565,10 +13565,9 @@ pump fastpath produced the identical f4340 hash and counters, so that
 hypothesis was retired and no control was retained.
 
 Focused Type3 field traces show correctly owned packets and plausible screen
-XY. They also expose a reference-parity difference: EutherDrive currently uses
-the packet's FBI `Wb` field as both TMU texture-Q values when explicit `W0/W1`
-fields are absent. MAME/3dfx setup keeps `Wb`, `W0` and `W1` separate. A new
-default-off bracket models that separation:
+XY. They initially raised a hypothesis that the packet's FBI `Wb` field should
+remain separate from TMU texture-Q when explicit `W0/W1` fields are absent. A
+new default-off bracket tests that separation:
 
 ```text
 EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_WB_TEXTURE_Q=1
@@ -13584,8 +13583,75 @@ framebuffer nonBlack=93749 colored=87221
 ```
 
 The result has smoother fills and new white texture bands, but the same wedge
-geometry. Keep the option diagnostic-only. The next narrow target is therefore
-the TMU fixed-fetch/combine state used by these correctly framed polygons,
-especially why large visible families sample zero or repeated rows; do not
-patch model vertices, suppress the legitimate clear, or replace strip/fan
-assembly.
+geometry. The later reference check below disproves the hypothesis: MAME
+initializes W0/W1 from Wb as baseline does. Keep the option diagnostic-only.
+The next narrow target is therefore the TMU fixed-fetch/combine state used by
+these correctly framed polygons, especially why large visible families sample
+zero or repeated rows; do not patch model vertices, suppress the legitimate
+clear, or replace strip/fan assembly.
+
+## 2026-07-29 - command-FIFO register masks and TMU0 page bracket
+
+`WriteRegister` already applied the Voodoo register-width table, but banked TMU
+writes decoded by `WriteCmdFifoRegister` reached `TryWriteTmuRegister` before
+that mask. The existing default-off
+`EUTHERDRIVE_GAUNTDL_FIX_VOODOO_REGISTER_WRITE_MASKS=1` path now applies the
+same mask before either banked or global command-FIFO register writes.
+
+A focused f4300-to-f4340 trace proves the behavioral correction:
+
+```text
+raw texBaseAddr=0xffffe000 -> banked value=0x0007e000
+raw texBaseAddr=0xfffff800 -> banked value=0x0007f800
+```
+
+The final output remains byte-identical to the default:
+
+```text
+frameHash=0xa76939e4
+PPM sha256=76f7b72e00746b37b7fd75041b28a982fd558490c9fb796d3699961ad58c50ed
+```
+
+This is expected under the current separate 4 MiB TMU banks: the old and
+masked base addresses alias after the bank mask. Keep the register-mask fix
+default-off until a longer clean-cold run validates all masked register
+classes; it is not the visible repair.
+
+The local MAME Voodoo 2 reference also corrects the previous Wb hypothesis:
+Type3 `Wb` initializes both `W0` and `W1`, then explicit W0/W1 fields override
+them. The accepted baseline behavior already matches that contract.
+`TYPE3_SEPARATE_WB_TEXTURE_Q` remains a negative diagnostic, not a parity fix.
+
+A two-TMU trace at logical pixel `(100,379)` identifies the brown wedge source:
+
+```text
+TMU0 mode/lod/base=80000009/00002104/ffffe000, LOD1
+     samples address 0x000009..0x00092b as zero
+TMU1 mode/lod/base=8c24110f/00002614/000a9b60, LOD6
+     samples address 0x563041..0x56304e as NCC brown
+trexInit1=0x0082a053, send-TMU-config bit 18 clear
+combined output=TMU1 brown
+```
+
+The f4320 raw TMU dump confirms that bank 0 is not globally empty: its first
+64 KiB contain 29,978 nonzero bytes, with the first nonzero texture word at
+`0x800`. A new default-off TMU0-only bracket isolates possible page
+displacement without moving TMU1:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TMU0_TEXTURE_SAMPLE_BASE_BIAS=<bytes>
+```
+
+Both plausible offsets are visibly negative while preserving the exact
+triangle workload (`393/188/205`, 719007 pixels):
+
+```text
+default: zero=426473 hash=0xa76939e4
++0x510:  zero=400761 hash=0xb2120fcb, adds a white panel wedge
++0x800:  zero=302364 hash=0x11c81aef, adds larger white/gray panel wedges
+```
+
+So this is not a missing constant fetch bias. The next boundary is the owner
+and upload lifetime of TMU0's wrapped LOD1 page near bank offset zero. Preserve
+TMU1 NCC decoding/combine, the Type3 vertices and the clean black clear while
+tracing which earlier Type5 upload should populate that page.
