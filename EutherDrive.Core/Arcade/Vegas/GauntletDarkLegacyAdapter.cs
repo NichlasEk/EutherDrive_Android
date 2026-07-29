@@ -801,6 +801,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeTextureExtentFastPath =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEXTURE_EXTENT");
     private readonly bool _enableFsysQioBringupRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_QIO_STATUS");
+    private readonly bool _enableFsysZeroLengthReadCompletion =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FSYS_ZERO_LENGTH_READ");
     private readonly bool _enableDcsBootCallbackRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_DCS_BOOT_CALLBACK");
     private readonly bool _enableSelftestLatchRepair = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_SELFTEST_LATCH");
     private readonly bool _enableRuntimeInterruptBridge =
@@ -2783,6 +2785,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeIdleRenderLoop(pc))
             return;
         if (TryFastPathKnownRuntimeQioErrorPollTail(pc))
+            return;
+        if (TryCompleteKnownRuntimeZeroLengthFsysRead(pc))
             return;
         if (TryRepairKnownDcsBootCallbackWait(pc))
             return;
@@ -13161,6 +13165,64 @@ internal sealed class MipsR5000Core
             Console.WriteLine(
                 $"[GAUNTDL:FSYS] repair-qio-status pc={pc:x16} object={fsysObject:x16} " +
                 $"status={status:x8}->{repaired:x8}");
+        }
+        return true;
+    }
+
+    private bool TryCompleteKnownRuntimeZeroLengthFsysRead(ulong pc)
+    {
+        const ulong entry = 0xffffffff800f252cUL;
+        const ulong wrapperReturn = 0xffffffff800f2b68UL;
+        if (!_enableFsysZeroLengthReadCompletion ||
+            pc != entry ||
+            _gpr[6] != 0 ||
+            _gpr[31] != wrapperReturn)
+        {
+            return false;
+        }
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffd0U ||
+            _memory.Read32(entry + 0x04UL) != 0xafb10014U ||
+            _memory.Read32(entry + 0x08UL) != 0x0080882dU ||
+            _memory.Read32(entry + 0x0cUL) != 0xafb60028U ||
+            _memory.Read32(entry + 0x10UL) != 0x00a0b02dU ||
+            _memory.Read32(entry + 0x14UL) != 0xafb50024U ||
+            _memory.Read32(entry + 0x18UL) != 0x00c0a82dU ||
+            _memory.Read32(entry + 0x2cUL) != 0x12200003U ||
+            _memory.Read32(entry + 0x34UL) != 0x06a10003U)
+        {
+            return false;
+        }
+
+        ulong handle = _gpr[4];
+        ulong destination = _gpr[5];
+        ulong callbackWork = _gpr[7];
+        if (!IsMainRamRange(handle, 0x40UL) ||
+            !IsMainRamRange(destination, 1UL) ||
+            !IsMainRamRange(callbackWork, 0xc4UL) ||
+            _memory.Read32(callbackWork + 0xbcUL) != 0x800f2160U)
+        {
+            return false;
+        }
+
+        ulong descriptor = SignExtend32(_memory.Read32(callbackWork + 0xc0UL));
+        if (!IsMainRamRange(descriptor, 0x20UL) ||
+            _memory.Read32(descriptor + 0x0cUL) == 0)
+        {
+            return false;
+        }
+
+        const uint successStatus = 0x0200U;
+        _gpr[2] = successStatus;
+        _gpr[0] = 0;
+        Pc = wrapperReturn;
+        CompleteFastPathStep();
+        if (_traceRd0Home && _bootCountDelayTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FSYS] zero-length-read-complete pc={pc:x16} " +
+                $"handle={handle:x16} descriptor={descriptor:x16} destination={destination:x16} " +
+                $"status={successStatus:x8}");
         }
         return true;
     }

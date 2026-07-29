@@ -232,21 +232,24 @@ static void ApplyRequestedGuestMemoryWordPatch(GauntletDarkLegacyAdapter adapter
     if (string.IsNullOrWhiteSpace(raw))
         return;
 
-    string[] parts = raw.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    if (parts.Length != 2 ||
-        !TryParseHexUlong(parts[0], out ulong address) ||
-        !TryParseHexUlong(parts[1], out ulong value) ||
-        value > uint.MaxValue)
-    {
-        throw new InvalidDataException(
-            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_GUEST_MEMORY_WORD_PATCH must be address:value in hex");
-    }
-
     object memory = GetProperty(GetField(adapter, "_machine"), "MemoryMap");
     MethodInfo write32 = memory.GetType().GetMethod("Write32", BindingFlags.Instance | BindingFlags.Public)
         ?? throw new MissingMethodException(memory.GetType().FullName, "Write32");
-    write32.Invoke(memory, new object[] { address, (uint)value });
-    Console.WriteLine($"guestMemoryWordPatch address=0x{address:x16} value=0x{value:x8}");
+    foreach (string item in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        string[] parts = item.Split(':', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length != 2 ||
+            !TryParseHexUlong(parts[0], out ulong address) ||
+            !TryParseHexUlong(parts[1], out ulong value) ||
+            value > uint.MaxValue)
+        {
+            throw new InvalidDataException(
+                "EUTHERDRIVE_GAUNTDL_EXPERIMENT_GUEST_MEMORY_WORD_PATCH must be one or more comma-separated address:value pairs in hex");
+        }
+
+        write32.Invoke(memory, new object[] { address, (uint)value });
+        Console.WriteLine($"guestMemoryWordPatch address=0x{address:x16} value=0x{value:x8}");
+    }
 }
 
 static void ApplyRequestedGuestMemoryFilePatch(GauntletDarkLegacyAdapter adapter)

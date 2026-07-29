@@ -14250,3 +14250,64 @@ The reusable post-edge continuation checkpoint is currently
 menu/exit lifecycle after accepting FIRE3; its clock and fade values continue
 to advance. The next investigation should compare that long lifecycle with
 MAME rather than patching the state.
+
+### Level loader type-4 zero-length QIO completion
+
+The later level-loader checkpoint
+`/tmp/gaunt-f6500-extra25m-level-loader.warm` reaches main state `0x8004`
+and loader state 11 while opening `/d0/monsters/zom2/objects.rom`. Its FSYS
+directory record is a valid fragmented type-4 record: record `+0` is zero
+because there is no contiguous disk base, while `+4=0x27558` is the file
+size. Shifting that record or treating `+4` as a misplaced disk base is
+incorrect.
+
+The actual loop was caused by a zero-byte read submitted by the level
+scheduler. Entries 10 through 13 of the request-length table at `0x802549a0`
+are intentionally zero and share destination `0x8059e508`. Guest FSYS entry
+`0x800f252c` nevertheless allocated a fragmented-file work item, which
+completed with `0x0500`; the QIO completion callback then resubmitted the
+same request indefinitely.
+
+`EUTHERDRIVE_GAUNTDL_FIX_FSYS_ZERO_LENGTH_READ=1` now gives that entry normal
+zero-byte read semantics. It returns the synchronous success status
+`0x0200` before allocating fragmented work. The repair is guarded by the
+exact function signature, zero request length, wrapper return address,
+mapped handle/destination, callback work object, callback `0x800f2160`, and
+a live descriptor with nonzero file size. It is enabled by the baseline
+bringup preset and can be explicitly disabled with `=0`.
+
+The short A/B from the identical f6500 snapshot is decisive:
+
+```text
+disabled, +100000 CPU steps:
+  drawPackets=614625 swaps=4864 frameHash=0xb928a63e
+  descriptor position=0x20 file offset=0x6400
+
+enabled, +500000 CPU steps:
+  QIO callback state=2
+  drawPackets=615388 swaps=4864 frameHash=0x859e1735
+  descriptor position=0x21 file offset=0x6480
+```
+
+A 50-frame continuation then proved that this is real I/O progress rather
+than another error exit:
+
+```text
+zero-length completions=2
+IDE DMA read LBA 543757, 512 bytes
+IDE DMA read LBA 543410, 512 bytes
+f6550 drawPackets=629266 swaps=4920 frameHash=0x39a3c15a
+final IDE transfer=0/0, interruptPending=0, Nile pending=0
+```
+
+The reusable continuation checkpoint is:
+
+```text
+/tmp/gaunt-f6550-fsys-zero-read.warm
+```
+
+Loader state is still 11 at f6550, but the descriptor has advanced to the
+next resource (`size=0x2b354`, position `0x21`, file offset `0x6580`) and
+rendering plus real disk traffic continue. Continue naturally from this
+checkpoint until state 11 completes; do not restore the rejected record
+shift or substitute a fabricated nonzero request length.
