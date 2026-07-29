@@ -5834,3 +5834,52 @@ artifacts/gauntlet-probe/gaunt-f4225-fbi3-clean-60k-current-v14.warm
 /tmp/gaunt-f3690-f3704-plus1m-fbi3-clean-current.log
 /tmp/gaunt-f4080-f4225-fbi3-clean-60k-current.log
 ```
+
+#### Warm-state-replay kräver baseline-presettet
+
+En direkt replay av f4225 utan baseline-presettet såg först ut att ha fastnat:
+175 tomma VBlank och 20 miljoner extra CPU-steg gav inga nya FIFO- eller
+draw-paket. CPU:n låg i IRQ-dispatchern `0x800de8e0..0x800dea10` med:
+
+```text
+status=0x34007f00
+cause=0x00008800
+epc=0x800bbc34
+nileState=0x0020
+nilePins=0x02
+```
+
+Det var inte ett nytt gästfel. Warm-state serialiserar maskinstate men inte
+processens env-konfiguration. Replayen saknade
+`EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1` och körde därför inte samma
+signaturvaktade bringup-fixar som staten skapades med.
+
+En default-off bred IRQ-suppress-A/B bekräftade varför IRQ:n inte ska forceras:
+den återstartade draw inom 100 000 steg men återgick till en gammal fysisk
+FIFO-generation. Första felaktiga paketet var Type4 `0x3bf2ac0c` vid
+FIFO-offset `0x000232e8`; det skrev `fbiInit3=0x38000000` vid gäst-PC
+`0x800c5bd0`. Suppressorn ska förbli av.
+
+Samma f4225-state med baseline-presettet fortsätter omedelbart och rent:
+
+```text
+f4225 Type3=508177 LFB=297480631 fbiInit3=0x00110001
+f4226 Type3=508205 LFB=297788121 frameHash=0xd855450a
+f4227 Type3=508244 LFB=297843859 frameHash=0x3e39c862
+f4230 Type3=508385 LFB=297848935 frameHash=0xdaf80748
+f4230 fbiInit3=0x00110001
+```
+
+CPU-watch-raden visar nu även CP0 status/cause/EPC och Nile-källstatus, så en
+framtida riktig IRQ-stall kan skiljas från en replay-konfigurationsmiss utan
+att aktivera en suppressor.
+
+Reproducerbara filer:
+
+```text
+artifacts/gauntlet-probe/gaunt-f4230-fbi3-clean-baseline-20260729.png
+sha256=1ac564bab00e42cb9b83867c59c161b9155cb8ca56872cd48bdd67f8c6de5df6
+/tmp/gaunt-f4225-f4230-baseline.log
+/tmp/gaunt-f4230-fbi3-clean-baseline-v14.warm
+sha256=c3f40b1c4d484b988dd2fb02f8b0c1cb3c023b10ffc4a15b7b997349454f0714
+```

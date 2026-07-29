@@ -28785,7 +28785,9 @@ internal sealed class MipsR5000Core
             $"pc={pc:x16} op={op:x8} {DisassembleBrief(op)} " +
             $"ra={_gpr[31]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
             $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} " +
-            $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} sp={_gpr[29]:x16} stack10={stackArguments}");
+            $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} sp={_gpr[29]:x16} " +
+            $"status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} " +
+            $"{_memory.GetNileInterruptDebugStatus()} stack10={stackArguments}");
     }
 
     private bool ShouldTrace(ulong pc)
