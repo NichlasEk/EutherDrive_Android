@@ -14457,3 +14457,57 @@ Reusable continuation:
 The native input-poll probe was not an oracle for this mapping: every tested
 control produced the same historical `0x0800` event. Use the runtime bridge
 trace and guest input record above as the validation evidence.
+
+#### Stable diagnostic exits reach a fresh state-8007 loader
+
+A second FIRE3 edge after the state-`0x8008` counter had reached 18 now exits
+the diagnostic world page naturally. From the f7000 checkpoint:
+
+```text
+f7020 main state=0x8002 latch=0 hash=0xbd58cd78
+f7040 main state=0x8002 latch=0 hash=0x3b35c0d2
+```
+
+The f7040 framebuffer is recognizable warning/front-end art rather than the
+old diagnostic world page. It contains a large `WARNING` graphic and character
+art; horizontal texture bands are still wrong. During this phase the guest
+loads `players/dwf/sfxgre` and `levels/levelF1`.
+
+A fresh, separate FIRE3 edge from f7040 starts the next native transition.
+The intermediate state is `0x8007` with the exit latch still set while the
+guest loads `font_story`, `movies/movie_sor`, player audio, and level assets:
+
+```text
+f7060 main state=0x8007 latch=1 hash=0xe095954f
+f7080 main state=0x8007 latch=1 hash=0xe095954f
+f7100 main state=0x8007 latch=1 hash=0xe095954f
+```
+
+This apparent render pause is active CPU-side asset work. A five-million
+instruction micro-window from f7100 makes the handler return and establishes
+the next loader cleanly:
+
+```text
+main state       = 0x8007
+exit latch       = 0
+load complete    = 0
+loader state     = 1
+frame hash       = 0x11878b29
+new Type3 draws  = 5084
+```
+
+The resulting framebuffer contains a large `Gauntlet Legends` logo and real
+menu/glyph resources, although the font surface repeats in horizontal bands.
+This proves that state `0x8007` is not stuck on the old latch or an idle
+renderer. Continue its real loader from the final checkpoint; do not add an
+`0x8005` state patch or send another input edge before load-complete:
+
+```text
+/tmp/gaunt-f7040-post-diagnostic.warm
+/tmp/gaunt-f7060-state8005.warm
+/tmp/gaunt-f7080-post-warning-transition.warm
+/tmp/gaunt-f7100-state8007.warm
+/tmp/gaunt-f7100-plus5m-state8007.warm
+/tmp/gaunt-f7040-post-diagnostic.png
+/tmp/gaunt-f7100-plus5m-state8007.png
+```
