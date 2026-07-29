@@ -759,6 +759,9 @@ internal sealed class MipsR5000Core
     private int _traceWatchPcCount;
     private int _traceRuntimeVertexFifoPackerCount;
     private int _traceRuntimeModelVertexIndexCount;
+    private bool _traceRuntimeModelVertexSequenceActive;
+    private uint _traceRuntimeModelVertexSequenceRaw;
+    private ulong _traceRuntimeModelVertexSequenceStream;
     private bool _traceRuntimeVertexFifoPackerActive;
     private int _traceRuntimeVertexFifoPackerVertexIndex;
     private int _traceRuntimeVertexFifoPackerVertexCount;
@@ -28888,11 +28891,33 @@ internal sealed class MipsR5000Core
     private void TraceRuntimeModelVertexIndex(ulong pc)
     {
         if (!_traceRuntimeModelVertexIndex ||
-            _traceRuntimeModelVertexIndexCount >= _traceRuntimeModelVertexIndexLimit ||
-            (pc & 0x1fffffffUL) != 0x000ba37cUL)
+            _traceRuntimeModelVertexIndexCount >= _traceRuntimeModelVertexIndexLimit)
         {
             return;
         }
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        if (_traceRuntimeModelVertexSequenceActive)
+        {
+            string? stage = physicalPc switch
+            {
+                0x000bbe80UL => "clip-input",
+                0x000bc4a0UL => "clip-setup",
+                0x000bc85cUL => "scratch-list",
+                0x000bcfc0UL => "render-record",
+                0x000ba43cUL => "complete",
+                _ => null
+            };
+            if (stage is not null)
+            {
+                TraceRuntimeModelVertexStage(pc, stage);
+                if (physicalPc == 0x000ba43cUL)
+                    _traceRuntimeModelVertexSequenceActive = false;
+            }
+        }
+
+        if (physicalPc != 0x000ba37cUL)
+            return;
 
         uint index = (uint)_gpr[2] & 0x7fu;
         if (_traceRuntimeModelVertexIndices.Length > 0 &&
@@ -28916,6 +28941,9 @@ internal sealed class MipsR5000Core
             : "unmapped";
 
         _traceRuntimeModelVertexIndexCount++;
+        _traceRuntimeModelVertexSequenceRaw = raw;
+        _traceRuntimeModelVertexSequenceStream = stream;
+        _traceRuntimeModelVertexSequenceActive = true;
         Console.WriteLine(
             $"[GAUNTDL:MODEL-VERTEX-INDEX] n={_traceRuntimeModelVertexIndexCount} " +
             $"frame={_memory.VoodooRenderFrameCount} pc=0x{pc:x16} " +
@@ -28923,6 +28951,31 @@ internal sealed class MipsR5000Core
             $"index=0x{index:x2} control=0x{controlClass:x3} context=0x{context:x16} " +
             $"table=0x{tableEntry:x16}:{tableWords} " +
             $"ra=0x{_gpr[31]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16}");
+    }
+
+    private void TraceRuntimeModelVertexStage(ulong pc, string stage)
+    {
+        ulong context = _gpr[16];
+        string contextWords = IsMainRamRange(context + 0x80UL, 0xa0UL)
+            ? FormatTraceWords(context + 0x80UL, 40)
+            : "unmapped";
+        const ulong ScratchBase = 0xffffffff80216988UL;
+        const ulong ScratchList = 0xffffffff80216ec8UL;
+        string scratchWords = IsMainRamRange(ScratchBase, 0x180UL)
+            ? FormatTraceWords(ScratchBase, 96)
+            : "unmapped";
+        string listWords = IsMainRamRange(ScratchList, 0x40UL)
+            ? FormatTraceWords(ScratchList, 16)
+            : "unmapped";
+
+        _traceRuntimeModelVertexIndexCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:MODEL-VERTEX-STAGE] n={_traceRuntimeModelVertexIndexCount} " +
+            $"stage={stage} frame={_memory.VoodooRenderFrameCount} pc=0x{pc:x16} " +
+            $"stream=0x{_traceRuntimeModelVertexSequenceStream:x16} raw=0x{_traceRuntimeModelVertexSequenceRaw:x4} " +
+            $"context=0x{context:x16}:{contextWords} scratch=0x{ScratchBase:x16}:{scratchWords} " +
+            $"list=0x{ScratchList:x16}:{listWords} ra=0x{_gpr[31]:x16} " +
+            $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16}");
     }
 
     private void TraceRuntimeVertexFifoPackerPayload(ulong pc)

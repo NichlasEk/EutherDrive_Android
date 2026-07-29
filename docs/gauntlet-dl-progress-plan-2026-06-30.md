@@ -9070,6 +9070,50 @@ Continue inside the guest's `0x180` clip/setup call chain. Correlate the two
 raw forms (`0x41ed` and `0xc1ed`) with the generated scratch-list length and
 the synthetic center vertices before changing Voodoo raster behavior.
 
+#### `0x180` stage replay closes the missing-vertex hypothesis
+
+The model-index probe now stays armed through the matching guest call chain
+and records these stages:
+
+```text
+clip-input   0x800bbe80
+clip-setup   0x800bc4a0
+scratch-list 0x800bc85c
+render-record 0x800bcfc0
+complete     0x800ba43c
+```
+
+Each stage includes context `+0x80..+0x11f`, the scratch vertex block at
+`0x80216988`, and the pointer list at `0x80216ec8`. The corrected completion
+PC is `0x800ba43c`; `0x800ba438` is the delay slot before the render-record
+call.
+
+The f4240-to-f4260 replay proves the two raw forms are deliberately different:
+
+```text
+raw 0x41ed:
+  context index/control = 0x6d/0x20
+  render-record writes index 0x6d and control 0x20 into scratch 0x802169c8
+  geometry copied from table entry 0x80214728 remains zero
+
+raw 0xc1ed:
+  context index/control = 0x6d/0x60
+  render-record writes index 0x6d and control 0x60 into scratch 0x80216a48
+  the special callback supplies the corresponding clipped/sentinel values
+```
+
+The pointer-list mutations are also deterministic, and the replay retains
+`frameHash=0x345a2b10`. The zero record is therefore constructed by the guest's
+normal render-record path after decoding an explicit clip control class. Its
+screen-center projection and the paired sentinel record are not evidence that
+vertex 109 failed to load.
+
+Do not patch table entry `0x80214728`, clamp the paired q values, or suppress
+this Type3 packet. The next useful visual pass must identify the actual
+triangles that write the wrong visible pixels, then correlate those triangles
+back to their Type3 packet and source list. Keep the model-stage probe for
+provenance, but retire the missing-vertex hypothesis.
+
 ## Broad writer family and layout probes - 2026-07-07
 
 The current f300 WTR visual oracle must include the baseline boot controls.
