@@ -13763,3 +13763,60 @@ geometry in the diagnostic block. The text polygons remain badly malformed,
 so this corrects string propagation rather than the outstanding geometry.
 Keep the experiment default-off while isolating the render-record/body or
 glyph-coordinate path responsible for the wedge and repeated-row output.
+
+## 2026-07-29 - glyph Type3 header ownership repair
+
+The corrected diagnostic strings exposed a second independent command-FIFO
+ownership failure. Every glyph is submitted as two complete 19-word Type3
+triangles by producer `0x800c4e5c`, with calls returning to `0x800b0d14` and
+`0x800b0d28`. Baseline executed only the second triangle. A centered FIFO dump
+at the first packet proved why:
+
+```text
+0545e534 header=0180a8cb valid=0 t4Body=1
+0545e538..0545e57c body valid=1 (18 orphaned words)
+0545e580 header=0180a8cb valid=0
+```
+
+The Type4 producer-body protection had stale ownership at the boundary and
+classified the first legitimate Type3 header as its final body word. Its
+default-on advance path therefore consumed only that header and left the
+correctly owned Type3 body behind.
+
+A new exact default-off experiment lets a plausible Type3 header from the
+known glyph producer terminate stale Type4-body ownership and start Type3
+ownership:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE4_BODY_YIELD_TO_GLYPH_TYPE3_HEADER=1
+```
+
+The f4390-to-f4391 replay then consumes both complete packets:
+
+```text
+0545e534 header valid=0 t3Body=0 t4Body=0
+0545e538..0545e57c body valid=0 t3Body=1
+0545e580 header valid=0
+0545e584..0545e5c8 body valid=0 t3Body=1
+```
+
+Its raster result is the exact expected doubling:
+
+```text
+baseline:   textured=46 covered=46 pixels=1656 hash=0xb8ebd29d
+experiment: textured=92 covered=92 pixels=3312 hash=0xda4be18e
+framebuffer nonBlack=67672 colored=43934
+PPM sha256=5f13b153ca350b939060c08ccacd3a763aa80c3e396eb999b346681276fe0c15
+```
+
+Visual inspection now shows real readable diagnostic text, including
+`Magic 3: hide menu text` and `Turbo 3: darken`, rather than isolated
+half-glyph triangles. This is a positive FIFO ownership correction. Keep it
+default-off for the next longer replay, then consider adding it to the
+baseline preset together with the texture-state tail and literal-destination
+repairs once their combined clean-cold behavior is stable.
+
+`GauntletProbe` now accepts
+`EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_CMD_FIFO_CENTER=<logical byte address>` with
+the existing FIFO-window dump, allowing consumed historical packet boundaries
+to be inspected instead of only the final read pointer.

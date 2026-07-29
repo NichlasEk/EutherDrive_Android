@@ -2325,11 +2325,18 @@ static void DumpRequestedCommandFifoWindow(object facade)
     bool[] type5Body = GetFieldValue<bool[]>(backend, "_cmdFifoStorageType5Body");
     int[] type5End = GetFieldValue<int[]>(backend, "_cmdFifoStorageType5PacketEnd");
     int read = GetFieldValue<int>(backend, "_cmdFifoReadIndex");
-    int readStorage = GetCommandFifoReadStorageIndex(backend, read);
-    Console.WriteLine($"cmdFifoWindow read=0x{read * 4:x8} storage=0x{readStorage * 4:x5}");
+    ulong? requestedCenter = ParseOptionalHexUlong(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_CMD_FIFO_CENTER"));
+    int center = requestedCenter.HasValue
+        ? checked((int)(requestedCenter.Value / 4UL))
+        : read;
+    int centerStorage = GetCommandFifoReadStorageIndex(backend, center);
+    Console.WriteLine(
+        $"cmdFifoWindow read=0x{read * 4:x8} center=0x{center * 4:x8} " +
+        $"storage=0x{centerStorage * 4:x5}");
     for (int offset = -24; offset <= 48; offset++)
     {
-        int index = read + offset;
+        int index = center + offset;
         int storage = GetCommandFifoReadStorageIndex(backend, index);
         Console.WriteLine(
             $" fifo[{offset,3}] logical=0x{index * 4:x8} storage=0x{storage * 4:x5} " +

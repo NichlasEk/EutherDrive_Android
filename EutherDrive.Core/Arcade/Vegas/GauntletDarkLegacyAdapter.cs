@@ -35954,6 +35954,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER"));
     private readonly ulong[] _experimentCommandFifoType4ProducerHeaderPcs =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE4_PRODUCER_HEADER_PCS"));
+    private readonly bool _experimentCommandFifoType4BodyYieldToGlyphType3Header =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE4_BODY_YIELD_TO_GLYPH_TYPE3_HEADER"));
     private readonly bool _experimentCommandFifoAdvanceTextureStateBuilderTail =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TEXTURE_STATE_BUILDER_TAIL"));
     private readonly bool _experimentCommandFifoGateType5ProducerBodyHeader =
@@ -37239,6 +37241,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool explicitHeaderPc = _experimentCommandFifoType3ProducerHeaderPcs.Length == 0 ||
                                 _experimentCommandFifoType3ProducerHeaderPcs.Any(
                                     candidate => (candidate & 0xffffffffUL) == (writePc & 0xffffffffUL));
+        if (_experimentCommandFifoType4BodyYieldToGlyphType3Header &&
+            (writePc & 0xffffffffUL) == 0x800c4e5cUL)
+        {
+            explicitHeaderPc = true;
+        }
         bool resyncHeader = type3Header && explicitHeaderPc;
         bool body = _cmdFifoType3ProducerBodyWordsRemaining > 0 &&
                     IsCommandFifoStorageInCircularRange(
@@ -37350,6 +37357,12 @@ internal class VoodooBringupBackend : IVoodooBackend
                                 _experimentCommandFifoType4ProducerHeaderPcs.Any(
                                     candidate => (candidate & 0xffffffffUL) == (writePc & 0xffffffffUL));
         bool resyncHeader = type4Header && explicitHeaderPc;
+        bool glyphType3Header =
+            _experimentCommandFifoType4BodyYieldToGlyphType3Header &&
+            (value & 7u) == 3u &&
+            ((value >> 3) & 7u) <= 2u &&
+            ((value >> 6) & 0x0fu) > 0u &&
+            (writePc & 0xffffffffUL) == 0x800c4e5cUL;
         bool body = normalized == _cmdFifoType4ProducerNextStorageIndex &&
                     _cmdFifoType4ProducerBodyWordsRemaining > 0;
         if (resyncHeader)
@@ -37357,6 +37370,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             _cmdFifoStorageType4Body[normalized] = false;
             _cmdFifoType4ProducerBodyWordsRemaining = GetFifoPacketWordsNeeded(value) - 1;
             _cmdFifoType4ProducerPacketEnd = CommandFifoStorageIndex(normalized + _cmdFifoType4ProducerBodyWordsRemaining);
+        }
+        else if (glyphType3Header)
+        {
+            _cmdFifoStorageType4Body[normalized] = false;
+            _cmdFifoType4ProducerBodyWordsRemaining = 0;
         }
         else if (body)
         {
