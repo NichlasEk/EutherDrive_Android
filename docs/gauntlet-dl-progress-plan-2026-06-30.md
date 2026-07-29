@@ -14527,6 +14527,8 @@ window    loader state    main state    latch    complete    frame hash
 +40M      11              0x8007        0        0           0x08488c31
 +50M      12              0x8007        0        0           0x1ea712bb
 +60M      12              0x8007        0        0           0xb5ed2c69
++70M      41              0x8007        0        0           0xb1939baa
++80M      -1              0x8007        0        1           0x1ea712bb
 ```
 
 State 11 is active rather than wedged. Between +30M and +40M the probe reaches
@@ -14540,6 +14542,18 @@ The following +10M window remains in state 12 while advancing to 810229 Type3
 packets, 469191891 LFB writes, and 7079418 texture writes, so state 12 is also
 active rather than a new wait loop.
 
+At +70M the loader reaches native state 41 with 824764 Type3 packets,
+490334347 LFB writes, and 10600 swaps. This is the late level-builder state
+also observed in the older natural path after states 34 and 40. The main
+state, latch, and completion flag remain valid while that final builder work
+continues.
+
+At +80M the loader finishes naturally: its word is `0xffffffff` and
+load-complete is 1. The final interval reaches 836060 Type3 packets,
+505529131 LFB writes, 7216596 texture writes, and 10620 swaps. Main state
+remains `0x8007` at the CPU-window boundary, so the next check is ordinary
+VBlank/frame continuation before applying a new FIRE3 edge.
+
 Continue from the latest snapshot until the loader reaches its next stable
 state or sets load-complete. Do not restore the rejected state/latch patches
 and do not inject FIRE3 while load-complete is zero:
@@ -14552,4 +14566,82 @@ and do not inject FIRE3 while load-complete is zero:
 /tmp/gaunt-f7100-plus40m-state8007.warm
 /tmp/gaunt-f7100-plus50m-state8007.warm
 /tmp/gaunt-f7100-plus60m-state8007.warm
+/tmp/gaunt-f7100-plus70m-state8007.warm
+/tmp/gaunt-f7100-plus80m-state8007.warm
+```
+
+Twenty ordinary frames after load completion keep the finished loader stable
+and continue rendering:
+
+```text
+f7120 loader=-1 complete=1 main=0x8007 latch=0 hash=0x7be90dee
+```
+
+A fresh four-frame FIRE3/Turbo edge at f7121--f7124 then reaches the guest
+input record as `0x0800` and performs the expected native transition:
+
+```text
+f7140 loader=-1 complete=1 main=0x8008 latch=1 hash=0x43ce6e02
+```
+
+This is the first fully natural traversal of the new f7000 diagnostic-exit
+path through the complete state-8007 asset loader and back into state 8008.
+Continue without input until the state-8008 owner consumes the latch and
+publishes its world frame:
+
+```text
+/tmp/gaunt-f7120-post-loadcomplete.warm
+/tmp/gaunt-f7140-post-loadcomplete-fire3.warm
+```
+
+The new state-8008 owner then performs a substantial world rebuild while
+keeping the exit latch set:
+
+```text
+f7160 main=0x8008 latch=1 texWrites=7225870 hash=0x43ce6e02
+f7180 main=0x8008 latch=1 texWrites=7426047 hash=0x43ce6e02
+```
+
+The visible f7160/f7180 buffer is still the horizontally corrupted diagnostic
+and object-text surface, but the guest is not idle. It allocates world records,
+looks up model strings, and loads `items/levelG`, `powerups`, and
+`items/levelF`; the f7180 interval alone touches 199931 texture addresses.
+Continue this owner without another input edge until it consumes the latch and
+publishes the newly built world:
+
+```text
+/tmp/gaunt-f7160-state8008.warm
+/tmp/gaunt-f7180-state8008.warm
+/tmp/gaunt-f7160-state8008.png
+```
+
+At f7220 the owner still has `main=0x8008`, `latch=1`, and
+`load-complete=1`. It has stopped emitting new draw or texture packets after
+finishing the large upload, but continues substantial CPU-side model work.
+A filtered five-frame write watch through f7225 records no write at all to
+either `0x80227ab0` or `0x80227ec8`; the latch is therefore not being
+rewritten with the wrong value.
+
+Disassembly identifies the native latch-clear store:
+
+```text
+0x80082a18  sw zero,0x7ec8(v0)
+```
+
+It is unconditional near the end of the function beginning at `0x80082964`.
+Its caller at `0x80082270` first compares the globals at `0x8015d458` and
+`0x8015d468`. At f7225 those are `0x00000700` and `0xffffffff`, so the caller
+would invoke the clear function if reached. A one-frame PC filter confirms
+that the dispatcher region `0x800821e0..0x800822b0` is not visited; current
+execution remains in the long world-builder call stack around `0x80077xxx`.
+
+The next causal probe should continue CPU execution with a stop-PC at
+`0x80082270`. Do not patch the latch: its native clear condition is already
+satisfied and the remaining question is when the builder returns to its
+dispatcher.
+
+```text
+/tmp/gaunt-f7220-state8008.warm
+/tmp/gaunt-f7225-state-latch-trace.warm
+/tmp/gaunt-f7225-mainram.bin
 ```
