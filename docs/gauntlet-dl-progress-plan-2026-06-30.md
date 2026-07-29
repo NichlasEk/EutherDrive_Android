@@ -14071,3 +14071,55 @@ discard diagnostic-only. The next trace should compare the descriptor,
 coordinates and texture state entering `0x800c4e5c` for a normal readable
 glyph pair versus one of the giant red pairs; do not suppress the shared
 producer or alter Voodoo setup decoding.
+
+#### Correction: the red owner is a coherent TMU1 fullscreen surface
+
+A direct Type3 read-index trace of the pixel-owner packet corrected the
+earlier glyph interpretation. Packet `0x059d3658` is an intentional
+fullscreen quad, not a giant glyph:
+
+```text
+xy = (512,383)/(0,-1)/(512,-1)
+st = (256,0)/(0,256)/(256,256)
+tmu0 = 80000009/FF802000/00000000
+tmu1 = 8C241ACF/06002000/0008D01E
+```
+
+At `(350,200)`, the two-TMU trace samples TMU1 byte address `0x47744c` as
+RGB565 `0x944f` and produces local/combined color `0x92897bff`; TMU0 is the
+neutral zero source. A raw RGB565 decode from TMU1 base `0x4680f0` is a
+coherent `256x256` copy of the exact red ring/gradient image displayed by the
+quad. The guest then animates that same surface naturally: from f4800 to
+f4900 the ring changes orientation while the diagnostic text stays fixed,
+with hashes changing every checkpoint and Type3/Type5/LFB work continuing.
+The surface is real rendered guest content, not bad geometry, a damaged
+glyph atlas, or a display-buffer fault.
+
+The unchanged swap count `3820` is specific to this diagnostic page, not a
+renderer hang. State remains `0x8002` through f4900 and the visible page still
+says `Exit menu (FIRE 3)`.
+
+### State 0x8002 diagnostic exit promoted
+
+A real four-frame FIRE3/Turbo pulse initially had no effect because the
+strict diagnostic-exit bridge covered `0x8000`, `0x8007`, and `0x8008`, but
+not `0x8002`. A one-word latch oracle at `0x80227ec8=1` from the identical
+f4800 snapshot restarted swaps and advanced naturally:
+
+```text
+f4812 swaps=3860
+f4820 swaps=3876
+f4820 main state=0x8005
+f4820 frameHash=0x30e41dc5
+```
+
+The bridge now includes `0x8002`. After rebuilding, the same real FIRE3 pulse
+reproduces every checkpoint and the oracle PPM byte-for-byte:
+
+```text
+sha256=a6087ec5178c7619d8136de2aa159dde7161d56f9e4c3b899b7165935d0353d8
+```
+
+The f4820 image is a clean black transition frame. Continue naturally through
+state `0x8005`; do not discard the fullscreen Type3 family or rewrite its
+coherent TMU1 surface.
