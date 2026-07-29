@@ -13711,3 +13711,55 @@ geometry remains malformed. This is a positive FIFO ownership correction, not
 the final raster fix. Keep it default-off until it survives a longer replay;
 the next useful boundary is why the otherwise stable Type3 families still
 produce the wedge geometry after the bogus texture-state writes are removed.
+
+## 2026-07-29 - diagnostic literal destination correction
+
+The longer f4320-to-f4400 replay with the texture-state tail experiment reaches
+Gauntlet's real `DIAGNOSTIC MENU`. A focused CPU trace at its line-builder
+wrapper exposed an independent runtime fastpath error. At entry to
+`0x80121670`, literal lines use:
+
+```text
+a0=807ffdd0  destination scratch buffer
+a1=<literal string>
+a2=807ffe34
+a3=ffffffff
+```
+
+The old fastpath copied the literal into fallback global address `802944c0`,
+then explicitly zeroed the real `a0` destination. The immediately following
+runtime string copy consequently observed `src=807ffdd0 len=0`. Formatted
+lines, which pass through the separate `0x80120204` formatter, already wrote
+to `807ffdd0` and propagated correctly.
+
+A new default-off experiment makes the literal wrapper honor its recovered
+destination argument and avoids clearing it:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_LITERAL_DESTINATION=1
+```
+
+The corrected f4390/f4394 traces now show:
+
+```text
+"DIAGNOSTIC MENU"     dst=807ffdd0 -> 8020f268 len=15
+"Exit menu (FIRE 3)" dst=807ffdd0 -> 8020f278 len=18
+```
+
+All subsequent formatted lines retain their correct nonzero lengths and move
+to the consecutive destination records beginning at `8020f28b`. At f4390:
+
+```text
+frameHash=0x52c79135
+framebuffer nonBlack=67486 colored=42903 white=24207
+PPM sha256=cb93e5b37504a8c61c0beb12779b34e3e0f024404f019f4332db604599a16d4
+```
+
+At f4394 the two literal lines are rebuilt with the same destinations and
+lengths; its PPM SHA-256 is
+`e485e548e32f0f448e1c1a446d3dd32e8e156ccf97b1d7ea1aab498e8c8571e1`.
+Visual inspection shows stable readable `CREDITS` and additional glyph
+geometry in the diagnostic block. The text polygons remain badly malformed,
+so this corrects string propagation rather than the outstanding geometry.
+Keep the experiment default-off while isolating the render-record/body or
+glyph-coordinate path responsible for the wedge and repeated-row output.

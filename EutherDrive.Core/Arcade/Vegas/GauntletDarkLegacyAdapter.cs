@@ -807,6 +807,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_FORMAT_BUFFER_INFLIGHT");
     private readonly bool _enableRuntimeFormatAccelerators =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_FORMAT_ACCELERATORS");
+    private readonly bool _experimentRuntimeDiagnosticLiteralDestination =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_LITERAL_DESTINATION"));
     private readonly bool _enableRuntimeStackRecordCopyFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STACK_RECORD_COPY");
     private readonly bool _enableRuntimeRenderRecordSkipFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP");
     private readonly bool _enableRuntimeByteMoveFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE");
@@ -19172,8 +19174,11 @@ internal sealed class MipsR5000Core
             destination = SignExtend32(_memory.Read32(sp + 0x10UL));
         }
 
+        ulong literalDestination = _experimentRuntimeDiagnosticLiteralDestination
+            ? destination
+            : globalDestination;
         if (!IsMainRamRange(format, 1UL) ||
-            !IsMainRamRange(globalDestination, 1UL))
+            !IsMainRamRange(literalDestination, 1UL))
         {
             return false;
         }
@@ -19191,16 +19196,19 @@ internal sealed class MipsR5000Core
 
         if (length == 0x100U ||
             !IsMainRamRange(format + length, 1UL) ||
-            !IsMainRamRange(globalDestination, length + 1UL))
+            !IsMainRamRange(literalDestination, length + 1UL))
         {
             return false;
         }
 
         for (uint offset = 0; offset < length; offset++)
-            _memory.Write8(globalDestination + offset, _memory.Read8(format + offset));
-        _memory.Write8(globalDestination + length, 0);
-        if (IsMainRamRange(destination, 1UL))
+            _memory.Write8(literalDestination + offset, _memory.Read8(format + offset));
+        _memory.Write8(literalDestination + length, 0);
+        if (!_experimentRuntimeDiagnosticLiteralDestination &&
+            IsMainRamRange(destination, 1UL))
+        {
             _memory.Write8(destination, 0);
+        }
 
         _gpr[2] = SignExtend32(length);
         _gpr[31] = returnAddress;
@@ -19215,7 +19223,7 @@ internal sealed class MipsR5000Core
         {
             Console.WriteLine(
                 $"[GAUNTDL:FIX] diagnostic-literal-line-wrapper pc={pc:x16} " +
-                $"dst={globalDestination:x16} fmt={format:x16} len={length} " +
+                $"dst={literalDestination:x16} fmt={format:x16} len={length} " +
                 $"ra={returnAddress:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
                 $"text=\"{ReadAsciiTraceString(format, 96)}\"");
         }
