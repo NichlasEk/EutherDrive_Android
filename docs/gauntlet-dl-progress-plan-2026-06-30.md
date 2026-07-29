@@ -13514,3 +13514,78 @@ baseline.
   byte-identical to the ordinary baseline (`frameHash=0xf4ccc0af`). The bad
   source selection is real, but this upload is a duplicate/symptom rather than
   the cause of the current visible f700 bands. Do not promote the skip.
+
+## 2026-07-29 - f4300-f4340 visible-owner and Type3 texture-Q bracket
+
+The clean FBI3 baseline now has reusable checkpoints at f4300, f4320 and f4340:
+
+```text
+/tmp/gaunt-f4300-fbi3-clean-baseline-v15.warm
+/tmp/gaunt-f4320-fbi3-clean-baseline-v15.warm
+/tmp/gaunt-f4340-fbi3-clean-baseline-v15.warm
+```
+
+The default f4320-to-f4340 replay is stable:
+
+```text
+frameHash=0xa76939e4
+textured=393/covered=188/rejected=205
+pixels=719007 zero=426473
+framebuffer nonBlack=84657 colored=84478
+fastFills=896 swaps=3368
+```
+
+Visual inspection confirms real textured raster output, but it is still a
+brown, perspective-stretched wedge field rather than a recognizable scene.
+Pixel-last-writer and covered-triangle profiling attribute the visible regions
+to several normal Type3 families, principally `0x01c0a90b`, `0x00c0a90b`,
+`0x00c0a94b` and `0x01c0a94b`. A new default-off command-family bracket allows
+one or more exact Type3 commands to be removed without suppressing all Type3
+raster work:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISCARD_TYPE3_RASTER_COMMANDS=0x01c0a90b,0x00c0a90b
+```
+
+Suppressing the two `a90b` families changes f4300 from `0x603f649f` to
+`0xe2399f9b` and removes about half of the wedge field, but the same structure
+remains under other command families. This is an ownership bracket, not a fix.
+
+The single black clear between f4300 and f4320 is also not stale FIFO traffic.
+It is a complete four-word Type4 packet:
+
+```text
+pc=0x801027cc cmd=0x0104824c
+color1=0x00000000 draw=front fastfill 895->896
+```
+
+The diagnostic menu deliberately draws to the front buffer (`fbzMode=0x660`);
+no swap is required for this interval. Disabling only the runtime swapbuffer
+pump fastpath produced the identical f4340 hash and counters, so that
+hypothesis was retired and no control was retained.
+
+Focused Type3 field traces show correctly owned packets and plausible screen
+XY. They also expose a reference-parity difference: EutherDrive currently uses
+the packet's FBI `Wb` field as both TMU texture-Q values when explicit `W0/W1`
+fields are absent. MAME/3dfx setup keeps `Wb`, `W0` and `W1` separate. A new
+default-off bracket models that separation:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_WB_TEXTURE_Q=1
+```
+
+At f4340 it preserves the exact triangle workload (`393/188/205`,
+719007 pixels) while changing only sampling/output:
+
+```text
+frameHash=0x87a945ad
+zero=409482
+framebuffer nonBlack=93749 colored=87221
+```
+
+The result has smoother fills and new white texture bands, but the same wedge
+geometry. Keep the option diagnostic-only. The next narrow target is therefore
+the TMU fixed-fetch/combine state used by these correctly framed polygons,
+especially why large visible families sample zero or repeated rows; do not
+patch model vertices, suppress the legitimate clear, or replace strip/fan
+assembly.

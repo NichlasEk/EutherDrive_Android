@@ -36276,6 +36276,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentType3SeparateTmuSt =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_TMU_ST"));
+    private readonly bool _experimentType3SeparateWbTextureQ =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_WB_TEXTURE_Q"));
     private readonly bool _experimentType3UseSkippedWordAsS =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_USE_SKIPPED_WORD_AS_S"));
     private readonly bool _experimentType3UseSkippedWordAsT =
@@ -36284,6 +36286,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_NONFINITE_S_AS_X"));
     private readonly bool _experimentDiscardType3Raster =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISCARD_TYPE3_RASTER"));
+    private readonly ulong[] _experimentDiscardType3RasterCommands =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISCARD_TYPE3_RASTER_COMMANDS"));
+    private int _experimentDiscardType3RasterCommandTraceCount;
     private readonly bool _experimentType3FlipVertexY =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_FLIP_VERTEX_Y"));
     private readonly int _experimentType3FlipVertexYHeight =
@@ -43375,10 +43380,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort color = fallbackColor;
         float s0 = 0;
         float t0 = 0;
-        float q0 = 1;
+        float q0 = _experimentType3SeparateWbTextureQ ? 0 : 1;
         float s1 = 0;
         float t1 = 0;
-        float q1 = 1;
+        float q1 = _experimentType3SeparateWbTextureQ ? 0 : 1;
         float fogW = 0;
         bool hasTmu0Texture = false;
         bool hasTexture = ((command >> 15) & 1u) != 0 || ((command >> 17) & 1u) != 0;
@@ -43446,15 +43451,19 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 if (!TryReadFloat(wordsNeeded, ref source, out fogW))
                     return;
-                q0 = fogW;
-                q1 = fogW;
+                if (!_experimentType3SeparateWbTextureQ)
+                {
+                    q0 = fogW;
+                    q1 = fogW;
+                }
             }
             if (((command >> 14) & 1u) != 0)
             {
                 if (!TryReadFloat(wordsNeeded, ref source, out float w0))
                     return;
                 q0 = w0;
-                q1 = w0;
+                if (!_experimentType3SeparateWbTextureQ)
+                    q1 = w0;
             }
             if (((command >> 15) & 1u) != 0)
             {
@@ -44541,10 +44550,19 @@ internal class VoodooBringupBackend : IVoodooBackend
             return;
         if (ShouldSuppressRgbBufferWrite() && (!_experimentSetupMameAuxDepth || !textured))
             return;
-        if (_experimentDiscardType3Raster &&
-            _decodingCommandFifo &&
-            (_currentCommandFifoCommand & 7u) == 3u)
+        if (_decodingCommandFifo &&
+            (_currentCommandFifoCommand & 7u) == 3u &&
+            (_experimentDiscardType3Raster ||
+             _experimentDiscardType3RasterCommands.Contains(_currentCommandFifoCommand)))
         {
+            if (_experimentDiscardType3RasterCommands.Length > 0 &&
+                _experimentDiscardType3RasterCommandTraceCount++ < 32)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:EXPERIMENT] discard-type3-raster-command " +
+                    $"cmd=0x{_currentCommandFifoCommand:x8} words={_currentCommandFifoWordsNeeded} " +
+                    $"packet=0x{_currentCommandFifoPacketStart * 4:x8} rd=0x{_cmdFifoReadIndex * 4:x8}");
+            }
             return;
         }
         if (textured)
