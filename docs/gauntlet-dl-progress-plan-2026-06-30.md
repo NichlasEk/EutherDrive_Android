@@ -14311,3 +14311,55 @@ next resource (`size=0x2b354`, position `0x21`, file offset `0x6580`) and
 rendering plus real disk traffic continue. Continue naturally from this
 checkpoint until state 11 completes; do not restore the rejected record
 shift or substitute a fabricated nonzero request length.
+
+#### Zero-length completion clears the full four-entry block
+
+Natural baseline continuation completed the remaining two zero-length
+requests, for four completions total. This matches exactly entries 10 through
+13 in the request table. No further zero-length completion occurred after
+f6600.
+
+```text
+f6600 loader=11 drawPackets=643828 swaps=4972 hash=0xd1c6b7fc
+f6620 loader=10 drawPackets=649719 swaps=4992 hash=0xb184858f
+f6650 loader=12 drawPackets=657764 swaps=5020 hash=0xb184858f
+f6670 loader=11 drawPackets=663529 swaps=5040 hash=0x816582e2
+f6700 loader=11 drawPackets=669951 swaps=5068 hash=0xa751c88d
+f6740 loader=34 drawPackets=679446 swaps=5096 hash=0x4b7c5708
+```
+
+The f6620 framebuffer is a real 640x480 image with 14,549 nonblack pixels
+and 13,449 colored pixels. It shows the diagnostic menu plus a rendered model,
+not a fabricated probe surface. By f6700 the menu has been rebuilt with more
+status text, while the texture pipeline has reached 5,896,511 writes.
+
+The f6620 -> f6650 interval performed real guest IDE DMA across LBA
+603873..604199, mostly in 8 KiB chunks, and entered loader state 12. The next
+interval streamed LBA 604200..604261, performed a large direct resource read,
+and returned naturally to state 11 with new descriptors. At f6700 the active
+descriptor had size `0x10e20`, position 1, and file offset `0x6e00`; texture
+writes then passed 6 million while the frontend also emitted the `CREDITS`
+render string.
+
+State 34 at f6740 is not corruption. Guest code around
+`0x800513c0..0x80051454` explicitly implements the sequence 32 -> 33 -> 34
+and stores it to `0x8019ccb0`; a later state 40 is present in the same switch.
+The f6740 descriptor is a new `0x4d8`-byte job and the device state is clean:
+IDE idle, no pending disk interrupt, and no Nile pending bit.
+
+Reusable checkpoints and frame dumps:
+
+```text
+/tmp/gaunt-f6620-fsys-zero-read.warm
+/tmp/gaunt-f6650-fsys-zero-read.warm
+/tmp/gaunt-f6670-fsys-zero-read.warm
+/tmp/gaunt-f6700-fsys-zero-read.warm
+/tmp/gaunt-f6740-fsys-zero-read.warm
+/tmp/gaunt-f6620-fsys-zero-read.png
+/tmp/gaunt-f6700-fsys-zero-read.png
+/tmp/gaunt-f6740-fsys-zero-read.png
+```
+
+Continue from f6740 through guest states 34 and 40. Do not patch these states:
+they are later, native level-builder phases reached only after the four-entry
+zero-length block was cleared.
