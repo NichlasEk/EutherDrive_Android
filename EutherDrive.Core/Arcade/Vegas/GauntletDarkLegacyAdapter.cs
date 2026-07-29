@@ -29857,7 +29857,7 @@ internal sealed class VegasMemoryMap
         const ulong diagnosticExitLatch = 0xffffffff80227ec8UL;
         uint currentMainState = Read32(mainState);
         if (_enableRuntimeInputDiagnosticExitBridge &&
-            (currentMainState == 0x8000U || currentMainState == 0x8007U) &&
+            (currentMainState == 0x8000U || currentMainState == 0x8007U || currentMainState == 0x8008U) &&
             ((player1Bits | player2Bits) & 0x0800U) != 0)
         {
             Write32(diagnosticExitLatch, 1U);

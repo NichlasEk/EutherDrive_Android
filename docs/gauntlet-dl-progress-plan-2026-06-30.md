@@ -14002,3 +14002,38 @@ The same rebuilt binary and f4400 snapshot, with only
 return to the old `frameHash=0xe21b32ec`. With the promoted baseline enabled,
 the saved f4440 RAM has source slot `0x8065a570`, resource slot `0x8094bb74`,
 and the selected command body still matches disk exactly at `+0x18068`.
+
+### State 0x8008 diagnostic exit promoted
+
+With the malformed object body removed, the front-buffer diagnostic object
+viewer remains active through f4600. Main state is `0x8008`, the exit latch at
+`0x80227ec8` is zero, and swaps remain fixed at `3368`. The visible page
+explicitly says `Exit menu (FIRE 3)`.
+
+A four-frame FIRE3/Turbo pulse reached the normal runtime input record as
+`p1=0x00000800`, but the existing diagnostic-exit bridge did not cover state
+`0x8008`; the latch stayed zero and the image and swap count remained
+unchanged. A one-word latch oracle from the identical f4600 snapshot produced
+the missing state transition:
+
+```text
+f4604 swaps=3386
+f4608 swaps=3408
+f4620 texture writes=3826305
+f4680 swaps=3820
+f4700 main state=0x8002, latch=0
+f4700 frameHash=0x29f94fcf
+```
+
+The bridge's strict state list now includes `0x8008`. A rebuilt replay driven
+only by the same real FIRE3 input pulse reproduces the latch oracle exactly:
+the f4700 PPM files have identical SHA-256
+`6adca80d8b1fa993d7c92aa7dda814fdd0b9b0876cc2ad8c238cee77861f18f6`.
+
+The new state-`0x8002` frame is not yet correct gameplay. It is a red
+panel/gradient scene with repeated `GetMemBase() called while mem reserved`
+text. This is nevertheless a real renderer restart with new Type5 uploads,
+draw packets and swaps, not the white state-`0x8001` diagnostic regression.
+The next narrow boundary is the reserved-memory lifecycle that state `0x8002`
+enters after the diagnostic exit; do not suppress the error text or remap its
+red polygons before the allocator owner is traced.
