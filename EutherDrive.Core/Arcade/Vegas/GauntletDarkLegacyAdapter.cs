@@ -29949,24 +29949,15 @@ internal sealed class VegasMemoryMap
 
     private static uint BuildRuntimePlayerButtonBits(GauntletPlayerInput player)
     {
-        ReadOnlySpan<byte> directionMap =
-        [
-            0x00, 0x10, 0x00, 0x20,
-            0x00, 0x00, 0x00, 0x30,
-            0x00, 0x00, 0x00, 0x00,
-            0x40, 0x00, 0x80, 0xc0
-        ];
-        uint directionIndex = 0;
+        uint value = 0;
         if (player.Up)
-            directionIndex |= 0x01U;
+            value |= 0x0010U;
         if (player.Down)
-            directionIndex |= 0x02U;
+            value |= 0x0020U;
         if (player.Left)
-            directionIndex |= 0x04U;
+            value |= 0x0040U;
         if (player.Right)
-            directionIndex |= 0x08U;
-
-        uint value = directionMap[(int)directionIndex];
+            value |= 0x0080U;
         if (player.Start)
             value |= 0x0100U;
         if (player.Fight)

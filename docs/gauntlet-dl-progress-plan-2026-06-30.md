@@ -14414,3 +14414,46 @@ Continue state `0x8008` naturally until its object/menu presentation is
 stable before applying another FIRE3 edge. The first edge was valid input but
 arrived during the early world-build owner; do not replace it with a direct
 main-state or latch patch.
+
+#### Runtime direction bits now reach the guest
+
+Natural continuation through f7000 kept main state `0x8008` and advanced the
+HUD/state counter at `0x80227b74` from 8 to 18 while the world continued to
+render:
+
+```text
+f6940 drawPackets=712497 hash=0xa8d26bd9
+f6960 drawPackets=714975 hash=0x2887a9a9
+f6980 drawPackets=720173 hash=0x82bf1014
+f7000 drawPackets=724244 hash=0xc17f3650
+```
+
+The runtime input bridge had a separate direction bug. It indexed a
+16-element lookup with the raw direction flags (`Up=1`, `Down=2`, `Left=4`,
+`Right=8`), but the entries at indices 2, 4, and 8 were zero. Consequently
+only Up worked by itself. The bridge now constructs the established guest
+button word directly:
+
+```text
+Up    active=0x01 -> p1=0x0010
+Down  active=0x02 -> p1=0x0020
+Left  active=0x04 -> p1=0x0040
+Right active=0x08 -> p1=0x0080
+```
+
+All four mappings were replayed independently from the same f7000 snapshot.
+A ten-frame Right replay also changed the final framebuffer from the
+no-input control hash `0x267b4b53` to `0xbd58cd78`; the guest input record at
+`0x80262b90` contained `0x00000080`. This verifies both the bridge value and
+an observable downstream effect rather than only testing the helper.
+
+Reusable continuation:
+
+```text
+/tmp/gaunt-f7000-state8008.warm
+/tmp/gaunt-f7010-right-fixed.ppm
+```
+
+The native input-poll probe was not an oracle for this mapping: every tested
+control produced the same historical `0x0800` event. Use the runtime bridge
+trace and guest input record above as the validation evidence.
