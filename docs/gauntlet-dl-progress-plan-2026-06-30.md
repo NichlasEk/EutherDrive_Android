@@ -14645,3 +14645,76 @@ dispatcher.
 /tmp/gaunt-f7225-state-latch-trace.warm
 /tmp/gaunt-f7225-mainram.bin
 ```
+
+The targeted +10M CPU continuation from f7225 eventually returns from the
+builder and clears the latch naturally:
+
+```text
+main state       = 0x8008
+exit latch       = 0
+frame hash       = 0x075f01c7
+textured tris    = 6122
+covered tris     = 6040
+visible colored  = 77738
+```
+
+The resulting raw buffer 0 contains genuine level geometry without the text
+overlay: bridges, floors, walls, and textured world surfaces. The geometry is
+still badly projected and overlapping, but this completes the natural
+state-8007 -> state-8008 world publication.
+
+A ten-frame Right/control A/B from the same checkpoint proves that Right still
+reaches the guest record as `0x0080`, but both runs end at hash `0x0a572cf1`.
+This diagnostic/attract owner does not yet use the direction as playable
+movement. A separate COIN then START sequence also reaches the guest:
+
+```text
+COIN   system=0x00030000
+START  system=0x00240000 p1=0x0100 p2=0x0100
+```
+
+Main state remains `0x8008`; those inputs do not by themselves leave the
+diagnostic owner.
+
+#### Post-swap display selection now publishes the coherent world buffer
+
+All-buffer inspection at f7232 found the actual world in raw buffer 0 while
+buffers 1 and 2 retained horizontally corrupted diagnostic surfaces. The
+selection trace exposed two presentation errors:
+
+```text
+front=1 back=2
+b0 active=71543 discontinuities=56
+b1 active=216978 discontinuities=1173
+b2 active=216325 discontinuities=1665
+old chosen=2 frameHash=0x43ce6e02
+```
+
+`ChooseRenderBufferIndex()` initially selected coherent buffer 0, then replaced
+it with buffer 2 only because buffer 2 had more active pixels. In addition,
+the MAME-vblank presentation path ignored any fallback selection and always
+used `_presentedColorBuffer`.
+
+The selector now preserves a candidate that is clearly more coherent than
+later high-coverage candidates. When the selected fallback differs from the
+logical front, `TryRenderLfb()` uses that raw buffer instead of the stale
+presented copy. Exact replay of the same snapshot now gives:
+
+```text
+front=1 back=2 chosen=0
+frameHash=0x66ae514f
+visible result=real world geometry without diagnostic bands
+```
+
+The earlier f7000 checkpoint remains unchanged at chosen buffer 0 and hash
+`0xc17f3650`. `GauntletProbe` builds with 467 existing warnings and zero
+errors.
+
+Reusable artifacts:
+
+```text
+/tmp/gaunt-f7225-world-builder-to-dispatch.warm
+/tmp/gaunt-f7225-world-builder-cleared.png
+/tmp/gaunt-f7232-world-coin-start.warm
+/tmp/gaunt-f7232-display-selection-fixed.png
+```

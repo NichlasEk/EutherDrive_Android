@@ -39748,7 +39748,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             (uint)_experimentForceRenderBufferIndex < (uint)_colorBuffers.Length;
         ushort[] front = _fixMameVblankSwapTiming &&
                          _presentedColorBufferValid &&
-                         !forceRawRenderBuffer
+                         !forceRawRenderBuffer &&
+                         (!_fixDisplayBufferSelection || renderBufferIndex == _frontBufferIndex)
             ? _presentedColorBuffer
             : _colorBuffers[renderBufferIndex];
         for (int y = 0; y < copyHeight; y++)
@@ -39855,6 +39856,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             bool candidateIsMoreCoherent =
                 frontMayBeCorrupt &&
                 candidateDiscontinuityCount * 2 + 128 < frontDiscontinuityCount;
+            bool candidateIsClearlyLessCoherentThanBest =
+                bestIndex != _frontBufferIndex &&
+                candidateDiscontinuityCount > bestDiscontinuityCount * 2 + 128;
             if (IsPendingClearBuffer(i) && candidateActiveCount <= 1024)
                 continue;
 
@@ -39872,6 +39876,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
             if (candidateCount > 1024 &&
                 candidateActiveCount > 1024 &&
+                !candidateIsClearlyLessCoherentThanBest &&
                 (candidateIsMoreCoherent ||
                  !frontIsUsable ||
                  frontIsLowDetailFill && candidateUniqueCount >= bestUniqueCount + 16 ||
