@@ -30,6 +30,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_GAME_TIME_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_LITERAL_DESTINATION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
@@ -365,6 +366,8 @@ internal sealed class GauntletDarkLegacyMachine
     private int _vblankGuestTimerInterruptCountdown;
     private readonly bool _splitVblankCpu = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_SPLIT_VBLANK_CPU");
     private readonly bool _enableVblankTickBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_TICK_BRIDGE");
+    private readonly bool _enableVblankGameTimeBridge =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_GAME_TIME_BRIDGE");
     private readonly bool _enableContextPreservingVblankTimerDispatch =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_TICK"));
     private readonly bool _enableVblankGuestTimerInterrupt =
@@ -420,6 +423,8 @@ internal sealed class GauntletDarkLegacyMachine
         Sio.PulseVblank(state: true);
         if (_enableVblankTickBridge)
             MemoryMap.RecordRuntimeVblankTick();
+        if (_enableVblankGameTimeBridge)
+            MemoryMap.RecordRuntimeGameTimeTick();
         if (_enableVblankGuestTimerInterrupt && _vblankGuestTimerInterruptCountdown <= 0)
         {
             MemoryMap.RequestRuntimeTimerInterrupt();
@@ -28899,6 +28904,7 @@ internal sealed class MipsR5000Core
         string stackArguments = IsMainRamRange(_gpr[29] + 0x10UL, 0x10UL)
             ? FormatTraceWords(_gpr[29] + 0x10UL, 4)
             : "unmapped";
+        string fprSummary = _traceCpuFprs ? $" {FormatCpuFprSummary()}" : "";
         _traceWatchPcCount++;
         Console.WriteLine(
             $"[GAUNTDL:CPU-WATCH] n={_traceWatchPcCount} frame={_memory.VoodooRenderFrameCount} " +
@@ -28908,7 +28914,7 @@ internal sealed class MipsR5000Core
             $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
             $"t0={_gpr[8]:x16} t1={_gpr[9]:x16} t2={_gpr[10]:x16} t3={_gpr[11]:x16} sp={_gpr[29]:x16} " +
             $"status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} " +
-            $"{_memory.GetNileInterruptDebugStatus()} stack10={stackArguments}");
+            $"{_memory.GetNileInterruptDebugStatus()} stack10={stackArguments}{fprSummary}");
     }
 
     private void TraceRuntimeVertexFifoPacker(ulong pc)
@@ -29816,6 +29822,18 @@ internal sealed class VegasMemoryMap
             Write32(ramFrameTick, Read32(ramFrameTick) + frameDelta);
         if (IsMainRamRange(runtimeFrameTick, 4))
             Write32(runtimeFrameTick, Read32(runtimeFrameTick) + frameDelta);
+    }
+
+    public void RecordRuntimeGameTimeTick()
+    {
+        const ulong runtimeGameTime = 0xffffffff80227dd8UL;
+        if (!IsMainRamRange(runtimeGameTime, 4))
+            return;
+
+        float current = BitConverter.UInt32BitsToSingle(Read32(runtimeGameTime));
+        if (!float.IsFinite(current) || current < 0.0f)
+            current = 0.0f;
+        Write32(runtimeGameTime, BitConverter.SingleToUInt32Bits(current + 1.0f / 60.0f));
     }
 
     public void RecordRuntimeInputPollEffects()

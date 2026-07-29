@@ -14160,21 +14160,25 @@ artifacts/gauntlet-probe/gaunt-f5000-post-state8005.warm
 Short COIN and START pulses correctly left this page unchanged. Disassembly
 of the state-`0x8005` handler at `0x8008393c` shows that it consumes FIRE3
 itself: it reads `0x80227ba4 & 0x0800`, sets internal flag
-`0x8021c5a4`, and owns the following exit lifecycle. No input bridge should be
+`0x8020c5a4`, and owns the following exit lifecycle. No input bridge should be
 added for state `0x8005`.
 
-Runtime tracing verifies both halves of the real input path while FIRE3 is
-held:
+Runtime tracing verifies both halves of the real input path. `0x80227ba8`
+contains the held state, while `0x80227ba4` is the one-shot press edge consumed
+by this handler:
 
 ```text
 runtime record 0x80262b90 = 0x00000800
-normalized word 0x80227ba4 = 0x00000800
+normalized held word 0x80227ba8 = 0x00000800
+normalized edge word 0x80227ba4 = 0x00000800 for one poll
 ```
 
-A four-frame pulse and a later 30-frame pulse did not change state because
-the handler-entry boundary was not observed during those windows. A
-stop-at-PC run from f5000 toward `0x8008393c` was intentionally interrupted
-after the completed f5400 checkpoint:
+A long FIRE3 hold started before the fade completes does not exit because its
+edge is correctly consumed before the handler accepts input. A fresh press
+after the fade reaches the handler. The earlier stop-at-PC run from f5000
+toward `0x8008393c` did not catch that entry only because its watch budget was
+exhausted before the later render-frame counter values. Its completed
+checkpoints were:
 
 ```text
 f5100 drawPackets=551418 hash=0x537e69b1
@@ -14185,10 +14189,64 @@ swaps remained 4256
 texture writes remained 4963970
 ```
 
-The diagnostic renderer remains alive and changing, but the exact
-`0x8008393c` entry was not caught through f5400. Resume from the f5000
-checkpoint and trace the main dispatch around `0x80013c30..0x80013d68`
-together with calls to `0x8008393c`; determine whether the old page lifecycle
-has not returned yet or whether an existing helper bypasses the expected
-entry. Do not add another latch, state patch, COIN/START shortcut, or Voodoo
-workaround before that control-flow boundary is explicit.
+The diagnostic renderer remains alive and changing. The exact handler and
+dispatch boundary are now explicit; do not add another latch, state patch,
+COIN/START shortcut, or Voodoo workaround.
+
+#### State 0x8005 game-time clock fix
+
+The page was not waiting on broken COP1 comparison semantics. FPR watch output
+at `0x800839ac` showed coherent compare operands, but all three fade values at
+the correctly sign-extended globals `0x8020c594..0x8020c59c` received a zero
+delta from `0x80227ddc`.
+
+Writer tracing identified the missing clock chain:
+
+```text
+0x80067d38 writes delta 0x80227ddc
+delta = total time 0x80227dd8 - previous time 0x801a98e0
+0x80067d94 is the scheduled clock callback
+0x80067e28 writes total time 0x80227dd8
+```
+
+The scheduled callback does not currently run in EutherDrive. The existing
+guest timer IRQ experiment exercises the IRQ path but does not make this
+high-resolution callback advance. A MAME oracle run from the matching game
+showed total time advancing about `1/60` second per video frame and callback
+delta near `0.033` seconds:
+
+```text
+current: 0x40122793 -> 0x401336e0 -> 0x4014462c
+delta:   approximately 0x3d07a680
+scale:   approximately 0x41f18fe9
+```
+
+`EUTHERDRIVE_GAUNTDL_FIX_VBLANK_GAME_TIME_BRIDGE=1` now advances only the
+guest total-time float `0x80227dd8` by `1/60` at VBlank. Guest code remains
+responsible for deriving delta, reciprocal scale, fades, input edges, and
+state lifecycle. The fix is part of the baseline preset and can be explicitly
+disabled with `=0` for A/B.
+
+Validation from `gaunt-f5000-post-state8005.warm`:
+
+```text
+without fix: delta=0, fade values remain 7.0 / 2.0 / 0.5
+with fix:    delta=0.033333335 then 0.150000006
+             fade 0.5 -> 0.466666669 -> 0.316666663
+post-fade FIRE3 edge: 0x80227ba4=0x0800
+handler:             v0=0x0800 at 0x800839bc
+guest result:        0x8020c5a4=1 at 0x800839cc
+```
+
+After promotion, a two-frame smoke from f5250 with only
+`EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1` changed total time from
+`0x3f955552` to `0x3f999996`, confirming that baseline enables the fix without
+the former experiment variable.
+
+The reusable post-edge continuation checkpoint is currently
+`/tmp/gaunt-f5250-game-time-post-fire3.warm` with
+`frameHash=0x2bc3e25a`. Natural continuation through f5400 remains in state
+`0x8005` because the handler intentionally runs a longer internal timed
+menu/exit lifecycle after accepting FIRE3; its clock and fade values continue
+to advance. The next investigation should compare that long lifecycle with
+MAME rather than patching the state.
