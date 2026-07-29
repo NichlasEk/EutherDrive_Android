@@ -55,3 +55,17 @@ The three numeric fields are hexadecimal byte values. The probe validates both
 the source-file and main-RAM ranges before copying. This is intended for narrow
 causal replay against an owned disk or RAM oracle; it is not part of the
 runtime baseline.
+
+The Gauntlet bringup baseline also keeps the Temple weapons object source
+distinct from the resource builder's writable output:
+
+```sh
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_DISTINCT_RESOURCE_SOURCE=1
+```
+
+The builder uses the free high-RAM range immediately after the transient
+weapons texture companion as its work arena, restores the source-table slot
+after returning, and publishes the resource-table pointer into the work arena.
+When an older warm snapshot still has an aliased resource pointer, the repair
+first preserves its built records there and then rehydrates the immutable
+`weapons/objects.rom` source from the configured raw disk.

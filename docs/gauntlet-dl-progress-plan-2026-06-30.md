@@ -13957,3 +13957,48 @@ four-byte command header, or only a short prefix, produces much worse world
 geometry; no late RAM copy is promoted. The correct runtime repair must stop
 the source/destination alias or lifetime violation at its first writer and
 preserve the guest's original `weapons/objects.rom` body naturally.
+
+### Distinct weapons resource source promoted
+
+The exact alias is now proven at the guest tables:
+
+```text
+source slot 15   0x802529dc = 0x8065a570
+resource slot 15 0x802545dc = 0x8066035c
+resource offset                 0x00005dec
+first file mismatch             0x00005def
+```
+
+The resource builder was therefore writing its first output word three bytes
+before the first changed source byte. The promoted repair gives the builder a
+distinct `0x1f930`-byte work copy at `0x80945d88`, immediately after the
+verified high-RAM weapons texture companion. During the builder call, source
+slot 15 temporarily points at that copy. On return the source slot is restored
+to the immutable raw-file arena, while resource slot 15 publishes the work
+copy's resource table. Existing warm snapshots are migrated once by copying
+their already-built resource records to the same arena and rehydrating the raw
+source from disk.
+
+The f4400-to-f4440 causal replay logged:
+
+```text
+source   0x8065a570
+resource 0x8066035c -> 0x8094bb74
+command  0x00000000 -> 0x3fffffff
+frameHash=0xa2e45d3e
+nonBlack=15732
+colored=15728
+```
+
+This is exactly the prior full-suffix oracle hash and pixel count. Visual
+inspection confirms that the diagnostic menu and real Gauntlet logo remain
+while the central white stripes and lower-left green wedge are gone. Unlike
+the oracle copy, the runtime repair preserves the builder output at a live
+resource pointer and prevents new builds from overwriting the object source in
+the first place.
+
+The same rebuilt binary and f4400 snapshot, with only
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_DISTINCT_RESOURCE_SOURCE=0`,
+return to the old `frameHash=0xe21b32ec`. With the promoted baseline enabled,
+the saved f4440 RAM has source slot `0x8065a570`, resource slot `0x8094bb74`,
+and the selected command body still matches disk exactly at `+0x18068`.

@@ -69,6 +69,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_NATURAL_POWERUPS_ALLOCATOR", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_DISTINCT_RESOURCE_SOURCE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_STREAM", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH", "1"),
@@ -914,6 +915,11 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeTempleWeaponsTextureCompanion =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION") ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION"));
+    private readonly bool _enableRuntimeTempleWeaponsDistinctResourceSource =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_DISTINCT_RESOURCE_SOURCE") ||
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TEMPLE_WEAPONS_DISTINCT_RESOURCE_SOURCE"));
     private readonly bool _traceRuntimeTempleItemsBoundary =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_TEMPLE_ITEMS_BOUNDARY"));
     private readonly bool _traceRuntimeTemplePowerupsRecordLoop =
@@ -1661,6 +1667,7 @@ internal sealed class MipsR5000Core
     private bool _runtimeTempleWeaponsLoadRequested;
     private bool _runtimeTempleWeaponsResourceBuilt;
     private ulong _runtimeTempleWeaponsTextureStream;
+    private bool _runtimeTempleWeaponsDistinctResourceSourceApplied;
     private bool _runtimeTempleItemsLoadRequested;
     private bool _runtimeTempleItemsResourceBuilt;
     private ulong _hi;
@@ -2083,13 +2090,31 @@ internal sealed class MipsR5000Core
         uint savedStreamCount = _memory.Read32(streamCount);
         uint savedStreamOffset = _memory.Read32(streamOffset);
         uint savedStreamLimit = _memory.Read32(streamLimit);
+        ulong sourceSlot = sourceTable + index * 4UL;
+        uint savedSourceSlot = _memory.Read32(sourceSlot);
+        ulong source = SignExtend32(savedSourceSlot);
+        ulong resourceSource = source;
+        if (index == 15UL && _enableRuntimeTempleWeaponsDistinctResourceSource)
+        {
+            const ulong clone = 0xffffffff80945d88UL;
+            const uint cloneBytes = 0x0001f930U;
+            if (!IsMainRamRange(source, cloneBytes) || !IsMainRamRange(clone, cloneBytes))
+                return false;
+
+            for (ulong offset = 0; offset < cloneBytes; offset++)
+                _memory.Write8(clone + offset, _memory.Read8(source + offset));
+            resourceSource = clone;
+            _memory.Write32(sourceSlot, unchecked((uint)resourceSource));
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] temple-weapons-distinct-resource-source " +
+                $"source={source:x16} clone={resourceSource:x16} bytes={cloneBytes:x8}");
+        }
         _memory.Write32(record + 0x04UL, unchecked((uint)qio));
         _memory.Write32(qio + 0x14UL, 2U);
         _memory.Write32(currentIndex, (uint)index);
-        ulong source = SignExtend32(_memory.Read32(sourceTable + index * 4UL));
-        uint count = _memory.Read32(source + 0x64UL);
-        uint tableIndex = _memory.Read32(source + 0x60UL);
-        ulong resource = source + 0x68UL + (ulong)tableIndex * 0x8cUL;
+        uint count = _memory.Read32(resourceSource + 0x64UL);
+        uint tableIndex = _memory.Read32(resourceSource + 0x60UL);
+        ulong resource = resourceSource + 0x68UL + (ulong)tableIndex * 0x8cUL;
         ulong streamBuffer = source;
         if (index == 15UL && _enableRuntimeTempleWeaponsTextureCompanion)
         {
@@ -2199,10 +2224,13 @@ internal sealed class MipsR5000Core
             _memory.Write32(streamCount, savedStreamCount);
             _memory.Write32(streamOffset, savedStreamOffset);
             _memory.Write32(streamLimit, savedStreamLimit);
+            _memory.Write32(sourceSlot, savedSourceSlot);
             if (returned)
             {
                 RepairKnownRuntimeTempleAnimatedTextureAliases(resource, count);
                 _memory.Write32(0xffffffff802545a0UL + index * 4UL, unchecked((uint)resource));
+                if (index == 15UL && _enableRuntimeTempleWeaponsDistinctResourceSource)
+                    _runtimeTempleWeaponsDistinctResourceSourceApplied = true;
                 for (ulong offset = 0; offset <= 0x14UL; offset += 4UL)
                     _memory.Write32(qio + offset, 0U);
             }
@@ -2234,7 +2262,8 @@ internal sealed class MipsR5000Core
         Console.WriteLine(
             $"[GAUNTDL:FIX] temple-resource-build asset={(index == 15UL ? "weapons" : "items")} returned={returned} " +
             $"index={_memory.Read32(currentIndex):x8} record={record:x16} qio={qio:x16} " +
-            $"source={source:x16} stream={streamBuffer:x16} resource={resource:x16} count={count:x8}");
+            $"source={source:x16} resourceSource={resourceSource:x16} stream={streamBuffer:x16} " +
+            $"resource={resource:x16} count={count:x8}");
         return returned;
     }
 
@@ -2494,9 +2523,62 @@ internal sealed class MipsR5000Core
         return true;
     }
 
+    private void ApplyKnownRuntimeTempleWeaponsDistinctResourceSourceRepair()
+    {
+        const ulong sourceTableSlot = 0xffffffff802529dcUL;
+        const ulong resourceTableSlot = 0xffffffff802545dcUL;
+        const ulong clone = 0xffffffff80945d88UL;
+        const ulong diskOffset = 0x043d1a00UL;
+        const uint sourceBytes = 0x0001f930U;
+        if (!_enableRuntimeTempleWeaponsDistinctResourceSource ||
+            _runtimeTempleWeaponsDistinctResourceSourceApplied ||
+            _insideContextPreservingRuntimeTimerTick)
+        {
+            return;
+        }
+
+        ulong source = SignExtend32(_memory.Read32(sourceTableSlot));
+        ulong resource = SignExtend32(_memory.Read32(resourceTableSlot));
+        ulong sourceEnd = source + sourceBytes;
+        if (!IsMainRamRange(source, sourceBytes) ||
+            !IsMainRamRange(clone, sourceBytes) ||
+            resource < source ||
+            resource >= sourceEnd)
+        {
+            return;
+        }
+
+        // Older warm snapshots already contain resource records built in place
+        // over the raw object body. Preserve those records in the same distinct
+        // work arena used by new builds, then rehydrate the immutable source.
+        ulong resourceOffset = resource - source;
+        uint corruptedCommand = _memory.Read32(source + 0x00018068UL);
+        for (ulong offset = 0; offset < sourceBytes; offset++)
+            _memory.Write8(clone + offset, _memory.Read8(source + offset));
+        if (!_memory.TryReadDiskByteOffsetToMemory(
+                diskOffset,
+                source,
+                sourceBytes,
+                out uint firstWord,
+                out _))
+        {
+            return;
+        }
+
+        ulong clonedResource = clone + resourceOffset;
+        _memory.Write32(resourceTableSlot, unchecked((uint)clonedResource));
+        _runtimeTempleWeaponsDistinctResourceSourceApplied = true;
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] temple-weapons-distinct-resource-source-late " +
+            $"source={source:x16} clone={clone:x16} bytes={sourceBytes:x8} " +
+            $"resource={resource:x16}->{clonedResource:x16} offset={resourceOffset:x8} " +
+            $"first={firstWord:x8} command={corruptedCommand:x8}->{_memory.Read32(source + 0x00018068UL):x8}");
+    }
+
     private void Step()
     {
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
+        ApplyKnownRuntimeTempleWeaponsDistinctResourceSourceRepair();
         ulong pc = Pc;
         TraceWatchedPc(pc);
         TraceRuntimeVertexFifoPacker(pc);
