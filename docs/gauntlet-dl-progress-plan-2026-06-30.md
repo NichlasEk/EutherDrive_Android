@@ -13655,3 +13655,59 @@ So this is not a missing constant fetch bias. The next boundary is the owner
 and upload lifetime of TMU0's wrapped LOD1 page near bank offset zero. Preserve
 TMU1 NCC decoding/combine, the Type3 vertices and the clean black clear while
 tracing which earlier Type5 upload should populate that page.
+
+## 2026-07-29 - texture-state builder tail ownership
+
+Focused Type4 ownership tracing found a real command-FIFO boundary error.
+Gauntlet's texture-state builder emits a valid four-word TMU1 packet:
+
+```text
+pc=800bd18c cmd=0005a604
+pc=800bd190 textureMode=8c24110f
+pc=800bd194 tLOD=00002614
+pc=800bd19c texBaseAddr=000a9b60
+```
+
+The same routine then writes a fixed 13-word cache record at
+`800bd1bc..800bd220`, followed by the next genuine two-word TMU0 packet at
+`800bd248/800bd24c`. The cache record contains diagnostic sentinels including
+`4d414741`, `bbaa5551` and `ffeeddcc`. Because every aperture write was marked
+as a valid FIFO word, `ffeeddcc` was decoded as a 20-word Type4 packet. That
+false packet wrote:
+
+```text
+TMU0 textureMode=008bebf3
+TMU0 tLOD=001bddeb
+TMU0 texBaseAddr=00009604
+```
+
+The previous Type3/Type4 producer-body protection could not own this region:
+it deliberately ends at the fourth word of the genuine `0005a604` packet.
+
+A new default-off experiment recognizes the complete cache record by its
+values, producer PCs, preceding genuine TMU1 packet and following genuine
+TMU0 packet:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TEXTURE_STATE_BUILDER_TAIL=1
+```
+
+The f4320-to-f4340 replay identifies and advances 13 such records. A focused
+ownership trace reports zero executed `ffeeddcc` Type4 packets. The ordinary
+default remains byte-stable at `frameHash=0xa76939e4`; the experiment produces:
+
+```text
+frameHash=0x35fe9125
+textured=393/covered=188/rejected=205
+pixels=719007 zero=389980
+framebuffer nonBlack=96499 colored=96320
+PPM sha256=c7575fe3a46a8ef8cda3023337c44c1924634823c933d16b39362cf83094402b
+```
+
+Triangle workload, fast fills, swaps and texture-upload count are unchanged.
+The image gains real green and multicolored texture regions, and final TMU0
+state is restored to `80000009/00002104/ffffe000`, but the perspective wedge
+geometry remains malformed. This is a positive FIFO ownership correction, not
+the final raster fix. Keep it default-off until it survives a longer replay;
+the next useful boundary is why the otherwise stable Type3 families still
+produce the wedge geometry after the bogus texture-state writes are removed.
