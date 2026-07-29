@@ -13820,3 +13820,26 @@ repairs once their combined clean-cold behavior is stable.
 `EUTHERDRIVE_GAUNTDL_DUMP_VOODOO_CMD_FIFO_CENTER=<logical byte address>` with
 the existing FIFO-window dump, allowing consumed historical packet boundaries
 to be inspected instead of only the final read pointer.
+
+### Combined baseline promotion
+
+The combined texture-state-tail, diagnostic-literal-destination and glyph
+Type3-ownership repairs remain stable through f4400. At f4394 the glyph repair
+again doubles the complete-menu workload from 134 to 268 triangles:
+
+```text
+frameHash=0x06018142
+textured=268 covered=268 rejected=0 pixels=9648 zero=4585
+framebuffer nonBlack=67666 colored=44667
+PPM sha256=e5c59fd4fea19abc2ae156be139ae5f6b0d887495dd4d8929de008297b184cf3
+```
+
+The image contains several readable green and red diagnostic lines. At f4400
+the guest enters its next clear/redraw phase normally (`frameHash=0x569c8e3f`,
+297 textured triangles, seven rejected) without a FIFO stall or crash.
+
+All three exact guards are now enabled by `EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1`.
+Each still honors an explicit per-variable `0` override for A/B and regression
+work. This changes the active warm-replay baseline intentionally; the older
+`0xa76939e4` and `0x35fe9125` checkpoints remain useful controls rather than
+the expected visible result after f4390.
