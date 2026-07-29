@@ -13843,3 +13843,55 @@ Each still honors an explicit per-variable `0` override for A/B and regression
 work. This changes the active warm-replay baseline intentionally; the older
 `0xa76939e4` and `0x35fe9125` checkpoints remain useful controls rather than
 the expected visible result after f4390.
+
+## 2026-07-29 - f4440 malformed-object ownership boundary
+
+The promoted readable-menu baseline remains stable to f4440:
+
+```text
+frameHash=0xe21b32ec
+snapshot=/tmp/gaunt-f4440-readable-menu-baseline-v15.warm
+```
+
+The frame now contains a largely readable diagnostic menu and a real Gauntlet
+Dark Legacy logo. Its two major residual artifacts are a central white
+trapezoid family and a lower-left green wedge.
+
+Pixel-writer and centered Type3 traces prove that both are complete guest
+polygons, not another command-FIFO header loss. The white family is owned by
+command `0x01c0a90b`, packet `0x05491790`, producer `0x800c5be0`; its vertices
+span approximately `(512,0)..(281,0)` and use TMU0 state
+`8c2412cf/00002104/ffffe000`. Discarding that command removes only the white
+family and is therefore diagnostic, not an acceptable repair.
+
+The green wedge's exact Type3 owner is command `0x00c0a94b`, packet
+`0x0548c4b0`, also produced by `0x800c5be0`. Its texture state is already
+corrupt when submitted:
+
+```text
+tmode=80000009
+tlod=edf826f6
+tbase=8df270d2
+```
+
+The preceding complete Type4 packet `0x0548b7e8` literally contains those
+values, so FIFO decode and Voodoo register ownership are innocent. CPU tracing
+continues the chain through texture-state builder `0x800bd100` to indexed
+material consumer `0x800bd87c`. The latter reads halfword `0x3f80` from shared
+model-stream address `0x8067289e`, calculates descriptor stride `0x50`, and
+therefore passes `0x8079db5c` to the builder. That address is pixel/matrix data,
+not a descriptor; its `+0x0c` bytes are exactly the bogus base `8df270d2`.
+
+Two strict default-off runtime-guard experiments were rejected:
+
+1. returning from `0x800bd100` for reserved-high-bit LOD values changes the
+   green wedge to brown but preserves its geometry;
+2. returning from `0x800bd87c` before consuming the implausible material token
+   changes and multiplies the wedge geometry.
+
+The experiment code was removed rather than promoted. The evidence means the
+bad material token is a symptom of an already out-of-phase shared model
+stream. The next ownership boundary is the normal stream advancement at
+`0x800bbdf8` (six-byte records), together with the two-byte material advance at
+`0x800bd898`; repair their caller/record sequencing instead of suppressing
+polygons or clamping TMU state.
