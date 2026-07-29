@@ -8953,6 +8953,73 @@ Current continuation:
    writer-to-sampler address interpretation.
 ```
 
+## World-triangle source provenance after the clean fbiInit3 clear - 2026-07-29
+
+The large overlapping world surface after the f4238 clear is not produced by
+the display-buffer chooser or by a Type3 vertex-count decode error. The focused
+pixel packet is:
+
+```text
+packet=0x0538b588 cmd=0x01c0a90b count=4
+v0=(512.000,91.188) q=0.005642
+v1=(415.555,331.302) q=0.005565
+v2=(256.000,192.000) q=0
+v3=(256.000,192.000) q=65535
+```
+
+`0x01c0a90b` declares four vertices (`(cmd >> 6) & 0xf == 4`), matching the
+four-entry guest list. Starting the provenance run at f4225, rather than after
+the packet was already serialized into f4260, proves the packet was written by
+the normal guest packer:
+
+```text
+header pc=0x800c5b80
+payload pc=0x800c5bcc..0x800c5be0
+list=0x80216ec8
+sources=0x80216a88/0x80216988/0x802169c8/0x80216ac8
+```
+
+The new default-off packer probe captures this boundary without confusing a
+later FIFO ring generation for the packet being decoded:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_FIFO_PACKER=1
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_FIFO_PACKER_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_FIFO_PACKER_DESTINATIONS=0xb588
+```
+
+Destinations at or below `0x3ffff` match the Voodoo FIFO storage offset; full
+addresses still match the CPU physical destination. Always replay with
+`EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1`.
+
+The packer is bit-exact for all four inputs. The bad values already exist in
+the guest sources:
+
+```text
+0x802169c8: xyzq=0/0/0/0, index=0x6d
+0x80216ac8: xyz=0/0/0, q becomes 65535
+```
+
+The expanded vertex-source writer trace proves two separate upstream causes:
+
+- `0x800c5710..0x800c571c` copies four zero floats into `0x802169c8`.
+  Immediately before that, `0x800c56fc..0x800c5708` loads those zeros from
+  `0x80214728`.
+- The guest computes `0x80214728` as vertex table `0x80213988` plus index
+  `0x6d * 0x20`. That table entry is genuinely zero; neighboring entries show
+  that the table is populated but sparse.
+- `0x80216ac8` initially has a finite q (`0.00639223121`), but the packer delay
+  slot at `0x800c5bec` replaces its q with context value `65535` before the
+  scratch vertex is consumed.
+
+This moves the blocker above COP1, the FIFO packer, and Voodoo rasterization.
+The next narrow boundary is the model/index producer at
+`0x800bcfe8..0x800bd004`: determine why polygon index `0x6d` references the
+zero vertex-table entry, and whether the indexed model body is incomplete or
+the polygon index is decoded incorrectly. Do not add a downstream q clamp or
+drop the last two Type3 vertices; that would only hide the missing/corrupt
+world geometry.
+
 ## Broad writer family and layout probes - 2026-07-07
 
 The current f300 WTR visual oracle must include the baseline boot controls.

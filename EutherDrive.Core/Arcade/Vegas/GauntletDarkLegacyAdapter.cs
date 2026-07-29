@@ -736,6 +736,12 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_CPU_WATCH_LIMIT", 128);
     private readonly bool _traceCpuFprs =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_CPU_FPRS"));
+    private readonly bool _traceRuntimeVertexFifoPacker =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_FIFO_PACKER"));
+    private readonly int _traceRuntimeVertexFifoPackerLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_FIFO_PACKER_LIMIT", 64);
+    private readonly ulong[] _traceRuntimeVertexFifoPackerDestinations =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_FIFO_PACKER_DESTINATIONS"));
     private readonly bool _traceRuntimeLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOG") == "1";
     private readonly int _stepBudget = ParseStepBudget();
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
@@ -745,6 +751,13 @@ internal sealed class MipsR5000Core
     private int _remainingProbeSteps;
     private int _probeStepDebt;
     private int _traceWatchPcCount;
+    private int _traceRuntimeVertexFifoPackerCount;
+    private bool _traceRuntimeVertexFifoPackerActive;
+    private int _traceRuntimeVertexFifoPackerVertexIndex;
+    private int _traceRuntimeVertexFifoPackerVertexCount;
+    private ulong _traceRuntimeVertexFifoPackerList;
+    private ulong _traceRuntimeVertexFifoPackerDestination;
+    private uint _traceRuntimeVertexFifoPackerCommand;
     private bool _isContinuingKnownRuntimeTileLoop;
     private int _bootGlideStateEmitTraceCount;
     private readonly bool _traceBootGlideStateEmit = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BOOT_GLIDE_STATE_EMIT") == "1";
@@ -2471,6 +2484,7 @@ internal sealed class MipsR5000Core
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ulong pc = Pc;
         TraceWatchedPc(pc);
+        TraceRuntimeVertexFifoPacker(pc);
         RepairKnownGauntletGlideWinOpenRgbMask(pc);
         TraceKnownRuntimeTemplePowerupsRecordLoop(pc);
         if (TraceKnownRuntimeTempleItemsBoundary(pc))
@@ -15387,7 +15401,7 @@ internal sealed class MipsR5000Core
             $"a0=0x{_gpr[4]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16} " +
             $"t0=0x{_gpr[8]:x16} t1=0x{_gpr[9]:x16} t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} " +
             $"s0=0x{_gpr[16]:x16} s1=0x{_gpr[17]:x16} s2=0x{_gpr[18]:x16} s3=0x{_gpr[19]:x16} " +
-            $"vertex={FormatVertexFifoSourceWords(vertexBase)}");
+            $"vertex={FormatTraceWords(vertexBase, 16)}");
     }
 
     private string FormatRuntimeVertexSourceLastWriter(ulong source, ulong offset)
@@ -15449,7 +15463,7 @@ internal sealed class MipsR5000Core
         out ulong vertexBase,
         out uint vertexOffset)
     {
-        if (address >= candidateBase && address < candidateBase + 0x18UL)
+        if (address >= candidateBase && address < candidateBase + 0x40UL)
         {
             vertexBase = candidateBase;
             vertexOffset = (uint)(address - candidateBase);
@@ -28738,7 +28752,9 @@ internal sealed class MipsR5000Core
             $"f22={FormatRuntimeFullrectFloat(ReadSingle(22))}/0x{(uint)_fpr[22]:x8} " +
             $"f23={FormatRuntimeFullrectFloat(ReadSingle(23))}/0x{(uint)_fpr[23]:x8} " +
             $"f24={FormatRuntimeFullrectFloat(ReadSingle(24))}/0x{(uint)_fpr[24]:x8} " +
-            $"f25={FormatRuntimeFullrectFloat(ReadSingle(25))}/0x{(uint)_fpr[25]:x8}";
+            $"f25={FormatRuntimeFullrectFloat(ReadSingle(25))}/0x{(uint)_fpr[25]:x8} " +
+            $"f26={FormatRuntimeFullrectFloat(ReadSingle(26))}/0x{(uint)_fpr[26]:x8} " +
+            $"f27={FormatRuntimeFullrectFloat(ReadSingle(27))}/0x{(uint)_fpr[27]:x8}";
 
     private void TraceInstruction(ulong pc, uint op)
     {
@@ -28785,9 +28801,124 @@ internal sealed class MipsR5000Core
             $"pc={pc:x16} op={op:x8} {DisassembleBrief(op)} " +
             $"ra={_gpr[31]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
             $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} " +
-            $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} sp={_gpr[29]:x16} " +
+            $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+            $"t0={_gpr[8]:x16} t1={_gpr[9]:x16} t2={_gpr[10]:x16} t3={_gpr[11]:x16} sp={_gpr[29]:x16} " +
             $"status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} " +
             $"{_memory.GetNileInterruptDebugStatus()} stack10={stackArguments}");
+    }
+
+    private void TraceRuntimeVertexFifoPacker(ulong pc)
+    {
+        if (!_traceRuntimeVertexFifoPacker ||
+            _traceRuntimeVertexFifoPackerCount >= _traceRuntimeVertexFifoPackerLimit)
+        {
+            return;
+        }
+
+        ulong physicalPc = pc & 0x1fffffffUL;
+        if (physicalPc == 0x000c5bdcUL && _traceRuntimeVertexFifoPackerActive)
+        {
+            TraceRuntimeVertexFifoPackerPayload(pc);
+            return;
+        }
+        if (physicalPc != 0x000c5b80UL)
+            return;
+
+        ulong destination = _gpr[2];
+        if (_traceRuntimeVertexFifoPackerDestinations.Length > 0)
+        {
+            bool destinationMatched = false;
+            ulong physicalDestination = destination & 0x1fffffffUL;
+            for (int i = 0; i < _traceRuntimeVertexFifoPackerDestinations.Length; i++)
+            {
+                ulong requestedDestination = _traceRuntimeVertexFifoPackerDestinations[i];
+                bool matched = requestedDestination <= 0x3ffffUL
+                    ? (destination & 0x3ffffUL) == requestedDestination
+                    : (requestedDestination & 0x1fffffffUL) == physicalDestination;
+                if (!matched)
+                    continue;
+                destinationMatched = true;
+                break;
+            }
+
+            if (!destinationMatched)
+                return;
+        }
+
+        ulong list = _gpr[16];
+        StringBuilder vertices = new();
+        for (int i = 0; i < 16 && IsMainRamRange(list + (ulong)i * 4UL, 4UL); i++)
+        {
+            ulong vertex = SignExtend32(_memory.Read32(list + (ulong)i * 4UL));
+            if (vertex == 0)
+                break;
+            if (!IsMainRamRange(vertex, 0x40UL))
+            {
+                vertices.Append($" v{i}=0x{vertex:x16}:unmapped");
+                break;
+            }
+
+            vertices.Append($" v{i}=0x{vertex:x16}:{FormatTraceWords(vertex, 16)}");
+        }
+
+        _traceRuntimeVertexFifoPackerCount++;
+        _traceRuntimeVertexFifoPackerCommand = (uint)_gpr[9];
+        _traceRuntimeVertexFifoPackerVertexCount = (int)((_traceRuntimeVertexFifoPackerCommand >> 6) & 0xf);
+        _traceRuntimeVertexFifoPackerVertexIndex = 0;
+        _traceRuntimeVertexFifoPackerList = list;
+        _traceRuntimeVertexFifoPackerDestination = destination;
+        _traceRuntimeVertexFifoPackerActive = _traceRuntimeVertexFifoPackerVertexCount > 0;
+        Console.WriteLine(
+            $"[GAUNTDL:VERTEX-FIFO-PACKER] n={_traceRuntimeVertexFifoPackerCount} " +
+            $"frame={_memory.VoodooRenderFrameCount} pc=0x{pc:x16} dst=0x{destination:x16} " +
+            $"cmd=0x{_traceRuntimeVertexFifoPackerCommand:x8} count={_traceRuntimeVertexFifoPackerVertexCount} " +
+            $"variant={(uint)_gpr[7]} list=0x{list:x16} " +
+            $"a2=0x{_gpr[6]:x16} t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} " +
+            $"fprs={FormatRuntimeVertexFifoPackerFprs()}{vertices}");
+    }
+
+    private void TraceRuntimeVertexFifoPackerPayload(ulong pc)
+    {
+        int index = _traceRuntimeVertexFifoPackerVertexIndex;
+        ulong sourceSlot = _traceRuntimeVertexFifoPackerList + (ulong)index * 4UL;
+        ulong source = IsMainRamRange(sourceSlot, 4UL)
+            ? SignExtend32(_memory.Read32(sourceSlot))
+            : 0;
+        ulong destination = _gpr[2];
+        string sourceWords = IsMainRamRange(source, 0x40UL)
+            ? FormatTraceWords(source, 16)
+            : "unmapped";
+
+        _traceRuntimeVertexFifoPackerCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:VERTEX-FIFO-PACKER-PAYLOAD] n={_traceRuntimeVertexFifoPackerCount} " +
+            $"frame={_memory.VoodooRenderFrameCount} pc=0x{pc:x16} " +
+            $"packet=0x{_traceRuntimeVertexFifoPackerDestination:x16} cmd=0x{_traceRuntimeVertexFifoPackerCommand:x8} " +
+            $"vertex={index}/{_traceRuntimeVertexFifoPackerVertexCount} dst=0x{destination:x16} " +
+            $"source=0x{source:x16}:{sourceWords} " +
+            $"f7={FormatRuntimeFullrectFloat(ReadSingle(7))}:0x{(uint)_fpr[7]:x8} " +
+            $"f8={FormatRuntimeFullrectFloat(ReadSingle(8))}:0x{(uint)_fpr[8]:x8} " +
+            $"f9={FormatRuntimeFullrectFloat(ReadSingle(9))}:0x{(uint)_fpr[9]:x8} " +
+            $"f10={FormatRuntimeFullrectFloat(ReadSingle(10))}:0x{(uint)_fpr[10]:x8} " +
+            $"f11={FormatRuntimeFullrectFloat(ReadSingle(11))}:0x{(uint)_fpr[11]:x8} " +
+            $"f12={FormatRuntimeFullrectFloat(ReadSingle(12))}:0x{(uint)_fpr[12]:x8}");
+
+        _traceRuntimeVertexFifoPackerVertexIndex++;
+        if (_traceRuntimeVertexFifoPackerVertexIndex >= _traceRuntimeVertexFifoPackerVertexCount)
+            _traceRuntimeVertexFifoPackerActive = false;
+    }
+
+    private string FormatRuntimeVertexFifoPackerFprs()
+    {
+        StringBuilder builder = new();
+        for (int i = 0; i < 16; i++)
+        {
+            if (i > 0)
+                builder.Append('/');
+            builder.Append($"f{i}:{FormatRuntimeFullrectFloat(ReadSingle(i))}:0x{(uint)_fpr[i]:x8}");
+        }
+
+        return builder.ToString();
     }
 
     private bool ShouldTrace(ulong pc)
