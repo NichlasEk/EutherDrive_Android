@@ -9020,6 +9020,56 @@ the polygon index is decoded incorrectly. Do not add a downstream q clamp or
 drop the last two Type3 vertices; that would only hide the missing/corrupt
 world geometry.
 
+### Model-index control class and MAME Type3 parity - 2026-07-29
+
+The index is not produced by an incorrect halfword mask. Guest code at
+`0x800ba364..0x800ba390` reads a 16-bit model word, deliberately keeps the low
+seven bits as the vertex index, and separately keeps bits `0x180` as a control
+class. The suspicious word is `0x41ed`, so its intended split is:
+
+```text
+index=0x6d
+control=0x180
+```
+
+Control class `0x180` then enters the guest's special clip/setup call chain at
+`0x800ba410..0x800ba438`. This makes a sparse/zero transformed-table entry a
+plausible clipped-vertex representation rather than proof of an incomplete
+asset.
+
+The new default-off focused probe captures that boundary directly:
+
+```text
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_MODEL_VERTEX_INDEX=1
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_MODEL_VERTEX_INDEX_LIMIT=...
+EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_MODEL_VERTEX_INDICES=0x6d
+```
+
+Verified f4240-to-f4260 output:
+
+```text
+stream=0x80670d92 raw=0x41ed index=0x6d control=0x180
+stream=0x80670e72 raw=0xc1ed index=0x6d control=0x180
+table=0x80214728:00000000/.../00000000
+frameHash=0x345a2b10
+```
+
+The second occurrence proves this is a repeated model-stream convention, not
+a one-off corrupt word. The probe prints the raw stream words, decoded index
+and control class, complete transformed-table entry, context, and call
+registers without requiring a broad main-RAM write watch.
+
+The local Type3 decoder was also compared line-for-line with MAME's current
+`src/devices/video/voodoo_2.cpp`. Packet field extraction, fan/strip vertex
+shuffling, and the culling-sign/ping-pong test already match. Enabling
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH=1` at f4283 is
+neutral (`frameHash=0x22d20ffc` with and without it), so neither a downstream
+vertex drop nor the current aux-depth experiment is the next correction.
+
+Continue inside the guest's `0x180` clip/setup call chain. Correlate the two
+raw forms (`0x41ed` and `0xc1ed`) with the generated scratch-list length and
+the synthetic center vertices before changing Voodoo raster behavior.
+
 ## Broad writer family and layout probes - 2026-07-07
 
 The current f300 WTR visual oracle must include the baseline boot controls.

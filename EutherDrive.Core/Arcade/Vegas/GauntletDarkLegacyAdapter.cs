@@ -742,6 +742,12 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_FIFO_PACKER_LIMIT", 64);
     private readonly ulong[] _traceRuntimeVertexFifoPackerDestinations =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_VERTEX_FIFO_PACKER_DESTINATIONS"));
+    private readonly bool _traceRuntimeModelVertexIndex =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_MODEL_VERTEX_INDEX"));
+    private readonly int _traceRuntimeModelVertexIndexLimit =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_MODEL_VERTEX_INDEX_LIMIT", 64);
+    private readonly ulong[] _traceRuntimeModelVertexIndices =
+        ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_MODEL_VERTEX_INDICES"));
     private readonly bool _traceRuntimeLog = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_LOG") == "1";
     private readonly int _stepBudget = ParseStepBudget();
     private readonly ulong _cp0CountStep = (ulong)ParsePositiveInt("EUTHERDRIVE_GAUNTDL_CP0_COUNT_STEP", 1024);
@@ -752,6 +758,7 @@ internal sealed class MipsR5000Core
     private int _probeStepDebt;
     private int _traceWatchPcCount;
     private int _traceRuntimeVertexFifoPackerCount;
+    private int _traceRuntimeModelVertexIndexCount;
     private bool _traceRuntimeVertexFifoPackerActive;
     private int _traceRuntimeVertexFifoPackerVertexIndex;
     private int _traceRuntimeVertexFifoPackerVertexCount;
@@ -2485,6 +2492,7 @@ internal sealed class MipsR5000Core
         ulong pc = Pc;
         TraceWatchedPc(pc);
         TraceRuntimeVertexFifoPacker(pc);
+        TraceRuntimeModelVertexIndex(pc);
         RepairKnownGauntletGlideWinOpenRgbMask(pc);
         TraceKnownRuntimeTemplePowerupsRecordLoop(pc);
         if (TraceKnownRuntimeTempleItemsBoundary(pc))
@@ -28875,6 +28883,46 @@ internal sealed class MipsR5000Core
             $"variant={(uint)_gpr[7]} list=0x{list:x16} " +
             $"a2=0x{_gpr[6]:x16} t2=0x{_gpr[10]:x16} t3=0x{_gpr[11]:x16} " +
             $"fprs={FormatRuntimeVertexFifoPackerFprs()}{vertices}");
+    }
+
+    private void TraceRuntimeModelVertexIndex(ulong pc)
+    {
+        if (!_traceRuntimeModelVertexIndex ||
+            _traceRuntimeModelVertexIndexCount >= _traceRuntimeModelVertexIndexLimit ||
+            (pc & 0x1fffffffUL) != 0x000ba37cUL)
+        {
+            return;
+        }
+
+        uint index = (uint)_gpr[2] & 0x7fu;
+        if (_traceRuntimeModelVertexIndices.Length > 0 &&
+            !_traceRuntimeModelVertexIndices.Contains(index))
+        {
+            return;
+        }
+
+        ulong context = _gpr[16];
+        uint raw = IsMainRamRange(context + 0x90UL, 4UL)
+            ? _memory.Read32(context + 0x90UL)
+            : 0;
+        uint controlClass = raw & 0x180u;
+        ulong stream = _gpr[4];
+        ulong tableEntry = 0xffffffff80213988UL + index * 0x20UL;
+        string tableWords = IsMainRamRange(tableEntry, 0x20UL)
+            ? FormatTraceWords(tableEntry, 8)
+            : "unmapped";
+        string streamWords = IsMainRamRange(stream, 8UL)
+            ? FormatTraceWords(stream, 2)
+            : "unmapped";
+
+        _traceRuntimeModelVertexIndexCount++;
+        Console.WriteLine(
+            $"[GAUNTDL:MODEL-VERTEX-INDEX] n={_traceRuntimeModelVertexIndexCount} " +
+            $"frame={_memory.VoodooRenderFrameCount} pc=0x{pc:x16} " +
+            $"stream=0x{stream:x16}:{streamWords} raw=0x{raw:x4} " +
+            $"index=0x{index:x2} control=0x{controlClass:x3} context=0x{context:x16} " +
+            $"table=0x{tableEntry:x16}:{tableWords} " +
+            $"ra=0x{_gpr[31]:x16} a1=0x{_gpr[5]:x16} a2=0x{_gpr[6]:x16} a3=0x{_gpr[7]:x16}");
     }
 
     private void TraceRuntimeVertexFifoPackerPayload(ulong pc)
