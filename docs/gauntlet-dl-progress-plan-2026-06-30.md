@@ -15361,3 +15361,41 @@ f60 SHA-256 716c529436c89fa1fa970d7c7f057454d2c0bf2f32a3095f3a83d3d3750df173
 Continue from f60 with a write watch on `0x80227ab0` until the first nonzero
 main-state selection. That result will distinguish the gameplay `0x4000`
 family from the closed `0x8000` diagnostic carousel without patching guest RAM.
+
+#### MAME NVRAM still selects the diagnostic family; P1 coin/start no longer leaks to P2
+
+The isolated MAME PIC/timekeeper branch was continued through the first
+nonzero main-state selection and ordinary VBlank cadence. The loaded boot
+image first writes `0x8002` at `0x800161d8`; by frame 240 it renders the
+guest's colored `DIAGNOSTIC MENU`, DL 2.4 credits, and character artwork:
+
+```text
+f240 main state  = 0x8002
+frameHash        = 0xb9a86eb7
+swaps            = 464
+Type-3 packets   = 28019
+LFB writes       = 11753881
+snapshot         = /tmp/gaunt-mame-nvram-f240.warm.gz
+snapshot SHA-256 = 23628eb44129a77beebabe9fa3e13a8348df37b3a9b221d9edf15278a4c68a11
+```
+
+A two-frame FIRE3 pulse exits the page through guest code and writes
+`0x8007` at `0x80081bec`. This confirms that known-good MAME NVRAM alone
+does not select the gameplay `0x4000` family in EutherDrive.
+
+The frontend input adapter also had a separate four-player mapping bug:
+P1 coin and start were mirrored onto P2. `SetInputState` now updates only
+P1; `SetPad2InputState` remains the explicit P2 path. Runtime input traces
+from the f240 checkpoint prove the corrected neutral and active-low masks:
+
+```text
+P1 coin   system=fffe active=00010000 p1=00000000 p2=00000000
+released  system=ffff active=00000000 p1=00000000 p2=00000000
+P1 start  system=fffb active=00040000 p1=00000100 p2=00000000
+```
+
+A clean P1 coin-release-start sequence changes rendered work but does not
+leave the diagnostic owner or write a `0x400x` state. Keep the input fix;
+continue the gameplay investigation above the state owner by comparing the
+boot/runtime selector's hardware dependencies with MAME. Do not overwrite
+the user's active security saves and do not patch the guest main-state word.

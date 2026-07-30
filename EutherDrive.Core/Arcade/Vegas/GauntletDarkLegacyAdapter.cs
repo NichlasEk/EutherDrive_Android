@@ -235,7 +235,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         PadType padType)
     {
         _machine.Input.SetPlayer1(up, down, left, right, fight: a, magic: b, turbo: c, start, coin: mode);
-        _machine.Input.SetPlayer2(up: false, down: false, left: false, right: false, fight: false, magic: false, turbo: false, start, coin: mode);
+        _machine.Input.SetPlayer2(up: false, down: false, left: false, right: false, fight: false, magic: false, turbo: false, start: false, coin: false);
         _machine.Input.SetOperator(service: x, test: y, volumeDown: false, volumeUp: z);
     }
 
