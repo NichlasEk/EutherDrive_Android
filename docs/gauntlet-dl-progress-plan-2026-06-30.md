@@ -15317,3 +15317,47 @@ artifacts/gauntlet-probe/gaunt-cold-f12128-state8008-tailfix-20260730.png
 PNG SHA-256      3a9c6e75ac6bc5c78bae9f4ebd627548d5f381cfdb966c895eb5860cf80be7d9
 snapshot SHA-256 4b3163bdad74dfdca7e07d6d700f16aa966d22027a5497b135b086d545722d45
 ```
+
+#### Color-combine boundary closed and compressed cold-boot checkpoints
+
+An eight-frame replay from the clean f12128 state to f12136 shows that the
+large state-8008 polygon is guest-owned and viewport-clipped. Its five finite
+vertices cover the diagnostic page coherently, and the center pixel samples
+live NCC-decoded texture bytes before the FBI color path.
+
+Disabling only `EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FBZ_COLORPATH_RGB_COMBINE`
+changes the diagnostic text from its intentional red, blue, and green material
+colors to white, but does not change the brown page surface or the repeated
+right-hand glyph strip. The FBI color combine is therefore not the source of
+the remaining visual defect and stays enabled.
+
+The next gameplay-oriented branch now uses a separate copy of MAME's known
+Temple-gameplay PIC/timekeeper pair. It does not overwrite the ROM-adjacent or
+active EutherDrive saves. Its first cold continuation is deterministic:
+
+```text
+f35 main state   = 0
+PC               = 0xffffffff800f6df4
+frameHash        = 0x907bfb45
+f60 main state   = 0
+PC               = 0xffffffff800ded6c
+```
+
+GauntletProbe warm snapshots can now be gzip-compressed by ending their path
+in `.gz`. Version-14 load/save roundtrips preserve the loaded frame hash, and
+the known f12128 checkpoint shrinks from 91 MiB to 5.6 MiB. The new isolated
+branch checkpoints are about 1.1 MiB each:
+
+```text
+/tmp/gaunt-mame-nvram-f35.warm.gz
+/tmp/gaunt-mame-nvram-f40.warm.gz
+/tmp/gaunt-mame-nvram-f60.warm.gz
+
+f35 SHA-256 d4ae0ed08722d74e4549f5de5863c7577f2e35f03778fa262d97a796960f72ce
+f40 SHA-256 18c4631b842e25a86f86e1f02718ab19d607021bccfd4897f3d3bb34be908611
+f60 SHA-256 716c529436c89fa1fa970d7c7f057454d2c0bf2f32a3095f3a83d3d3750df173
+```
+
+Continue from f60 with a write watch on `0x80227ab0` until the first nonzero
+main-state selection. That result will distinguish the gameplay `0x4000`
+family from the closed `0x8000` diagnostic carousel without patching guest RAM.

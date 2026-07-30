@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.IO.Compression;
 using System.Numerics;
 using System.Reflection;
 using System.Security.Cryptography;
@@ -1209,7 +1210,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
         Directory.CreateDirectory(directory);
 
     string tempPath = $"{path}.tmp";
-    using (var stream = File.Create(tempPath))
+    using (var stream = OpenWarmupSnapshotWriteStream(tempPath, path))
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
@@ -1228,6 +1229,24 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     }
 
     File.Move(tempPath, path, overwrite: true);
+}
+
+static Stream OpenWarmupSnapshotWriteStream(string tempPath, string destinationPath)
+{
+    FileStream file = File.Create(tempPath);
+    if (!destinationPath.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
+        return file;
+
+    return new GZipStream(file, CompressionLevel.Fastest);
+}
+
+static Stream OpenWarmupSnapshotReadStream(string path)
+{
+    FileStream file = File.OpenRead(path);
+    if (!path.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
+        return file;
+
+    return new GZipStream(file, CompressionMode.Decompress);
 }
 
 static void SaveRequestedFinalSnapshot(GauntletDarkLegacyAdapter adapter, int frames, int cpuStepsPerFrame)
@@ -1324,7 +1343,7 @@ static void LoadRequestedTextureWriterSidecar(GauntletDarkLegacyAdapter adapter)
 
 static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, int frames, int cpuStepsPerFrame, bool ignoreCpuStepMismatch)
 {
-    using var stream = File.OpenRead(path);
+    using var stream = OpenWarmupSnapshotReadStream(path);
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
@@ -1353,8 +1372,15 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     LoadSio(reader, GetProperty(machine, "Sio"));
     LoadVoodoo(reader, GetProperty(machine, "Voodoo"), version);
 
-    if (stream.Position != stream.Length)
-        throw new InvalidDataException($"Warmup snapshot has {stream.Length - stream.Position} trailing bytes");
+    if (stream.CanSeek)
+    {
+        if (stream.Position != stream.Length)
+            throw new InvalidDataException($"Warmup snapshot has {stream.Length - stream.Position} trailing bytes");
+    }
+    else if (stream.ReadByte() != -1)
+    {
+        throw new InvalidDataException("Compressed warmup snapshot has trailing bytes");
+    }
 }
 
 static void SaveCpu(BinaryWriter writer, object cpu)
@@ -1645,7 +1671,8 @@ static void LoadVoodoo(BinaryReader reader, object facade, int version)
         SetField(backend, "_cmdFifoAddressMin", reader.ReadInt32());
         SetField(backend, "_cmdFifoAddressMax", reader.ReadInt32());
     }
-    if (reader.BaseStream.CanSeek && reader.BaseStream.Position < reader.BaseStream.Length)
+    if (version >= 5 ||
+        (reader.BaseStream.CanSeek && reader.BaseStream.Position < reader.BaseStream.Length))
         ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(backend, "_auxBuffer"));
     if (version >= 5)
         ReadTextureWriterMaps(reader, backend);

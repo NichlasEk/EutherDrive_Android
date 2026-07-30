@@ -29,6 +29,15 @@ env EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
     /home/nichlas/roms/MAME/Midway/Vegas/gauntd 520 200000 0
 ```
 
+Warmup and final snapshot paths ending in `.gz` are compressed transparently.
+This preserves the same snapshot format after decompression while avoiding the
+large sparse-memory footprint of raw `.warm` files:
+
+```sh
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/gaunt-f35.warm.gz
+EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=/tmp/gaunt-f60.warm.gz
+```
+
 Two default-off texture provenance overlays can be applied after loading a
 snapshot:
 
