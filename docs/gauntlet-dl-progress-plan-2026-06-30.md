@@ -14874,3 +14874,54 @@ not reached its completion flag yet.
 /tmp/gaunt-f7320-plus20m-new-loader.png
 /tmp/gaunt-f7320-plus50m-new-loader.warm
 ```
+
+The Hall-of-Legends branch continues beyond the preceding loader's +80M
+completion point:
+
+```text
+window   loader   complete   new textured tris   new raster pixels
++55M     11       0          7154                6030186
++60M     10       0          7224                8069362
++65M     40       0          7336                6957780
++70M     41       0          6247                6674204
++75M     41       0          4727                3765654
++80M     43       0          6524                6928548
++85M     -1       1          7454                6962028
+```
+
+State 43 is therefore a real additional finalizer for this branch. At +85M
+the guest naturally sets the loader word to `-1` and load-complete to 1 while
+main state remains `0x8007` and the exit latch remains zero.
+
+Twenty ordinary no-input frames preserve that completed state through f7340:
+
+```text
+loader=-1 complete=1 main=0x8007 latch=0 counter=0xc2
+```
+
+The selected frame is a stable, recognizable `Hall of Legends` page, although
+its glyph surfaces remain horizontally repeated. A fresh four-frame
+FIRE3/Turbo edge at f7341--f7344 then performs the next native transition. By
+f7360 the released input record is back to zero, but the causal guest result
+is clear:
+
+```text
+main state       = 0x8008
+exit latch       = 1
+counter          = 0
+loader           = -1
+load complete    = 1
+new swaps        = 2602
+frame hash       = 0xec2f9d25
+```
+
+The f7360 frame combines the Hall page with the next diagnostic/world-owner
+overlay. Continue without input until the state-`0x8008` owner naturally
+consumes its latch; do not patch the state or resend FIRE3 while latch is one.
+
+```text
+/tmp/gaunt-f7340-hall-loader-complete.warm
+/tmp/gaunt-f7340-hall-loader-complete.png
+/tmp/gaunt-f7360-post-hall-fire3.warm
+/tmp/gaunt-f7360-post-hall-fire3.png
+```
