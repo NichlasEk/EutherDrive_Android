@@ -15170,3 +15170,61 @@ uploads. Continue from the frame-12012 snapshot with the baseline preset
 explicit. Do not diagnose the historical `invalid-standard-window` text as
 an active FIFO stop: the recorded `0x00010241` packet is subsequently
 completed and decoded, and the counters above prove continued work.
+
+#### Isolated cold boot reaches a real diagnostic image and Hall of Legends
+
+A continuation from the clean frame-12012 checkpoint first ran five million
+raw CPU steps, followed by ordinary frame cadence. The CPU-only interval
+changed loader work buffers and built player asset paths without changing the
+main state or corrupting the executable. Restoring VBlank/device cadence then
+advanced the runtime substantially:
+
+```text
+f12033  swaps=424  Type3=0     texture writes=308213  black loading surface
+f12053  swaps=444  Type3=3606  texture writes=446357  90377 colored pixels
+f12073  swaps=444  Type3=9654  LFB writes=3181749    diagnostic menu visible
+```
+
+The f12053 image contains real character art, `Version DL 2.4`, credits text,
+and the loader's red memory-reservation diagnostics. By f12073 the guest's
+own `DIAGNOSTIC MENU` and `Exit menu (FIRE 3)` page are legible over the
+character art. This is the first clean isolated-cold-boot chain to prove the
+entire firmware, disk, model, texture-upload, Type-3, and selected-display
+path together. The remaining horizontal bands and overlapping diagnostic
+surfaces are real visual defects, but the page is not a synthetic probe image
+or a stuck black framebuffer.
+
+A four-frame P1 FIRE3/Turbo pulse at f12074--f12077 reached the normalized
+runtime record as `0x0800`. The baseline diagnostic-exit bridge set only the
+game's own latch, after which guest code performed the native transition:
+
+```text
+f12093 main state=0x8007  exit latch=1  load complete=0
+        swaps=696         Type3=10690   texture writes=700332
+```
+
+No further input was injected. A ten-million-instruction loader window
+cleared the latch naturally, changed loader state to `1`, selected
+`levels/levelE1`, and continued emitting geometry:
+
+```text
+f12093 +10m  main=0x8007  latch=0  loader=1  complete=0
+             Type3=20601  swaps=1058  LFB writes=12083388
+f12094       Type3=20915  colored pixels=81094
+```
+
+The selected f12094 image is a recognizable `Hall of Legends` page with
+portraits, name rows, XP fields, and `MORE`, while the diagnostic page and
+repeated horizontal glyph bands still overlap it. Continue this loader
+naturally from the f12094 snapshot. Do not send another FIRE3 edge while
+load-complete is zero.
+
+```text
+artifacts/gauntlet-probe/gaunt-cold-f12094-fire3-plus10m-20260730.png
+/tmp/gaunt-f12094-fire3-plus10m-baseline.warm
+/tmp/gaunt-f12094-fire3-plus10m-baseline.log
+/tmp/gaunt-f12094-fire3-plus10m-baseline-mainram.bin
+
+PNG SHA-256      b7bbe203eb8baaed28054c1fedb2eaa155555d5a0b5c88988941f6cd6c427e1d
+snapshot SHA-256 ffbd51d4681ee7575f0a4776f8b61ee9cc2364a4131f10323170b63d8ec50465
+```
