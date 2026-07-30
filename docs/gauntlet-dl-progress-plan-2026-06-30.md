@@ -14984,3 +14984,51 @@ cleared its latch.
 /tmp/gaunt-f7400-post-hall-world-stable.warm
 /tmp/gaunt-f7400-post-hall-world-stable.png
 ```
+
+#### The post-Hall world exits into another native loader
+
+Natural no-input continuation keeps the published state-`0x8008` world live
+and advances its page counter:
+
+```text
+f7440 counter=4 hash=0x99fd5a57
+f7460 counter=6 hash=0x61ea63b4
+f7540 counter=10 hash=0x61839912
+```
+
+A four-frame TEST edge from f7440 is byte-for-byte identical to the no-input
+f7460 control, including the exported PPM SHA-256. TEST is therefore not an
+exit from this owner.
+
+A fresh four-frame FIRE3/Turbo edge from f7540 is causal even at counter 10.
+It resets the page counter and advances the guest to state `0x8002`:
+
+```text
+f7560 main=0x8002 latch=1 counter=0 texture writes +269030 swaps +216
+```
+
+A baseline-enabled 5M CPU window lets state `0x8002` finish naturally. The
+latch clears, the counter reaches 6, and the selected image becomes the known
+red diagnostic fullscreen phase. A second, separate FIRE3 edge then advances
+to state `0x8007`. Two 5M owner windows establish the next real loader:
+
+```text
+frame         = 7580
+main state    = 0x8007
+exit latch    = 0
+loader state  = 1
+load complete = 0
+counter       = 4
+frame hash    = 0xb58879b6
+```
+
+Continue this new loader without another input edge. Rotate intermediate RAM
+and PPM dumps, retain the latest valid warm snapshot, and keep
+`EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1` explicit.
+
+```text
+/tmp/gaunt-f7540-post-hall-world-counter.warm
+/tmp/gaunt-f7560-plus5m-state8002.png
+/tmp/gaunt-f7580-state8002-fire3.png
+/tmp/gaunt-f7580-plus10m-state8007-loader.warm
+```
