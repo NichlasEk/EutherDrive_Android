@@ -248,6 +248,48 @@ Minnesdiagnostikrader ligger fortfarande ovanpå, men detta reproducerar den
 positiva state-`0x8001`-grenen med dagens kompletta v15-runtime och är den nya
 gameplay-orienterade huvudcheckpointen.
 
+## Andra orakelcykeln når diagnostikägaren, inte initials
+
+State-`0x8001` fortsatte utan input till f1140 och visade en ren
+attract-/världsscen med figurer och en stor grön sköld. Den andra
+MAME-tidsatta inputcykeln kördes därefter:
+
+```text
+coin@1140-1145
+start@1230-1235
+fight@1320-1325
+up@1365-1395
+fight@1410-1415
+```
+
+Gästen stannade i `0x8001`, men diagnostikmenyn återkom och öppnade senare
+sin objektvy. Naturlig fortsättning gav:
+
+```text
+f1430 main=0x8001 counter=112 latch=0
+f1530 main=0x8001 counter=126 latch=0
+f1730 main=0x8001 counter=152 latch=0
+f1980 main=0x8001 counter=184 latch=0
+```
+
+Detta är en riktig inputrespons men inte MAME-orakelns `ENTER INITIALS`.
+Bildrutorna fortsätter rendera levande 3D bakom diagnostiktexten.
+
+Menyn anger själv `Exit menu (FIRE 3)`. En femframes FIRE3/Turbo-edge vid
+f1980--f1984 utförde den naturliga gästövergången:
+
+```text
+f2080 main=0x8007 counter=0  latch=1 frameHash=0x30e41dc5
+f2180 main=0x8007 counter=10 latch=0 frameHash=0x586c7757
+```
+
+Mellan dessa checkpoints laddade gästen `hiscore/legends`, ansiktsmodeller
+och high-score-paneler. f2180 visar den riktiga `Legends`-sidan med namn som
+RIZ, SJB och DON, men diagnostikens gamla textrecords ligger kvar ovanpå.
+Detta bekräftar att input-, loader-, state-owner- och high-score-flödena
+fungerar. Det bekräftar inte gameplay: EutherDrive väljer fortfarande
+diagnostikfamiljen där samma isolerade MAME-provenance når initials.
+
 ## Rotorsak och fix
 
 Två oberoende heap-stack-kollisioner orsakade den tidigare cachetrampolin- och
@@ -338,22 +380,22 @@ artifacts/gauntlet-probe/gaunt-mame-oracle-cycle1-f520-rebuilt-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-mame-oracle-cycle1-f520-rebuilt.png
 artifacts/gauntlet-probe/gaunt-mame-oracle-postcycle-f620-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-mame-oracle-postcycle-f620.png
+artifacts/gauntlet-probe/gaunt-mame-oracle-precycle2-f1140-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-mame-oracle-cycle2-f1430-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-mame-oracle-postcycle2-f1530-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-mame-oracle-postcycle2-f1730-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-mame-oracle-postcycle2-f1980-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-fire3-exit-f2080-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-fire3-postreturn-f2180-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-fire3-postreturn-f2180.png
 ```
 
 f670-snapshotten återladdades med noll körda frames och gav deterministiskt
 `frameHash=0x30e41dc5`, `pc=0xffffffff80078670` och `swaps=3294`.
 
-## Nästa körning
+## Nästa pass
 
-Fortsätt state-`0x8001` naturligt till nästa MAME-orakelcykel. Skicka ingen
-input före den andra cykelns coin vid f1140:
-
-```sh
-EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-mame-oracle-postcycle-f620-60k.warm.gz \
-EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=620 \
-EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=60000 \
-EUTHERDRIVE_GAUNTDL_EXTRA_SERIES= \
-EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=artifacts/gauntlet-probe/gaunt-mame-oracle-precycle2-f1140-60k.warm.gz \
-tools/GauntletProbe/run-gauntdl-baseline.sh \
-/home/nichlas/roms/MAME/Midway/Vegas/gauntd 1140
-```
+Jämför den första runtime-selector som skiljer EutherDrive från MAME före
+andra cykelns stateval. Spåra service/test- och timekeeper/PIC-beroenden från
+den rena f1140-snapshotten och MAME-referensen. Patching av huvudstate eller
+bortfiltrering av diagnostikens trianglar är inte giltiga lösningar.

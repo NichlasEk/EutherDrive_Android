@@ -15513,3 +15513,41 @@ counter is healthy rather than evidence of an impending reset. The next
 bringup target is therefore to exit or bypass the diagnostic-menu state through
 correct input/state behavior while retaining the verified v15 checkpoint
 chain, not to patch the scheduler or watchdog.
+
+#### The complete second cycle selects the diagnostic object view in EutherDrive
+
+The rebuilt v15 branch continued from f620 to f1140 without input. Its main
+state remained `0x8001`, and the selected image was a clean textured world
+scene with characters and a large green shield. The second oracle cycle was
+then injected with the same relative timing used by MAME:
+
+```text
+coin@1140-1145,start@1230-1235,fight@1320-1325,up@1365-1395,fight@1410-1415
+```
+
+Unlike MAME, EutherDrive did not reach `ENTER INITIALS`. The diagnostic menu
+returned over the live 3D scene and opened its object view while the owner
+continued to tick:
+
+```text
+f1430 main=0x8001 counter=112 latch=0
+f1530 main=0x8001 counter=126 latch=0
+f1730 main=0x8001 counter=152 latch=0
+f1980 main=0x8001 counter=184 latch=0
+```
+
+This is a selector/input-family mismatch, not a frozen renderer. The screen's
+own `Exit menu (FIRE 3)` contract was tested with a five-frame Turbo edge at
+f1980. Guest code naturally wrote `0x8007`, raised and later cleared the exit
+latch, loaded `hiscore/legends`, face assets, and high-score panels:
+
+```text
+f2080 main=0x8007 counter=0  latch=1 frameHash=0x30e41dc5
+f2180 main=0x8007 counter=10 latch=0 frameHash=0x586c7757
+```
+
+The f2180 framebuffer contains the real Legends names and artwork, although
+stale diagnostic text records remain overlaid. The next causal pass should
+compare the service/test and timekeeper/PIC inputs consumed by the runtime
+selector before the second-cycle state write. Do not patch the main-state
+word or hide the diagnostic geometry in the host renderer.
