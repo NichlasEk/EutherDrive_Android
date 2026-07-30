@@ -141,6 +141,44 @@ riktigt färglagt lila/silverfärgat spelobjekt längst ned. Den gamla korrupta
 diagnostik-/glyphytan ligger fortfarande uppe till vänster, så detta bevisar
 verklig nivågrafik men ännu inte korrekt slutlig framebufferkomposition.
 
+## Level-loadern är passerad
+
+Fortsättningen från f2260 nådde hela vägen genom nivå- och powerupfaserna:
+
+```text
+f2460  loader state 0x0c  /d0/levels/levelE1/objects.rom
+f2560  loader state 0x29  /d0/powerups/objects.rom + textures.rom
+f2660  loader state 0x2b  /d0/powerups/anim.rom, stream 0x220/0x220
+f2760  loader state -1    main state 0x8008
+```
+
+Vid f2760 var level-loadern alltså inaktiv och huvudmaskinen hade lämnat
+`0x8004` för post-loader/game-init i `0x8008`. Den riktiga object arena-fixen
+bar då minst 832 objekt och fortsatte till minst 1024 objekt vid f2860, långt
+förbi den gamla stackkollisionen vid objekt 160. Även
+`/d0/items/levelF1/objects.rom` publicerades.
+
+f2860 visade Gauntlet Dark Legacy-logotypen och verklig färglagd miljögrafik.
+Vid f2960 fyllde en texturerad 3D-scen med lava och stenarkitektur nästan hela
+bilden:
+
+```text
+main state       0x8008
+loader state     0xffffffff
+frame hash       0x45be5521
+non-black        216483
+colored          216250
+draw packets     281413
+textured tris    6768
+```
+
+Det återstående felet är nu verklig renderkorrekthet, inte bringup eller
+assetladdning. Geometrin/kameran är felkomponerad med stora överlappande ytor.
+Post-loadertrafiken ger samtidigt reproducerbara
+`VOODOO-CMDFIFO-TEXTURE-STATE-TAIL`-händelser där upp till 13 ord hoppas över.
+Nästa kodpass ska korrelera dessa paketsvansar med den felaktiga geometrin
+från den deterministiska f2960-snapshotten.
+
 ## Rotorsak och fix
 
 Två oberoende heap-stack-kollisioner orsakade den tidigare cachetrampolin- och
@@ -210,6 +248,15 @@ artifacts/gauntlet-probe/gaunt-level-loader-f2160-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-level-loader-f2260-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-level-loader-f2260.ppm
 artifacts/gauntlet-probe/gaunt-level-loader-f2260.png
+artifacts/gauntlet-probe/gaunt-level-loader-f2360-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f2460-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f2560-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f2660-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f2760-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-post-loader-f2860-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-post-loader-f2860.png
+artifacts/gauntlet-probe/gaunt-post-loader-f2960-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-post-loader-f2960.png
 ```
 
 f670-snapshotten återladdades med noll körda frames och gav deterministiskt
@@ -217,14 +264,14 @@ f670-snapshotten återladdades med noll körda frames och gav deterministiskt
 
 ## Nästa körning
 
-Fortsätt från f2260 för att låta den avslutade `death`-/`temple`-resursvågen
-gå mot load-complete/publicering utan att göra om monsterladdningen:
+Fortsätt från f2960 för att undersöka den första fulla 3D-scenen utan att göra
+om bringup, level-loader eller game-init:
 
 ```sh
-EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-level-loader-f2260-60k.warm.gz \
-EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=2260 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-post-loader-f2960-60k.warm.gz \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=2960 \
 EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=60000 \
 EUTHERDRIVE_GAUNTDL_EXTRA_SERIES= \
 tools/GauntletProbe/run-gauntdl-baseline.sh \
-/home/nichlas/roms/MAME/Midway/Vegas/gauntd 2360
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd 3060
 ```
