@@ -204,6 +204,50 @@ om till f240 med sina sparade 200000 CPU-steg per frame; själva inputcykeln
 ska därefter använda den verifierade 60000-stegskadensen. Blanda inte den
 provenansen med active-save-karusellen.
 
+## Den isolerade grenen når state 0x8001 igen
+
+Den bevarade `/tmp/gaunt-mame-nvram-f140.warm.gz` byggdes om till f240 med
+200000 CPU-steg per frame. Den nya snapshotten reproducerade den historiska
+orakelns starka räknare exakt:
+
+```text
+Type-3 packets  28019
+LFB writes      11753881
+swaps           464
+main state      0x8000
+counter         54
+```
+
+f240-bilden visar en läsbar diagnostikmeny över full Gauntlet-karaktärs- och
+creditsgrafik. Därefter laddades 200k-snapshotten med den uttryckliga,
+dokumenterade 60000-stegskadensen och fick MAME-orakelns första inputcykel:
+
+```text
+coin@240-245
+start@330-335
+fight@420-425
+up@465-495
+fight@510-515
+```
+
+Alla inputmasker verifierades i runtime-bridgen. Vid f520 hade gästen fångat
+cykeln som `latch=1` men arbetade fortfarande i state-`0x8000`-byggaren.
+Ytterligare 100 frames utan input lät ägaren returnera naturligt:
+
+```text
+f620 main state  0x8001
+f620 counter     4
+f620 latch       0
+frame hash       0xb32cd5bf
+non-black        292471
+colored          291681
+```
+
+f620-bilden innehåller en riktig 3D-scen med flera figurer på sten-/lavagolv.
+Minnesdiagnostikrader ligger fortfarande ovanpå, men detta reproducerar den
+positiva state-`0x8001`-grenen med dagens kompletta v15-runtime och är den nya
+gameplay-orienterade huvudcheckpointen.
+
 ## Rotorsak och fix
 
 Två oberoende heap-stack-kollisioner orsakade den tidigare cachetrampolin- och
@@ -288,6 +332,12 @@ artifacts/gauntlet-probe/gaunt-post-state8008-fire3-f3160-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-state8002-f3250-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-oracle-cycle-f3530-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-oracle-cycle-f3530.png
+artifacts/gauntlet-probe/gaunt-mame-nvram-f240-rebuilt-200k.warm.gz
+artifacts/gauntlet-probe/gaunt-mame-nvram-f240-rebuilt.png
+artifacts/gauntlet-probe/gaunt-mame-oracle-cycle1-f520-rebuilt-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-mame-oracle-cycle1-f520-rebuilt.png
+artifacts/gauntlet-probe/gaunt-mame-oracle-postcycle-f620-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-mame-oracle-postcycle-f620.png
 ```
 
 f670-snapshotten återladdades med noll körda frames och gav deterministiskt
@@ -295,16 +345,15 @@ f670-snapshotten återladdades med noll körda frames och gav deterministiskt
 
 ## Nästa körning
 
-Bygg först om den isolerade MAME-NVRAM-grenen från dess bevarade f140-snapshot
-till den rena diagnostikcheckpoint där den positiva gameplay-inputcykeln
-tidigare började:
+Fortsätt state-`0x8001` naturligt till nästa MAME-orakelcykel. Skicka ingen
+input före den andra cykelns coin vid f1140:
 
 ```sh
-EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/gaunt-mame-nvram-f140.warm.gz \
-EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=140 \
-EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-mame-oracle-postcycle-f620-60k.warm.gz \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=620 \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=60000 \
 EUTHERDRIVE_GAUNTDL_EXTRA_SERIES= \
-EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=artifacts/gauntlet-probe/gaunt-mame-nvram-f240-rebuilt-200k.warm.gz \
+EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=artifacts/gauntlet-probe/gaunt-mame-oracle-precycle2-f1140-60k.warm.gz \
 tools/GauntletProbe/run-gauntdl-baseline.sh \
-/home/nichlas/roms/MAME/Midway/Vegas/gauntd 240
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd 1140
 ```
