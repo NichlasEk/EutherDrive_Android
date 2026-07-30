@@ -15399,3 +15399,72 @@ leave the diagnostic owner or write a `0x400x` state. Keep the input fix;
 continue the gameplay investigation above the state owner by comparing the
 boot/runtime selector's hardware dependencies with MAME. Do not overwrite
 the user's active security saves and do not patch the guest main-state word.
+
+#### MAME input oracle reproduced; correctly timed first cycle selects state 0x8001
+
+The checked-in MAME Lua reference is not a neutral attract-mode capture after
+frame 1200. It deliberately repeats the following five-input cycle every 900
+MAME frames:
+
+```text
+cycle +0..4      P1 coin
+cycle +90..94    P1 start
+cycle +180..184  P1 fight
+cycle +225..254  P1 up
+cycle +270..274  P1 fight
+```
+
+A fresh MAME run used an isolated copy of the known gameplay NVRAM and a new
+output directory. Its frame 1200 and frame 2400 PNG files are byte-identical
+to the preserved cold-reference files:
+
+```text
+frame 1200 SHA-256 1f6950152e1773c4b1cc79e35ff774af04baa38acdae6767d098a84ac6302068
+frame 2400 SHA-256 7c8d4b86a528591dcdb2d89858f09332d6362f21cfde6048e1737929a949d064
+```
+
+The first cycle moves from credits into the attract sequence. The second
+cycle reaches the real `ENTER INITIALS` screen by MAME frame 2280. Lower
+numbered PNGs in the old shared output directory were later overwritten by
+the initials/password save-state chain and must not be treated as cold-boot
+provenance.
+
+EutherDrive reaches the same credits/character-art phase by f240, so the
+MAME cycle's relative spacing was shifted to start at that clean checkpoint.
+The earlier P1 coin/start probe used only a six-frame gap and was not an
+equivalent test. The correctly timed first cycle was:
+
+```text
+coin@240-245,start@330-335,fight@420-425,up@465-495,fight@510-515
+```
+
+Guest code then wrote main state `0x8001` at PC `0x80081bec`, rather than the
+`0x8007` produced by the earlier diagnostic FIRE3 exit. The resulting black
+transition at f520 is deterministic:
+
+```text
+snapshot         = /tmp/gaunt-mame-oracle-cycle1-f520.warm.gz
+snapshot SHA-256 = 6b425c6c8d954a386ad7367d2c832563922813333f8ebe0b3d32dfefd459ea79
+frameHash        = 0x30e41dc5
+PC               = 0xffffffff800edac4
+```
+
+`GauntletProbe` now accepts comma-separated, end-exclusive input windows via
+`EUTHERDRIVE_GAUNTDL_INPUT_SCRIPT`, using the syntax shown above. Unknown
+actions and malformed windows fail fast. This keeps multi-stage oracle input
+in one deterministic run instead of chaining lossy one-pulse processes.
+
+A five-frame A/B continuation from f520 with normal rasterization and
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_DISCARD_TYPE3_RASTER=1` produced the
+same PC, frame hash, and byte-identical compressed snapshot:
+
+```text
+f525 PC           = 0xffffffff800edac8
+f525 frameHash    = 0x30e41dc5
+snapshot SHA-256  = 0f7a3e5cfd5e89990f6b52c5fc426e494d29525169bdcf4b01271165cc70cf01
+```
+
+Continue the isolated branch through the second 900-frame cycle. Watch both
+request `0x8021c534` and main state `0x80227ab0`; then re-enable rasterization
+for the visual checkpoint. Do not infer gameplay merely from the shared MAME
+output directory or patch either guest state word.

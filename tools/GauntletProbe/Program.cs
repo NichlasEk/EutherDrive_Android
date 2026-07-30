@@ -530,7 +530,9 @@ static ulong? ParseOptionalHexUlong(string? value)
 
 static void ApplyInputFromEnvironment(GauntletDarkLegacyAdapter adapter, long? frame)
 {
+    string? inputScript = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_INPUT_SCRIPT");
     bool hasInputConfiguration =
+        !string.IsNullOrWhiteSpace(inputScript) ||
         HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_UP") ||
         HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_DOWN") ||
         HasEnvValue("EUTHERDRIVE_GAUNTDL_INPUT_LEFT") ||
@@ -553,19 +555,32 @@ static void ApplyInputFromEnvironment(GauntletDarkLegacyAdapter adapter, long? f
         return;
 
     bool active = IsInputFrameActive(frame);
-    bool up = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_UP");
-    bool down = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_DOWN");
-    bool left = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_LEFT");
-    bool right = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_RIGHT");
-    bool fight = active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_FIGHT") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_A"));
-    bool magic = active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MAGIC") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_B"));
-    bool turbo = active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TURBO") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_C"));
-    bool start = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_START");
-    bool service = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_SERVICE");
-    bool test = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TEST");
-    bool volumeDown = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_VOLUME_DOWN");
-    bool volumeUp = active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_VOLUME_UP");
-    bool coin = active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_COIN") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MODE"));
+    HashSet<string> scripted = ParseActiveInputScript(inputScript, frame);
+    bool up = (active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_UP")) || scripted.Contains("up");
+    bool down = (active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_DOWN")) || scripted.Contains("down");
+    bool left = (active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_LEFT")) || scripted.Contains("left");
+    bool right = (active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_RIGHT")) || scripted.Contains("right");
+    bool fight =
+        (active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_FIGHT") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_A"))) ||
+        scripted.Contains("fight") ||
+        scripted.Contains("a");
+    bool magic =
+        (active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MAGIC") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_B"))) ||
+        scripted.Contains("magic") ||
+        scripted.Contains("b");
+    bool turbo =
+        (active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TURBO") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_C"))) ||
+        scripted.Contains("turbo") ||
+        scripted.Contains("c");
+    bool start = (active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_START")) || scripted.Contains("start");
+    bool service = (active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_SERVICE")) || scripted.Contains("service");
+    bool test = (active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_TEST")) || scripted.Contains("test");
+    bool volumeDown = (active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_VOLUME_DOWN")) || scripted.Contains("volumedown");
+    bool volumeUp = (active && IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_VOLUME_UP")) || scripted.Contains("volumeup");
+    bool coin =
+        (active && (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_COIN") || IsEnvEnabled("EUTHERDRIVE_GAUNTDL_INPUT_MODE"))) ||
+        scripted.Contains("coin") ||
+        scripted.Contains("mode");
 
     if (active || frame.HasValue)
     {
@@ -573,6 +588,63 @@ static void ApplyInputFromEnvironment(GauntletDarkLegacyAdapter adapter, long? f
         adapter.SetOperatorInputState(service, test, volumeDown, volumeUp);
     }
 }
+
+static HashSet<string> ParseActiveInputScript(string? raw, long? frame)
+{
+    var active = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    if (string.IsNullOrWhiteSpace(raw))
+        return active;
+
+    foreach (string specification in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        string[] actionAndRange = specification.Split('@', StringSplitOptions.TrimEntries);
+        string[] range = actionAndRange.Length == 2
+            ? actionAndRange[1].Split('-', StringSplitOptions.TrimEntries)
+            : [];
+        if (actionAndRange.Length != 2 ||
+            string.IsNullOrWhiteSpace(actionAndRange[0]) ||
+            range.Length != 2 ||
+            !long.TryParse(range[0], out long start) ||
+            !long.TryParse(range[1], out long end) ||
+            start < 0 ||
+            end <= start)
+        {
+            throw new InvalidDataException(
+                "EUTHERDRIVE_GAUNTDL_INPUT_SCRIPT must be comma-separated action@start-end windows with an exclusive end frame");
+        }
+
+        string action = actionAndRange[0];
+        if (!IsKnownScriptedInputAction(action))
+        {
+            throw new InvalidDataException(
+                $"Unknown EUTHERDRIVE_GAUNTDL_INPUT_SCRIPT action '{action}'");
+        }
+
+        if (frame.HasValue && frame.Value >= start && frame.Value < end)
+            active.Add(actionAndRange[0]);
+    }
+
+    return active;
+}
+
+static bool IsKnownScriptedInputAction(string action)
+    => action.Equals("up", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("down", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("left", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("right", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("fight", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("a", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("magic", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("b", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("turbo", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("c", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("start", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("service", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("test", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("volumedown", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("volumeup", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("coin", StringComparison.OrdinalIgnoreCase) ||
+       action.Equals("mode", StringComparison.OrdinalIgnoreCase);
 
 static bool HasEnvValue(string name)
     => Environment.GetEnvironmentVariable(name) is { Length: > 0 };
