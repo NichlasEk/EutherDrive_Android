@@ -14816,3 +14816,27 @@ another FIRE3 edge while load-complete is zero.
 /tmp/gaunt-f7320-plus5m-new-loader.warm
 /tmp/gaunt-f7320-plus5m-new-loader.png
 ```
+
+The new loader remains active and differs from the preceding content cycle:
+
+```text
+window   loader   complete   new textured tris   new raster pixels
++10M     1        0          7113                3602190
++20M     5        0          11248               11558860
++25M     11       0          6465                5813018
+```
+
+At +20M it has also performed 417,044 texture writes and produced a
+recognizable `Hall of Legends` front-end page with separate player/initial
+fields. The glyph/font surfaces still repeat in horizontal bands, but the
+screen identity and native loader progression are unambiguous. State 5 is new
+relative to the preceding `1 -> 2 -> 11` loader, confirming that FIRE3 entered
+a different content branch before both paths converge on the long state-11
+phase.
+
+```text
+/tmp/gaunt-f7320-plus10m-new-loader.warm
+/tmp/gaunt-f7320-plus20m-new-loader.warm
+/tmp/gaunt-f7320-plus20m-new-loader.png
+/tmp/gaunt-f7320-plus25m-new-loader.warm
+```
