@@ -15228,3 +15228,92 @@ artifacts/gauntlet-probe/gaunt-cold-f12094-fire3-plus10m-20260730.png
 PNG SHA-256      b7bbe203eb8baaed28054c1fedb2eaa155555d5a0b5c88988941f6cd6c427e1d
 snapshot SHA-256 ffbd51d4681ee7575f0a4776f8b61ee9cc2364a4131f10323170b63d8ec50465
 ```
+
+#### State 8008 survives the variable texture-state cache record
+
+The f12094 loader continued naturally for another 90 million raw CPU
+instructions. It reached loader state `-1`, set load-complete to 1, and
+remained stable for ten ordinary frames. A fresh four-frame FIRE3/Turbo edge
+then performed the native transition from main state `0x8007` to `0x8008`.
+Five million no-input instructions let the new owner build its world; one
+ordinary frame left a clean Voodoo state:
+
+```text
+main state       = 0x8008
+exit latch       = 1
+loader state     = -1
+load complete    = 1
+fbiInit3         = 0x00110001
+```
+
+The next interval cleared the exit latch naturally but exposed a deterministic
+FIFO ownership bug. The guest texture-state builder at
+`0x800bd18c..0x800bd220` writes a genuine four-word TMU packet followed by a
+13-word software cache record through the Voodoo aperture. One runtime variant
+contained:
+
+```text
+pc=800bd204 value=000ffbf9
+pc=800bd20c value=07ebf9fa
+pc=800bd214 value=000c0a01
+pc=800bd220 value=000ffbff
+```
+
+The first value resembles a 16-word Type-1 packet. Treating it as hardware
+work consumed the following Type-3 geometry and wrote `0x3db2e55e` to
+`fbiInit3`. The existing texture-state-tail experiment was enabled in the
+baseline, but recognized one fixed set of cache values only after the entire
+record and a particular following TMU packet had arrived. This later producer
+path varies both the values and the next packet, and the FIFO can decode after
+each individual aperture write.
+
+The ownership correction now identifies the record by its exact 17-word
+producer-PC chain: four real TMU words at `0x800bd18c..0x800bd19c`, followed
+by all 13 cache writers at `0x800bd1bc..0x800bd220`. It advances whatever
+contiguous cache words are currently available and therefore also handles
+records delivered in several write/decode slices. It does not inspect or
+special-case the cache payload values, and it does not suppress other Type-1
+packets.
+
+A replay from the last clean instruction boundary proves the causal result:
+
+```text
+checkpoint       = /tmp/gaunt-f12127-state8008-fbi3-prewrite-1375k.warm
+extra steps      = 62500
+tail records     = split record plus 13 subsequent records
+reg 0x87 writes  = 0
+fbiInit3         = 0x00110001
+```
+
+A longer ten-million-instruction no-input replay from the clean state-8008
+checkpoint also survives. It clears the latch, continues real Type-3 and
+raster work, and preserves the hardware initialization:
+
+```text
+main state       = 0x8008
+exit latch       = 0
+loader state     = -1
+load complete    = 1
+fbiInit3         = 0x00110001
+Type-3 packets   = 151104
+textured tris    = 5710
+raster pixels    = 1189516
+swaps            = 3386
+```
+
+One ordinary frame from that checkpoint preserves the state and produces
+109901 colored pixels. The selected image contains real textured world
+geometry and diagnostic glyph surfaces, but projection and clipping remain
+visibly wrong: large overlapping red/black polygons and repeated text bands
+still cover the view. The next graphics pass should therefore start from this
+clean checkpoint and investigate Type-3 coordinate/setup semantics. Do not
+revisit the disproven `fbiInit3` corruption or patch guest state.
+
+```text
+artifacts/gauntlet-probe/gaunt-cold-f12128-state8008-tailfix-20260730.png
+/tmp/gaunt-f12127-state8008-plus15m-tailfix.warm
+/tmp/gaunt-f12128-state8008-plus15m-tailfix.warm
+
+PNG SHA-256      3a9c6e75ac6bc5c78bae9f4ebd627548d5f381cfdb966c895eb5860cf80be7d9
+snapshot SHA-256 4b3163bdad74dfdca7e07d6d700f16aa966d22027a5497b135b086d545722d45
+```

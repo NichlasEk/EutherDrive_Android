@@ -36138,6 +36138,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE4_BODY_YIELD_TO_GLYPH_TYPE3_HEADER"));
     private readonly bool _experimentCommandFifoAdvanceTextureStateBuilderTail =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TEXTURE_STATE_BUILDER_TAIL"));
+    private readonly int _experimentCommandFifoAdvanceTextureStateBuilderTailTraceLimit =
+        ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TEXTURE_STATE_BUILDER_TAIL_TRACE_LIMIT"), 16);
     private readonly bool _experimentCommandFifoGateType5ProducerBodyHeader =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_GATE_TYPE5_PRODUCER_BODY_HEADER"));
     private readonly bool _experimentCommandFifoAdvanceType5ProducerBodyHeader =
@@ -36709,6 +36711,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private int _commandFifoImplausiblePacketTraceCount;
     private int _commandFifoType1PacketOwnershipTraceCount;
     private int _commandFifoType4PacketOwnershipTraceCount;
+    private int _commandFifoTextureStateBuilderTailTraceCount;
     private int _texturedPixelTraceCount;
     private int _texturedPixelCandidateTraceCount;
     private int _commandFifoImplausibleType1OutsideBulkWindowGateCount;
@@ -41237,22 +41240,6 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_experimentCommandFifoAdvanceTextureStateBuilderTail)
             return false;
 
-        ReadOnlySpan<uint> tailValues =
-        [
-            0x07ffa64c,
-            0x483a3a23,
-            0x4d414741,
-            0xbbaa5551,
-            0xffeeddcc,
-            0x00bc0bf4,
-            0x07b3c5e3,
-            0x07f7d7e1,
-            0x009019ed,
-            0x00c03bea,
-            0x008bebf3,
-            0x001bddeb,
-            0x0793bddc
-        ];
         ReadOnlySpan<uint> tailWriterPcs =
         [
             0x800bd1bc,
@@ -41273,58 +41260,57 @@ internal class VoodooBringupBackend : IVoodooBackend
         int currentStorage = CommandFifoReadStorageIndex(packetStart);
         uint currentWriterPc = (uint)_cmdFifoStorageLastWritePc[currentStorage];
         int tailOffset = tailWriterPcs.IndexOf(currentWriterPc);
-        if (tailOffset < 0 || command != tailValues[tailOffset])
+        if (tailOffset < 0)
             return false;
 
         int tailStart = packetStart - tailOffset;
-        if (!CommandFifoStoredWordMatchesWriter(tailStart - 4, 0x0005a604, 0x800bd18c) ||
-            !CommandFifoStoredWordMatchesWriter(tailStart - 3, 0x8c24110f, 0x800bd190) ||
+        if (!CommandFifoStoredWordMatchesWriterPc(tailStart - 4, 0x800bd18c) ||
+            !CommandFifoStoredWordMatchesWriterPc(tailStart - 3, 0x800bd190) ||
             !CommandFifoStoredWordMatchesWriterPc(tailStart - 2, 0x800bd194) ||
             !CommandFifoStoredWordMatchesWriterPc(tailStart - 1, 0x800bd19c))
             return false;
 
-        for (int i = 0; i < tailValues.Length; i++)
+        uint precedingCommand = ReadCommandFifoWordAt(tailStart - 4);
+        if ((precedingCommand & 0x7) != 4)
+            return false;
+
+        for (int i = 0; i < tailOffset; i++)
         {
-            bool matches = i < tailOffset
-                ? CommandFifoStoredWordMatchesWriter(tailStart + i, tailValues[i], tailWriterPcs[i])
-                : CommandFifoWordMatchesWriter(tailStart + i, tailValues[i], tailWriterPcs[i]);
-            if (!matches)
+            if (!CommandFifoStoredWordMatchesWriterPc(tailStart + i, tailWriterPcs[i]))
                 return false;
         }
 
-        int nextPacket = tailStart + tailValues.Length;
-        if (!CommandFifoWordMatchesWriter(nextPacket, 0x00009604, 0x800bd248) ||
-            !CommandFifoWordMatchesWriter(nextPacket + 1, 0x80000009, 0x800bd24c))
+        int wordsToSkip = 0;
+        for (int i = tailOffset; i < tailWriterPcs.Length; i++)
+        {
+            if (!CommandFifoWordMatchesWriterPc(tailStart + i, tailWriterPcs[i]))
+                break;
+            wordsToSkip++;
+        }
+        if (wordsToSkip == 0)
             return false;
 
-        int wordsToSkip = tailValues.Length - tailOffset;
         InvalidateCommandFifoWords(packetStart, wordsToSkip);
         SetCommandFifoReadIndex(
             DecodeCommandFifoReadIndex(packetStart + wordsToSkip),
             "texture-state-builder-tail",
             command,
             wordsToSkip);
-        Console.WriteLine(
-            $"[GAUNTDL:VOODOO-CMDFIFO-TEXTURE-STATE-TAIL] " +
-            $"packet=0x{packetStart * 4:x8} start=0x{tailStart * 4:x8} " +
-            $"offset={tailOffset} skipped={wordsToSkip} next=0x{nextPacket * 4:x8}");
+        if (_commandFifoTextureStateBuilderTailTraceCount++ <
+            _experimentCommandFifoAdvanceTextureStateBuilderTailTraceLimit)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:VOODOO-CMDFIFO-TEXTURE-STATE-TAIL] " +
+                $"packet=0x{packetStart * 4:x8} start=0x{tailStart * 4:x8} " +
+                $"offset={tailOffset} skipped={wordsToSkip} next=0x{(tailStart + tailWriterPcs.Length) * 4:x8}");
+        }
         return true;
     }
 
-    private bool CommandFifoWordMatchesWriter(int logicalIndex, uint value, uint writerPc)
+    private bool CommandFifoWordMatchesWriterPc(int logicalIndex, uint writerPc)
     {
         int storageIndex = CommandFifoReadStorageIndex(logicalIndex);
         return IsCommandFifoWordValidForRead(logicalIndex) &&
-               ReadCommandFifoWordAt(logicalIndex) == value &&
-               _cmdFifoStorageLastWriteSource[storageIndex] == CmdFifoStorageWriteSourceFifo &&
-               (uint)_cmdFifoStorageLastWritePc[storageIndex] == writerPc;
-    }
-
-    private bool CommandFifoStoredWordMatchesWriter(int logicalIndex, uint value, uint writerPc)
-    {
-        int storageIndex = CommandFifoReadStorageIndex(logicalIndex);
-        return _cmdFifoStorageLogicalIndex[storageIndex] == logicalIndex &&
-               _cmdFifoRam[storageIndex] == value &&
                _cmdFifoStorageLastWriteSource[storageIndex] == CmdFifoStorageWriteSourceFifo &&
                (uint)_cmdFifoStorageLastWritePc[storageIndex] == writerPc;
     }
