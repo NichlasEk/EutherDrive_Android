@@ -11473,6 +11473,37 @@ Result: when the `0xCD4A255C`/float-like owner is rejected inside the forced
 background/noise image. There is no better nearby owner in that narrow forced
 path.
 
+#### Native Player 1 completes ZZZ
+
+The earlier f2760 image was not a valid editor origin despite showing the P1
+panel: its active-player mask was zero. The native COIN/START f2800 baseline
+snapshot has mask `1`, state `0x400a`, and a fully initialized initials object
+at `0x80229460`.
+
+Input must be quantized around the full sign-extended normalizer PC
+`0xffffffff80019b9c` and its caller return `0xffffffff80014cc8`. A raw
+`0x80019b9c` stop never matches; one whole 10M-step frame is too long and
+times out P1. The correct press and release each use a normal 60k host frame,
+then CPU stepping through one complete normalizer call.
+
+Two DOWN edges select `Z` through `@ -> _ -> Z`. The editor ignores confirm
+buttons until its `+0x16` animation cooldown reaches zero. Once settled,
+Fight confirms the glyph. Three such cycles produce:
+
+```text
+Z__  position 1
+ZZ_  position 2
+ZZZ  position 3, completion flag 1
+```
+
+At f2812 the entered bytes are ASCII `ZZZ`, state remains `0x400a`, and the
+native P1 mask remains one. Five million CPU-only steps plus 100 real
+baseline frames did not write a new main state. The next causal boundary is
+the post-initials completion/timer path after a finished name, not input
+delivery. Preserve `/tmp/euther-native-initials-zzz-confirmed-f2812.warm.gz`
+and `/tmp/euther-native-post-initials-zzz-plus5m-f2812.warm.gz` as the narrow
+continuations.
+
 Broad transform control:
 
 ```text

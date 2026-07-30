@@ -637,3 +637,60 @@ dem explicit. En ombyggd baseline-only reload behöll `state=0x400a` och
 Player 1-masken utan de tidigare experimentvariablerna. Nästa pass ska
 kvantisera initials-riktningar och Fight över hela gästloopar, mata tre
 bokstäver och följa originalvägen vidare till password/character selection.
+
+## Native Player 1 skriver ZZZ
+
+Den gamla f2760-checkpointen hade Player 1-panel men active-player-mask `0`,
+eftersom den kom från den tidigare manuella transitionen. Riktig initials-
+interaktion måste därför börja från den nya native-kedjan. Baseline-f2800 har:
+
+```text
+state                  = 0x400a
+active-player mask     = 1
+initials object        = 0x80229460
+candidate glyph        = 0x0040
+entered name           = 00 5f 5f
+snapshot sha256        = b5e5f621767a3d230ff0696bdf4bfc5d21c4e204d0c85994f8113e2058149055
+```
+
+Ett korrekt inputkvantum består av:
+
+1. ett vanligt 60k-frame som skriver host-input,
+2. CPU-steg till den sign-extended normalizer-entryn
+   `0xffffffff80019b9c`,
+3. steg till return-PC `0xffffffff80014cc8`,
+4. ett release-frame och samma normalizer/return-sekvens.
+
+Att använda `0x80019b9c` som stop-PC missar eftersom CPU-PC:n är
+sign-extended. Att köra hela 10M som ett frame är också fel: då hinner
+initials-sessionen löpa ut.
+
+Två DOWN-edge:ar flyttade candidate `@ -> _ -> Z`. Editorns cooldown vid
+objekt-offset `+0x16` måste nå noll innan Fight accepteras. Fight, Magic,
+Turbo och START normaliserades alla korrekt (`0x200`, `0x400`, `0x800`,
+`0x100`), men försök under cooldown ändrade inte namnet. Med cooldown noll
+bekräftade Fight bokstaven.
+
+Tre stabiliserade Fight-cykler gav:
+
+```text
+after letter 1  name=Z__ position=1 completion=0
+after letter 2  name=ZZ_ position=2 completion=0
+after letter 3  name=ZZZ position=3 completion=1
+```
+
+Vid f2812 är state fortfarande `0x400a`, P1-masken är `1`, och
+`0x80229478..7a` innehåller ASCII `ZZZ`. Fem miljoner fortsatta CPU-steg och
+100 riktiga baseline-frames gav ingen write till main-state. Nästa gräns är
+därför post-initials completion/timer efter ett redan färdigt namn, inte
+längre inputnormalisering eller bokstavsval.
+
+Bevarade lokala fortsättningar:
+
+```text
+/tmp/euther-native-baseline-initials-f2800.warm.gz
+/tmp/euther-native-initials-z-ready-f2804.warm.gz
+/tmp/euther-native-initials-zzz-confirmed-f2812.warm.gz
+/tmp/euther-native-initials-zzz-released-f2812.warm.gz
+/tmp/euther-native-post-initials-zzz-plus5m-f2812.warm.gz
+```
