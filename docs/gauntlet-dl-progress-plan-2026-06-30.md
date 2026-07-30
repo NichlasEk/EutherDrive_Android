@@ -15551,3 +15551,49 @@ stale diagnostic text records remain overlaid. The next causal pass should
 compare the service/test and timekeeper/PIC inputs consumed by the runtime
 selector before the second-cycle state write. Do not patch the main-state
 word or hide the diagnostic geometry in the host renderer.
+
+#### Portable MAME proves state 0x400a and locates its exact writer
+
+A portable MAME 0.288 run against an isolated copy of the known NVRAM reached
+the real `ENTER INITIALS` screen at frame 2280. Its full main-RAM dump proves
+that the request remains `0x8001` while the actual main state becomes
+`0x400a`:
+
+```text
+0x80227ab0 = 0x400a
+0x8020c534 = 0x8001
+0x80227b74 = 0x38
+0x80227ec8 = 0
+```
+
+The first scripted cycle sets state `0x8001` at MAME frame 1384. The next
+cycle's coin/start reaches `0x400a` at frame 2195. A debugger watchpoint
+captured the preceding write at frame 2194, PC `0x80085448`. The containing
+function begins at `0x8008540c`; its caller is at `0x800139c0`, after a
+cleanup tail beginning at `0x80013990`.
+
+The real input poll at `0x800eb078` can now be run context-preserving behind
+the off-by-default
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_NATIVE_INPUT_POLL` flag. It reads the
+correct MAME port values and fills auxiliary input records, but an A/B run
+did not by itself change the EutherDrive state selection.
+
+The separate off-by-default
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_ENTER_RUNTIME_INITIALS` transfers the live
+guest CPU to the original transition tail with a valid 40-byte caller frame.
+This exposed a genuine missing VBlank effect: guest PC `0x800136d4` waits
+for `0x80227b44` to change, while `RecordRuntimeVblankTick()` previously
+updated only `0x800b2ed8` and `0x80228114`. The bridge now increments
+`0x80227b44` once per VBlank as well.
+
+With that fix, the live transition exits the frame wait and proceeds through
+its cleanup. The current f2520 checkpoint is still before the `0x400a`
+writer because several QIO operations take their timeout path, but CPU,
+packet and swap activity continue. Continue from:
+
+```text
+artifacts/gauntlet-probe/gaunt-live-transition-vblank-f2520-60k.warm.gz
+```
+
+The next causal boundary is QIO completion during the original transition
+cleanup, not request-word patching or renderer suppression.

@@ -377,6 +377,11 @@ internal sealed class GauntletDarkLegacyMachine
     private readonly int _vblankGuestTimerInterruptInterval =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_IRQ_INTERVAL", 1);
     private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
+    private readonly bool _enableNativeRuntimeInputPoll =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_NATIVE_INPUT_POLL"));
+    private readonly bool _enterRuntimeInitials =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ENTER_RUNTIME_INITIALS"));
+    private bool _runtimeInitialsEntered;
     private readonly int _vblankCpuSteps = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_VBLANK_CPU_STEPS", 2048);
 
     public VegasMemoryMap MemoryMap { get; } = new();
@@ -446,8 +451,7 @@ internal sealed class GauntletDarkLegacyMachine
         }
         Cpu.StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         Cpu.ServiceKnownRuntimeTempleTextureQioPreservingContext();
-        if (_enableRuntimeInputPollBridge)
-            MemoryMap.RecordRuntimeInputPollEffects();
+        PollRuntimeInput(allowInitialsTransition: false);
         if (_splitVblankCpu)
         {
             Cpu.RunProbeSteps(_vblankCpuSteps);
@@ -459,13 +463,26 @@ internal sealed class GauntletDarkLegacyMachine
             Cpu.RunProbeFrame();
             Sio.PulseVblank(state: false);
         }
-        if (_enableRuntimeInputPollBridge)
-            MemoryMap.RecordRuntimeInputPollEffects();
+        PollRuntimeInput(allowInitialsTransition: true);
         MemoryMap.StepFrame();
         Audio.RunFrame();
         if (MemoryMap.ConsumeWatchdogResetRequest())
             Reset();
         RenderFrame(target);
+    }
+
+    private void PollRuntimeInput(bool allowInitialsTransition)
+    {
+        if (allowInitialsTransition && _enterRuntimeInitials && !_runtimeInitialsEntered)
+            _runtimeInitialsEntered = Cpu.StartRuntimeInitialsTransition();
+
+        if (!_enableRuntimeInputPollBridge)
+            return;
+
+        if (_enableNativeRuntimeInputPoll)
+            Cpu.RunRuntimeInputPollPreservingContext();
+        else
+            MemoryMap.RecordRuntimeInputPollEffects();
     }
 
     public void RenderFrame(EutherFrameTarget target)
@@ -1683,6 +1700,7 @@ internal sealed class MipsR5000Core
     private ulong _tileWriteCount;
     private bool _timerInterruptPending;
     private bool _insideContextPreservingRuntimeTimerTick;
+    private bool _insideContextPreservingRuntimeInputPoll;
     private bool _runtimeTempleWeaponsLoadRequested;
     private bool _runtimeTempleWeaponsResourceBuilt;
     private ulong _runtimeTempleWeaponsTextureStream;
@@ -1891,6 +1909,117 @@ internal sealed class MipsR5000Core
             _remainingProbeSteps = savedRemainingProbeSteps;
             _probeStepDebt = savedProbeStepDebt;
             _insideContextPreservingRuntimeTimerTick = false;
+        }
+
+        return returned;
+    }
+
+    public bool RunRuntimeInputPollPreservingContext()
+    {
+        const ulong inputPollEntry = 0xffffffff800eb078UL;
+        return RunGuestFunctionPreservingContext(
+            inputPollEntry,
+            argument0: null,
+            maxSteps: 100_000,
+            bypassRuntimeInputPollFastPath: true);
+    }
+
+    public bool StartRuntimeInitialsTransition()
+    {
+        const ulong initialsTransitionTail = 0xffffffff80013990UL;
+        const int callerFrameSize = 40;
+        if (_halted || _insideContextPreservingRuntimeInputPoll || !IsRuntimeCodeAddress(Pc))
+            return false;
+
+        ulong returnPc = Pc;
+        ulong callerSp = _gpr[29] - callerFrameSize;
+        _memory.Write32(callerSp + 16, unchecked((uint)_gpr[16]));
+        _memory.Write32(callerSp + 20, unchecked((uint)_gpr[17]));
+        _memory.Write32(callerSp + 24, unchecked((uint)_gpr[18]));
+        _memory.Write32(callerSp + 28, unchecked((uint)_gpr[19]));
+        _memory.Write32(callerSp + 32, unchecked((uint)_gpr[20]));
+        _memory.Write32(callerSp + 36, unchecked((uint)returnPc));
+        _gpr[29] = callerSp;
+        _hasPendingBranch = false;
+        _pendingBranchTarget = 0;
+        _hasImmediatePcOverride = false;
+        _immediatePcOverride = 0;
+        Pc = initialsTransitionTail;
+        Console.WriteLine(
+            $"[GAUNTDL:EXPERIMENT] runtime-initials-transition pc={initialsTransitionTail:x16} " +
+            $"return={returnPc:x16} sp={callerSp:x16}");
+        return true;
+    }
+
+    private bool RunGuestFunctionPreservingContext(
+        ulong entry,
+        uint? argument0,
+        int maxSteps,
+        bool bypassRuntimeInputPollFastPath)
+    {
+        const ulong returnSentinel = 0xffffffff80000000UL;
+        if (_halted || _insideContextPreservingRuntimeInputPoll || !IsRuntimeCodeAddress(Pc))
+            return false;
+
+        ulong[] savedGpr = (ulong[])_gpr.Clone();
+        ulong[] savedCp0 = (ulong[])_cp0.Clone();
+        ulong[] savedFpr = (ulong[])_fpr.Clone();
+        uint[] savedFcr = (uint[])_fcr.Clone();
+        ulong savedPc = Pc;
+        uint savedLastFetchedInstruction = LastFetchedInstruction;
+        bool savedHalted = _halted;
+        bool savedHasPendingBranch = _hasPendingBranch;
+        ulong savedPendingBranchTarget = _pendingBranchTarget;
+        bool savedHasImmediatePcOverride = _hasImmediatePcOverride;
+        ulong savedImmediatePcOverride = _immediatePcOverride;
+        ulong savedHi = _hi;
+        ulong savedLo = _lo;
+        int savedRemainingProbeSteps = _remainingProbeSteps;
+        int savedProbeStepDebt = _probeStepDebt;
+        bool returned = false;
+
+        try
+        {
+            _insideContextPreservingRuntimeInputPoll = bypassRuntimeInputPollFastPath;
+            _halted = false;
+            _hasPendingBranch = false;
+            _pendingBranchTarget = 0;
+            _hasImmediatePcOverride = false;
+            _immediatePcOverride = 0;
+            _gpr[31] = returnSentinel;
+            if (argument0.HasValue)
+                _gpr[4] = argument0.Value;
+            _gpr[0] = 0;
+            Pc = entry;
+
+            for (int i = 0; i < maxSteps && !_halted; i++)
+            {
+                if (Pc == returnSentinel)
+                {
+                    returned = true;
+                    break;
+                }
+                Step();
+            }
+        }
+        finally
+        {
+            Array.Copy(savedGpr, _gpr, _gpr.Length);
+            Array.Copy(savedCp0, _cp0, _cp0.Length);
+            Array.Copy(savedFpr, _fpr, _fpr.Length);
+            Array.Copy(savedFcr, _fcr, _fcr.Length);
+            Pc = savedPc;
+            LastFetchedInstruction = savedLastFetchedInstruction;
+            _halted = savedHalted;
+            _hasPendingBranch = savedHasPendingBranch;
+            _pendingBranchTarget = savedPendingBranchTarget;
+            _hasImmediatePcOverride = savedHasImmediatePcOverride;
+            _immediatePcOverride = savedImmediatePcOverride;
+            _hi = savedHi;
+            _lo = savedLo;
+            _remainingProbeSteps = savedRemainingProbeSteps;
+            _probeStepDebt = savedProbeStepDebt;
+            _insideContextPreservingRuntimeInputPoll = false;
         }
 
         return returned;
@@ -15086,7 +15215,7 @@ internal sealed class MipsR5000Core
     private bool TryFastPathKnownRuntimeInputPoll(ulong pc)
     {
         const ulong entry = 0xffffffff800eb078UL;
-        if (!_enableRuntimeInputPollBridge || pc != entry)
+        if (!_enableRuntimeInputPollBridge || _insideContextPreservingRuntimeInputPoll || pc != entry)
             return false;
 
         if (_memory.Read32(entry + 0x00UL) != 0x27bdffa0U ||
@@ -29992,11 +30121,14 @@ internal sealed class VegasMemoryMap
     public void RecordRuntimeVblankTick()
     {
         const ulong ramFrameTick = 0xffffffff800b2ed8UL;
+        const ulong runtimeProgressTick = 0xffffffff80227b44UL;
         const ulong runtimeFrameTick = 0xffffffff80228114UL;
         const uint frameDelta = 0xb4U;
 
         if (IsMainRamRange(ramFrameTick, 4))
             Write32(ramFrameTick, Read32(ramFrameTick) + frameDelta);
+        if (IsMainRamRange(runtimeProgressTick, 4))
+            Write32(runtimeProgressTick, Read32(runtimeProgressTick) + 1U);
         if (IsMainRamRange(runtimeFrameTick, 4))
             Write32(runtimeFrameTick, Read32(runtimeFrameTick) + frameDelta);
     }

@@ -395,7 +395,76 @@ f670-snapshotten återladdades med noll körda frames och gav deterministiskt
 
 ## Nästa pass
 
-Jämför den första runtime-selector som skiljer EutherDrive från MAME före
-andra cykelns stateval. Spåra service/test- och timekeeper/PIC-beroenden från
-den rena f1140-snapshotten och MAME-referensen. Patching av huvudstate eller
-bortfiltrering av diagnostikens trianglar är inte giltiga lösningar.
+Fortsätt den levande initials-transitionen från f2520 och gör QIO-cleanupen
+timer-/completion-korrekt. Patching av huvudstate eller bortfiltrering av
+diagnostikens trianglar är inte giltiga lösningar.
+
+## Portabel MAME-orakel och exakt initials-writer
+
+MAME 0.288 kördes portabelt och headless mot en isolerad kopia av den
+bevarade NVRAM-provenancen. Samma 900-frame inputcykel upprepades från frame
+1200. Vid frame 2280 visar den riktiga MAME-bilden `ENTER INITIALS`, och hela
+32 MiB huvud-RAM gav:
+
+```text
+main state 0x80227ab0 = 0x400a
+request    0x8020c534 = 0x8001
+counter    0x80227b74 = 0x38
+latch      0x80227ec8 = 0
+```
+
+Det avfärdar antagandet att request-ordet måste lämna `0x8001`. En
+frame-för-frame-trace visade den verkliga sekvensen:
+
+```text
+f1384 main 0x8001  efter första fight-pulsen
+f2195 main 0x400a  fem frames efter nästa start-puls
+```
+
+MAME-debuggerns skriv-watchpoint fångade själva övergången:
+
+```text
+frame 2194
+writer PC 0x80085448
+value     0x0000400a
+```
+
+`0x80085448` ligger i funktionen som börjar vid `0x8008540c`. Dess enda
+direkta caller ligger vid `0x800139c0`. Originalets transition-tail börjar
+vid `0x80013990` och gör flera cleanup-anrop innan initials-funktionen.
+
+Den tidigare host-inputbryggan och ett nytt explicit
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_NATIVE_INPUT_POLL=1` testades mot
+samma snapshot. Native-pollen kör gästens riktiga `0x800eb078`, läser
+MAME-korrekta portar och fyller de extra runtime-inputposterna, men den
+förklarar inte ensam statevalet. Experimentet är därför avstängt som
+standard.
+
+## Levande transition och VBlank-gränsen
+
+En rå patch av state till `0x400a` aktiverade omedelbart gameplay-koden och
+gav 520 texturerade trianglar, men ofullständig data. Ett synkront anrop av
+initializern gav korrekt `AllocMem() called while mem reserved`; cleanupen
+måste köras först och transitionen sträcker sig över flera frames.
+
+Det explicita experimentet
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_ENTER_RUNTIME_INITIALS=1` växlar därför den
+levande CPU-kontexten till originalets tail `0x80013990` med funktionens
+40-byte caller-frame. Det första naturliga stoppet var frame-waiten vid
+`0x800136d4`, som väntar på förändring i `0x80227b44`. Bringupens
+`RecordRuntimeVblankTick()` uppdaterade två andra tickord men inte detta.
+VBlank-bryggan ökar nu även `0x80227b44` med ett per frame.
+
+Efter fixen lämnar CPU:n waiten på nästa VBlank, kör initials-cleanupen och
+fortsätter genom QIO-timeout-fallbacken. Vid f2520 är CPU:n levande och
+swaps/packet counters fortsätter, men writer-PC `0x80085448` har ännu inte
+nåtts. Den aktuella gränsen är alltså cleanupens QIO-completion, inte längre
+input-selector, state-dispatch eller VBlank.
+
+Nya lokala checkpoints:
+
+```text
+artifacts/gauntlet-probe/gaunt-live-transition-vblank-f2320-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-live-transition-vblank-f2520-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-live-transition-vblank-f2520.ppm
+```
