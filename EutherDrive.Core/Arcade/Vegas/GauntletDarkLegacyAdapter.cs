@@ -433,12 +433,21 @@ internal sealed class GauntletDarkLegacyMachine
             MemoryMap.RecordRuntimeVblankTick();
         if (_enableVblankGameTimeBridge)
             MemoryMap.RecordRuntimeGameTimeTick();
-        if (_enableVblankGuestTimerInterrupt && _vblankGuestTimerInterruptCountdown <= 0)
+        const ulong runtimeMainState = 0xffffffff80227ab0UL;
+        bool serviceRuntimeInitialsScheduler =
+            _enterRuntimeInitials &&
+            _runtimeInitialsEntered &&
+            MemoryMap.Read32(runtimeMainState) != 0x400aU;
+        bool pulseGuestTimer = _enableVblankGuestTimerInterrupt || serviceRuntimeInitialsScheduler;
+        int guestTimerInterval = _enableVblankGuestTimerInterrupt
+            ? _vblankGuestTimerInterruptInterval
+            : 100;
+        if (pulseGuestTimer && _vblankGuestTimerInterruptCountdown <= 0)
         {
             MemoryMap.RequestRuntimeTimerInterrupt();
-            _vblankGuestTimerInterruptCountdown = _vblankGuestTimerInterruptInterval;
+            _vblankGuestTimerInterruptCountdown = guestTimerInterval;
         }
-        if (_enableVblankGuestTimerInterrupt)
+        if (pulseGuestTimer)
             _vblankGuestTimerInterruptCountdown--;
         if (_enableContextPreservingVblankTimerDispatch)
         {
@@ -833,6 +842,8 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS");
     private readonly bool _traceRuntimeWorkerSignal =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORKER_SIGNAL"));
+    private readonly bool _traceRuntimeInterrupt =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_INTERRUPT"));
     private readonly bool _traceRuntimeCacheTrampolineEntry =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_CACHE_TRAMPOLINE_ENTRY"));
     private readonly bool _enableRuntimeAssetObjectArena =
@@ -1575,6 +1586,7 @@ internal sealed class MipsR5000Core
     private int _runtimeRecordScanAllocateRejectTraceCount;
     private int _runtimeInterruptSuppressTraceCount;
     private int _runtimeWorkerSignalTraceCount;
+    private int _runtimeInterruptTraceCount;
     private ulong _runtimeWorkerSignalLastState = ulong.MaxValue;
     private int _exceptionFpuContextTraceCount;
     private int _exceptionFpuContextLoadTraceCount;
@@ -28744,6 +28756,12 @@ internal sealed class MipsR5000Core
         ulong pending = _cp0[13] & _cp0[12] & Cp0CauseInterruptPendingMask;
         if (pending == 0)
             return false;
+        if (_traceRuntimeInterrupt && _runtimeInterruptTraceCount++ < 128)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:IRQ] pending pc={pc:x16} status={_cp0[12]:x16} cause={_cp0[13]:x16} " +
+                $"masked={pending:x4} {_memory.GetNileInterruptDebugStatus()}");
+        }
 
         if (_enableRuntimeInterruptSuppress && IsRuntimeCodeAddress(pc))
         {
@@ -28793,6 +28811,12 @@ internal sealed class MipsR5000Core
         Pc = (_cp0[12] & Cp0StatusBev) != 0
             ? 0xffffffffbfc00380UL
             : 0xffffffff80000180UL;
+        if (_traceRuntimeInterrupt && _runtimeInterruptTraceCount++ < 128)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:IRQ] enter pc={pc:x16} vector={Pc:x16} status={_cp0[12]:x16} " +
+                $"cause={_cp0[13]:x16} pending={pending:x4}");
+        }
         return true;
     }
 

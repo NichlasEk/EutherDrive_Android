@@ -468,3 +468,105 @@ artifacts/gauntlet-probe/gaunt-live-transition-vblank-f2320-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-live-transition-vblank-f2520-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-live-transition-vblank-f2520.ppm
 ```
+
+## Cleanup-QIO:n är konsumerad och huvudstate är 0x400a
+
+f2520-staten avslöjade QIO-objektet `0x80295440` med state `0x7107`,
+status noll och noden `0x80295470` publicerad på scheduler-ready-listan.
+Den tidigare körningen använde rå `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1`.
+Eftersom den profilen gör ospecificerade bringup-fixar sanna aktiverade den
+också den gamla globala `RUNTIME_INTERRUPT_SUPPRESS`. CPU:n såg Nile-pulsen
+som `Cause=0x0800`, men kastade den före exception-entry.
+
+Med den kanoniska `EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1`, som uttryckligen
+sätter suppression till noll, och en enda guest-routad timerpuls gick den
+obrutna kedjan:
+
+```text
+0x80000180  exception vector
+0x800dec10  runtime interrupt handler
+0x800dea2c  timer/scheduler dispatch
+0x800f087c  QIO worker, a0=0x80295440
+0x800de480  scheduler return
+```
+
+Riktiga IDE-interrupt följde. Vid f2540 är filesystem- och
+scheduler-ready-listorna tomma, QIO-objektet har handle `0xffffffff` och
+status `0x0500`, och RAM-dumpen visar:
+
+```text
+0x80227ab0 = 0x400a
+```
+
+Detta är den MAME-verifierade `ENTER INITIALS`-staten, nådd efter originalets
+cleanup-tail i stället för genom en state-patch. Initials-experimentet ger nu
+självt en guest-korrekt schedulerpuls var hundrade frame medan det är aktivt;
+normal baseline påverkas inte. En default-off, begränsad
+`EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_INTERRUPT` visar Nile request, maskning och
+exception-entry för framtida IRQ-fel.
+
+Efter statebytet laddar gästen riktiga select/player-resurser. Vid f2660 är
+state fortfarande `0x400a`, aktuell sökväg är
+`/d0/select/textures.rom`, texture writes har nått `5 213 588`, men inga nya
+Type-3 draw packets har ännu emitterats efter framebuffer-clear. Nästa gräns
+är därför select-loaderns completion och första initials-draw, därefter
+initials-inputen.
+
+Reload-verifierade fortsättningar:
+
+```text
+artifacts/gauntlet-probe/gaunt-live-transition-scheduler-f2540-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-initials-f2560-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-initials-f2660-60k.warm.gz
+```
+
+## Första riktiga initials-bilden och hela inputkedjan
+
+Select-loadern blir färdig utan ytterligare fixar. Vid f2760 har gästen
+fortfarande huvudstate `0x400a`, men har nu emitterat 510 nya texturerade
+trianglar och en verklig fyrspelarscen:
+
+```text
+drawPackets  = 170670
+rasterPixels = 280827
+nonBlack     = 162221
+colored      = 156454
+frameHash    = 0x4d578d50
+```
+
+Bilden matchar MAME:s `ENTER INITIALS`-layout: Player 1:s initials-panel
+ligger längst ned till vänster, medan Player 2--4 visar `INSERT ... TO JOIN
+GAME`. Den stora rubriken och P1-panelen är delvis dolda av de kvarvarande
+horisontella renderfelen, så scenen får inte misstolkas som en vanlig
+coin/join-prompt.
+
+```text
+artifacts/gauntlet-probe/gaunt-initials-f2760-60k.warm.gz
+snapshot sha256 b1db2a8d1930881fb251ed76d77add7f78edb441fe622f37dc9ac216adef74ef
+artifacts/gauntlet-probe/gaunt-initials-f2760.ppm
+ppm sha256 a40529149f46bb5854d0c3b6d68000ff1d9e367c347b2907dbaac9096c811b7f
+```
+
+Ett A/B-test mellan host-inputbryggan och den default-avstängda native-pollen
+gav exakt samma f2840-framebuffer och draw-count. Coin/start/fight-sekvensen
+ändrade animationen men lämnade korrekt state `0x400a`, eftersom Player 1
+redan befinner sig i initials-editorn.
+
+Den riktiga nästa gränsen var tidskvantiseringen. Vid 60 000 CPU-steg per
+probe-frame hann en kort knappuls skrivas till runtime-recordet men inte nå
+gästens normaliserare. Ett isolerat 10M-stegspass från den rena f2760-staten
+visade hela kedjan utan RAM-patch:
+
+```text
+runtime record 0x80262b90 = 0x00000020  (P1 DOWN)
+0x80019b9c inputnormalisering körs
+0x800eb834 index 0 läser a2=0x00000020
+0x80227ba8 = 0x00000020                  (held)
+```
+
+Det bevisar att initials-editorn får riktig input. Nästa pass ska mata
+press/release i hela gästloopskvantum och sedan bekräfta tre initialer med
+Fight. Fortsättningar från f2760 ska inte återaktivera
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_ENTER_RUNTIME_INITIALS`; använd vid behov en
+explicit 100-frame guest-timer-IRQ. Själva initials-experimentets automatiska
+schedulerpuls är nu begränsad till tiden före huvudstate `0x400a`.

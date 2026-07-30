@@ -15597,3 +15597,67 @@ artifacts/gauntlet-probe/gaunt-live-transition-vblank-f2520-60k.warm.gz
 
 The next causal boundary is QIO completion during the original transition
 cleanup, not request-word patching or renderer suppression.
+
+#### The live cleanup reaches the native 0x400a initials state
+
+The f2520 QIO object is `0x80295440`, with its `0x80295470` worker node already
+published on the runtime scheduler list. The apparent deadlock was caused by
+using raw `EUTHERDRIVE_GAUNTDL_BRINGUP_FAST=1`: that fallback also enables the
+legacy global runtime interrupt suppression. The canonical baseline preset
+explicitly disables it.
+
+With `EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1`, one guest-routed timer pulse
+enters `0x80000180`, runs `0x800dec10 -> 0x800dea2c`, and dispatches the real
+`0x800f087c` worker with `a0=0x80295440`. Native IDE completion follows. At
+f2540 both worker queues are empty, the QIO handle is `-1`, its status is
+`0x0500`, and main RAM contains:
+
+```text
+0x80227ab0 = 0x400a
+```
+
+The off-by-default initials experiment now supplies a guest timer pulse every
+100 frames while its live transition is active, so the scheduler can complete
+without a second experiment flag. A separate default-off
+`EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_INTERRUPT` records pending/routed interrupt
+state without modifying it.
+
+From f2540 the guest naturally loads `/d0/select/textures.rom` and player
+resources. f2660 remains in `0x400a` with 5,213,588 texture writes but no new
+Type-3 draw after the transition clear. Continue from
+`artifacts/gauntlet-probe/gaunt-initials-f2660-60k.warm.gz` until the select
+loader emits the first initials frame, then exercise the actual initials
+input path.
+
+#### The real initials frame renders and consumes P1 input
+
+The select loader completes naturally by f2760. The resulting framebuffer is
+the real four-player `ENTER INITIALS` layout, not another diagnostic page:
+Player 1 owns the lower-left initials panel and the other three panels show
+their join prompts. Remaining horizontal bands obscure much of the title and
+P1 panel, but the guest produced 510 new textured triangles, 280,827 raster
+pixels, and `frameHash=0x4d578d50`.
+
+```text
+artifacts/gauntlet-probe/gaunt-initials-f2760-60k.warm.gz
+sha256 b1db2a8d1930881fb251ed76d77add7f78edb441fe622f37dc9ac216adef74ef
+```
+
+Native input polling and the host bridge produce a byte-identical f2840
+framebuffer. The initial coin/start experiment was the wrong interaction for
+this screen because Player 1 has already joined. A separate timing probe found
+the actual input boundary: short 60k-step host-frame pulses update record 0
+but can end before the guest finishes its large render loop and calls the
+normalizer.
+
+One isolated 10M-step DOWN hold from the clean f2760 checkpoint reaches
+`0x80019b9c`; its status reads see record-0 value `0x20`, and the normalized
+held word at `0x80227ba8` becomes `0x20`. The input chain is therefore
+complete. The next pass must quantize each DOWN/Fight press and release over
+complete guest loops, then enter three initials and continue to password or
+character selection. Do not add a coin shortcut or patch the editor state.
+
+The automatic 100-frame timer interrupt used by the off-by-default live
+initials transition is now restricted to the pre-`0x400a` interval. Reloaded
+f2760 continuations should use an explicit guest timer IRQ only if scheduler
+service is still required, and must not re-enter the transition tail.
