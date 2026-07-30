@@ -14840,3 +14840,37 @@ phase.
 /tmp/gaunt-f7320-plus20m-new-loader.png
 /tmp/gaunt-f7320-plus25m-new-loader.warm
 ```
+
+The long follow-up is also active and non-monotonic; the loader word is a
+state-machine value rather than a progress counter:
+
+```text
+window   loader   complete   new textured tris   new raster pixels
++30M     14       0          6639                6443478
++35M     11       0          7200                6952884
++40M     14       0          7167                6951696
++45M     11       0          7200                6952884
++50M     10       0          7088                7869894
+```
+
+The first combined +30M-to-+40M attempt was externally terminated before
+saving. A retry completed all CPU steps but exposed the actual host-side
+problem while writing the final snapshot:
+
+```text
+System.IO.IOException: Disk quota exceeded
+path=/tmp/gaunt-f7320-plus40m-new-loader.warm.tmp
+```
+
+Only this pass's reproducible intermediate snapshots and raw RAM/PPM dumps
+were removed. Keeping the +20M visual milestone and rotating the latest
+continuation checkpoint freed about 900 MiB. Replaying +35M-to-+40M then
+finished deterministically with `frameHash=0x769cecff` and saved the complete
+snapshot. Continue in 5M windows while rotating old raw dumps; the loader has
+not reached its completion flag yet.
+
+```text
+/tmp/gaunt-f7320-plus20m-new-loader.warm
+/tmp/gaunt-f7320-plus20m-new-loader.png
+/tmp/gaunt-f7320-plus50m-new-loader.warm
+```
