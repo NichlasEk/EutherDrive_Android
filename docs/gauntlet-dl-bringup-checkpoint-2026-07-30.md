@@ -96,6 +96,21 @@ diagnostik-/glyphytan ligger fortfarande i frontbufferten medan loadern
 arbetar, men CPU, QIO, Type 5 och swaps fortsätter utan de tidigare
 heap-stack-krockarna.
 
+Fortsättningen till f1460 bevisar dessutom att loader state 1 inte är ett
+hang. Dess interna streamräknare gick:
+
+```text
+f1310  0x4e / 0x0b / 0x00085a00
+f1410  0x14 / 0x09 / 0x0002d400
+f1460  0x50 / 0x0e / 0x000e6a00
+```
+
+Rullningen till ett nytt större värde vid f1460 betyder att den första
+QIO-/resursvågen avslutades och nästa startade. Mellan f1410 och f1460 ökade
+swaps `4986 -> 5018`, texture writes `5410148 -> 5588976` och 178828
+texturord berördes. Nästa steg är därför naturlig loaderfortsättning, inte en
+ny syntetisk completion.
+
 ## Rotorsak och fix
 
 Två oberoende heap-stack-kollisioner orsakade den tidigare cachetrampolin- och
@@ -151,6 +166,11 @@ artifacts/gauntlet-probe/gaunt-state8005-postfade-fire3-f1210.png
 artifacts/gauntlet-probe/gaunt-level-loader-f1310-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-level-loader-f1310.ppm
 artifacts/gauntlet-probe/gaunt-level-loader-f1310.png
+artifacts/gauntlet-probe/gaunt-level-loader-f1410-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f1410.ppm
+artifacts/gauntlet-probe/gaunt-level-loader-f1410.png
+artifacts/gauntlet-probe/gaunt-level-loader-f1460-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f1460.ppm
 ```
 
 f670-snapshotten återladdades med noll körda frames och gav deterministiskt
@@ -158,14 +178,14 @@ f670-snapshotten återladdades med noll körda frames och gav deterministiskt
 
 ## Nästa körning
 
-Fortsätt från f1310 för att låta level-loadern gå från state 1 mot
+Fortsätt från f1460 för att låta level-loadern gå från state 1 mot
 load-complete/publicering utan att göra om de två diagnostikfaserna:
 
 ```sh
-EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-level-loader-f1310-60k.warm.gz \
-EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=1310 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-level-loader-f1460-60k.warm.gz \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=1460 \
 EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=60000 \
 EUTHERDRIVE_GAUNTDL_EXTRA_SERIES= \
 tools/GauntletProbe/run-gauntdl-baseline.sh \
-/home/nichlas/roms/MAME/Midway/Vegas/gauntd 1410
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd 1560
 ```
