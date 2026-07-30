@@ -174,10 +174,35 @@ textured tris    6768
 
 Det återstående felet är nu verklig renderkorrekthet, inte bringup eller
 assetladdning. Geometrin/kameran är felkomponerad med stora överlappande ytor.
-Post-loadertrafiken ger samtidigt reproducerbara
-`VOODOO-CMDFIFO-TEXTURE-STATE-TAIL`-händelser där upp till 13 ord hoppas över.
-Nästa kodpass ska korrelera dessa paketsvansar med den felaktiga geometrin
-från den deterministiska f2960-snapshotten.
+Post-loadertrafiken ger reproducerbara
+`VOODOO-CMDFIFO-TEXTURE-STATE-TAIL`-händelser där upp till 13 ord hoppas över,
+men den äldre kausalproven visar att detta är den avsedda, redan validerade
+ägarskapsfixen som skyddar `fbiInit3`. Den är inte en ny blockerare. Tidigare
+rasterprover visar även att viewportprojektionen kommer färdigberäknad från
+gästen; lägg därför inte till en host-side projektionsclamp eller ett
+downstream triangelfilter. Fortsätt i stället state-`0x8008`-ägaren naturligt
+och använd dess stabila counter/inputgräns för nästa övergång mot
+attract/gameplay.
+
+En naturlig fortsättning nådde counter `10` vid f3100. En fyrframes FIRE3-edge
+vid f3100--f3103 satte exit-latchen, och gästkoden utförde sedan övergången:
+
+```text
+f3100  main=0x8008 counter=10 latch=0
+f3120  main=0x8008 counter=10 latch=1
+f3160  main=0x8002 counter=0  latch=1
+f3250  main=0x8002 counter=4  latch=0
+```
+
+f3250 visade riktig karaktärsgrafik och `CREDITS` bakom diagnostikmenyn. Den
+korrekt tidsatta MAME-inputcykeln
+`coin -> start -> fight -> up -> fight` kördes därifrån till f3530 men lämnade
+denna active-save-gren i `0x8002` med counter `56`. Det avfärdar inte den
+tidigare positiva `0x8001`-vägen: den startade från en separat, isolerad
+MAME-timekeeper/PIC-snapshot. Den bevarade f140-snapshotten ska först byggas
+om till f240 med sina sparade 200000 CPU-steg per frame; själva inputcykeln
+ska därefter använda den verifierade 60000-stegskadensen. Blanda inte den
+provenansen med active-save-karusellen.
 
 ## Rotorsak och fix
 
@@ -257,6 +282,12 @@ artifacts/gauntlet-probe/gaunt-post-loader-f2860-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-post-loader-f2860.png
 artifacts/gauntlet-probe/gaunt-post-loader-f2960-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-post-loader-f2960.png
+artifacts/gauntlet-probe/gaunt-state8008-f3100-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-state8008-fire3-f3120-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-post-state8008-fire3-f3160-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-state8002-f3250-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-oracle-cycle-f3530-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-oracle-cycle-f3530.png
 ```
 
 f670-snapshotten återladdades med noll körda frames och gav deterministiskt
@@ -264,14 +295,16 @@ f670-snapshotten återladdades med noll körda frames och gav deterministiskt
 
 ## Nästa körning
 
-Fortsätt från f2960 för att undersöka den första fulla 3D-scenen utan att göra
-om bringup, level-loader eller game-init:
+Bygg först om den isolerade MAME-NVRAM-grenen från dess bevarade f140-snapshot
+till den rena diagnostikcheckpoint där den positiva gameplay-inputcykeln
+tidigare började:
 
 ```sh
-EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-post-loader-f2960-60k.warm.gz \
-EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=2960 \
-EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=60000 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/gaunt-mame-nvram-f140.warm.gz \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=140 \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=200000 \
 EUTHERDRIVE_GAUNTDL_EXTRA_SERIES= \
+EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=artifacts/gauntlet-probe/gaunt-mame-nvram-f240-rebuilt-200k.warm.gz \
 tools/GauntletProbe/run-gauntdl-baseline.sh \
-/home/nichlas/roms/MAME/Midway/Vegas/gauntd 3060
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd 240
 ```
