@@ -111,6 +111,36 @@ swaps `4986 -> 5018`, texture writes `5410148 -> 5588976` och 178828
 texturord berördes. Nästa steg är därför naturlig loaderfortsättning, inte en
 ny syntetisk completion.
 
+Den fortsatta naturliga körningen till f2260 nådde nästa tydliga loaderfas.
+Loader state gick från `1` till `12` vid f1760 och fortsatte sedan genom den
+normala `11`/`12`-cykeln för monsterposterna. De observerade verkliga
+resurserna var:
+
+```text
+f1760  monsters/zom2 textures.rom + objects.rom   loader state 12
+f1860  monsters/ice2 textures.rom + objects.rom   loader state 11
+f1960  monsters/imp2 textures.rom + objects.rom   loader state 11
+f2060  monsters/pla2 textures.rom + objects.rom   loader state 11
+f2160  monsters/golem/levelF/textures.rom         loader state 11
+f2260  monsters/death textures.rom + objects.rom  loader state 11
+```
+
+Vid f2260 är huvudstaten fortfarande `0x8004`, `load complete` är fortfarande
+noll och streamräknarna har nått `0x3b / 0x3b`. `temple.wad` har samtidigt
+aktiverats. Texturskrivningarna återupptogs mellan f2160 och f2260:
+
+```text
+texture writes  5921605 -> 5951441
+touched texels  29836
+swaps            5462 -> 5526
+frame hash       0xf053602b
+```
+
+f2260-bilden innehåller för första gången i den här loadersekvensen ett
+riktigt färglagt lila/silverfärgat spelobjekt längst ned. Den gamla korrupta
+diagnostik-/glyphytan ligger fortfarande uppe till vänster, så detta bevisar
+verklig nivågrafik men ännu inte korrekt slutlig framebufferkomposition.
+
 ## Rotorsak och fix
 
 Två oberoende heap-stack-kollisioner orsakade den tidigare cachetrampolin- och
@@ -171,6 +201,15 @@ artifacts/gauntlet-probe/gaunt-level-loader-f1410.ppm
 artifacts/gauntlet-probe/gaunt-level-loader-f1410.png
 artifacts/gauntlet-probe/gaunt-level-loader-f1460-60k.warm.gz
 artifacts/gauntlet-probe/gaunt-level-loader-f1460.ppm
+artifacts/gauntlet-probe/gaunt-level-loader-f1560-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f1760-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f1860-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f1960-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f2060-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f2160-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f2260-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f2260.ppm
+artifacts/gauntlet-probe/gaunt-level-loader-f2260.png
 ```
 
 f670-snapshotten återladdades med noll körda frames och gav deterministiskt
@@ -178,14 +217,14 @@ f670-snapshotten återladdades med noll körda frames och gav deterministiskt
 
 ## Nästa körning
 
-Fortsätt från f1460 för att låta level-loadern gå från state 1 mot
-load-complete/publicering utan att göra om de två diagnostikfaserna:
+Fortsätt från f2260 för att låta den avslutade `death`-/`temple`-resursvågen
+gå mot load-complete/publicering utan att göra om monsterladdningen:
 
 ```sh
-EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-level-loader-f1460-60k.warm.gz \
-EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=1460 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-level-loader-f2260-60k.warm.gz \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=2260 \
 EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=60000 \
 EUTHERDRIVE_GAUNTDL_EXTRA_SERIES= \
 tools/GauntletProbe/run-gauntdl-baseline.sh \
-/home/nichlas/roms/MAME/Midway/Vegas/gauntd 1560
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd 2360
 ```
