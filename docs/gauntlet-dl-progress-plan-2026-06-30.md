@@ -14718,3 +14718,23 @@ Reusable artifacts:
 /tmp/gaunt-f7232-world-coin-start.warm
 /tmp/gaunt-f7232-display-selection-fixed.png
 ```
+
+Natural no-input continuation from f7232 confirms that the state-8008
+world/camera phase remains live with the corrected presentation:
+
+```text
+f7232 counter=8  state=0x8008 latch=0 hash=0x66ae514f
+f7272 counter=16 state=0x8008 latch=0 hash=0x1b234514
+f7272 textured=4300 covered=4090 framebuffer colored=99103
+```
+
+The f7272 image is a later moving world composition. It contains textured
+level surfaces and perspective changes, but the geometry remains badly
+oversized and overlapping, and diagnostic text can still be drawn into the
+same selected buffer. This is natural camera/render progression rather than a
+new input or loader stall.
+
+```text
+/tmp/gaunt-f7272-world-camera-fixed.warm
+/tmp/gaunt-f7272-world-camera-fixed.png
+```
