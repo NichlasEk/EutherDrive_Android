@@ -56,9 +56,45 @@ AllocMem() called while mem reserved
 GetMemBase() called while mem reserved
 ```
 
-Det betyder att input- och diagnostik-exitvägen nu är bevisad. Nästa
-bringup-spärr är den efterföljande minnesreservations-livscykeln, inte längre
-diagnostikmenyn.
+Det betyder att input- och diagnostik-exitvägen nu är bevisad.
+
+## State 0x8005 lämnas naturligt
+
+Den efterföljande kontrollen korrigerade f780-slutsatsen ovan:
+`GetMemBase()/AllocMem called while mem reserved` är riktiga
+gästdiagnostikmeddelanden, men den långlivade reservationen är avsiktlig och
+allokeringarna fortsätter. Flaggan ska inte nollas syntetiskt.
+
+Direkta RAM-prover visade statekedjan:
+
+```text
+f740  main state = 0x8002
+f760  main state = 0x8005
+f800  main state = 0x8005
+f1210 main state = 0x8004
+```
+
+State `0x8002` lämnas korrekt genom den befintliga FIRE 3-latchbridgen.
+State `0x8005` äger däremot sin egen FIRE 3-edge och accepterar den först
+efter sin tidsstyrda fade. En tidig puls vid f802 nådde inputrecordet som
+`0x0800` men lämnade den interna exitflaggan noll. Game-time-fixen drev
+fadevärdena naturligt framåt; en ny puls vid f1200 lämnade sidan utan någon
+RAM- eller state-patch och nådde level-loaderstate `0x8004`.
+
+Vid f1310 är den exakta loaderstaten:
+
+```text
+main state      = 0x8004
+loader state    = 1
+load complete   = 0
+swaps           = 4942
+texture writes  = 5363728
+```
+
+Gästen laddar bland annat `contest` och `movies/atarilogo`. Den gamla
+diagnostik-/glyphytan ligger fortfarande i frontbufferten medan loadern
+arbetar, men CPU, QIO, Type 5 och swaps fortsätter utan de tidigare
+heap-stack-krockarna.
 
 ## Rotorsak och fix
 
@@ -106,6 +142,15 @@ artifacts/gauntlet-probe/gaunt-fire3-second-f760.ppm
 artifacts/gauntlet-probe/gaunt-post-exit-f780.warm.gz
 artifacts/gauntlet-probe/gaunt-post-exit-f780.ppm
 artifacts/gauntlet-probe/gaunt-post-exit-f780.png
+artifacts/gauntlet-probe/gaunt-post-exit-f800.warm.gz
+artifacts/gauntlet-probe/gaunt-post-exit-f800.ppm
+artifacts/gauntlet-probe/gaunt-post-exit-f800.png
+artifacts/gauntlet-probe/gaunt-state8005-postfade-fire3-f1210-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-state8005-postfade-fire3-f1210.ppm
+artifacts/gauntlet-probe/gaunt-state8005-postfade-fire3-f1210.png
+artifacts/gauntlet-probe/gaunt-level-loader-f1310-60k.warm.gz
+artifacts/gauntlet-probe/gaunt-level-loader-f1310.ppm
+artifacts/gauntlet-probe/gaunt-level-loader-f1310.png
 ```
 
 f670-snapshotten återladdades med noll körda frames och gav deterministiskt
@@ -113,13 +158,14 @@ f670-snapshotten återladdades med noll körda frames och gav deterministiskt
 
 ## Nästa körning
 
-Fortsätt från f780 för att isolera allocator-reservationsfelet utan att göra
-om input- eller resursladdningsstegen:
+Fortsätt från f1310 för att låta level-loadern gå från state 1 mot
+load-complete/publicering utan att göra om de två diagnostikfaserna:
 
 ```sh
-EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-post-exit-f780.warm.gz \
-EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=780 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-level-loader-f1310-60k.warm.gz \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=1310 \
+EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME=60000 \
 EUTHERDRIVE_GAUNTDL_EXTRA_SERIES= \
 tools/GauntletProbe/run-gauntdl-baseline.sh \
-/home/nichlas/roms/MAME/Midway/Vegas/gauntd 800
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd 1410
 ```
