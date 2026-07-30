@@ -71,6 +71,8 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_NATURAL_ITEMS_ALLOCATOR", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_TEXTURE_COMPANION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_DISTINCT_RESOURCE_SOURCE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_ASSET_OBJECT_ARENA", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_ASSET_STREAM_ARENA", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_STREAM", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH", "1"),
@@ -814,6 +816,14 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS");
     private readonly bool _traceRuntimeWorkerSignal =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_WORKER_SIGNAL"));
+    private readonly bool _traceRuntimeCacheTrampolineEntry =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_CACHE_TRAMPOLINE_ENTRY"));
+    private readonly bool _enableRuntimeAssetObjectArena =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_ASSET_OBJECT_ARENA") ||
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_ASSET_OBJECT_ARENA"));
+    private readonly bool _enableRuntimeAssetStreamArena =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_ASSET_STREAM_ARENA") ||
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_ASSET_STREAM_ARENA"));
     private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
     private readonly bool _enableRuntimeFormatBufferInFlightFastPath =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_FORMAT_BUFFER_INFLIGHT");
@@ -1553,6 +1563,7 @@ internal sealed class MipsR5000Core
     private int _exceptionFpuContextLoadTraceCount;
     private int _exceptionRestoreTailTraceCount;
     private int _lowPcTransitionTraceCount;
+    private int _runtimeCacheTrampolineEntryTraceCount;
     private int _s8DeadTraceCount;
     private int _textureUploadProvenanceTraceCount;
     private int _textureUploadPayloadAsciiTraceCount;
@@ -2590,6 +2601,9 @@ internal sealed class MipsR5000Core
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ApplyKnownRuntimeTempleWeaponsDistinctResourceSourceRepair();
         ulong pc = Pc;
+        ApplyRuntimeAssetStreamArenaFix(pc);
+        if (TryApplyRuntimeAssetObjectArenaFix(pc))
+            return;
         TraceWatchedPc(pc);
         TraceRuntimeVertexFifoPacker(pc);
         TraceRuntimeModelVertexIndex(pc);
@@ -3364,6 +3378,20 @@ internal sealed class MipsR5000Core
             return;
 
         ulong nextPhysical = nextPc & 0x1fffffffUL;
+        if (_traceRuntimeCacheTrampolineEntry &&
+            (nextPhysical == 0x00011000UL ||
+             (nextPhysical is 0x000af300UL or 0x000af378UL && _gpr[31] == 0)) &&
+            _runtimeCacheTrampolineEntryTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:CACHE-TRAMPOLINE] from={pc:x16} op={op:x8} to={nextPc:x16} " +
+                $"branchPrev={branchFromPreviousInstruction} branchTarget={branchTarget:x16} " +
+                $"override={_hasImmediatePcOverride} overrideTarget={_immediatePcOverride:x16} " +
+                $"ra={_gpr[31]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} " +
+                $"a2={_gpr[6]:x16} a3={_gpr[7]:x16} v0={_gpr[2]:x16} v1={_gpr[3]:x16} " +
+                $"sp={_gpr[29]:x16} status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16}");
+        }
+
         bool lowTarget = nextPhysical < 0x00010000UL ||
             nextPhysical is >= 0x007f0000UL and < 0x00810000UL ||
             nextPhysical is >= 0x04400000UL and < 0x04500000UL;
@@ -3384,6 +3412,84 @@ internal sealed class MipsR5000Core
             $"override={_hasImmediatePcOverride} overrideTarget={_immediatePcOverride:x16} " +
             $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} k0={_gpr[26]:x16} k1={_gpr[27]:x16} " +
             $"status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16}");
+    }
+
+    private bool TryApplyRuntimeAssetObjectArenaFix(ulong pc)
+    {
+        const ulong allocationCallPc = 0xffffffff800af2ccUL;
+        const ulong allocationReturnPc = 0xffffffff800af2d4UL;
+        const ulong freeListHeadAddress = 0xffffffff80238080UL;
+        const ulong allocationCountAddress = 0xffffffff801620bcUL;
+        const ulong arena = 0xffffffff80a00000UL;
+        const uint firstRelocatedCount = 160U;
+        const uint maxRelocatedObjects = 4096U;
+        const ulong objectStride = 0x70UL;
+        if (!_enableRuntimeAssetObjectArena ||
+            pc != allocationCallPc ||
+            _memory.Read32(allocationCallPc) != 0x0c0323dcU ||
+            _memory.Read32(allocationCallPc + 0x04UL) != 0x2404006cU ||
+            _memory.Read32(freeListHeadAddress) != 0)
+        {
+            return false;
+        }
+
+        uint count = _memory.Read32(allocationCountAddress);
+        if (count < firstRelocatedCount || count - firstRelocatedCount >= maxRelocatedObjects)
+            return false;
+
+        ulong result = arena + (count - firstRelocatedCount) * objectStride;
+        for (ulong offset = 0; offset < objectStride; offset += 4UL)
+            _memory.Write32(result + offset, 0);
+
+        _gpr[2] = SignExtend32((uint)result);
+        _gpr[4] = 0x6c;
+        _gpr[31] = allocationReturnPc;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = allocationReturnPc;
+        AdvanceCp0Count(_cp0CountStep * 2UL);
+        _instructionCounter += 2UL;
+        if (count < firstRelocatedCount + 4U || count % 64U == 0)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] asset-object-arena count={count} " +
+                $"result={result:x16} bytes=00000070");
+        }
+
+        return true;
+    }
+
+    private void ApplyRuntimeAssetStreamArenaFix(ulong pc)
+    {
+        const ulong destinationLoadPc = 0xffffffff800f7828UL;
+        const ulong request = 0xffffffff802a0780UL;
+        const ulong arena = 0xffffffff80b00000UL;
+        const uint expectedDestination = 0x807fdcacU;
+        const uint expectedCapacity = 0x00002000U;
+        const uint expectedLength = 0x00022400U;
+        const uint arenaBytes = 0x00024000U;
+        if (!_enableRuntimeAssetStreamArena ||
+            pc != destinationLoadPc ||
+            _gpr[17] != request ||
+            _memory.Read32(destinationLoadPc + 0x00UL) != 0x8e24000cU ||
+            _memory.Read32(destinationLoadPc + 0x04UL) != 0x8e450080U ||
+            _memory.Read32(destinationLoadPc + 0x08UL) != 0x0c0344b1U ||
+            _memory.Read32(destinationLoadPc + 0x0cUL) != 0x8e260010U ||
+            _memory.Read32(request + 0x0cUL) != expectedDestination ||
+            _memory.Read32(request + 0x10UL) != expectedCapacity ||
+            _memory.Read32(request + 0x1cUL) != expectedLength)
+        {
+            return;
+        }
+
+        for (ulong offset = 0; offset < arenaBytes; offset += 4UL)
+            _memory.Write32(arena + offset, 0);
+        _memory.Write32(request + 0x0cUL, unchecked((uint)arena));
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] asset-stream-arena pc={pc:x16} request={request:x16} " +
+            $"destination={expectedDestination:x8}->{unchecked((uint)arena):x8} " +
+            $"capacity={expectedCapacity:x8} length={expectedLength:x8}");
     }
 
     private void TraceSuspiciousS8DeadState(ulong pc, string phase)
@@ -29947,6 +30053,7 @@ internal sealed class VegasMemoryMap
         uint currentMainState = Read32(mainState);
         if (_enableRuntimeInputDiagnosticExitBridge &&
             (currentMainState == 0x8000U ||
+             currentMainState == 0x8001U ||
              currentMainState == 0x8002U ||
              currentMainState == 0x8007U ||
              currentMainState == 0x8008U) &&
