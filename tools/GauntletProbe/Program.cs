@@ -77,7 +77,13 @@ if (!loadedWarmupSnapshot)
     if (!string.IsNullOrWhiteSpace(warmupSnapshotPath))
         summaryContext.WarmupState = "building";
 
-    RunUntilFrame(adapter, string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames, stopPc, frameCheckpoints, summaryContext);
+    RunUntilFrame(
+        adapter,
+        string.IsNullOrWhiteSpace(warmupSnapshotPath) ? frames : warmupFrames,
+        cpuStepsPerFrameConfig,
+        stopPc,
+        frameCheckpoints,
+        summaryContext);
 
     if (!string.IsNullOrWhiteSpace(warmupSnapshotPath))
     {
@@ -87,7 +93,7 @@ if (!loadedWarmupSnapshot)
     }
 }
 
-RunUntilFrame(adapter, frames, stopPc, frameCheckpoints, summaryContext);
+RunUntilFrame(adapter, frames, cpuStepsPerFrameConfig, stopPc, frameCheckpoints, summaryContext);
 runStopwatch.Stop();
 
 int extraSteps = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_CPU_STEPS"), out int parsedExtraSteps)
@@ -703,14 +709,20 @@ static int ParseWarmupFrames(int targetFrames)
     return Math.Min(parsed, targetFrames);
 }
 
-static void RunUntilFrame(GauntletDarkLegacyAdapter adapter, int targetFrames, ulong? stopPc, int[] frameCheckpoints, ProbeSummaryContext summaryContext)
+static void RunUntilFrame(
+    GauntletDarkLegacyAdapter adapter,
+    int targetFrames,
+    int cpuStepsPerFrame,
+    ulong? stopPc,
+    int[] frameCheckpoints,
+    ProbeSummaryContext summaryContext)
 {
     while (adapter.FrameCounter.GetValueOrDefault() < targetFrames)
     {
         long frame = adapter.FrameCounter.GetValueOrDefault();
         ApplyInputFromEnvironment(adapter, frame);
         adapter.RunFrame();
-        PrintFrameCheckpointIfRequested(adapter, frameCheckpoints, summaryContext);
+        PrintFrameCheckpointIfRequested(adapter, cpuStepsPerFrame, frameCheckpoints, summaryContext);
         if (TryStopAtRuntimeTempleItemsBoundary(adapter))
             return;
         if (stopPc.HasValue && TryGetCpuPc(adapter, out ulong pc) && pc == stopPc.Value)
@@ -750,7 +762,11 @@ static int[] ParseFrameCheckpoints(string? raw)
         .ToArray();
 }
 
-static void PrintFrameCheckpointIfRequested(GauntletDarkLegacyAdapter adapter, int[] frameCheckpoints, ProbeSummaryContext summaryContext)
+static void PrintFrameCheckpointIfRequested(
+    GauntletDarkLegacyAdapter adapter,
+    int cpuStepsPerFrame,
+    int[] frameCheckpoints,
+    ProbeSummaryContext summaryContext)
 {
     if (frameCheckpoints.Length == 0)
         return;
@@ -778,7 +794,24 @@ static void PrintFrameCheckpointIfRequested(GauntletDarkLegacyAdapter adapter, i
         $"swaps={GetIntField(backend, "_swapBufferCount")} " +
         $"packetTypes={string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}"))}");
 
+    SaveFrameCheckpointStateIfRequested(adapter, checked((int)frame), cpuStepsPerFrame);
     PrintFrameSummaryIfRequested(summaryContext, frame, frameHash, frameBuffer, width, height, stride, cpu, backend, packetTypes);
+}
+
+static void SaveFrameCheckpointStateIfRequested(GauntletDarkLegacyAdapter adapter, int frame, int cpuStepsPerFrame)
+{
+    string? pattern = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINT_STATE_PATTERN");
+    if (string.IsNullOrWhiteSpace(pattern))
+        return;
+    if (!pattern.Contains("{frame}", StringComparison.Ordinal))
+    {
+        throw new InvalidDataException(
+            "EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINT_STATE_PATTERN must contain the {frame} placeholder");
+    }
+
+    string path = pattern.Replace("{frame}", frame.ToString(), StringComparison.Ordinal);
+    SaveWarmupSnapshot(adapter, path, frame, cpuStepsPerFrame);
+    Console.Error.WriteLine($"frameCheckpointStateSaved={path}");
 }
 
 static string GetGauntletModuleId()
@@ -1286,7 +1319,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(14);
+        writer.Write(15);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -1297,6 +1330,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
         SaveMemoryMap(writer, GetProperty(machine, "MemoryMap"));
         SaveDisk(writer, GetProperty(machine, "Disk"));
         SaveSio(writer, GetProperty(machine, "Sio"));
+        SaveAudio(writer, GetProperty(machine, "Audio"));
         SaveVoodoo(writer, GetProperty(machine, "Voodoo"));
     }
 
@@ -1419,7 +1453,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version < 1 || version > 14)
+    if (magic != 0x314d5241574c4447UL || version < 1 || version > 15)
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1442,6 +1476,8 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     LoadMemoryMap(reader, GetProperty(machine, "MemoryMap"), version);
     LoadDisk(reader, GetProperty(machine, "Disk"), version);
     LoadSio(reader, GetProperty(machine, "Sio"));
+    if (version >= 15)
+        LoadAudio(reader, GetProperty(machine, "Audio"));
     LoadVoodoo(reader, GetProperty(machine, "Voodoo"), version);
 
     if (stream.CanSeek)
@@ -1531,6 +1567,15 @@ static void SaveMemoryMap(BinaryWriter writer, object memory)
     writer.Write(GetFieldValue<bool>(memory, "_fpgaConfigSeenLow"));
     writer.Write(GetFieldValue<bool>(memory, "_fpgaConfigStatusHigh"));
     writer.Write(GetFieldValue<bool>(memory, "_fpgaConfigDone"));
+    WriteByteArray(writer, GetFieldValue<byte[]>(memory, "_timekeeperRam"));
+    writer.Write(GetFieldValue<ulong>(memory, "_timekeeperReadTicks"));
+    writer.Write(GetFieldValue<int>(memory, "_timekeeperWatchdogFrameCountdown"));
+    writer.Write(GetFieldValue<bool>(memory, "_timekeeperWatchdogResetRequested"));
+    writer.Write(GetFieldValue<bool>(memory, "_timekeeperInitialized"));
+    writer.Write(GetFieldValue<bool>(memory, "_cmosUnlocked"));
+    writer.Write(GetFieldValue<bool>(memory, "_timekeeperRamDirty"));
+    writer.Write(GetFieldValue<bool>(memory, "_runtimeTimerInterruptPending"));
+    writer.Write(GetFieldValue<bool>(memory, "_runtimeTimerInterruptActive"));
     SaveIdePci(writer, GetField(memory, "_idePci"));
     SaveVoodooPci(writer, GetField(memory, "_voodooPci"));
 }
@@ -1563,6 +1608,18 @@ static void LoadMemoryMap(BinaryReader reader, object memory, int version)
     SetField(memory, "_fpgaConfigSeenLow", reader.ReadBoolean());
     SetField(memory, "_fpgaConfigStatusHigh", reader.ReadBoolean());
     SetField(memory, "_fpgaConfigDone", reader.ReadBoolean());
+    if (version >= 15)
+    {
+        ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_timekeeperRam"));
+        SetField(memory, "_timekeeperReadTicks", reader.ReadUInt64());
+        SetField(memory, "_timekeeperWatchdogFrameCountdown", reader.ReadInt32());
+        SetField(memory, "_timekeeperWatchdogResetRequested", reader.ReadBoolean());
+        SetField(memory, "_timekeeperInitialized", reader.ReadBoolean());
+        SetField(memory, "_cmosUnlocked", reader.ReadBoolean());
+        SetField(memory, "_timekeeperRamDirty", reader.ReadBoolean());
+        SetField(memory, "_runtimeTimerInterruptPending", reader.ReadBoolean());
+        SetField(memory, "_runtimeTimerInterruptActive", reader.ReadBoolean());
+    }
     LoadIdePci(reader, GetField(memory, "_idePci"));
     LoadVoodooPci(reader, GetField(memory, "_voodooPci"));
 }
@@ -1654,6 +1711,171 @@ static void LoadSio(BinaryReader reader, object sio)
     SetField(sio, "_irqEnable", reader.ReadByte());
     SetField(sio, "_irqState", reader.ReadByte());
     SetField(sio, "_ledState", reader.ReadByte());
+}
+
+static void SaveAudio(BinaryWriter writer, object audio)
+{
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(audio, "_dram"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(audio, "_fifo"));
+    WriteShortArray(writer, GetFieldValue<short[]>(audio, "_audioFrame"));
+    WriteUIntArray(writer, GetFieldValue<uint[]>(audio, "_programRam"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(audio, "_internalDataRam"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(audio, "_sdrcRegisters"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(audio, "_adspControlRegisters"));
+
+    Queue<ushort> outputQueue = GetFieldValue<Queue<ushort>>(audio, "_outputQueue");
+    writer.Write(outputQueue.Count);
+    foreach (ushort value in outputQueue)
+        writer.Write(value);
+
+    writer.Write(GetFieldValue<int>(audio, "_traceCount"));
+    writer.Write(GetFieldValue<int>(audio, "_fifoIn"));
+    writer.Write(GetFieldValue<int>(audio, "_fifoOut"));
+    writer.Write(GetFieldValue<int>(audio, "_fifoCount"));
+    writer.Write(GetFieldValue<bool>(audio, "_fifoForceFull"));
+    writer.Write(GetFieldValue<bool>(audio, "_fifoFullSelfTestReported"));
+    writer.Write(GetFieldValue<ushort>(audio, "_lastCommand"));
+    writer.Write(GetFieldValue<ushort>(audio, "_latchControl"));
+    writer.Write(GetFieldValue<ushort>(audio, "_inputData"));
+    writer.Write(GetFieldValue<ushort>(audio, "_outputData"));
+    writer.Write(GetFieldValue<ushort>(audio, "_outputControl"));
+    writer.Write(GetFieldValue<bool>(audio, "_resetAsserted"));
+    writer.Write(GetFieldValue<bool>(audio, "_fifoReset"));
+    writer.Write(GetFieldValue<bool>(audio, "_bootStatusCompat"));
+    writer.Write(GetFieldValue<uint>(audio, "_idmaAddress"));
+    writer.Write(GetFieldValue<int>(audio, "_transferState"));
+    writer.Write(GetFieldValue<int>(audio, "_transferDcsState"));
+    writer.Write(GetFieldValue<uint>(audio, "_transferStart"));
+    writer.Write(GetFieldValue<uint>(audio, "_transferStop"));
+    writer.Write(GetFieldValue<uint>(audio, "_transferType"));
+    writer.Write(GetFieldValue<int>(audio, "_transferWritesLeft"));
+    writer.Write(GetFieldValue<ushort>(audio, "_transferSum"));
+    writer.Write(GetFieldValue<ushort>(audio, "_programHighByte"));
+    writer.Write(GetFieldValue<int>(audio, "_toneSamplesLeft"));
+    writer.Write(GetFieldValue<int>(audio, "_tonePhase"));
+    writer.Write(GetFieldValue<int>(audio, "_toneStep"));
+    writer.Write(GetFieldValue<int>(audio, "_toneVolume"));
+    writer.Write(GetFieldValue<ulong>(audio, "_hostWrites"));
+    writer.Write(GetFieldValue<ulong>(audio, "_fifoWrites"));
+    writer.Write(GetFieldValue<ulong>(audio, "_transferredWords"));
+    writer.Write(GetFieldValue<int>(audio, "_bootProgramWords"));
+    SaveAdsp(writer, GetField(audio, "_adsp"));
+}
+
+static void LoadAudio(BinaryReader reader, object audio)
+{
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(audio, "_dram"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(audio, "_fifo"));
+    ReadShortArrayInto(reader, GetFieldValue<short[]>(audio, "_audioFrame"));
+    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(audio, "_programRam"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(audio, "_internalDataRam"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(audio, "_sdrcRegisters"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(audio, "_adspControlRegisters"));
+
+    Queue<ushort> outputQueue = GetFieldValue<Queue<ushort>>(audio, "_outputQueue");
+    outputQueue.Clear();
+    int outputCount = reader.ReadInt32();
+    if (outputCount < 0 || outputCount > 1_048_576)
+        throw new InvalidDataException($"Invalid DCS output queue count: {outputCount}");
+    for (int i = 0; i < outputCount; i++)
+        outputQueue.Enqueue(reader.ReadUInt16());
+
+    SetField(audio, "_traceCount", reader.ReadInt32());
+    SetField(audio, "_fifoIn", reader.ReadInt32());
+    SetField(audio, "_fifoOut", reader.ReadInt32());
+    SetField(audio, "_fifoCount", reader.ReadInt32());
+    SetField(audio, "_fifoForceFull", reader.ReadBoolean());
+    SetField(audio, "_fifoFullSelfTestReported", reader.ReadBoolean());
+    SetField(audio, "_lastCommand", reader.ReadUInt16());
+    SetField(audio, "_latchControl", reader.ReadUInt16());
+    SetField(audio, "_inputData", reader.ReadUInt16());
+    SetField(audio, "_outputData", reader.ReadUInt16());
+    SetField(audio, "_outputControl", reader.ReadUInt16());
+    SetField(audio, "_resetAsserted", reader.ReadBoolean());
+    SetField(audio, "_fifoReset", reader.ReadBoolean());
+    SetField(audio, "_bootStatusCompat", reader.ReadBoolean());
+    SetField(audio, "_idmaAddress", reader.ReadUInt32());
+    SetField(audio, "_transferState", reader.ReadInt32());
+    SetField(audio, "_transferDcsState", reader.ReadInt32());
+    SetField(audio, "_transferStart", reader.ReadUInt32());
+    SetField(audio, "_transferStop", reader.ReadUInt32());
+    SetField(audio, "_transferType", reader.ReadUInt32());
+    SetField(audio, "_transferWritesLeft", reader.ReadInt32());
+    SetField(audio, "_transferSum", reader.ReadUInt16());
+    SetField(audio, "_programHighByte", reader.ReadUInt16());
+    SetField(audio, "_toneSamplesLeft", reader.ReadInt32());
+    SetField(audio, "_tonePhase", reader.ReadInt32());
+    SetField(audio, "_toneStep", reader.ReadInt32());
+    SetField(audio, "_toneVolume", reader.ReadInt32());
+    SetField(audio, "_hostWrites", reader.ReadUInt64());
+    SetField(audio, "_fifoWrites", reader.ReadUInt64());
+    SetField(audio, "_transferredWords", reader.ReadUInt64());
+    SetField(audio, "_bootProgramWords", reader.ReadInt32());
+    LoadAdsp(reader, GetField(audio, "_adsp"));
+}
+
+static void SaveAdsp(BinaryWriter writer, object adsp)
+{
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(adsp, "_r"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(adsp, "_rAlt"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(adsp, "_i"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(adsp, "_m"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(adsp, "_l"));
+    WriteUShortArray(writer, GetFieldValue<ushort[]>(adsp, "_pcStack"));
+    WriteUShortMatrix(writer, GetFieldValue<ushort[,]>(adsp, "_statStack"));
+    WriteUIntArray(writer, GetFieldValue<uint[]>(adsp, "_loopStack"));
+    writer.Write(GetFieldValue<int>(adsp, "_pcStackDepth"));
+    writer.Write(GetFieldValue<int>(adsp, "_statStackDepth"));
+    writer.Write(GetFieldValue<int>(adsp, "_loopStackDepth"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_pc"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_ppc"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_loop"));
+    writer.Write(GetFieldValue<int>(adsp, "_loopCondition"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_astat"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_mstat"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_sstat"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_imask"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_icntl"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_cntr"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_px"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_pmovlay"));
+    writer.Write(GetFieldValue<ushort>(adsp, "_dmovlay"));
+    writer.Write(GetFieldValue<bool>(adsp, "_irq2State"));
+    writer.Write(GetFieldValue<bool>(adsp, "_irq2Latch"));
+    writer.Write(GetFieldValue<int>(adsp, "_traceCount"));
+    writer.Write(GetFieldValue<uint>(adsp, "_steps"));
+}
+
+static void LoadAdsp(BinaryReader reader, object adsp)
+{
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(adsp, "_r"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(adsp, "_rAlt"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(adsp, "_i"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(adsp, "_m"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(adsp, "_l"));
+    ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(adsp, "_pcStack"));
+    ReadUShortMatrixInto(reader, GetFieldValue<ushort[,]>(adsp, "_statStack"));
+    ReadUIntArrayInto(reader, GetFieldValue<uint[]>(adsp, "_loopStack"));
+    SetField(adsp, "_pcStackDepth", reader.ReadInt32());
+    SetField(adsp, "_statStackDepth", reader.ReadInt32());
+    SetField(adsp, "_loopStackDepth", reader.ReadInt32());
+    SetField(adsp, "_pc", reader.ReadUInt16());
+    SetField(adsp, "_ppc", reader.ReadUInt16());
+    SetField(adsp, "_loop", reader.ReadUInt16());
+    SetField(adsp, "_loopCondition", reader.ReadInt32());
+    SetField(adsp, "_astat", reader.ReadUInt16());
+    SetField(adsp, "_mstat", reader.ReadUInt16());
+    SetField(adsp, "_sstat", reader.ReadUInt16());
+    SetField(adsp, "_imask", reader.ReadUInt16());
+    SetField(adsp, "_icntl", reader.ReadUInt16());
+    SetField(adsp, "_cntr", reader.ReadUInt16());
+    SetField(adsp, "_px", reader.ReadUInt16());
+    SetField(adsp, "_pmovlay", reader.ReadUInt16());
+    SetField(adsp, "_dmovlay", reader.ReadUInt16());
+    SetField(adsp, "_irq2State", reader.ReadBoolean());
+    SetField(adsp, "_irq2Latch", reader.ReadBoolean());
+    SetField(adsp, "_traceCount", reader.ReadInt32());
+    SetField(adsp, "_steps", reader.ReadUInt32());
 }
 
 static void SaveVoodoo(BinaryWriter writer, object facade)
@@ -2201,6 +2423,50 @@ static void ReadUShortArrayInto(BinaryReader reader, ushort[] values)
         throw new InvalidDataException($"UInt16 array length mismatch: snapshot={length} runtime={values.Length}");
     for (int i = 0; i < values.Length; i++)
         values[i] = reader.ReadUInt16();
+}
+
+static void WriteShortArray(BinaryWriter writer, short[] values)
+{
+    writer.Write(values.Length);
+    foreach (short value in values)
+        writer.Write(value);
+}
+
+static void ReadShortArrayInto(BinaryReader reader, short[] values)
+{
+    int length = reader.ReadInt32();
+    if (length != values.Length)
+        throw new InvalidDataException($"Int16 array length mismatch: snapshot={length} runtime={values.Length}");
+    for (int i = 0; i < values.Length; i++)
+        values[i] = reader.ReadInt16();
+}
+
+static void WriteUShortMatrix(BinaryWriter writer, ushort[,] values)
+{
+    writer.Write(values.GetLength(0));
+    writer.Write(values.GetLength(1));
+    for (int row = 0; row < values.GetLength(0); row++)
+    {
+        for (int column = 0; column < values.GetLength(1); column++)
+            writer.Write(values[row, column]);
+    }
+}
+
+static void ReadUShortMatrixInto(BinaryReader reader, ushort[,] values)
+{
+    int rows = reader.ReadInt32();
+    int columns = reader.ReadInt32();
+    if (rows != values.GetLength(0) || columns != values.GetLength(1))
+    {
+        throw new InvalidDataException(
+            $"UInt16 matrix shape mismatch: snapshot={rows}x{columns} runtime={values.GetLength(0)}x{values.GetLength(1)}");
+    }
+
+    for (int row = 0; row < rows; row++)
+    {
+        for (int column = 0; column < columns; column++)
+            values[row, column] = reader.ReadUInt16();
+    }
 }
 
 static void WriteUShortArrayArray(BinaryWriter writer, ushort[][] values)

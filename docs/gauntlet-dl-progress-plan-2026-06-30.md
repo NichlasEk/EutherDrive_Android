@@ -15468,3 +15468,48 @@ Continue the isolated branch through the second 900-frame cycle. Watch both
 request `0x8021c534` and main state `0x80227ab0`; then re-enable rasterization
 for the visual checkpoint. Do not infer gameplay merely from the shared MAME
 output directory or patch either guest state word.
+
+## 2026-07-30: Rebased Runtime Checkpoints and Real f520 Output
+
+The old f520/f1430 continuation above mixed probe-runner defaults and incomplete
+snapshot state. It is retained as investigation history, but its black frame
+and scheduler conclusion are no longer the current oracle.
+
+A focused f240-to-f450 trace proved that the queued work does dispatch through
+the real interrupt and scheduler path:
+
+```text
+enqueue          = 0x800ed4ac
+signal           = 0x800de4fc
+scheduler        = 0x800de420
+active-level set = 0x800de46c
+worker callback  = 0x800f087c
+```
+
+The baseline runner now always enables the central Gauntlet bringup preset and
+defaults to 200000 CPU steps per frame. The same budget is recorded in
+checkpoint metadata. Snapshot version 15 additionally preserves M48T37
+timekeeper/watchdog state and complete DCS/ADSP runtime state. A hard split at
+f451 reproduced the continuous f452 hash `0xac961968`; zero-frame reloads also
+preserve the main CPU, watchdog, DCS host state, ADSP PC/status, and framebuffer
+hash.
+
+The corrected first-cycle input path now produces live, real 3D output:
+
+```text
+f450 frameHash = 0xe59bada5
+f510 frameHash = 0x5c891520
+f520 frameHash = 0x35da74ab
+f520 PC        = 0xffffffff801061a0
+f520 pixels    = 297533 non-black, 295455 colored
+f520 watchdog  = 167
+f520 DCS       = host active, ADSP pc=0079, irq2=1/1
+```
+
+At f520 the screen contains the textured stone arena, several rendered
+characters, credits and version text, with the green/blue diagnostic menu
+still overlaid. The guest also reloads the watchdog during the run, so the
+counter is healthy rather than evidence of an impending reset. The next
+bringup target is therefore to exit or bypass the diagnostic-menu state through
+correct input/state behavior while retaining the verified v15 checkpoint
+chain, not to patch the scheduler or watchdog.

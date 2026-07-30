@@ -38,6 +38,28 @@ EUTHERDRIVE_GAUNTDL_WARMUP_STATE=/tmp/gaunt-f35.warm.gz
 EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=/tmp/gaunt-f60.warm.gz
 ```
 
+`run-gauntdl-baseline.sh` enables the core's central bringup baseline and uses
+`200000` CPU steps per frame unless
+`EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME` explicitly overrides it. The same
+budget is passed to the probe and stored in every snapshot, so a later load
+rejects an accidentally mixed-budget checkpoint instead of silently changing
+the replay rate.
+
+Long replays can save compressed, atomic snapshots at selected frame
+checkpoints:
+
+```sh
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINTS=450,470,490
+EUTHERDRIVE_GAUNTDL_FRAME_CHECKPOINT_STATE_PATTERN=/tmp/gaunt-f{frame}.warm.gz
+```
+
+The state pattern must contain the literal `{frame}` placeholder. Checkpoint
+files use the same format and CPU-budget validation as warmup and final states.
+Snapshot version 15 also preserves the M48T37 timekeeper/watchdog state and the
+complete DCS/ADSP execution state. This keeps a resumed long replay from
+silently disabling an armed watchdog or restarting audio while the main CPU and
+framebuffer continue from a later frame.
+
 Two default-off texture provenance overlays can be applied after loading a
 snapshot:
 
