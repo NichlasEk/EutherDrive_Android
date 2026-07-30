@@ -15661,3 +15661,38 @@ The automatic 100-frame timer interrupt used by the off-by-default live
 initials transition is now restricted to the pre-`0x400a` interval. Reloaded
 f2760 continuations should use an explicit guest timer IRQ only if scheduler
 service is still required, and must not re-enter the transition tail.
+
+#### Native credit and START now drive the complete initials transition
+
+MAME traces located two periodic guest callbacks missing from the frame
+bridge. `0x80067d94` runs the clock/input updater and reaches the exact START
+counter writer `0x80089ea8`. `0x800e1178` runs the coin poll, increment helper
+and exact credit-byte writer `0x800d50a0`. MAME calls the latter 68 times in
+four frames, establishing a 17-calls-per-frame cadence.
+
+With those callbacks active, real COIN and START pulses traverse the native
+payment and join code:
+
+```text
+0x80013938 -> 0x800d5960  payment succeeds
+0x80013954                  active mask becomes 1
+0x80013990                  transition cleanup begins
+0x800139c0 -> 0x80085448   main state becomes 0x400a
+```
+
+There is no RAM patch or forced transition PC. The resulting f2800 frame is
+the real four-player initials screen with `frameHash=0x861e3281`, 147,374
+non-black pixels and 143,355 colored pixels. Its PNG SHA-256 is
+`8b7a826f7f87f4b6e073d134ce049b3177298ef00c8d69869f1000848067b28e`.
+
+The callback bridges are promoted into the canonical baseline as
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_CLOCK_CALLBACK` and
+`EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_COIN_CALLBACK`; the baseline wrapper also
+exports both explicitly. Release builds pass with zero errors, and a
+baseline-only reload preserves `0x400a` plus the Player 1 mask.
+
+The next playability boundary is narrow: hold each initials direction/Fight
+edge across a complete guest-loop quantum, enter three letters, and follow
+the native password/character-selection route. Renderer banding remains a
+parallel visual-correctness issue, not a blocker for proving the input/state
+path.

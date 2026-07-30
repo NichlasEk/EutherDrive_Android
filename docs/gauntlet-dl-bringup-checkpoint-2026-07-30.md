@@ -570,3 +570,70 @@ Fight. Fortsättningar från f2760 ska inte återaktivera
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_ENTER_RUNTIME_INITIALS`; använd vid behov en
 explicit 100-frame guest-timer-IRQ. Själva initials-experimentets automatiska
 schedulerpuls är nu begränsad till tiden före huvudstate `0x400a`.
+
+## Native COIN + START når den riktiga initials-skärmen
+
+MAME-tracen hittade input-sidans två saknade periodiska gästcallbacks:
+
+```text
+0x80067d94  clock callback
+  -> 0x80089e00 input/counter updater
+  -> 0x80089ea8 exakt START-counter-writer vid 0x8020c780
+
+0x800e1178  coin callback
+  -> 0x800d4cb8 coin poll
+  -> 0x800d5058 coin increment helper
+  -> 0x800d50a0 exakt byte-writer vid 0x802190d0 + input-index
+```
+
+MAME anropar coin-callbacken 68 gånger under fyra videoframes. Bryggan kör
+därför originalkoden 17 gånger per frame. Clock-callbacken ersätter den äldre
+direkta ökningen av game-time-ordet när den är aktiv.
+
+Efter att debounce-byten initierats nådde en riktig COIN-puls den exakta
+coin-writern. En ren START press/release fortsatte sedan genom spelets egen
+join-kedja:
+
+```text
+0x800138d0  player-join caller
+0x80013938  payment -> 0x800d5960, returnerar 1
+0x80013954  skriver active-player-mask 0x80227af4 = 1
+0x80013990  startar transition-cleanup
+0x800139c0  anropar initials-state-funktionen
+0x80085448  skriver main state 0x80227ab0 = 0x400a
+```
+
+Ingen guest-RAM-patch eller direkt transition-entry ingår. En viktig detalj
+för fortsatt inputautomation är att nästa START-edge inte är ny förrän
+runtime record 0 har släppt de gamla `0x300` FIRE3/START-bitarna till
+`0x200`.
+
+Samma obrutna körning laddade select-resurserna och renderade den riktiga
+fyrspelarscenen vid f2800:
+
+```text
+state       = 0x400a
+player mask = 1
+frameHash   = 0x861e3281
+nonBlack    = 147374
+colored     = 143355
+PNG sha256  = 8b7a826f7f87f4b6e073d134ce049b3177298ef00c8d69869f1000848067b28e
+RAM sha256  = 83004fd0b6ec49ac31bd87ff03d117eff4dbed60cdb12539cbb1384ed802d0c2
+```
+
+Player 1 visar `ENTER INITIALS`; Player 2--4 visar join-prompter.
+Horisontella rasterfel och gammal diagnostikgeometri finns kvar, men
+spelvägen är nu entydig.
+
+Callbacksen är promoterade till baseline:
+
+```text
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_CLOCK_CALLBACK=1
+EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_COIN_CALLBACK=1
+```
+
+Central preset och `tools/GauntletProbe/run-gauntdl-baseline.sh` aktiverar
+dem explicit. En ombyggd baseline-only reload behöll `state=0x400a` och
+Player 1-masken utan de tidigare experimentvariablerna. Nästa pass ska
+kvantisera initials-riktningar och Fight över hela gästloopar, mata tre
+bokstäver och följa originalvägen vidare till password/character selection.

@@ -31,6 +31,8 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_GAME_TIME_BRIDGE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_CLOCK_CALLBACK", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_COIN_CALLBACK", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_LITERAL_DESTINATION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
@@ -370,6 +372,10 @@ internal sealed class GauntletDarkLegacyMachine
     private readonly bool _enableVblankTickBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_TICK_BRIDGE");
     private readonly bool _enableVblankGameTimeBridge =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_GAME_TIME_BRIDGE");
+    private readonly bool _enableRuntimeClockCallback =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_CLOCK_CALLBACK");
+    private readonly bool _enableRuntimeCoinCallback =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_COIN_CALLBACK");
     private readonly bool _enableContextPreservingVblankTimerDispatch =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_TICK"));
     private readonly bool _enableVblankGuestTimerInterrupt =
@@ -431,7 +437,7 @@ internal sealed class GauntletDarkLegacyMachine
         Sio.PulseVblank(state: true);
         if (_enableVblankTickBridge)
             MemoryMap.RecordRuntimeVblankTick();
-        if (_enableVblankGameTimeBridge)
+        if (_enableVblankGameTimeBridge && !_enableRuntimeClockCallback)
             MemoryMap.RecordRuntimeGameTimeTick();
         const ulong runtimeMainState = 0xffffffff80227ab0UL;
         bool serviceRuntimeInitialsScheduler =
@@ -461,6 +467,15 @@ internal sealed class GauntletDarkLegacyMachine
         Cpu.StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         Cpu.ServiceKnownRuntimeTempleTextureQioPreservingContext();
         PollRuntimeInput(allowInitialsTransition: false);
+        if (_enableRuntimeClockCallback)
+            Cpu.RunRuntimeClockCallbackPreservingContext();
+        if (_enableRuntimeCoinCallback)
+        {
+            // A four-frame MAME instruction trace records 68 invocations.
+            // Preserve that 17-per-frame cadence for the coin debouncer.
+            for (int i = 0; i < 17; i++)
+                Cpu.RunRuntimeCoinCallbackPreservingContext();
+        }
         if (_splitVblankCpu)
         {
             Cpu.RunProbeSteps(_vblankCpuSteps);
@@ -1934,6 +1949,26 @@ internal sealed class MipsR5000Core
             argument0: null,
             maxSteps: 100_000,
             bypassRuntimeInputPollFastPath: true);
+    }
+
+    public bool RunRuntimeClockCallbackPreservingContext()
+    {
+        const ulong runtimeClockCallback = 0xffffffff80067d94UL;
+        return RunGuestFunctionPreservingContext(
+            runtimeClockCallback,
+            argument0: null,
+            maxSteps: 100_000,
+            bypassRuntimeInputPollFastPath: false);
+    }
+
+    public bool RunRuntimeCoinCallbackPreservingContext()
+    {
+        const ulong runtimeCoinCallback = 0xffffffff800e1178UL;
+        return RunGuestFunctionPreservingContext(
+            runtimeCoinCallback,
+            argument0: null,
+            maxSteps: 100_000,
+            bypassRuntimeInputPollFastPath: false);
     }
 
     public bool StartRuntimeInitialsTransition()
