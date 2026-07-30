@@ -390,6 +390,7 @@ internal sealed class GauntletDarkLegacyMachine
     public GauntletDarkLegacyMachine()
     {
         MemoryMap.AttachInput(Input);
+        Sio.AttachInput(Input);
         Cpu = new MipsR5000Core(MemoryMap);
         Voodoo.SetCpuPcProvider(() => Cpu.Pc);
         Voodoo.SetCpuGprProvider(Cpu.GetGpr);
@@ -33949,6 +33950,7 @@ internal sealed class ChdDiskImage : IDiskImage
 internal sealed class VegasSioDevice
 {
     private byte[] _bootRom = Array.Empty<byte>();
+    private GauntletInputPanel? _input;
     private byte _resetControl;
     private byte _irqEnable;
     private byte _irqState;
@@ -33957,6 +33959,8 @@ internal sealed class VegasSioDevice
     public bool InterruptLine => (_irqState & _irqEnable) != 0;
 
     public void LoadBootRom(byte[] bootRom) => _bootRom = bootRom.ToArray();
+    public void AttachInput(GauntletInputPanel input) => _input = input;
+
     public void Reset()
     {
         _resetControl = 0;
@@ -33979,14 +33983,23 @@ internal sealed class VegasSioDevice
         };
     }
 
-    private static byte ReadGauntletAuxInput(uint offset)
+    private byte ReadGauntletAuxInput(uint offset)
     {
-        // Mirrors the Vegas SIO gun-input window used by Gauntlet for the
-        // extra magic/fight/run bits. Neutral arcade inputs are active-high
-        // here after the MAME bit transforms, so only the run nibbles read set.
+        GauntletPlayerInput player1 = _input?.Player1 ?? default;
+        GauntletPlayerInput player2 = _input?.Player2 ?? default;
+
+        // Mirrors vegas_state::sio_r for Gauntlet's extra fight/magic/turbo
+        // inputs. The horizontal high byte is active-low after the hardware
+        // transform, while the vertical high byte carries active-high inputs.
         return (offset & 7) switch
         {
-            3 or 7 => 0x78,
+            1 => (byte)((player1.Fight ? 0 : 0x10) |
+                        (player1.Magic ? 0 : 0x20)),
+            3 => (byte)((player1.Turbo ? 0x08 : 0) |
+                        (player2.Fight ? 0x10 : 0) |
+                        (player2.Magic ? 0x20 : 0) |
+                        (player2.Turbo ? 0x40 : 0)),
+            5 => 0x30,
             _ => 0x00
         };
     }

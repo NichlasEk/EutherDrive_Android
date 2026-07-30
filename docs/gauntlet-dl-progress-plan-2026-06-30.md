@@ -15032,3 +15032,65 @@ and PPM dumps, retain the latest valid warm snapshot, and keep
 /tmp/gaunt-f7580-state8002-fire3.png
 /tmp/gaunt-f7580-plus10m-state8007-loader.warm
 ```
+
+#### The diagnostic carousel table is correct; the Vegas SIO auxiliary inputs were not
+
+Continuing the new loader to 25M CPU steps returns to the Hall of Legends
+asset set. This is a closed diagnostic carousel, not the route into gameplay.
+The carousel table at guest `0x8013444c` is byte-identical to the MAME
+gameplay RAM oracle and contains only states `0x8000` through `0x8008`.
+
+The FIRE3 transition was traced without a guest-state patch:
+
+```text
+0x80081f3c  writes request 0x8020c534: 0x8008 -> 0x8002
+0x80082364  reads the request
+0x80082384  calls the generic state initializer
+0x80081bec  writes main state 0x80227ab0: 0x8008 -> 0x8002
+```
+
+The selector increments index `0x8020c530` from 4 to 5 and reads the
+eight-byte entry at `0x8013446c`. The MAME Temple oracle instead has main
+state `0x400f`, proving that gameplay belongs to a separate `0x4000` state
+family and must be reached before, not through, this table.
+
+Comparison with MAME's `vegas_state::sio_r` then exposed a concrete device
+bug. EutherDrive returned `0x78` on neutral SIO auxiliary offsets 3 and 7,
+which asserts P1 Turbo plus P2 fight, magic, and turbo continuously. Real
+neutral values are:
+
+```text
+offset 1  0x30  P1 fight/magic active-low half
+offset 3  0x00  P1 turbo plus P2 buttons active-high half
+offset 5  0x30  P3 fight/magic active-low half
+offset 7  0x00  P3 turbo plus P4 buttons active-high half
+```
+
+`VegasSioDevice` now consumes the shared `GauntletInputPanel` and reproduces
+those transforms, including live P1/P2 button bits. This removes a real
+permanently-held Turbo source; it does not patch guest RAM.
+
+A new cold write-watch through frame 450 showed only the normal zero writes
+to `0x80227ab0`; the main state had not yet been selected. That cold branch
+was still in the pre-runtime cache/delay path around `0x800cca50` with Nile
+interrupt routing unset, so it cannot yet decide whether the SIO correction
+changes the eventual `0x8000`/`0x4000` boot choice. Enabling the later
+VBlank guest-timer IRQ at f350 is correctly neutral while `nileCtl=0/0`.
+Keep the f350 checkpoint as the earliest useful branch point and do not use
+the two f450 variants as gameplay evidence.
+
+```text
+/tmp/gaunt-f7540-fire3-state-request-correct.log
+/tmp/gaunt-f7540-fire3-state-writer-trace.log
+/tmp/gaunt-f7540-source-mainram.bin
+/tmp/gaunt-f7580-plus25m-state8007-loader.warm
+/tmp/gaunt-cold-sio-fixed-f350.warm
+```
+
+The next causal pass should run a cold boot with isolated persistent
+timekeeper storage and compare the first nonzero main-state write. The active,
+ROM-adjacent, and older `gauntd24` timekeeper images have different mirrored
+configuration bytes around offsets `0x70` and `0x100`; do not overwrite the
+user's active save while testing this. Once the first `0x800x` or `0x400x`
+write is observed, trace its selector backward before changing any CMOS
+field.
