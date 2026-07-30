@@ -31,6 +31,35 @@ Gästkoden byggde samtidigt sin riktiga `DIAGNOSTIC MENU` med raden
 diagnostik-exit/input-vägen till attract/game och därefter korrigera den
 fortfarande mörka och delvis trasiga renderstaten.
 
+## Diagnostik-exit verifierad
+
+Efter checkpoint-commiten verifierades FIRE 3-vägen med två tidsstyrda
+`turbo`/C-tryck. Det första trycket nådde runtime-inputtabellen som
+`p1=0x0800` och startade riktig spelinnehållsladdning, bland annat:
+
+```text
+players/dwf/sfxgre
+levels/levelE1
+monsters/zom2
+monsters/ice2
+monsters/imp2
+monsters/death
+```
+
+Vid f740 renderades spelvärld och `CREDITS` bakom diagnostik-overlayn. Ett
+andra FIRE 3-tryck från f740 tog bort overlayn och gav en normal svart
+skärmövergång. Vid f780 hade gästen gått vidare till attract-starten och
+renderade sitt nästa riktiga fel:
+
+```text
+AllocMem() called while mem reserved
+GetMemBase() called while mem reserved
+```
+
+Det betyder att input- och diagnostik-exitvägen nu är bevisad. Nästa
+bringup-spärr är den efterföljande minnesreservations-livscykeln, inte längre
+diagnostikmenyn.
+
 ## Rotorsak och fix
 
 Två oberoende heap-stack-kollisioner orsakade den tidigare cachetrampolin- och
@@ -69,6 +98,14 @@ artifacts/gauntlet-probe/gaunt-asset-arenas-f680.ppm
 artifacts/gauntlet-probe/gaunt-asset-arenas-f680.png
 artifacts/gauntlet-probe/gaunt-asset-arenas-f700.ppm
 artifacts/gauntlet-probe/gaunt-asset-arenas-f700.png
+artifacts/gauntlet-probe/gaunt-fire3-f740.warm.gz
+artifacts/gauntlet-probe/gaunt-fire3-f740.ppm
+artifacts/gauntlet-probe/gaunt-fire3-f740.png
+artifacts/gauntlet-probe/gaunt-fire3-second-f760.warm.gz
+artifacts/gauntlet-probe/gaunt-fire3-second-f760.ppm
+artifacts/gauntlet-probe/gaunt-post-exit-f780.warm.gz
+artifacts/gauntlet-probe/gaunt-post-exit-f780.ppm
+artifacts/gauntlet-probe/gaunt-post-exit-f780.png
 ```
 
 f670-snapshotten återladdades med noll körda frames och gav deterministiskt
@@ -76,13 +113,13 @@ f670-snapshotten återladdades med noll körda frames och gav deterministiskt
 
 ## Nästa körning
 
-Fortsätt från f680 för att prova diagnostik-exit utan att göra om
-resursladdningen:
+Fortsätt från f780 för att isolera allocator-reservationsfelet utan att göra
+om input- eller resursladdningsstegen:
 
 ```sh
-EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-asset-arenas-f680.warm.gz \
-EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=680 \
+EUTHERDRIVE_GAUNTDL_WARMUP_STATE=artifacts/gauntlet-probe/gaunt-post-exit-f780.warm.gz \
+EUTHERDRIVE_GAUNTDL_WARMUP_FRAMES=780 \
 EUTHERDRIVE_GAUNTDL_EXTRA_SERIES= \
 tools/GauntletProbe/run-gauntdl-baseline.sh \
-/home/nichlas/roms/MAME/Midway/Vegas/gauntd 700
+/home/nichlas/roms/MAME/Midway/Vegas/gauntd 800
 ```
