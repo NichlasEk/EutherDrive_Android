@@ -14738,3 +14738,81 @@ new input or loader stall.
 /tmp/gaunt-f7272-world-camera-fixed.warm
 /tmp/gaunt-f7272-world-camera-fixed.png
 ```
+
+#### World projection is guest-owned and the next FIRE3 starts a fresh loader
+
+A focused f7272-to-f7280 raster trace found only six textured triangles above
+5,000 covered pixels. Their coordinates are finite, clipped to the expected
+medium-resolution viewport, and form coherent polygon pairs. Representative
+packets are:
+
+```text
+pc=0x800c6fbc cmd=0x0082a053
+xy=(479.312,71.000)/(284.375,40.125)/(256.250,152.500)
+
+pc=0x800c6324 cmd=0x01c2a10b
+xy=(0.000,313.125)/(249.375,211.250)/(320.812,335.562)
+```
+
+The first f7272-to-f7273 probe landed between draw batches and produced no new
+textured triangles. Repeating through f7280 deterministically produced 677
+textured triangles, 632 covered triangles, 162,251 raster pixels and
+`frameHash=0x44308043`.
+
+CPU tracing closes the projection boundary. `0x800c6324` is the guest emitter
+instruction `swc1 f13,0x18(v0)`, not a host-side decoder PC. The preceding
+loop loads the transformed vertex fields, computes reciprocal/perspective
+values, and applies the normal viewport transform:
+
+```text
+screen X = 256 * x_over_w + 256
+screen Y = 192 * y_over_w + 192
+```
+
+It then serializes X, Y, Q, S and T directly to the Voodoo FIFO aperture.
+The visible overlapping diagnostic-world composition is therefore not caused
+by a host projection scale, a malformed Type3 vertex count, or non-finite
+raster coordinates. Do not add a projection clamp or downstream triangle
+filter.
+
+The f7272 counter was 16. Eight no-input frames let the page reach its stable
+exit boundary, then a fresh four-frame FIRE3/Turbo edge at f7280--f7283
+reached the guest input record as `0x0800`. By f7300 the guest had naturally
+performed the next transition:
+
+```text
+main state       = 0x8007
+exit latch       = 1
+counter          = 0
+loader state     = -1
+load complete    = 1
+texture writes   = +276727
+swaps            = +222
+frame hash       = 0x5799f724
+```
+
+Twenty no-input frames then moved the loader word from `-1` to `0`. A focused
++5M CPU continuation from that saved f7320 state completed the loader init:
+
+```text
+main state       = 0x8007
+exit latch       = 0
+loader state     = 1
+load complete    = 0
+new Type3 draws  = 196
+raster pixels    = 1184124
+```
+
+The resulting selected image no longer contains the diagnostic text and shows
+a newly rendered world composition. This proves that the second FIRE3 edge
+starts another real asset/content cycle; it is not an ignored gameplay input.
+Continue the loader naturally from the +5M checkpoint and do not inject
+another FIRE3 edge while load-complete is zero.
+
+```text
+/tmp/gaunt-f7300-post-second-fire3.warm
+/tmp/gaunt-f7300-post-second-fire3.png
+/tmp/gaunt-f7320-post-second-fire3.warm
+/tmp/gaunt-f7320-plus5m-new-loader.warm
+/tmp/gaunt-f7320-plus5m-new-loader.png
+```
