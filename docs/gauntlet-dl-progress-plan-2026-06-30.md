@@ -15137,7 +15137,36 @@ pass should trace that job's completion cadence from object
 corruption or adding a guest-RAM patch.
 
 ```text
-/tmp/gaunt-f1000-fixed.warm
-/tmp/gaunt-f3000-fixed.warm
-/tmp/gaunt-f3000-fixed-mainram.bin
+/tmp/gaunt-isolated-capture-f35.warm
+/tmp/gaunt-isolated-capture-f35-mainram.bin
+/tmp/gaunt-f12000-fixed.warm
 ```
+
+That job does complete naturally. The raw-interpreter continuation first
+changes Voodoo state between frames 9000 and 10000, then reaches the clean
+black hash `0x30e41dc5` with four swaps. Continuing without the checked-in
+bringup preset subsequently reproduces the already-known
+`0x800de910..0x800de9b8` IRQ/status polling symptom. This is not a new
+blocker: the established warm-snapshot workflow requires
+`EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1`.
+
+Enabling that preset on the frame-12000 snapshot immediately restores the
+runtime pipeline:
+
+```text
+frame             = 12012
+runtime text      = "Loading Game."
+swaps             = 64
+Type-5 packets    = 3275
+texture writes    = 163716
+LFB writes        = 1267200
+frameHash         = 0x30e41dc5
+snapshot          = /tmp/gaunt-f12012-baseline.warm
+```
+
+The image is still the expected clean black loading transition, but the guest
+has now entered the actual game-loading path and is issuing sustained asset
+uploads. Continue from the frame-12012 snapshot with the baseline preset
+explicit. Do not diagnose the historical `invalid-standard-window` text as
+an active FIFO stop: the recorded `0x00010241` packet is subsequently
+completed and decoded, and the counters above prove continued work.
