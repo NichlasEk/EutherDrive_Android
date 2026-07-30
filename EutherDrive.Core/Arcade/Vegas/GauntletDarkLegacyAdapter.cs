@@ -367,6 +367,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
 internal sealed class GauntletDarkLegacyMachine
 {
     private int _runtimeTimerTickAccumulator;
+    private int _runtimeClockFrameRemainder;
     private int _vblankGuestTimerInterruptCountdown;
     private readonly bool _splitVblankCpu = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_SPLIT_VBLANK_CPU");
     private readonly bool _enableVblankTickBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_TICK_BRIDGE");
@@ -437,7 +438,7 @@ internal sealed class GauntletDarkLegacyMachine
         Sio.PulseVblank(state: true);
         if (_enableVblankTickBridge)
             MemoryMap.RecordRuntimeVblankTick();
-        if (_enableVblankGameTimeBridge && !_enableRuntimeClockCallback)
+        if (_enableVblankGameTimeBridge)
             MemoryMap.RecordRuntimeGameTimeTick();
         const ulong runtimeMainState = 0xffffffff80227ab0UL;
         bool serviceRuntimeInitialsScheduler =
@@ -468,7 +469,21 @@ internal sealed class GauntletDarkLegacyMachine
         Cpu.ServiceKnownRuntimeTempleTextureQioPreservingContext();
         PollRuntimeInput(allowInitialsTransition: false);
         if (_enableRuntimeClockCallback)
-            Cpu.RunRuntimeClockCallbackPreservingContext();
+        {
+            // A MAME debugger breakpoint records exactly 9 invocations per
+            // video frame. The probe's accelerated guest paths do not preserve
+            // wall-clock CP0 Count pacing, so give the original callback a
+            // deterministic 125 MHz Count / 60 Hz delta across those
+            // invocations (R5000 Count advances at half the 250 MHz clock).
+            int frameTicks = (125_000_000 + _runtimeClockFrameRemainder) / 60;
+            _runtimeClockFrameRemainder =
+                (125_000_000 + _runtimeClockFrameRemainder) % 60;
+            for (int i = 0; i < 9; i++)
+            {
+                uint callbackTicks = (uint)(frameTicks / 9 + (i < frameTicks % 9 ? 1 : 0));
+                Cpu.RunRuntimeClockCallbackPreservingContext(callbackTicks);
+            }
+        }
         if (_enableRuntimeCoinCallback)
         {
             // A four-frame MAME instruction trace records 68 invocations.
@@ -1726,6 +1741,7 @@ internal sealed class MipsR5000Core
     private ulong _tileWriteMax;
     private ulong _tileWriteCount;
     private bool _timerInterruptPending;
+    private bool _freezeCp0CountAdvance;
     private bool _insideContextPreservingRuntimeTimerTick;
     private bool _insideContextPreservingRuntimeInputPoll;
     private bool _runtimeTempleWeaponsLoadRequested;
@@ -1951,14 +1967,19 @@ internal sealed class MipsR5000Core
             bypassRuntimeInputPollFastPath: true);
     }
 
-    public bool RunRuntimeClockCallbackPreservingContext()
+    public bool RunRuntimeClockCallbackPreservingContext(uint elapsedTicks)
     {
         const ulong runtimeClockCallback = 0xffffffff80067d94UL;
+        const ulong runtimePreviousClockCount = 0xffffffff801a98dcUL;
+        _memory.Write32(
+            runtimePreviousClockCount,
+            unchecked((uint)_cp0[9] - elapsedTicks));
         return RunGuestFunctionPreservingContext(
             runtimeClockCallback,
             argument0: null,
             maxSteps: 100_000,
-            bypassRuntimeInputPollFastPath: false);
+            bypassRuntimeInputPollFastPath: false,
+            freezeCp0CountAdvance: true);
     }
 
     public bool RunRuntimeCoinCallbackPreservingContext()
@@ -2002,7 +2023,8 @@ internal sealed class MipsR5000Core
         ulong entry,
         uint? argument0,
         int maxSteps,
-        bool bypassRuntimeInputPollFastPath)
+        bool bypassRuntimeInputPollFastPath,
+        bool freezeCp0CountAdvance = false)
     {
         const ulong returnSentinel = 0xffffffff80000000UL;
         if (_halted || _insideContextPreservingRuntimeInputPoll || !IsRuntimeCodeAddress(Pc))
@@ -2028,6 +2050,7 @@ internal sealed class MipsR5000Core
         try
         {
             _insideContextPreservingRuntimeInputPoll = bypassRuntimeInputPollFastPath;
+            _freezeCp0CountAdvance = freezeCp0CountAdvance;
             _halted = false;
             _hasPendingBranch = false;
             _pendingBranchTarget = 0;
@@ -2066,6 +2089,7 @@ internal sealed class MipsR5000Core
             _lo = savedLo;
             _remainingProbeSteps = savedRemainingProbeSteps;
             _probeStepDebt = savedProbeStepDebt;
+            _freezeCp0CountAdvance = false;
             _insideContextPreservingRuntimeInputPoll = false;
         }
 
@@ -28682,7 +28706,7 @@ internal sealed class MipsR5000Core
 
     private void AdvanceCp0Count(ulong delta)
     {
-        if (delta == 0)
+        if (delta == 0 || _freezeCp0CountAdvance)
             return;
 
         _memory.AdvanceNileClock(delta);
@@ -30192,16 +30216,38 @@ internal sealed class VegasMemoryMap
             Write32(runtimeFrameTick, Read32(runtimeFrameTick) + frameDelta);
     }
 
-    public void RecordRuntimeGameTimeTick()
+    public bool RecordRuntimeGameTimeTick()
     {
         const ulong runtimeGameTime = 0xffffffff80227dd8UL;
-        if (!IsMainRamRange(runtimeGameTime, 4))
-            return;
+        const ulong runtimePreviousGameTime = 0xffffffff801a98e0UL;
+        const ulong runtimeClockFrequency = 0xffffffff80228180UL;
+        if (!IsMainRamRange(runtimeGameTime, 4) ||
+            !IsMainRamRange(runtimePreviousGameTime, 4) ||
+            !IsMainRamRange(runtimeClockFrequency, 4))
+            return false;
 
+        bool initialized = false;
+        if (Read32(runtimeClockFrequency) == 0)
+        {
+            // MAME's Vegas runtime publishes the 250 MHz system clock here.
+            // The guest callback divides two Count ticks by this value.
+            Write32(runtimeClockFrequency, 250_000_000U);
+            initialized = true;
+        }
         float current = BitConverter.UInt32BitsToSingle(Read32(runtimeGameTime));
         if (!float.IsFinite(current) || current < 0.0f)
+        {
             current = 0.0f;
-        Write32(runtimeGameTime, BitConverter.SingleToUInt32Bits(current + 1.0f / 60.0f));
+            Write32(runtimeGameTime, BitConverter.SingleToUInt32Bits(current));
+            initialized = true;
+        }
+        float previous = BitConverter.UInt32BitsToSingle(Read32(runtimePreviousGameTime));
+        if (!float.IsFinite(previous) || previous < 0.0f)
+        {
+            Write32(runtimePreviousGameTime, BitConverter.SingleToUInt32Bits(current));
+            initialized = true;
+        }
+        return initialized;
     }
 
     public void RecordRuntimeInputPollEffects()

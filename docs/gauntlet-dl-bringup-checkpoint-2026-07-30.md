@@ -694,3 +694,40 @@ Bevarade lokala fortsättningar:
 /tmp/euther-native-initials-zzz-released-f2812.warm.gz
 /tmp/euther-native-post-initials-zzz-plus5m-f2812.warm.gz
 ```
+
+## Native runtime-klocka efter initials
+
+MAME-debuggerns breakpoint vid `0x80067d94` räknade exakt nio
+clock-callbacks per videoframe (`270/30` och `3150/350`). En RAM-dump från
+samma oracle visade dessutom att callbackens frekvensord
+`0x80228180` är `250000000`. Euther-checkpointen hade noll där, vilket gav:
+
+```text
+2.0 / 0 -> +Infinity
+MADD vid 0x80067e24 -> NaN
+total game time 0x80227dd8 -> NaN
+```
+
+Baseline initierar nu frekvensordet till 250 MHz och reparerar bara
+icke-finita tidsvärden. Därefter körs originalcallbacken nio gånger per
+frame. Eftersom probens accelererade gästvägar inte motsvarar verklig
+CP0-Count-tid fryses Count under den kontextbevarande callbacken och den får
+ett deterministiskt delta för R5000 Count: `125 MHz / 60 Hz`, fördelat över
+de nio anropen. Själva guest-koden räknar fortfarande ut och skriver både
+total tid och framedelta.
+
+Ett tioframesprov från den bevarade ZZZ-checkpointen gav:
+
+```text
+0x80228180 frequency     = 250000000
+0x80227dd8 total time    = 0x3e2aaaa9 ~= 0.16666664 s
+0x80227ddc frame delta   = 0x3c88889a ~= 1/60 s
+NaN/Infinity            = none
+frameHash                = 0xbdcee336
+```
+
+Det isolerar nästa post-initialsproblem: objektets countdown vid
+`0x80229470` stod kvar på `0x0382`, trots korrekt game time. MAME minskar
+den en gång per frame. Nästa spårning ska därför hitta den separata
+scheduler/writer-kedjan för countdownen; den ska inte lösas med en direkt
+RAM-patch.
