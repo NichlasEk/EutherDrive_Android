@@ -14925,3 +14925,62 @@ consumes its latch; do not patch the state or resend FIRE3 while latch is one.
 /tmp/gaunt-f7360-post-hall-fire3.warm
 /tmp/gaunt-f7360-post-hall-fire3.png
 ```
+
+#### Hall exit publishes a second world naturally
+
+The state-`0x8008` owner after f7360 has now completed without another input
+edge or a guest-memory patch. Its early phases are distinct:
+
+```text
+window  main    latch  new activity
++5M     0x8008  1      14920 type-1 packets, 3730 swaps
++10M    0x8008  1      234048 texture-write words, 1344 swaps
++15M    0x8008  1      register/LFB/swap finalization
+```
+
+A reconstructed continuation command briefly omitted
+`EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1`. The resulting raw interpreter
+windows stayed in the known `0x800de910..0x800de9b8` IRQ/status polling path
+and emitted no Voodoo work. Re-enabling the checked-in baseline immediately
+restored swaps and world-builder execution. Continuations from these warm
+snapshots must therefore keep the baseline preset explicit.
+
+After three additional baseline-enabled 5M windows, the final window returned
+to Type-3/raster work and cleared the exit latch naturally:
+
+```text
+frame            = 7380
+main state       = 0x8008
+exit latch       = 0
+counter          = 2
+loader           = -1
+load complete    = 1
+new type-3 draws = 2271
+raster pixels    = 180771
+frame hash       = 0xe5df0ccc
+```
+
+The selected framebuffer contains genuine textured level geometry rather
+than the Hall page's flat diagnostic bands. The view is still visibly
+incorrect, with oversized/overlapping surfaces and diagnostic allocation
+text, but floors, walls, platforms, and depth-changing world geometry are
+present.
+
+Twenty ordinary no-input frames keep the published owner live:
+
+```text
+f7400 main=0x8008 latch=0 counter=2 hash=0xb86233e5
+new type-3 draws=2766 raster pixels=284857 colored pixels=125601
+```
+
+The next causal pass should continue from f7400 and determine which input or
+native attract-state transition leads toward an actual player-controlled
+session. Do not resend FIRE3 merely to clear state: the owner has already
+cleared its latch.
+
+```text
+/tmp/gaunt-f7380-baseline-plus15m-state8008.warm
+/tmp/gaunt-f7380-baseline-plus15m-state8008.png
+/tmp/gaunt-f7400-post-hall-world-stable.warm
+/tmp/gaunt-f7400-post-hall-world-stable.png
+```
