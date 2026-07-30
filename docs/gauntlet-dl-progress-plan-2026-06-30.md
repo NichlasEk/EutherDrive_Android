@@ -15094,3 +15094,50 @@ configuration bytes around offsets `0x70` and `0x100`; do not overwrite the
 user's active save while testing this. Once the first `0x800x` or `0x400x`
 write is observed, trace its selector backward before changing any CMOS
 field.
+
+#### R5000 TLB probe miss and early Temple migration guards
+
+The isolated cold branch's apparent cache/delay path was an R5000 TLB probe
+loop, not a performance bottleneck. `TLBP` was a no-op, leaving the stale
+non-negative CP0 Index value `0x1f`; the firmware consequently treated every
+virtual address as a match and kept probing. The core does not yet model TLB
+entries because the Vegas memory map performs direct translation, so `TLBP`
+now reports the architectural miss result by setting the Index probe-failure
+bit:
+
+```text
+CP0 Index = 0x80000000
+```
+
+A fresh isolated cold boot with that change reaches runtime code before frame
+5 instead of remaining in the probe loop through frames 350-450. The clean
+frame-35 checkpoint is:
+
+```text
+/tmp/gaunt-isolated-capture-f35.warm
+PC        = 0xffffffff800f00b4
+frameHash = 0x9520dd85
+```
+
+The first continuation initially failed at `0x800111c8`. A write watch proved
+that this was not native IDE DMA: the promoted late Temple weapons migration
+ran while both its source and resource slots were null. Physical address zero
+is a valid main-RAM translation, so it copied disk offset `0x043d1a00` over
+the executable image at physical `0x00011000`.
+
+The migration now requires non-null source and resource pointers in addition
+to its existing same-arena range checks. Replaying the identical frame-35
+checkpoint preserves opcode `0x3c028016` at `0x800111c8`, reaches frame 36 at
+PC `0xffffffff800de9b8`, and continues through frame 3000 without an invalid
+control-flow target. The frame remains the initial black Voodoo surface with
+white corners (`frameHash=0x907bfb45`, zero swaps); however, the diagnostic
+job state is advancing and runtime strings continue to be built. The next
+pass should trace that job's completion cadence from object
+`0x8021e8a8`/record `0x8021e9c4`, rather than revisiting the disproven code
+corruption or adding a guest-RAM patch.
+
+```text
+/tmp/gaunt-f1000-fixed.warm
+/tmp/gaunt-f3000-fixed.warm
+/tmp/gaunt-f3000-fixed-mainram.bin
+```

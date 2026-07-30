@@ -2548,7 +2548,9 @@ internal sealed class MipsR5000Core
         ulong source = SignExtend32(_memory.Read32(sourceTableSlot));
         ulong resource = SignExtend32(_memory.Read32(resourceTableSlot));
         ulong sourceEnd = source + sourceBytes;
-        if (!IsMainRamRange(source, sourceBytes) ||
+        if (source == 0 ||
+            resource == 0 ||
+            !IsMainRamRange(source, sourceBytes) ||
             !IsMainRamRange(clone, sourceBytes) ||
             resource < source ||
             resource >= sourceEnd)
@@ -28450,7 +28452,13 @@ internal sealed class MipsR5000Core
             case 0x01: // tlbr
             case 0x02: // tlbwi
             case 0x06: // tlbwr
+                break;
             case 0x08: // tlbp
+                // Address translation is currently handled directly by the
+                // Vegas memory map, so there are no modeled TLB entries to
+                // match. Report the architectural probe failure instead of
+                // leaving a stale non-negative Index value behind.
+                _cp0[0] = 0x80000000UL;
                 break;
             case 0x18: // eret
                 if ((_cp0[12] & Cp0StatusErl) != 0)
