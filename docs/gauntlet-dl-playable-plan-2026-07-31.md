@@ -480,5 +480,8 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   viktig exekveringsfix men ännu inte ett ärligt spelbart slutläge.
 - Vägen ingår nu i desktopbaselinen via
   `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=1`. Warm-startskriptet sätter även
-  baselinens preset explicit. Nästa blockerare är scene-registreringen och de
+  baselinens preset explicit. UI-bryggan kan dessutom uttryckligen ignorera
+  snapshotens CPU-step-metadata när skriptet väljer den verifierade snabbare
+  60k-nivån; frame-id och snapshotformat kontrolleras fortfarande. Nästa
+  blockerare är scene-registreringen och de
   felaktiga texture/FIFO-paketen, inte längre en frusen game-task.

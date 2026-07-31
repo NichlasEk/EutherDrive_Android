@@ -3364,9 +3364,13 @@ public partial class MainWindow : Window
             .Single(method =>
                 method.Name.Contains("LoadWarmupSnapshot", StringComparison.Ordinal) &&
                 method.GetParameters().Length == 5);
+        bool ignoreCpuStepMismatch =
+            EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter.IsTruthy(
+                Environment.GetEnvironmentVariable(
+                    "EUTHERDRIVE_GAUNTDL_UI_WARMUP_IGNORE_CPU_STEPS"));
         try
         {
-            loader.Invoke(null, [adapter, snapshotPath, frames, cpuStepsPerFrame, false]);
+            loader.Invoke(null, [adapter, snapshotPath, frames, cpuStepsPerFrame, ignoreCpuStepMismatch]);
         }
         catch (TargetInvocationException ex) when (ex.InnerException is not null)
         {
@@ -3377,7 +3381,8 @@ public partial class MainWindow : Window
 
         Console.WriteLine(
             $"[UI] Gauntlet warm snapshot loaded: {snapshotPath} " +
-            $"frame={frames} cpuStepsPerFrame={cpuStepsPerFrame}");
+            $"frame={frames} cpuStepsPerFrame={cpuStepsPerFrame} " +
+            $"ignoreCpuStepMismatch={(ignoreCpuStepMismatch ? 1 : 0)}");
     }
 
     private async Task<bool> ShouldBlockSportTitleLaunchAsync()
