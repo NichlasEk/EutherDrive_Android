@@ -439,3 +439,22 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
 - Tempdisciplin: de tre experimentcheckpoints och två bilder som skapades under
   avgränsningen raderades. `.build-tmp` återgick till 144 MB; `/tmp` låg runt
   442 MB och fick inga Gauntlet-snapshots eller växande loggar.
+
+### 2026-07-31: yttre game-task identifierad
+
+- Den enda direkta guest-callern till main-state-rutinen `0x80013a10` är
+  `0x80015390`. Callern ligger i den större rutinen med entry `0x80014b70`,
+  vars prolog börjar med `27bdff50` och bevarar hela spelets serviceordning.
+- Ett default-avstängt context-preserving prov från f4733 körde entryn med en
+  fast 8M-instruktionsbudget. Det nådde tids-/servicerutinen runt `0x800de0bc`
+  men returnerade inte, ändrade inte scene-root `0x80213618` och lämnade
+  transienträknaren oförändrad på fem. Provet tog cirka 39 sekunder och skrev
+  inga filer.
+- `0x80014b70` är därmed en långlivad game-task, inte en framefunktion som kan
+  anropas och sedan rullas tillbaka via `RunGuestFunctionPreservingContext`.
+  Direktexperimentet är borttaget.
+- Nästa implementation ska ge denna task en separat serialiserbar CPU-kontext,
+  köra den till dess verifierade OS/vblank-yield, serva maskinens vanliga frame
+  och återuppta samma kontext nästa frame. Först när tasken naturligt når
+  `0x80015390`, scene-root blir aktiv och allocator-reservationen är balanserad
+  får vägen bli baseline.
