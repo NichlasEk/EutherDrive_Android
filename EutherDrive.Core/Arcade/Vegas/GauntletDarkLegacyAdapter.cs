@@ -390,6 +390,8 @@ internal sealed class GauntletDarkLegacyMachine
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_NATIVE_INPUT_POLL"));
     private readonly bool _enterRuntimeInitials =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ENTER_RUNTIME_INITIALS"));
+    private readonly int _runtimePhaseThreeSchedulerTicksPerService =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PHASE_THREE_SCHEDULER_TICKS_PER_SERVICE", 1);
     private bool _runtimeInitialsEntered;
     private readonly int _vblankCpuSteps = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_VBLANK_CPU_STEPS", 2048);
 
@@ -503,15 +505,31 @@ internal sealed class GauntletDarkLegacyMachine
                 for (uint player = 0; player < 4; player++)
                 {
                     uint playerBit = 1U << (int)player;
-                    if ((activePlayers & playerBit) == 0 ||
-                        (_runtimeInitialsPlayersCompletedMask & playerBit) != 0)
+                    if ((activePlayers & playerBit) == 0)
                         continue;
 
-                    bool returned = Cpu.RunRuntimeInitialsPlayerUpdatePreservingContext(
-                        player,
-                        out bool completed);
-                    if (returned && completed)
-                        _runtimeInitialsPlayersCompletedMask |= playerBit;
+                    if ((_runtimeInitialsPlayersCompletedMask & playerBit) == 0)
+                    {
+                        bool returned = Cpu.RunRuntimeInitialsPlayerUpdatePreservingContext(
+                            player,
+                            out bool completed);
+                        if (returned && completed)
+                            _runtimeInitialsPlayersCompletedMask |= playerBit;
+                    }
+                    else
+                    {
+                        for (int tick = 0; tick < _runtimePhaseThreeSchedulerTicksPerService; tick++)
+                        {
+                            if (MemoryMap.Read32(
+                                    0xffffffff80229270UL +
+                                    player * 0x964UL +
+                                    0xc8UL) != 3U ||
+                                !Cpu.RunRuntimePhaseThreePlayerUpdatePreservingContext(player))
+                            {
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -2039,6 +2057,55 @@ internal sealed class MipsR5000Core
             bypassRuntimeInputPollFastPath: false);
         completed = completionReturned;
         return completionReturned;
+    }
+
+    public bool RunRuntimePhaseThreePlayerUpdatePreservingContext(uint player)
+    {
+        const ulong runtimePlayerBase = 0xffffffff80229270UL;
+        const ulong runtimePlayerStride = 0x964UL;
+        const ulong runtimePlayerPhaseOffset = 0xc8UL;
+        const ulong runtimePhaseThreePlayerUpdate = 0xffffffff800669c0UL;
+        const ulong runtimePhaseFourSetup = 0xffffffff800229ccUL;
+        const ulong runtimePlayerStateRefresh = 0xffffffff80020810UL;
+        const ulong runtimePhaseFourTimer = 0xffffffff80227bd0UL;
+        const ulong runtimePhaseFourFlags = 0xffffffff80228610UL;
+
+        ulong playerBase = runtimePlayerBase + player * runtimePlayerStride;
+        if (_memory.Read32(playerBase + runtimePlayerPhaseOffset) != 3U)
+            return true;
+
+        bool returned = RunGuestFunctionPreservingContext(
+            runtimePhaseThreePlayerUpdate,
+            argument0: player,
+            maxSteps: 1_000_000,
+            bypassRuntimeInputPollFastPath: false);
+        if (!returned || _lastContextPreservingReturnValue == 0)
+            return returned;
+
+        // At the measured MAME transition the native updater returns -1.
+        // Reproduce its caller's 0x800217b0..0x800217e0 branch exactly while
+        // retaining the context-preserving boundary around the two callees.
+        if (unchecked((long)_lastContextPreservingReturnValue) > 0)
+            return false;
+
+        _memory.Write32(playerBase + runtimePlayerPhaseOffset, 4U);
+        _memory.Write32(runtimePhaseFourTimer, 300U);
+        if (!RunGuestFunctionPreservingContext(
+                runtimePhaseFourSetup,
+                argument0: player,
+                maxSteps: 1_000_000,
+                bypassRuntimeInputPollFastPath: false))
+        {
+            return false;
+        }
+
+        uint flags = _memory.Read32(runtimePhaseFourFlags);
+        _memory.Write32(runtimePhaseFourFlags, flags & 0xfffff1ffU);
+        return RunGuestFunctionPreservingContext(
+            runtimePlayerStateRefresh,
+            argument0: player,
+            maxSteps: 1_000_000,
+            bypassRuntimeInputPollFastPath: false);
     }
 
     public bool StartRuntimeInitialsTransition()

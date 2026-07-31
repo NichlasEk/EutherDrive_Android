@@ -769,3 +769,80 @@ frameHash              = 0xeeffdbb3
 Detta är den första reloadbara checkpointen efter färdig initialinmatning.
 Nästa oracle är övergången när fas-3-timern löper ut; timrarna ska fortsatt
 drivas av native guest-kod och inte genom direkta RAM-patchar.
+
+## Avbrottsåterstart 2026-07-31: fas 3 passerad
+
+Efter datorfrysningen återfanns den senaste lokala fortsättningen som:
+
+```text
+.build-tmp/euther-native-phase3-to-game-f4100.warm.gz
+```
+
+Snapshotten var skapad före den ocommittade fas-3-callerändringen. En ren
+fortsättning från f4100 till f4200 med den ändringen reproducerades två gånger
+med exakt samma slutresultat:
+
+```text
+frameHash       = 0x44ef1458
+nonBlack        = 217882
+colored         = 209055
+draw packets    = 326464
+swaps           = 2790
+```
+
+Player 1 låg fortfarande i fas 3. Dess guest-timer minskade naturligt från
+`0x0d38` till `0x0cc4` under de 100 framesen, vilket visade att vägen levde
+men också att ett fullständigt renderat väntetest skulle kräva tusentals dyra
+probe-frames.
+
+En default-avstängd accelerator lades därför till:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PHASE_THREE_SCHEDULER_TICKS_PER_SERVICE
+```
+
+Den upprepar samma originalfunktion `0x800669c0`; den skriver inte timern
+direkt och ändrar inte baseline när variabeln saknas. Med värdet `4096` från
+den rena f4200-snapshotten nådde gästkoden sin riktiga nonzero-retur på två
+probe-frames. Host-caller-steget följer den uppmätta
+`0x8002179c..0x800217e8`-kedjan:
+
+```text
+phase 3 updater   0x800669c0
+phase field       3 -> 4
+phase-4 timer     300
+phase-4 setup     0x800229cc
+state refresh     0x80020810
+resulting phase   5
+```
+
+Vid f4202 hade diagnostikmenyn försvunnit och Player 1:s karaktärsvy
+renderades. En normal, oaccelererad fortsättning till f4232 var stabil,
+återställde active-player-masken till `1` och behöll fas `5`:
+
+```text
+frameHash       = 0xc766b6b0
+nonBlack        = 221190
+colored         = 215058
+draw packets    = 329258
+```
+
+Ett första riktigt speltestinput från denna checkpoint,
+`fight@4232-4236`, ändrade framebuffer men lämnade fasen på `5`. Nästa
+avgränsade blockerare är därför den native fas-5-dispatcher som följer
+karaktärsvyn, inte längre initials-editorn eller fas-3-countdownen. Spåra
+MAME-callergrenen efter `0x800217e8` och driv samma guestägda fas-5-funktion
+kontextbevarande innan fler inputsekvenser provas.
+
+Reloadbara lokala checkpoints:
+
+```text
+.build-tmp/euther-native-phase3-to-game-f4200.warm.gz
+.build-tmp/euther-native-phase4-fast-f4202.warm.gz
+.build-tmp/euther-native-phase5-natural-f4232.warm.gz
+.build-tmp/euther-native-phase5-fight-f4260.warm.gz
+```
+
+Alla nya snapshots är gzip-komprimerade och ligger repo-lokalt. Ingen
+Gauntlet-snapshot eller växande logg skrevs till `/tmp`; efter passen var
+vanliga filer direkt under `/tmp` cirka 200 KB totalt.
