@@ -278,15 +278,18 @@ MAME fas-5-orakel
 ## Nästa konkreta arbetspass
 
 1. Utgå från
-   `.build-tmp/euther-native-phase5-natural-f4232.warm.gz`.
-2. Lägg en begränsad trace kring `0x80021620` och
-   `0x80021780..0x80021880`.
-3. Kör no-input, Right och Fight som tre separata korta A/B.
-4. Identifiera fas-5-call target och callerreturen.
-5. Implementera endast den uppmätta fas-5-grenen.
-6. Repetera Right/Fight och stoppa vid första riktiga phase- eller
-   main-stateändring.
-7. Spara en enda ny `.warm.gz` när character confirm är bevisad.
+   `.build-tmp/euther-native-phase4-fight-f4631.warm.gz`.
+2. Använd `EUTHERDRIVE_GAUNTDL_GUEST_MEMORY_WORDS` för små före/efterprov utan
+   rå RAM-dump.
+3. Spåra MAME:s yttre game-state-dispatch från fas 5 till den första skrivaren
+   av `0x400c`; `0x80085034` och dess gate är redan verifierade.
+4. Identifiera caller-villkoret eller den separata per-frame-tick som saknas i
+   EutherDrive.
+5. Implementera endast den uppmätta caller/tick-kedjan, kontextbevarande.
+6. Kör no-input tills första naturliga `0x400a -> 0x400c`, därefter till
+   player phase `1`.
+7. Spara en enda ny `.warm.gz` vid game-stateövergången och börja först då med
+   Right/Fight-speltestet.
 
 Detta är den kortaste evidensbaserade vägen från dagens checkpoint till
 faktiskt spelbar kontroll.

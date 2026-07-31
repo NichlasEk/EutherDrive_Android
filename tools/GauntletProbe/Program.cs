@@ -69,6 +69,7 @@ ApplyRequestedDiskTextureMemoryCopy(adapter);
 ApplyRequestedTextureMemoryCopy(adapter);
 LoadRequestedVoodooTextureBanks(adapter);
 LoadRequestedTextureWriterSidecar(adapter);
+PrintRequestedGuestMemoryWords(adapter, "start");
 
 long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
 var runStopwatch = Stopwatch.StartNew();
@@ -95,6 +96,7 @@ if (!loadedWarmupSnapshot)
 
 RunUntilFrame(adapter, frames, cpuStepsPerFrameConfig, stopPc, frameCheckpoints, summaryContext);
 runStopwatch.Stop();
+PrintRequestedGuestMemoryWords(adapter, "final");
 
 int extraSteps = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_CPU_STEPS"), out int parsedExtraSteps)
     ? parsedExtraSteps
@@ -257,6 +259,31 @@ static void ApplyRequestedGuestMemoryWordPatch(GauntletDarkLegacyAdapter adapter
         write32.Invoke(memory, new object[] { address, (uint)value });
         Console.WriteLine($"guestMemoryWordPatch address=0x{address:x16} value=0x{value:x8}");
     }
+}
+
+static void PrintRequestedGuestMemoryWords(GauntletDarkLegacyAdapter adapter, string label)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GUEST_MEMORY_WORDS");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    object memory = GetProperty(GetField(adapter, "_machine"), "MemoryMap");
+    MethodInfo read32 = memory.GetType().GetMethod("Read32", BindingFlags.Instance | BindingFlags.Public)
+        ?? throw new MissingMethodException(memory.GetType().FullName, "Read32");
+    var words = new List<string>();
+    foreach (string item in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        if (!TryParseHexUlong(item, out ulong address))
+        {
+            throw new InvalidDataException(
+                "EUTHERDRIVE_GAUNTDL_GUEST_MEMORY_WORDS must be comma-separated hexadecimal addresses");
+        }
+
+        uint value = (uint)(read32.Invoke(memory, new object[] { address }) ?? 0U);
+        words.Add($"0x{address:x16}=0x{value:x8}");
+    }
+
+    Console.Error.WriteLine($"guestMemoryWords label={label} {string.Join(' ', words)}");
 }
 
 static void ApplyRequestedGuestMemoryFilePatch(GauntletDarkLegacyAdapter adapter)

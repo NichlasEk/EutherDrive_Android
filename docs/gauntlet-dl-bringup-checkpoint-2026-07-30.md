@@ -1150,3 +1150,36 @@ SHA-256 b4a68d1e88be335218f0871c8f0ac060181a08e53cb77f1de531d06bb4013b13
 Alla råa 32 MiB RAM-dumpar raderades direkt efter att de små caller-regionerna
 extraherats. Inga snapshots eller loggar skrevs till `/tmp`; längre körningar
 delades i en-frame-processer för att hålla processminnet bounded.
+
+## Desktopfortsättning 2026-07-31: fas-5-ägaren avgränsad
+
+Från f4631 gav separata no-input-, Right- och Fight-körningar exakt samma
+nästa frame:
+
+```text
+frameHash   0xa8994587
+nonBlack    248012
+colored     235712
+```
+
+`GauntletProbe` kan nu skriva ut en explicit lista av 32-bitars guestord före
+och efter körningen via `EUTHERDRIVE_GAUNTDL_GUEST_MEMORY_WORDS`. Funktionen
+är default-avstängd, skriver bara två korta terminalrader och skapar inga
+RAM-dumpar.
+
+En en-framekontroll visade att fas-5-gaten var öppen men att den kända
+handlern inte ändrade de observerade stateorden:
+
+```text
+main state              0x400a -> 0x400a
+active players          1 -> 1
+player phase            5 -> 5
+phase-4/global timer    0 -> 0
+player +0x93c gate      0 -> 0
+```
+
+Ett bounded prov med 256 extra anrop av `0x80085034` gav inte heller någon
+transition. Acceleratorn och dess enda 7 MiB-testsnapshot togs därför bort
+direkt. Nästa ägare att spåra är den yttre game-state-dispatchen som i MAME
+driver `0x400a -> 0x400c`; fler inputpulser eller direkta handleranrop är inte
+motiverade innan den caller-kedjan är uppmätt.
