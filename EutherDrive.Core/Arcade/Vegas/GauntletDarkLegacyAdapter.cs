@@ -518,16 +518,30 @@ internal sealed class GauntletDarkLegacyMachine
                     }
                     else
                     {
-                        for (int tick = 0; tick < _runtimePhaseThreeSchedulerTicksPerService; tick++)
+                        const ulong runtimePlayerBase = 0xffffffff80229270UL;
+                        const ulong runtimePlayerStride = 0x964UL;
+                        const ulong runtimePlayerPhaseOffset = 0xc8UL;
+                        uint phase = MemoryMap.Read32(
+                            runtimePlayerBase +
+                            player * runtimePlayerStride +
+                            runtimePlayerPhaseOffset);
+                        if (phase == 3U)
                         {
-                            if (MemoryMap.Read32(
-                                    0xffffffff80229270UL +
-                                    player * 0x964UL +
-                                    0xc8UL) != 3U ||
-                                !Cpu.RunRuntimePhaseThreePlayerUpdatePreservingContext(player))
+                            for (int tick = 0; tick < _runtimePhaseThreeSchedulerTicksPerService; tick++)
                             {
-                                break;
+                                if (MemoryMap.Read32(
+                                        runtimePlayerBase +
+                                        player * runtimePlayerStride +
+                                        runtimePlayerPhaseOffset) != 3U ||
+                                    !Cpu.RunRuntimePhaseThreePlayerUpdatePreservingContext(player))
+                                {
+                                    break;
+                                }
                             }
+                        }
+                        else if (phase == 5U)
+                        {
+                            Cpu.RunRuntimePhaseFivePlayerUpdatePreservingContext(player);
                         }
                     }
                 }
@@ -2105,6 +2119,32 @@ internal sealed class MipsR5000Core
             runtimePlayerStateRefresh,
             argument0: player,
             maxSteps: 1_000_000,
+            bypassRuntimeInputPollFastPath: false);
+    }
+
+    public bool RunRuntimePhaseFivePlayerUpdatePreservingContext(uint player)
+    {
+        const ulong runtimePlayerBase = 0xffffffff80229270UL;
+        const ulong runtimePlayerStride = 0x964UL;
+        const ulong runtimePlayerPhaseOffset = 0xc8UL;
+        const ulong runtimePhaseFiveDispatchSlotOffset = 0x93cUL;
+        const ulong runtimePhaseFivePlayerUpdate = 0xffffffff80085034UL;
+
+        ulong playerBase = runtimePlayerBase + player * runtimePlayerStride;
+        if (_memory.Read32(playerBase + runtimePlayerPhaseOffset) != 5U)
+            return true;
+
+        // MAME's 0x800862f0 dispatcher reaches this branch at
+        // 0x8008665c. It only calls 0x80085034 when the per-player slot at
+        // playerBase + 0x93c is zero, passes the player index in a0, and
+        // applies no caller-side state write to the return value.
+        if (_memory.Read32(playerBase + runtimePhaseFiveDispatchSlotOffset) != 0U)
+            return true;
+
+        return RunGuestFunctionPreservingContext(
+            runtimePhaseFivePlayerUpdate,
+            argument0: player,
+            maxSteps: 2_000_000,
             bypassRuntimeInputPollFastPath: false);
     }
 

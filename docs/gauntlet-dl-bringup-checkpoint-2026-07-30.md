@@ -846,3 +846,58 @@ Reloadbara lokala checkpoints:
 Alla nya snapshots är gzip-komprimerade och ligger repo-lokalt. Ingen
 Gauntlet-snapshot eller växande logg skrevs till `/tmp`; efter passen var
 vanliga filer direkt under `/tmp` cirka 200 KB totalt.
+
+## Desktopfortsättning 2026-07-31: fas-5-dispatch uppmätt
+
+Ett nytt bounded MAME-orakel,
+`tools/GauntletProbe/mame-gauntdl-phase5-oracle.lua`, reproducerar
+character-select-kedjan från en repo-lokal fas-4-save utan växande
+instruktionstrace. Den sparar endast explicita checkpoints och kan köra
+separata no-input-, Right-, Fight- och Turbo-fönster.
+
+MAME bekräftade följande originalväg:
+
+```text
+phase-4 timer                300 -> 0
+released action edge         phase 4 -> 5
+phase-5 dispatcher           0x800862f0
+phase-5 caller branch        0x8008665c
+phase-5 player handler       0x80085034
+handler argument a0          player index
+per-player call gate         playerBase + 0x93c == 0
+caller-side return write     none
+```
+
+En enda tvåframes-instruktionstrace användes för att bevisa entryn. Den
+begränsades till ett fast inputfönster, relevanta rader extraherades till
+en 35 KiB-fil och den 22 MiB stora råtracen raderades direkt. Alla MAME
+states, bilder och kortlivade probes ligger under `.build-tmp/`; `/tmp`
+användes inte.
+
+Fas 5 är den färdiga Sorceress-karaktärsvyn, inte ännu en
+karaktärsväljare. MAME lämnar den naturligt utan mer input:
+
+```text
+relative frame 100   state=0x400a phase=5
+relative frame 200   state=0x400c phase=5
+relative frame 300   state=0x400c phase=1
+```
+
+EutherDrive har nu en kontextbevarande anropsväg till `0x80085034` med
+samma fas- och slotvillkor. Två rena f4232 -> f4236-körningar gav identiskt
+resultat:
+
+```text
+frameHash       = 0x634ca87c
+nonBlack        = 221841
+colored         = 215709
+main state      = 0x400a
+player phase    = 5
+```
+
+Vid f4248 hade handlern gjort fler riktiga fill/swap-anrop men samtliga tre
+host-färgbuffertar var tomma. Det är nästa separata desktop-rendergräns;
+den får inte döljas med en RAM-patch eller syntetisk framebuffer. Nästa
+state-milstolpe är att driva samma handler tills EutherDrive naturligt når
+`0x400c`, samtidigt som den första felande phase-5-triangeln eller
+buffer-clearen ringas in.
