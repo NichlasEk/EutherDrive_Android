@@ -731,3 +731,41 @@ Det isolerar nästa post-initialsproblem: objektets countdown vid
 den en gång per frame. Nästa spårning ska därför hitta den separata
 scheduler/writer-kedjan för countdownen; den ska inte lösas med en direkt
 RAM-patch.
+
+## Native post-initials-scheduler och fas 3
+
+MAME-trace visar att caller `0x80021620` anropar spelaruppdateraren
+`0x800662c4` en gång vartannat videoframe. Uppdateraren läser scheduler-delta
+`2` från `0x80227b48` och minskar både initials- och completion-timrarna med
+det värdet. När den returnerar nonzero fortsätter originalcallern till
+fas-3-initialiseraren `0x80066510`.
+
+Baseline kör nu samma originalfunktion med samma 30 Hz-kadens för aktiva
+spelare. Nonzero-returen driver den riktiga fas-3-initialiseraren och stoppar
+sedan den syntetiska caller-kedjan för spelaren. Completion-masken sparas i
+warm-snapshot v16; läsaren är fortsatt bakåtkompatibel med v1-v15.
+
+Från den bevarade ZZZ-snapshoten gav åtta frames:
+
+```text
+completion 0x8022947c  = 1 -> 0 (write vid PC 0x80066574)
+player phase +0xc8     = 3
+phase-3 timer +0x216   = 0x0e10
+entered name           = ZZZ
+frameHash              = 0xec504e1e
+```
+
+Efter reload av v16-snapshoten gav fyra fortsatta frames ingen ny skrivning
+till completion-flaggan. Native fas-3-timrar fortsatte däremot att ticka:
+
+```text
++0x216  0x0e10 -> 0x0e0e
++0x218  0x0384 -> 0x0382
++0x21e  0x001e -> 0x001c
+completion remains     = 0
+frameHash              = 0xeeffdbb3
+```
+
+Detta är den första reloadbara checkpointen efter färdig initialinmatning.
+Nästa oracle är övergången när fas-3-timern löper ut; timrarna ska fortsatt
+drivas av native guest-kod och inte genom direkta RAM-patchar.

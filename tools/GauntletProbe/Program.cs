@@ -1319,7 +1319,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(15);
+        writer.Write(16);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -1332,6 +1332,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
         SaveSio(writer, GetProperty(machine, "Sio"));
         SaveAudio(writer, GetProperty(machine, "Audio"));
         SaveVoodoo(writer, GetProperty(machine, "Voodoo"));
+        writer.Write(GetFieldValue<uint>(machine, "_runtimeInitialsPlayersCompletedMask"));
     }
 
     File.Move(tempPath, path, overwrite: true);
@@ -1453,7 +1454,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version < 1 || version > 15)
+    if (magic != 0x314d5241574c4447UL || version < 1 || version > 16)
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1479,6 +1480,8 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     if (version >= 15)
         LoadAudio(reader, GetProperty(machine, "Audio"));
     LoadVoodoo(reader, GetProperty(machine, "Voodoo"), version);
+    if (version >= 16)
+        SetField(machine, "_runtimeInitialsPlayersCompletedMask", reader.ReadUInt32());
 
     if (stream.CanSeek)
     {

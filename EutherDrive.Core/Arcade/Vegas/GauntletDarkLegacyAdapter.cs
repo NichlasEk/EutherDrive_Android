@@ -368,6 +368,8 @@ internal sealed class GauntletDarkLegacyMachine
 {
     private int _runtimeTimerTickAccumulator;
     private int _runtimeClockFrameRemainder;
+    private int _runtimeInitialsPlayerUpdatePhase;
+    private uint _runtimeInitialsPlayersCompletedMask;
     private int _vblankGuestTimerInterruptCountdown;
     private readonly bool _splitVblankCpu = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_SPLIT_VBLANK_CPU");
     private readonly bool _enableVblankTickBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_TICK_BRIDGE");
@@ -490,6 +492,28 @@ internal sealed class GauntletDarkLegacyMachine
             // Preserve that 17-per-frame cadence for the coin debouncer.
             for (int i = 0; i < 17; i++)
                 Cpu.RunRuntimeCoinCallbackPreservingContext();
+        }
+        if (_enableRuntimeClockCallback &&
+            MemoryMap.Read32(runtimeMainState) == 0x400aU)
+        {
+            const ulong runtimeActivePlayerMask = 0xffffffff80227af4UL;
+            uint activePlayers = MemoryMap.Read32(runtimeActivePlayerMask);
+            if ((_runtimeInitialsPlayerUpdatePhase++ & 1) == 0)
+            {
+                for (uint player = 0; player < 4; player++)
+                {
+                    uint playerBit = 1U << (int)player;
+                    if ((activePlayers & playerBit) == 0 ||
+                        (_runtimeInitialsPlayersCompletedMask & playerBit) != 0)
+                        continue;
+
+                    bool returned = Cpu.RunRuntimeInitialsPlayerUpdatePreservingContext(
+                        player,
+                        out bool completed);
+                    if (returned && completed)
+                        _runtimeInitialsPlayersCompletedMask |= playerBit;
+                }
+            }
         }
         if (_splitVblankCpu)
         {
@@ -1744,6 +1768,7 @@ internal sealed class MipsR5000Core
     private bool _freezeCp0CountAdvance;
     private bool _insideContextPreservingRuntimeTimerTick;
     private bool _insideContextPreservingRuntimeInputPoll;
+    private ulong _lastContextPreservingReturnValue;
     private bool _runtimeTempleWeaponsLoadRequested;
     private bool _runtimeTempleWeaponsResourceBuilt;
     private ulong _runtimeTempleWeaponsTextureStream;
@@ -1992,6 +2017,30 @@ internal sealed class MipsR5000Core
             bypassRuntimeInputPollFastPath: false);
     }
 
+    public bool RunRuntimeInitialsPlayerUpdatePreservingContext(uint player, out bool completed)
+    {
+        const ulong runtimeInitialsPlayerUpdate = 0xffffffff800662c4UL;
+        const ulong runtimeInitialsPlayerComplete = 0xffffffff80066510UL;
+        completed = false;
+        bool returned = RunGuestFunctionPreservingContext(
+            runtimeInitialsPlayerUpdate,
+            argument0: player,
+            maxSteps: 1_000_000,
+            bypassRuntimeInputPollFastPath: false);
+        if (!returned || _lastContextPreservingReturnValue == 0)
+            return returned;
+
+        // The native caller falls through 0x80021628 and invokes this
+        // phase-3 initializer when the player updater returns non-zero.
+        bool completionReturned = RunGuestFunctionPreservingContext(
+            runtimeInitialsPlayerComplete,
+            argument0: player,
+            maxSteps: 1_000_000,
+            bypassRuntimeInputPollFastPath: false);
+        completed = completionReturned;
+        return completionReturned;
+    }
+
     public bool StartRuntimeInitialsTransition()
     {
         const ulong initialsTransitionTail = 0xffffffff80013990UL;
@@ -2071,6 +2120,7 @@ internal sealed class MipsR5000Core
                 }
                 Step();
             }
+            _lastContextPreservingReturnValue = returned ? _gpr[2] : 0;
         }
         finally
         {
