@@ -1028,3 +1028,70 @@ obruten f4264 -> f4266-körning. Fortsatta state- och renderprober ska använda
 denna korrigerade reloadväg; den tidigare f4245 -> f4246-slutsatsen måste
 betraktas som en diagnos av den falska återinträdesframen, inte som
 spelvägens verkliga nästa frame.
+
+## Desktopfortsättning 2026-07-31: originalrenderingen återstartar
+
+Med schedulerläget korrekt återställt fortsatte f4265 i avgränsade,
+komprimerade block till f4540. Inga råtraces skrevs och inget lades i
+`/tmp`. Under den svarta perioden fortsatte originalkoden att ladda
+spelvärldens resurser, bland annat:
+
+```text
+players/dwf
+select
+monsters/zom2
+monsters/ice2
+monsters/imp2
+monsters/pla2
+monsters/death
+weapons
+SCORE_ATT8
+NAMEFONT
+AAAWHITE
+```
+
+Vid f4530 nådde player-timern sin fasgräns. Den gick från den tidigare
+stigande serien till `0x30`, player phase ändrades `5 -> 2` och riktig
+rasterisering återstartade:
+
+```text
+frameHash       = 0xaa1516f5
+draw packets    = 331668  (+1320)
+raster pixels   = 47520
+nonBlack        = 18410
+colored         = 18410
+main state      = 0x400a
+```
+
+Tio naturliga frames senare vid f4540 hade scenen byggts ut till den riktiga
+fyra-player-vyn med `ENTER INITIALS`, slotramar, bakgrund och central figur:
+
+```text
+frameHash       = 0xbe3300c6
+draw packets    = 332490
+textured tris   = 822
+raster pixels   = 526782
+nonBlack        = 247949
+colored         = 241090
+main state      = 0x400a
+player phase    = 2
+player timer    = 0x52
+```
+
+Reloadbar desktopcheckpoint:
+
+```text
+.build-tmp/euther-native-phase2-v17-f4540.warm.gz
+SHA-256 756402a111c9b227bae30607bdc24fd1cf88a05c90f38cd3b1a50d747314645a
+```
+
+Referensbilden ligger i
+`.build-tmp/euther-native-phase2-v17-f4540.png` med SHA-256
+`4b22a865e13f160a3be7ca79f3ceac90812479eb3d34d33ae17f0d9385f291b1`.
+
+Scenen är ännu inte spelbar: mittpartiet har tydliga textur-/recordfel och
+guest state har inte lämnat `0x400a`. Nästa arbete ska börja från f4540,
+köra fas 2 naturligt fram till nästa phase/state-write och ringa in de
+`render-record-null-body`-poster som motsvarar de trasiga mittpanelerna.
+Inputtest hör hemma först när denna naturliga statekedja är verifierad; gå
+inte tillbaka till den falska f4246 clear-bursten.
