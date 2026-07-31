@@ -42,6 +42,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_COIN_CALLBACK", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PLAYER_SCHEDULER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_MAIN_STATE_SCHEDULER", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_EXIT", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PAIRED_WORD_COPY", "1"),
@@ -417,6 +418,10 @@ internal sealed class GauntletDarkLegacyMachine
         ParsePositiveInt(
             "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_MAIN_STATE_SCHEDULER_TICKS_PER_FRAME",
             1);
+    private readonly bool _enableRuntimeGameTask =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK");
+    private int _runtimeGameTaskTraceCount;
     private readonly int _runtimePlayerSchedulerTicksPerFrame =
         ParsePositiveInt(
             "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PLAYER_SCHEDULER_TICKS_PER_FRAME",
@@ -514,6 +519,14 @@ internal sealed class GauntletDarkLegacyMachine
             // Preserve that 17-per-frame cadence for the coin debouncer.
             for (int i = 0; i < 17; i++)
                 Cpu.RunRuntimeCoinCallbackPreservingContext();
+        }
+        if (_runtimeGameTaskTraceCount == 0 &&
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK") is not null)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] runtime-game-task-config " +
+                $"enabled={(_enableRuntimeGameTask ? 1 : 0)} " +
+                $"state=0x{MemoryMap.Read32(runtimeMainState):x}");
         }
         if (_enableRuntimeClockCallback &&
             MemoryMap.Read32(runtimeMainState) == 0x400aU)
@@ -662,6 +675,20 @@ internal sealed class GauntletDarkLegacyMachine
                             Cpu.RunRuntimePhaseFivePlayerUpdatePreservingContext(player);
                     }
                 }
+            }
+        }
+        else if (_enableRuntimeGameTask && MemoryMap.Read32(runtimeMainState) == 0x400cU)
+        {
+            bool yielded = Cpu.RunRuntimeGameTaskSlice(
+                maxSteps: 500_000,
+                out int taskSteps,
+                out ulong taskPc);
+            if (_runtimeGameTaskTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:FIX] runtime-game-task " +
+                    $"yielded={(yielded ? 1 : 0)} steps={taskSteps} pc={taskPc:x16} " +
+                    $"scene=0x{MemoryMap.Read32(0xffffffff80213618UL):x8}");
             }
         }
         long cpuStart = Stopwatch.GetTimestamp();
@@ -1962,6 +1989,8 @@ internal sealed class MipsR5000Core
     private bool _freezeCp0CountAdvance;
     private bool _insideContextPreservingRuntimeTimerTick;
     private bool _insideContextPreservingRuntimeInputPoll;
+    private bool _insideRuntimeGameTask;
+    private RuntimeTaskContext? _runtimeGameTaskContext;
     private ulong _lastContextPreservingReturnValue;
     private ulong _lastContextPreservingTimeoutPc;
     private uint _lastContextPreservingTimeoutInstruction;
@@ -2345,6 +2374,138 @@ internal sealed class MipsR5000Core
             maxSteps: 8_000_000,
             bypassRuntimeInputPollFastPath: false);
     }
+
+    public bool RunRuntimeGameTaskSlice(int maxSteps, out int steps, out ulong taskPc)
+    {
+        const ulong runtimeGameTaskEntry = 0xffffffff80014b70UL;
+        const ulong runtimeFrameDelayEntry = 0xffffffff80010fbcUL;
+        const ulong returnSentinel = 0xffffffff80000000UL;
+        const ulong runtimeGameTaskStackTop = 0xffffffff807f0000UL;
+        steps = 0;
+        taskPc = 0;
+        if (maxSteps <= 0 || _halted || _insideContextPreservingRuntimeInputPoll || !IsRuntimeCodeAddress(Pc))
+            return false;
+
+        RuntimeTaskContext hostContext = CaptureRuntimeTaskContext();
+        bool yielded = false;
+        try
+        {
+            if (_runtimeGameTaskContext is null)
+            {
+                _halted = false;
+                _timerInterruptPending = false;
+                _cp0[12] &= ~(Cp0StatusExl | Cp0StatusErl);
+                _cp0[13] &= ~Cp0CauseInterruptPendingMask;
+                _hasPendingBranch = false;
+                _pendingBranchTarget = 0;
+                _hasImmediatePcOverride = false;
+                _immediatePcOverride = 0;
+                // The warm snapshot is stopped in a different RTOS task. A
+                // resumed game loop must not share that task's live stack,
+                // whose top is also used for temporary text/IO buffers.
+                _gpr[29] = runtimeGameTaskStackTop;
+                _gpr[31] = returnSentinel;
+                _gpr[0] = 0;
+                Pc = runtimeGameTaskEntry;
+            }
+            else
+            {
+                RestoreRuntimeTaskContext(_runtimeGameTaskContext);
+            }
+
+            _insideRuntimeGameTask = true;
+            for (; steps < maxSteps && !_halted; steps++)
+            {
+                if (Pc == runtimeFrameDelayEntry && IsRuntimeCodeAddress(_gpr[31]))
+                {
+                    // prc_delay blocks the game task until a later scheduler
+                    // tick. Yield to the host frame here and resume at the
+                    // guest return address on the next video frame.
+                    Pc = _gpr[31];
+                    _gpr[2] = 0;
+                    _gpr[0] = 0;
+                    _hasPendingBranch = false;
+                    _pendingBranchTarget = 0;
+                    _hasImmediatePcOverride = false;
+                    _immediatePcOverride = 0;
+                    yielded = true;
+                    break;
+                }
+                if (Pc == returnSentinel)
+                    break;
+                Step();
+            }
+            taskPc = Pc;
+            _runtimeGameTaskContext = CaptureRuntimeTaskContext();
+        }
+        finally
+        {
+            RestoreRuntimeTaskContext(hostContext);
+            _insideRuntimeGameTask = false;
+        }
+
+        return yielded;
+    }
+
+    private RuntimeTaskContext CaptureRuntimeTaskContext()
+        => new(
+            (ulong[])_gpr.Clone(),
+            (ulong[])_cp0.Clone(),
+            (ulong[])_fpr.Clone(),
+            (uint[])_fcr.Clone(),
+            Pc,
+            LastFetchedInstruction,
+            _halted,
+            _hasPendingBranch,
+            _pendingBranchTarget,
+            _hasImmediatePcOverride,
+            _immediatePcOverride,
+            _hi,
+            _lo,
+            _instructionCounter,
+            _timerInterruptPending,
+            _remainingProbeSteps,
+            _probeStepDebt);
+
+    private void RestoreRuntimeTaskContext(RuntimeTaskContext context)
+    {
+        Array.Copy(context.Gpr, _gpr, _gpr.Length);
+        Array.Copy(context.Cp0, _cp0, _cp0.Length);
+        Array.Copy(context.Fpr, _fpr, _fpr.Length);
+        Array.Copy(context.Fcr, _fcr, _fcr.Length);
+        Pc = context.Pc;
+        LastFetchedInstruction = context.LastFetchedInstruction;
+        _halted = context.Halted;
+        _hasPendingBranch = context.HasPendingBranch;
+        _pendingBranchTarget = context.PendingBranchTarget;
+        _hasImmediatePcOverride = context.HasImmediatePcOverride;
+        _immediatePcOverride = context.ImmediatePcOverride;
+        _hi = context.Hi;
+        _lo = context.Lo;
+        _instructionCounter = context.InstructionCounter;
+        _timerInterruptPending = context.TimerInterruptPending;
+        _remainingProbeSteps = context.RemainingProbeSteps;
+        _probeStepDebt = context.ProbeStepDebt;
+    }
+
+    private sealed record RuntimeTaskContext(
+        ulong[] Gpr,
+        ulong[] Cp0,
+        ulong[] Fpr,
+        uint[] Fcr,
+        ulong Pc,
+        uint LastFetchedInstruction,
+        bool Halted,
+        bool HasPendingBranch,
+        ulong PendingBranchTarget,
+        bool HasImmediatePcOverride,
+        ulong ImmediatePcOverride,
+        ulong Hi,
+        ulong Lo,
+        ulong InstructionCounter,
+        bool TimerInterruptPending,
+        int RemainingProbeSteps,
+        int ProbeStepDebt);
 
     public bool RunRuntimePhaseFiveExitPreservingContext()
     {
@@ -3344,9 +3505,12 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownBootA420Handshake(pc))
             return;
-        UpdateInterruptPendingBits();
-        if (!_hasPendingBranch && TryEnterPendingInterrupt(pc))
-            return;
+        if (!_insideRuntimeGameTask)
+        {
+            UpdateInterruptPendingBits();
+            if (!_hasPendingBranch && TryEnterPendingInterrupt(pc))
+                return;
+        }
         ApplyKnownRd0SyncReadCompletion(pc);
         ApplyKnownRd0HomeTableParse(pc);
         ApplyKnownRd0HomeBlockStatusRepair(pc);
@@ -3810,6 +3974,23 @@ internal sealed class MipsR5000Core
         ulong resolvedPc = branchFromPreviousInstruction
             ? branchTarget
             : _hasImmediatePcOverride ? _immediatePcOverride : nextPc;
+        bool gameTaskEscapedRuntimeRange =
+            IsRuntimeCodeAddress(pc) && !IsRuntimeCodeAddress(resolvedPc);
+        bool gameTaskLostCanonicalSegment =
+            pc >= 0xffffffff80000000UL &&
+            (resolvedPc & 0xffffffff00000000UL) == 0;
+        if (_insideRuntimeGameTask &&
+            _lowPcTransitionTraceCount < 16 &&
+            (gameTaskEscapedRuntimeRange || gameTaskLostCanonicalSegment))
+        {
+            _lowPcTransitionTraceCount++;
+            Console.WriteLine(
+                $"[GAUNTDL:GAME-TASK-ESCAPE] from={pc:x16} op={op:x8} to={resolvedPc:x16} " +
+                $"branchPrev={branchFromPreviousInstruction} branchTarget={branchTarget:x16} " +
+                $"override={_hasImmediatePcOverride} overrideTarget={_immediatePcOverride:x16} " +
+                $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} t9={_gpr[25]:x16} " +
+                $"ra={_gpr[31]:x16} sp={_gpr[29]:x16}");
+        }
         if (!steadyStateFastDispatch)
             TraceSuspiciousLowPcTransition(pc, op, resolvedPc, branchFromPreviousInstruction, branchTarget);
         Pc = resolvedPc;

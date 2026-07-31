@@ -458,3 +458,27 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   och återuppta samma kontext nästa frame. Först när tasken naturligt når
   `0x80015390`, scene-root blir aktiv och allocator-reservationen är balanserad
   får vägen bli baseline.
+
+### 2026-07-31: game-tasken kan nu återupptas mellan desktopframes
+
+- `0x80014b70` körs nu som en separat CPU-kontext fram till gästens
+  `prc_delay` vid `0x80010fbc`; retur-PC, register, branch-state och CP0/FPU
+  bevaras till nästa videoframe medan den frusna värdtrådens kontext lämnas
+  orörd.
+- Den första implementationen återanvände värdtrådens stack vid
+  `0x807ffc00`. Det gav fyra korrekta yields men förstörde sedan den sparade
+  returadressen vid `0x800bfb0c` (`ra=0x00ffc0e0`). En separat taskstack med
+  topp `0x807f0000` tar bort kollisionen.
+- Ett 60-frame-prov från f4733 gav rena yields, 2 099 nya Type3-paket,
+  222 848 rasterpixlar och `frameHash=0x21544f49` vid 26,76 fps. Ett längre
+  300-frame-prov gav 18 269 texturerade trianglar, 1 270 674 rasterpixlar,
+  båda displaybuffertarna aktiva och `frameHash=0xbbff2c36` vid 32,49 fps utan
+  CPU-halt eller adressflykt.
+- Kontrollbilden visar att tasken inte längre är statiskt fast: den emitterar
+  löpande grafik och byter buffert. Bilden är däremot fortfarande felaktig med
+  trasiga texturblock och scene-root `0x80213618` är fortsatt noll. Detta är en
+  viktig exekveringsfix men ännu inte ett ärligt spelbart slutläge.
+- Vägen ingår nu i desktopbaselinen via
+  `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=1`. Warm-startskriptet sätter även
+  baselinens preset explicit. Nästa blockerare är scene-registreringen och de
+  felaktiga texture/FIFO-paketen, inte längre en frusen game-task.
