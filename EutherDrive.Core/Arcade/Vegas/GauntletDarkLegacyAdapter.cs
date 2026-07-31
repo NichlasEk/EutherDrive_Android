@@ -30,6 +30,10 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "60000"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STEADY_STATE_FAST_DISPATCH", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAMEPLAY_DIAGNOSTIC_TEXT_RECORDS", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STACK_RECORD_COPY", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BYTE_MOVE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STRING_COPY", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE", "1"),
@@ -1042,6 +1046,7 @@ internal sealed class MipsR5000Core
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAMEPLAY_DIAGNOSTIC_TEXT_RECORDS");
     private int _runtimeGameplayDiagnosticTextRecordFixTraceCount;
+    private int _runtimeGameplayDiagnosticRenderRecordFixTraceCount;
     private readonly Dictionary<ulong, ulong> _hotPcCounts = [];
     private readonly bool _enableFdSlotHandleFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE");
     private readonly bool _enableRd0AsyncCallbackKick = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK");
@@ -3157,6 +3162,16 @@ internal sealed class MipsR5000Core
             if (_profileHotPcs)
                 CountHotPc(pc);
             _memory.SetTraceCpuPc(pc);
+            if (TryFastPathKnownRuntimeGameplayDiagnosticRenderRecord(pc))
+                return;
+            if (TryFastPathKnownRuntimeRenderRecordNullBody(pc))
+                return;
+            if (TryFastPathKnownRuntimeStackRecordCopy(pc))
+                return;
+            if (TryFastPathKnownRuntimeByteMove(pc))
+                return;
+            if (TryFastPathKnownRuntimeStringCopy(pc))
+                return;
             if (TryFastPathKnownRuntimeGameplayDiagnosticTextRecord(pc))
                 return;
             if (TryFastPathKnownGauntletGlideHotPath(pc))
@@ -3445,6 +3460,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRuntimeDwordCopyTail(pc))
             return;
         if (TryFastPathKnownRuntimeRenderRecordSkip(pc))
+            return;
+        if (TryFastPathKnownRuntimeGameplayDiagnosticRenderRecord(pc))
             return;
         if (TryFastPathKnownRuntimeRenderRecordNullBody(pc))
             return;
@@ -16833,6 +16850,86 @@ internal sealed class MipsR5000Core
         }
 
         CompleteFastPathStep();
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeGameplayDiagnosticRenderRecord(ulong pc)
+    {
+        const ulong body = 0xffffffff800b1e7cUL;
+        const ulong tail = 0xffffffff800b1fecUL;
+        const ulong diagnosticTextStart = 0xffffffff8020f268UL;
+        const ulong diagnosticTextEnd = 0xffffffff8020f606UL;
+        if (!_enableRuntimeGameplayDiagnosticTextRecordFix ||
+            pc != body ||
+            _memory.Read32(0xffffffff80227ab0UL) != 0x400cU)
+        {
+            return false;
+        }
+
+        if (_memory.Read32(body + 0x00UL) != 0x24e7f1d8U ||
+            _memory.Read32(body + 0x04UL) != 0x8e110000U ||
+            _memory.Read32(body + 0x08UL) != 0x8e12000cU ||
+            _memory.Read32(body + 0x0cUL) != 0x8e020020U ||
+            _memory.Read32(body + 0x10UL) != 0x8e170004U ||
+            _memory.Read32(body + 0x14UL) != 0x00022880U ||
+            _memory.Read32(body + 0x18UL) != 0x00a71821U ||
+            _memory.Read32(body + 0x1cUL) != 0x92440000U ||
+            _memory.Read32(body + 0x20UL) != 0x82420000U ||
+            _memory.Read32(body + 0x24UL) != 0x8c760000U ||
+            _memory.Read32(body + 0x28UL) != 0x10400051U ||
+            _memory.Read32(body + 0x2cUL) != 0x00041600U ||
+            _memory.Read32(tail + 0x00UL) != 0x8fc23600U ||
+            _memory.Read32(tail + 0x04UL) != 0x26940001U ||
+            _memory.Read32(tail + 0x08UL) != 0x0282102aU ||
+            _memory.Read32(tail + 0x0cUL) != 0x1440ff96U ||
+            _memory.Read32(tail + 0x10UL) != 0x2610002cU ||
+            !MatchesAscii(diagnosticTextStart, "DIAGNOSTIC MENU"))
+        {
+            return false;
+        }
+
+        ulong record = _gpr[16];
+        if (!IsMainRamRange(record, 0x24UL))
+            return false;
+
+        ulong tableBase = unchecked(_gpr[7] + 0xfffffffffffff1d8UL);
+        ulong s1 = SignExtend32(_memory.Read32(record + 0x00UL));
+        ulong s2 = SignExtend32(_memory.Read32(record + 0x0cUL));
+        ulong slotIndex = _memory.Read32(record + 0x20UL);
+        ulong s7 = SignExtend32(_memory.Read32(record + 0x04UL));
+        ulong tableOffset = (slotIndex & 0xffffffffUL) << 2;
+        ulong tableEntry = tableBase + tableOffset;
+        if (s2 < diagnosticTextStart || s2 >= diagnosticTextEnd ||
+            !IsMainRamRange(tableEntry, 4UL))
+        {
+            return false;
+        }
+
+        uint unsignedFirst = _memory.Read8(s2);
+        ulong s6 = SignExtend32(_memory.Read32(tableEntry));
+        _gpr[2] = (unsignedFirst << 24) & 0xffffffffUL;
+        _gpr[3] = tableEntry;
+        _gpr[4] = unsignedFirst;
+        _gpr[5] = tableOffset;
+        _gpr[7] = tableBase;
+        _gpr[17] = s1;
+        _gpr[18] = s2;
+        _gpr[22] = s6;
+        _gpr[23] = s7;
+        _gpr[0] = 0;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = tail;
+
+        AdvanceCp0Count(_cp0CountStep * 12UL);
+        _instructionCounter += 12UL;
+        if (_runtimeGameplayDiagnosticRenderRecordFixTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] gameplay-diagnostic-render-record record={record:x16} " +
+                $"text={s2:x16} next={tail:x16}");
+        }
+
         return true;
     }
 

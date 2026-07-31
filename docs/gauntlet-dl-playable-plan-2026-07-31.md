@@ -328,3 +328,10 @@ krediter, så inputkedjan fungerar. Den praktiska blockeraren är nu tydligare:
 Voodoo får fortfarande inte den stora 3D-världsscenen, bara portal, HUD och
 menygeometri. Nästa renderingstest ska därför spåra varför gameplayvärldens
 Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
+### 2026-07-31: diagnostic render-record starvation removed
+
+- The gameplay-state renderer was spending most of its 60,000-instruction frame budget copying and drawing records whose text pointers belonged to the stale `DIAGNOSTIC MENU` blob (`0x8020f268..0x8020f606`).
+- The desktop baseline now skips those records at the verified render-record body (`0x800b1e7c`) before the per-character stack-copy and triangle loops. The fast path requires state `0x400c`, exact code signatures, the diagnostic blob sentinel, and a text pointer inside that blob.
+- A 300-frame continuation from `euther-native-game-phase1-f4733.warm.gz` reached 7,958 textured triangles and 1,237,256 covered raster pixels (`frameHash=0xb58f5f59`, 48.96 fps). Before this source-level skip the same continuation emitted no gameplay Type 3 draw packets in the first profiled frame.
+- The final image is still mostly black, so the next blocker is no longer guest submission starvation. The next slice should inspect why 758,113 of those texture samples resolve to zero and why the remaining textured coverage does not survive into the selected display buffer. Enabling zero-texture transparency changed the hash to `0x51b1e32e` but did not reveal the world, so it remains disabled.
+- Temp hygiene held during both long probes: raw PPM files were converted immediately to small PNGs and deleted; repo-local `.build-tmp` stayed at 134 MB and `/tmp` stayed at 431 MB.
