@@ -34,6 +34,8 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_CLOCK_CALLBACK", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_COIN_CALLBACK", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PLAYER_SCHEDULER", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_MAIN_STATE_SCHEDULER", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_EXIT", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_LITERAL_DESTINATION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
@@ -396,6 +398,16 @@ internal sealed class GauntletDarkLegacyMachine
     private readonly bool _enableRuntimePlayerScheduler =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PLAYER_SCHEDULER");
+    private readonly bool _enableRuntimeMainStateScheduler =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_MAIN_STATE_SCHEDULER");
+    private readonly bool _enableRuntimePhaseFiveExit =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_EXIT");
+    private readonly int _runtimeMainStateSchedulerTicksPerFrame =
+        ParsePositiveInt(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_MAIN_STATE_SCHEDULER_TICKS_PER_FRAME",
+            1);
     private readonly int _runtimePlayerSchedulerTicksPerFrame =
         ParsePositiveInt(
             "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PLAYER_SCHEDULER_TICKS_PER_FRAME",
@@ -482,21 +494,7 @@ internal sealed class GauntletDarkLegacyMachine
         Cpu.ServiceKnownRuntimeTempleTextureQioPreservingContext();
         PollRuntimeInput(allowInitialsTransition: false);
         if (_enableRuntimeClockCallback)
-        {
-            // A MAME debugger breakpoint records exactly 9 invocations per
-            // video frame. The probe's accelerated guest paths do not preserve
-            // wall-clock CP0 Count pacing, so give the original callback a
-            // deterministic 125 MHz Count / 60 Hz delta across those
-            // invocations (R5000 Count advances at half the 250 MHz clock).
-            int frameTicks = (125_000_000 + _runtimeClockFrameRemainder) / 60;
-            _runtimeClockFrameRemainder =
-                (125_000_000 + _runtimeClockFrameRemainder) % 60;
-            for (int i = 0; i < 9; i++)
-            {
-                uint callbackTicks = (uint)(frameTicks / 9 + (i < frameTicks % 9 ? 1 : 0));
-                Cpu.RunRuntimeClockCallbackPreservingContext(callbackTicks);
-            }
-        }
+            RunRuntimeClockCallbacksForFrame();
         if (_enableRuntimeCoinCallback)
         {
             // A four-frame MAME instruction trace records 68 invocations.
@@ -604,7 +602,51 @@ internal sealed class GauntletDarkLegacyMachine
                     }
                     else if (phase == 5U)
                     {
-                        Cpu.RunRuntimePhaseFivePlayerUpdatePreservingContext(player);
+                        if (_enableRuntimeMainStateScheduler)
+                        {
+                            uint mainState = MemoryMap.Read32(runtimeMainState);
+                            for (int tick = 0; tick < _runtimeMainStateSchedulerTicksPerFrame; tick++)
+                            {
+                                if (MemoryMap.Read32(
+                                        runtimePlayerBase +
+                                        player * runtimePlayerStride +
+                                        runtimePlayerPhaseOffset) != phase ||
+                                    MemoryMap.Read32(runtimeMainState) != mainState)
+                                {
+                                    break;
+                                }
+
+                                if (tick > 0)
+                                {
+                                    RunRuntimeClockCallbacksForFrame();
+                                    if (_enableRuntimeCoinCallback)
+                                    {
+                                        for (int callback = 0; callback < 17; callback++)
+                                            Cpu.RunRuntimeCoinCallbackPreservingContext();
+                                    }
+                                }
+
+                                if (!Cpu.RunRuntimeMainStateUpdatePreservingContext())
+                                    break;
+                            }
+
+                            const ulong runtimePhaseFiveTimerOffset = 0x89cUL;
+                            if (_enableRuntimePhaseFiveExit &&
+                                MemoryMap.Read32(runtimeMainState) == mainState &&
+                                MemoryMap.Read32(
+                                    runtimePlayerBase +
+                                    player * runtimePlayerStride +
+                                    runtimePhaseFiveTimerOffset) >= 0x400U)
+                            {
+                                bool returned = Cpu.RunRuntimePhaseFiveExitPreservingContext();
+                                Console.WriteLine(
+                                    $"[GAUNTDL:FIX] runtime-phase-five-exit " +
+                                    $"returned={(returned ? 1 : 0)} " +
+                                    $"state=0x{mainState:x}->0x{MemoryMap.Read32(runtimeMainState):x}");
+                            }
+                        }
+                        else
+                            Cpu.RunRuntimePhaseFivePlayerUpdatePreservingContext(player);
                     }
                 }
             }
@@ -626,6 +668,20 @@ internal sealed class GauntletDarkLegacyMachine
         if (MemoryMap.ConsumeWatchdogResetRequest())
             Reset();
         RenderFrame(target);
+    }
+
+    private void RunRuntimeClockCallbacksForFrame()
+    {
+        // A MAME debugger breakpoint records exactly 9 invocations per video
+        // frame. Preserve its deterministic 125 MHz Count / 60 Hz delta.
+        int frameTicks = (125_000_000 + _runtimeClockFrameRemainder) / 60;
+        _runtimeClockFrameRemainder =
+            (125_000_000 + _runtimeClockFrameRemainder) % 60;
+        for (int i = 0; i < 9; i++)
+        {
+            uint callbackTicks = (uint)(frameTicks / 9 + (i < frameTicks % 9 ? 1 : 0));
+            Cpu.RunRuntimeClockCallbackPreservingContext(callbackTicks);
+        }
     }
 
     private void PollRuntimeInput(bool allowInitialsTransition)
@@ -2223,6 +2279,29 @@ internal sealed class MipsR5000Core
             runtimePlayerScheduler,
             argument0: null,
             maxSteps: 4_000_000,
+            bypassRuntimeInputPollFastPath: false);
+    }
+
+    public bool RunRuntimeMainStateUpdatePreservingContext()
+    {
+        const ulong runtimeMainStateUpdate = 0xffffffff80013a10UL;
+
+        // This is the complete native main-state routine containing the two
+        // measured callers of the phase-5 -> 0x400c transition initializer.
+        return RunGuestFunctionPreservingContext(
+            runtimeMainStateUpdate,
+            argument0: null,
+            maxSteps: 8_000_000,
+            bypassRuntimeInputPollFastPath: false);
+    }
+
+    public bool RunRuntimePhaseFiveExitPreservingContext()
+    {
+        const ulong runtimePhaseFiveExit = 0xffffffff80086cecUL;
+        return RunGuestFunctionPreservingContext(
+            runtimePhaseFiveExit,
+            argument0: null,
+            maxSteps: 8_000_000,
             bypassRuntimeInputPollFastPath: false);
     }
 

@@ -278,18 +278,16 @@ MAME fas-5-orakel
 ## Nästa konkreta arbetspass
 
 1. Utgå från
-   `.build-tmp/euther-native-phase4-fight-f4631.warm.gz`.
-2. Använd `EUTHERDRIVE_GAUNTDL_GUEST_MEMORY_WORDS` för små före/efterprov utan
-   rå RAM-dump.
-3. Spåra MAME:s yttre game-state-dispatch från fas 5 till den första skrivaren
-   av `0x400c`; `0x80085034` och dess gate är redan verifierade.
-4. Identifiera caller-villkoret eller den separata per-frame-tick som saknas i
-   EutherDrive.
-5. Implementera endast den uppmätta caller/tick-kedjan, kontextbevarande.
-6. Kör no-input tills första naturliga `0x400a -> 0x400c`, därefter till
-   player phase `1`.
-7. Spara en enda ny `.warm.gz` vid game-stateövergången och börja först då med
-   Right/Fight-speltestet.
+   `.build-tmp/euther-native-game-phase1-f4733.warm.gz`.
+2. Avgränsa de stale diagnostikposterna mot den riktiga phase-1-scenen; behåll
+   guestvärld, HUD och input oförändrade.
+3. Profilera en enda phase-1-frame och rangordna CPU-, FIFO- och rasterkostnad.
+4. Optimera den största generella desktopkostnaden utan Gauntlet-PC-specialfall.
+5. Repetera Right 8 frames och Fight 4 frames; kräv guest-state eller visuell
+   rörelse/attack, inte bara inputtabellträff.
+6. Kör 300 frames med en kort inputsekvens utan halt eller växande artefakter.
+7. Starta Avalonia-desktopappen med den rena baselinen först när bilden är
+   läsbar och framekadensen praktiskt spelbar.
 
 Detta är den kortaste evidensbaserade vägen från dagens checkpoint till
 faktiskt spelbar kontroll.

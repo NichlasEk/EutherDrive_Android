@@ -1183,3 +1183,45 @@ transition. Acceleratorn och dess enda 7 MiB-testsnapshot togs därför bort
 direkt. Nästa ägare att spåra är den yttre game-state-dispatchen som i MAME
 driver `0x400a -> 0x400c`; fler inputpulser eller direkta handleranrop är inte
 motiverade innan den caller-kedjan är uppmätt.
+
+## Desktopfortsättning 2026-07-31: game state och phase 1 nådda
+
+En RAM-kodscan lokaliserade den exakta `0x400c`-skrivaren till den ursprungliga
+guestfunktionen `0x80086cec`. Dess två callers ligger vid `0x80013e7c` och
+`0x800146a4` inuti den fulla main-state-rutinen `0x80013a10`.
+
+Baselinen kör nu den fulla main-state-rutinen i fas 5 i stället för enbart den
+isolerade `0x80085034`-handlern. När den guestägda fas-5-timern når `0x400`
+körs originalets transition-initialiserare kontextbevarande. Ingen direkt
+RAM-statepatch används. Ett bounded bringupsegment gav:
+
+```text
+phase-5 timer       0x0187 -> 0x04ed
+main state          0x400a -> 0x400c
+transition entry    0x80086cec
+```
+
+Från `0x400c` fortsatte den vanliga CPU-vägen utan experiment. Efter 100
+naturliga frames nåddes spelarfas 1:
+
+```text
+frame               4733
+main state          0x400c
+active players      1
+player phase        1
+frameHash           0x19ab6cf9
+```
+
+Reloadbar desktopcheckpoint:
+
+```text
+.build-tmp/euther-native-game-phase1-f4733.warm.gz
+SHA-256 aeffc6cf00ddf2832bce47801e40b4f73db49ccf59714d3727a9e4a40f4883d2
+```
+
+Right och Fight når nu den riktiga guest-inputtabellen i phase 1 som `0x80`
+respektive `0x200`. Fyraframes A/B ändrade ännu inte framebuffer; den gamla
+diagnostikrenderingen ligger kvar över den nya scenen. De två återstående
+desktopblockerarna före praktiskt speltest är därför en läsbar framebuffer
+utan stale diagnostikposter och runtimeprestanda över probens nuvarande
+cirka `0.2-0.27 fps`.
