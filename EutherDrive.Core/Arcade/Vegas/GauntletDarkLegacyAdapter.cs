@@ -29,6 +29,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1"),
         ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "60000"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STEADY_STATE_FAST_DISPATCH", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAMEPLAY_DIAGNOSTIC_TEXT_RECORDS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE", "1"),
@@ -1037,6 +1038,10 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeSteadyStateFastDispatch =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STEADY_STATE_FAST_DISPATCH");
+    private readonly bool _enableRuntimeGameplayDiagnosticTextRecordFix =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAMEPLAY_DIAGNOSTIC_TEXT_RECORDS");
+    private int _runtimeGameplayDiagnosticTextRecordFixTraceCount;
     private readonly Dictionary<ulong, ulong> _hotPcCounts = [];
     private readonly bool _enableFdSlotHandleFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE");
     private readonly bool _enableRd0AsyncCallbackKick = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK");
@@ -3147,7 +3152,13 @@ internal sealed class MipsR5000Core
             _memory.Read32(0xffffffff80227ab0UL) == 0x400cU;
         if (steadyStateFastDispatch)
         {
+            if (_traceWatchPcs.Length > 0)
+                TraceWatchedPc(pc);
+            if (_profileHotPcs)
+                CountHotPc(pc);
             _memory.SetTraceCpuPc(pc);
+            if (TryFastPathKnownRuntimeGameplayDiagnosticTextRecord(pc))
+                return;
             if (TryFastPathKnownGauntletGlideHotPath(pc))
                 return;
             goto ExecuteInstruction;
@@ -3274,6 +3285,8 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownRd0HomeSecondCounterWait(pc))
             return;
         if (TryRepairKnownRuntimeWorldListInvalidSentinelEnd(pc))
+            return;
+        if (TryFastPathKnownRuntimeGameplayDiagnosticTextRecord(pc))
             return;
         if (TryFastPathKnownGauntletGlideHotPath(pc))
             return;
@@ -14354,6 +14367,68 @@ internal sealed class MipsR5000Core
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
         Pc = returnAddress;
+        return true;
+    }
+
+    private bool TryFastPathKnownRuntimeGameplayDiagnosticTextRecord(ulong pc)
+    {
+        const ulong firstTriangleCall = 0xffffffff800b0d0cUL;
+        const ulong secondTriangleCall = 0xffffffff800b0d20UL;
+        const ulong epilogue = 0xffffffff800b0d28UL;
+        const ulong diagnosticTextStart = 0xffffffff8020f268UL;
+        const ulong diagnosticTextEnd = 0xffffffff8020f606UL;
+        if (!_enableRuntimeGameplayDiagnosticTextRecordFix ||
+            pc is not (firstTriangleCall or secondTriangleCall) ||
+            _memory.Read32(0xffffffff80227ab0UL) != 0x400cU)
+        {
+            return false;
+        }
+
+        if (_memory.Read32(firstTriangleCall) != 0x0c03137bU ||
+            _memory.Read32(firstTriangleCall + 0x04UL) != 0x24c50028U ||
+            _memory.Read32(secondTriangleCall) != 0x0c03137bU ||
+            _memory.Read32(secondTriangleCall + 0x04UL) != 0x24c60078U ||
+            _memory.Read32(epilogue) != 0x8fbf002cU)
+        {
+            return false;
+        }
+
+        ulong sp = _gpr[29];
+        if (!IsMainRamRange(sp + 0x18UL, 4))
+            return false;
+
+        ulong coordinateRecord = SignExtend32(_memory.Read32(sp + 0x18UL));
+        if (coordinateRecord < 4 || !IsMainRamRange(coordinateRecord - 4UL, 0x14UL))
+            return false;
+
+        ulong text = SignExtend32(_memory.Read32(coordinateRecord + 0x0cUL));
+        if (text < diagnosticTextStart || text >= diagnosticTextEnd ||
+            !MatchesAscii(diagnosticTextStart, "DIAGNOSTIC MENU"))
+        {
+            return false;
+        }
+
+        if (_runtimeGameplayDiagnosticTextRecordFixTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] gameplay-diagnostic-text-record pc={pc:x16} " +
+                $"record={coordinateRecord - 4UL:x16} text={text:x16} next={epilogue:x16}");
+        }
+        Pc = epilogue;
+        CompleteFastPathStep();
+        return true;
+    }
+
+    private bool MatchesAscii(ulong address, string expected)
+    {
+        if (!IsMainRamRange(address, (ulong)expected.Length))
+            return false;
+
+        for (int i = 0; i < expected.Length; i++)
+        {
+            if (_memory.Read8(address + (uint)i) != (byte)expected[i])
+                return false;
+        }
         return true;
     }
 
@@ -43910,6 +43985,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (!_profilePixelLastWriters)
             return 0;
 
+        int producerStorageIndex = CommandFifoReadStorageIndex(_currentCommandFifoPacketStart);
         PixelLastWriterKey key = new(
             CpuPcProvider?.Invoke() ?? 0,
             kind,
@@ -43921,7 +43997,11 @@ internal class VoodooBringupBackend : IVoodooBackend
             _currentCommandFifoWordsNeeded,
             _currentCommandFifoPacketStart,
             _cmdFifoReadIndex,
-            _commandFifoDecodeTrigger);
+            _commandFifoDecodeTrigger,
+            _cmdFifoStorageLastWritePc[producerStorageIndex],
+            _cmdFifoStorageLastWriteLogicalIndex[producerStorageIndex],
+            _cmdFifoStorageLastWriteAddress[producerStorageIndex],
+            _cmdFifoStorageLastWriteSource[producerStorageIndex]);
         if (_pixelLastWriterIds.TryGetValue(key, out int id))
             return id;
 
@@ -44088,7 +44168,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             return "-";
 
         PixelLastWriterKey key = _pixelLastWriterKeys[id - 1];
-        return $"{count}@0x{key.Pc:x16}:{key.Kind}:{key.Source}:c{key.Color:X4}:cmd{key.Command:X8}:{key.CommandWords}:rd{key.CommandFifoReadIndex:X}:pkt{key.CommandFifoPacketStart:X}:fbz{key.FbzMode:X8}:cp{key.FbzColorPath:X8}:tr{key.Trigger}";
+        return $"{count}@0x{key.Pc:x16}:{key.Kind}:{key.Source}:c{key.Color:X4}:cmd{key.Command:X8}:{key.CommandWords}:rd{key.CommandFifoReadIndex:X}:pkt{key.CommandFifoPacketStart:X}:prodpc{key.ProducerPc:x16}:prodlg{key.ProducerLogicalIndex:X}:prodaddr{key.ProducerAddress:X}:prodsrc{FormatCommandFifoStorageWriteSource(key.ProducerSource)}:fbz{key.FbzMode:X8}:cp{key.FbzColorPath:X8}:tr{key.Trigger}";
     }
 
     private static bool TouchesInterestingEventRegister(uint target, uint count)
@@ -44142,7 +44222,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         int CommandWords,
         int CommandFifoPacketStart,
         int CommandFifoReadIndex,
-        string Trigger);
+        string Trigger,
+        ulong ProducerPc,
+        int ProducerLogicalIndex,
+        int ProducerAddress,
+        byte ProducerSource);
 
     private readonly record struct PacketMapProducerState(
         int NextLogicalIndex,

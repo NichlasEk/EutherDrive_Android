@@ -301,3 +301,30 @@ att tangentbordskontrollerna kan speltestas i ett riktigt desktopfönster.
 
 Detta är den kortaste evidensbaserade vägen från dagens checkpoint till
 faktiskt spelbar kontroll.
+
+### Källägd diagnostikspärr
+
+Pixel-last-writer-profilen binder nu varje rasterpost till FIFO-paketets
+faktiska CPU-producent. Diagnosglypherna kommer från `0x800c4e6c` och
+`0x800c4f20`; deras två triangelanrop görs från `0x800b0d0c` och
+`0x800b0d20`. Anropsramen innehåller samtidigt den aktiva textposten.
+
+Baselinen hoppar därför bara över en glyphquad när alla följande villkor
+stämmer:
+
+- main state är gameplay `0x400c`,
+- gäst-PC är en av de två verifierade triangelanropsplatserna,
+- textposten pekar in i den sammanhängande diagnostiktextbloben, och
+- bloben fortfarande börjar med `DIAGNOSTIC MENU`.
+
+Detta tar bort 911 stale diagnosglyph-trianglar redan i första fortsatta
+framen utan skärmpositionsfilter och utan att stänga av HUD-renderaren. En
+300-frame-körning från f4733 nådde 63.99--65.27 fps, stannade i fungerande
+guestkörning och gav `frameHash=0x964a21b5`. Kontrollbilden
+`.build-tmp/gauntdl-source-clean-f5033.png` visar att diagnosmenyn är borta.
+
+Coin/start/fight-provet når därefter `Easy`/buy-health-vyn och konsumerar
+krediter, så inputkedjan fungerar. Den praktiska blockeraren är nu tydligare:
+Voodoo får fortfarande inte den stora 3D-världsscenen, bara portal, HUD och
+menygeometri. Nästa renderingstest ska därför spåra varför gameplayvärldens
+Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
