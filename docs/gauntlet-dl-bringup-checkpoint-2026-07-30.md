@@ -1095,3 +1095,58 @@ köra fas 2 naturligt fram till nästa phase/state-write och ringa in de
 `render-record-null-body`-poster som motsvarar de trasiga mittpanelerna.
 Inputtest hör hemma först när denna naturliga statekedja är verifierad; gå
 inte tillbaka till den falska f4246 clear-bursten.
+
+## Desktopfortsättning 2026-07-31: full spelarscheduler genom fas 2 och 4
+
+Den tidigare host-schedulern körde bara separata guestfunktioner för fas 3
+och fas 5. En kodump från den reloadbara f4620-checkpointen visar att spelets
+fulla per-frame-scheduler börjar vid `0x80020ab4`, loopar över alla fyra
+spelarposter och hoppar genom fasfältet vid `playerBase + 0xc8`. Att anropa
+den senare `0x800862f0`-dispatchern gav en bit-identisk A/B och var inte
+fas-2-ägaren.
+
+Baseline kör nu hela `0x80020ab4` kontextbevarande när en färdig aktiv
+spelare ligger i fas 2 eller 4. Inga fasfält eller timrar skrivs av hosten.
+Normal kadens är en native scheduler-tick per videoframe. En default-off
+accelerator finns bara för bounded bringup:
+
+```text
+EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PLAYER_SCHEDULER_TICKS_PER_FRAME
+```
+
+Från f4620 minskade fas-2-timrarna med exakt två per native tick. Bounded
+64-tickssegment, med en komprimerad checkpoint per process, nådde den riktiga
+guestövergången efter 441 ticks:
+
+```text
+phase                 2 -> 4
+final segment ticks   57 (stoppade automatiskt vid fasbyte)
+phase-4 timer         298
+main state            0x400a
+```
+
+Samma native scheduler minskade därefter fas-4-timern
+`298 -> 170 -> 42 -> 0`. En riktig Fight-kant vid timer noll gav:
+
+```text
+phase                 4 -> 5
+main state            0x400a
+frameHash             0x5f8fc447
+nonBlack              159076
+colored               151149
+```
+
+En ren baseline-reload utan accelerator verifierar både fas 2 och fas 4:
+fas-2-timrarna tickar med två och fas-4-timern går `298 -> 296` på en frame.
+Fas 5 förblir stabil genom minst fem fortsatta frames.
+
+Senaste reloadbara desktopcheckpoint:
+
+```text
+.build-tmp/euther-native-phase4-fight-f4631.warm.gz
+SHA-256 b4a68d1e88be335218f0871c8f0ac060181a08e53cb77f1de531d06bb4013b13
+```
+
+Alla råa 32 MiB RAM-dumpar raderades direkt efter att de små caller-regionerna
+extraherats. Inga snapshots eller loggar skrevs till `/tmp`; längre körningar
+delades i en-frame-processer för att hålla processminnet bounded.

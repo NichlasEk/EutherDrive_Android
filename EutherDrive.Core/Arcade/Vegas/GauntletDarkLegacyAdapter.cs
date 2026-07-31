@@ -33,6 +33,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_GAME_TIME_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_CLOCK_CALLBACK", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_COIN_CALLBACK", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PLAYER_SCHEDULER", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_LITERAL_DESTINATION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
@@ -392,6 +393,14 @@ internal sealed class GauntletDarkLegacyMachine
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ENTER_RUNTIME_INITIALS"));
     private readonly int _runtimePhaseThreeSchedulerTicksPerService =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PHASE_THREE_SCHEDULER_TICKS_PER_SERVICE", 1);
+    private readonly bool _enableRuntimePlayerScheduler =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PLAYER_SCHEDULER");
+    private readonly int _runtimePlayerSchedulerTicksPerFrame =
+        ParsePositiveInt(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PLAYER_SCHEDULER_TICKS_PER_FRAME",
+            1);
+    private bool _loggedRuntimePlayerScheduler;
     private bool _runtimeInitialsEntered;
     private readonly int _vblankCpuSteps = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_VBLANK_CPU_STEPS", 2048);
 
@@ -502,52 +511,101 @@ internal sealed class GauntletDarkLegacyMachine
             uint activePlayers = MemoryMap.Read32(runtimeActivePlayerMask);
             bool serviceThirtyHertzPlayerPhase =
                 (_runtimeInitialsPlayerUpdatePhase++ & 1) == 0;
-            for (uint player = 0; player < 4; player++)
+            bool servicedNativePlayerScheduler = false;
+            if (_enableRuntimePlayerScheduler)
             {
-                uint playerBit = 1U << (int)player;
-                if ((activePlayers & playerBit) == 0)
-                    continue;
-
-                if ((_runtimeInitialsPlayersCompletedMask & playerBit) == 0)
-                {
-                    if (!serviceThirtyHertzPlayerPhase)
-                        continue;
-
-                    bool returned = Cpu.RunRuntimeInitialsPlayerUpdatePreservingContext(
-                        player,
-                        out bool completed);
-                    if (returned && completed)
-                        _runtimeInitialsPlayersCompletedMask |= playerBit;
-                    continue;
-                }
-
                 const ulong runtimePlayerBase = 0xffffffff80229270UL;
                 const ulong runtimePlayerStride = 0x964UL;
                 const ulong runtimePlayerPhaseOffset = 0xc8UL;
-                uint phase = MemoryMap.Read32(
-                    runtimePlayerBase +
-                    player * runtimePlayerStride +
-                    runtimePlayerPhaseOffset);
-                if (phase == 3U)
+                for (uint player = 0; player < 4; player++)
                 {
-                    if (!serviceThirtyHertzPlayerPhase)
-                        continue;
-
-                    for (int tick = 0; tick < _runtimePhaseThreeSchedulerTicksPerService; tick++)
+                    uint playerBit = 1U << (int)player;
+                    uint phase = MemoryMap.Read32(
+                        runtimePlayerBase +
+                        player * runtimePlayerStride +
+                        runtimePlayerPhaseOffset);
+                    if ((activePlayers & playerBit) != 0 &&
+                        (_runtimeInitialsPlayersCompletedMask & playerBit) != 0 &&
+                        phase is 2U or 4U)
                     {
-                        if (MemoryMap.Read32(
-                                runtimePlayerBase +
-                                player * runtimePlayerStride +
-                                runtimePlayerPhaseOffset) != 3U ||
-                            !Cpu.RunRuntimePhaseThreePlayerUpdatePreservingContext(player))
+                        int completedTicks = 0;
+                        for (int tick = 0;
+                             tick < _runtimePlayerSchedulerTicksPerFrame;
+                             tick++)
                         {
-                            break;
+                            if (MemoryMap.Read32(
+                                    runtimePlayerBase +
+                                    player * runtimePlayerStride +
+                                    runtimePlayerPhaseOffset) != phase ||
+                                !Cpu.RunRuntimePlayerSchedulerPreservingContext())
+                            {
+                                break;
+                            }
+                            completedTicks++;
                         }
+                        servicedNativePlayerScheduler = completedTicks > 0;
+                        if (!_loggedRuntimePlayerScheduler)
+                        {
+                            Console.WriteLine(
+                                $"[GAUNTDL:FIX] runtime-player-scheduler " +
+                                $"player={player} phase={phase} ticks={completedTicks} " +
+                                $"returned={(servicedNativePlayerScheduler ? 1 : 0)}");
+                            _loggedRuntimePlayerScheduler = true;
+                        }
+                        break;
                     }
                 }
-                else if (phase == 5U)
+            }
+
+            if (!servicedNativePlayerScheduler)
+            {
+                for (uint player = 0; player < 4; player++)
                 {
-                    Cpu.RunRuntimePhaseFivePlayerUpdatePreservingContext(player);
+                    uint playerBit = 1U << (int)player;
+                    if ((activePlayers & playerBit) == 0)
+                        continue;
+
+                    if ((_runtimeInitialsPlayersCompletedMask & playerBit) == 0)
+                    {
+                        if (!serviceThirtyHertzPlayerPhase)
+                            continue;
+
+                        bool returned = Cpu.RunRuntimeInitialsPlayerUpdatePreservingContext(
+                            player,
+                            out bool completed);
+                        if (returned && completed)
+                            _runtimeInitialsPlayersCompletedMask |= playerBit;
+                        continue;
+                    }
+
+                    const ulong runtimePlayerBase = 0xffffffff80229270UL;
+                    const ulong runtimePlayerStride = 0x964UL;
+                    const ulong runtimePlayerPhaseOffset = 0xc8UL;
+                    uint phase = MemoryMap.Read32(
+                        runtimePlayerBase +
+                        player * runtimePlayerStride +
+                        runtimePlayerPhaseOffset);
+                    if (phase == 3U)
+                    {
+                        if (!serviceThirtyHertzPlayerPhase)
+                            continue;
+
+                        for (int tick = 0; tick < _runtimePhaseThreeSchedulerTicksPerService; tick++)
+                        {
+                            if (MemoryMap.Read32(
+                                    runtimePlayerBase +
+                                    player * runtimePlayerStride +
+                                    runtimePlayerPhaseOffset) != 3U ||
+                                !Cpu.RunRuntimePhaseThreePlayerUpdatePreservingContext(player))
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    else if (phase == 5U)
+                    {
+                        Cpu.RunRuntimePhaseFivePlayerUpdatePreservingContext(player);
+                    }
                 }
             }
         }
@@ -2149,6 +2207,22 @@ internal sealed class MipsR5000Core
             runtimePhaseFivePlayerUpdate,
             argument0: player,
             maxSteps: 2_000_000,
+            bypassRuntimeInputPollFastPath: false);
+    }
+
+    public bool RunRuntimePlayerSchedulerPreservingContext()
+    {
+        const ulong runtimePlayerScheduler = 0xffffffff80020ab4UL;
+
+        // This native routine loops over all four player records and jumps
+        // through the phase field at playerBase + 0xc8. MAME reaches its
+        // phase-2 case as part of the per-frame game scheduler; invoke the
+        // complete guest-owned routine rather than reproducing its inline
+        // timer, input and state writes in host code.
+        return RunGuestFunctionPreservingContext(
+            runtimePlayerScheduler,
+            argument0: null,
+            maxSteps: 4_000_000,
             bypassRuntimeInputPollFastPath: false);
     }
 
