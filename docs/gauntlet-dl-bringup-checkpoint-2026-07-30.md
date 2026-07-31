@@ -987,3 +987,44 @@ FIFO-registerskrivningar. Nästa implementation ska därför modellera den
 generella Voodoo busy/PCI-FIFO-kön och dess swap-presentation. Den ska inte
 specialfalla de två Gauntlet-PC-adresserna, behålla en gammal framebuffer
 eller kopiera fram en syntetisk bild.
+
+## Desktopfortsättning 2026-07-31: warm snapshot återställer schedulern
+
+En kontroll av den bevarade f4264-snapshotten visade att varje ny
+GauntletProbe-process felaktigt körde `StartRuntimeInitialsTransition()` en
+gång till. Snapshotformat 16 sparade active-player completion-masken men
+inte maskinens övriga schedulerläge, framför allt
+`_runtimeInitialsEntered`. Alla tidigare korta reload-prober efter state
+`0x400a` hade därför en falsk initials-cleanup i sin första frame.
+
+Snapshotformat 17 sparar nu även:
+
+```text
+runtime timer accumulator
+runtime clock remainder
+30 Hz player update phase
+vblank timer-IRQ countdown
+runtime initials entered
+```
+
+Äldre snapshots förblir läsbara. För version 16 och äldre härleds
+`runtime initials entered` endast när det guestägda main state redan är
+`0x400a` eller `0x400c`.
+
+En f4264 -> f4265-kontroll efter fixen gav ingen
+`runtime-initials-transition`. I stället fortsatte den pågående asset- och
+command-FIFO-vägen naturligt:
+
+```text
+texture writes    6,438,119 -> 6,548,047
+type-5 packets    +2,171
+swaps             2,832 -> 2,848
+fast fills        oförändrat 327
+```
+
+En ny version-17-snapshot vid f4265 reloadades därefter till f4266. PC,
+framehash och huvudräknarna för FIFO, texturer, fills och swaps matchade en
+obruten f4264 -> f4266-körning. Fortsatta state- och renderprober ska använda
+denna korrigerade reloadväg; den tidigare f4245 -> f4246-slutsatsen måste
+betraktas som en diagnos av den falska återinträdesframen, inte som
+spelvägens verkliga nästa frame.

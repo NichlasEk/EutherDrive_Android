@@ -1319,7 +1319,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(16);
+        writer.Write(17);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -1333,6 +1333,11 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
         SaveAudio(writer, GetProperty(machine, "Audio"));
         SaveVoodoo(writer, GetProperty(machine, "Voodoo"));
         writer.Write(GetFieldValue<uint>(machine, "_runtimeInitialsPlayersCompletedMask"));
+        writer.Write(GetFieldValue<int>(machine, "_runtimeTimerTickAccumulator"));
+        writer.Write(GetFieldValue<int>(machine, "_runtimeClockFrameRemainder"));
+        writer.Write(GetFieldValue<int>(machine, "_runtimeInitialsPlayerUpdatePhase"));
+        writer.Write(GetFieldValue<int>(machine, "_vblankGuestTimerInterruptCountdown"));
+        writer.Write(GetFieldValue<bool>(machine, "_runtimeInitialsEntered"));
     }
 
     File.Move(tempPath, path, overwrite: true);
@@ -1454,7 +1459,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version < 1 || version > 16)
+    if (magic != 0x314d5241574c4447UL || version < 1 || version > 17)
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1482,6 +1487,21 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     LoadVoodoo(reader, GetProperty(machine, "Voodoo"), version);
     if (version >= 16)
         SetField(machine, "_runtimeInitialsPlayersCompletedMask", reader.ReadUInt32());
+    if (version >= 17)
+    {
+        SetField(machine, "_runtimeTimerTickAccumulator", reader.ReadInt32());
+        SetField(machine, "_runtimeClockFrameRemainder", reader.ReadInt32());
+        SetField(machine, "_runtimeInitialsPlayerUpdatePhase", reader.ReadInt32());
+        SetField(machine, "_vblankGuestTimerInterruptCountdown", reader.ReadInt32());
+        SetField(machine, "_runtimeInitialsEntered", reader.ReadBoolean());
+    }
+    else
+    {
+        object memory = GetProperty(machine, "MemoryMap");
+        uint mainState = ReadMem32(memory, 0xffffffff80227ab0UL);
+        if (mainState is 0x400aU or 0x400cU)
+            SetField(machine, "_runtimeInitialsEntered", true);
+    }
 
     if (stream.CanSeek)
     {
