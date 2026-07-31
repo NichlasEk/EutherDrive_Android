@@ -901,3 +901,40 @@ den får inte döljas med en RAM-patch eller syntetisk framebuffer. Nästa
 state-milstolpe är att driva samma handler tills EutherDrive naturligt når
 `0x400c`, samtidigt som den första felande phase-5-triangeln eller
 buffer-clearen ringas in.
+
+## Desktopfortsättning 2026-07-31: fas 5 körs i originalets 60 Hz
+
+Ett frame-för-frame-orakel i MAME visade att fas-5-handlern anropas varje
+videoframe. Initialinmatningen och fas 3 ligger däremot kvar på sin uppmätta
+30 Hz-takt. Spelarschedulern har därför delats så att endast
+`0x80085034`-vägen för fas 5 körs i 60 Hz.
+
+En ren f4232 -> f4234-körning efter ändringen gav:
+
+```text
+player timer    = 0x141f -> 0x1426
+frameHash       = 0x75c2c4e3
+nonBlack        = 219221
+colored         = 213117
+main state      = 0x400a
+player phase    = 5
+```
+
+En längre naturlig körning till f4264 ökade samma guestägda timer till
+`0x148c` och sparades som:
+
+```text
+.build-tmp/euther-native-phase5-60hz-f4264.warm.gz
+SHA-256 b56571a0675e468f42e6e3b625c232c631c93ec9543d08383ba7ad17dd69ac76
+```
+
+Snapshotten är 6,8 MiB och gzip-komprimerad. Vid f4264 är state fortfarande
+`0x400a` och fasen fortfarande `5`, vilket stämmer med att MAME först når
+`0x400c` omkring relative frame 200. Fortsatta test ska därför starta från
+f4264-snapshotten i stället för f4232.
+
+Rendergränsen är samtidigt reproducerad: f4264 har fortsatt FIFO-, raster-,
+texture-write-, fill- och swapaktivitet, men alla tre färgbuffertar samt
+exporterad framebuffer är helt noll. Nästa renderarbete ska börja vid den
+första övergången mellan den fortfarande synliga f4234-bilden och de tomma
+buffertarna, inte med ytterligare display-buffer-val eller syntetisk output.

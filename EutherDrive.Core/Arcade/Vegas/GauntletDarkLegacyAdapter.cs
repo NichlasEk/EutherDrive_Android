@@ -500,50 +500,54 @@ internal sealed class GauntletDarkLegacyMachine
         {
             const ulong runtimeActivePlayerMask = 0xffffffff80227af4UL;
             uint activePlayers = MemoryMap.Read32(runtimeActivePlayerMask);
-            if ((_runtimeInitialsPlayerUpdatePhase++ & 1) == 0)
+            bool serviceThirtyHertzPlayerPhase =
+                (_runtimeInitialsPlayerUpdatePhase++ & 1) == 0;
+            for (uint player = 0; player < 4; player++)
             {
-                for (uint player = 0; player < 4; player++)
+                uint playerBit = 1U << (int)player;
+                if ((activePlayers & playerBit) == 0)
+                    continue;
+
+                if ((_runtimeInitialsPlayersCompletedMask & playerBit) == 0)
                 {
-                    uint playerBit = 1U << (int)player;
-                    if ((activePlayers & playerBit) == 0)
+                    if (!serviceThirtyHertzPlayerPhase)
                         continue;
 
-                    if ((_runtimeInitialsPlayersCompletedMask & playerBit) == 0)
+                    bool returned = Cpu.RunRuntimeInitialsPlayerUpdatePreservingContext(
+                        player,
+                        out bool completed);
+                    if (returned && completed)
+                        _runtimeInitialsPlayersCompletedMask |= playerBit;
+                    continue;
+                }
+
+                const ulong runtimePlayerBase = 0xffffffff80229270UL;
+                const ulong runtimePlayerStride = 0x964UL;
+                const ulong runtimePlayerPhaseOffset = 0xc8UL;
+                uint phase = MemoryMap.Read32(
+                    runtimePlayerBase +
+                    player * runtimePlayerStride +
+                    runtimePlayerPhaseOffset);
+                if (phase == 3U)
+                {
+                    if (!serviceThirtyHertzPlayerPhase)
+                        continue;
+
+                    for (int tick = 0; tick < _runtimePhaseThreeSchedulerTicksPerService; tick++)
                     {
-                        bool returned = Cpu.RunRuntimeInitialsPlayerUpdatePreservingContext(
-                            player,
-                            out bool completed);
-                        if (returned && completed)
-                            _runtimeInitialsPlayersCompletedMask |= playerBit;
-                    }
-                    else
-                    {
-                        const ulong runtimePlayerBase = 0xffffffff80229270UL;
-                        const ulong runtimePlayerStride = 0x964UL;
-                        const ulong runtimePlayerPhaseOffset = 0xc8UL;
-                        uint phase = MemoryMap.Read32(
-                            runtimePlayerBase +
-                            player * runtimePlayerStride +
-                            runtimePlayerPhaseOffset);
-                        if (phase == 3U)
+                        if (MemoryMap.Read32(
+                                runtimePlayerBase +
+                                player * runtimePlayerStride +
+                                runtimePlayerPhaseOffset) != 3U ||
+                            !Cpu.RunRuntimePhaseThreePlayerUpdatePreservingContext(player))
                         {
-                            for (int tick = 0; tick < _runtimePhaseThreeSchedulerTicksPerService; tick++)
-                            {
-                                if (MemoryMap.Read32(
-                                        runtimePlayerBase +
-                                        player * runtimePlayerStride +
-                                        runtimePlayerPhaseOffset) != 3U ||
-                                    !Cpu.RunRuntimePhaseThreePlayerUpdatePreservingContext(player))
-                                {
-                                    break;
-                                }
-                            }
-                        }
-                        else if (phase == 5U)
-                        {
-                            Cpu.RunRuntimePhaseFivePlayerUpdatePreservingContext(player);
+                            break;
                         }
                     }
+                }
+                else if (phase == 5U)
+                {
+                    Cpu.RunRuntimePhaseFivePlayerUpdatePreservingContext(player);
                 }
             }
         }
