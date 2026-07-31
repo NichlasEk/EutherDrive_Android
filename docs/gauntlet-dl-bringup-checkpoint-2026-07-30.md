@@ -1241,3 +1241,48 @@ gav cirka `0.40` respektive `0.89 fps`. Ett prov att batcha MAME:s nio
 clockcallbacks och sjutton coincallbacks tappade däremot timerticket och togs
 bort. Nästa prestandasteg ska därför profilera/optimera den generella
 CPU/Voodoo-hotpathen med korrekt callbackkadens.
+
+## Desktopfortsättning 2026-07-31: steady-state nära realtid
+
+Voodoo-profilen visade att FIFO-avkodningen bara tog cirka 77 ms av en
+nästan fem sekunder lång 200k-frame. Den stora kostnaden låg i MIPS-kärnans
+diagnostiska store-väg: varje vanlig RAM-store läste tillbaka det gamla
+värdet och körde hela bringupkedjan av remappers och tracers även efter att
+guestens main state stabiliserats i `0x400c`.
+
+Den nya `EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STEADY_STATE_FAST_DISPATCH` aktiveras
+först när guesten själv ligger i `0x400c`. Den behåller normal
+instruktionssemantik, CP0 Count, branch delay, MMIO och Glide FIFO-källägarskap,
+men hoppar över de avklarade boot/load-reparationerna och diagnostiska
+readbacks för vanliga stores. Main-RAM-accesser använder dessutom RAM-vägen
+före de icke överlappande MMIO-proberna. Baseline för vanlig desktop-UI är nu
+60k CPU-steg per bild.
+
+En 200k A/B-frame från f4733 behöll exakt:
+
+```text
+frameHash       0x85a61550
+nonBlack        8919
+colored         8574
+före            cirka 5075 ms/frame
+efter           cirka 267 ms/frame
+```
+
+Ett längre prov med Right, Fight, Turbo och alla fyra riktningar körde 300
+frames vid 60k utan halt:
+
+```text
+frames          4733 -> 5033
+runMs           5963.7
+genomsnitt      50.30 fps inklusive uppvärmning
+slut-hash       0x6a24aa1d
+nonBlack        58427
+colored         57919
+```
+
+Efter uppvärmningen låg enskilda frames typiskt på 10-16 ms CPU plus cirka
+5 ms presentation. Prestandablockeraren för desktop är därmed avgränsad och
+i praktiken löst för phase-1/gameplay-checkpointen. Den kvarvarande synliga
+blockeraren är diagnostikmenyn som fortfarande ritas ovanpå den växande
+guestscenen; de gamla flagg- och textpump-experimenten träffade inte den
+aktuella ägaren och lämnades avstängda.

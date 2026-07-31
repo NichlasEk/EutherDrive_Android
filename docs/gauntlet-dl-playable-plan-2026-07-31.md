@@ -289,5 +289,15 @@ MAME fas-5-orakel
 7. Starta Avalonia-desktopappen med den rena baselinen först när bilden är
    läsbar och framekadensen praktiskt spelbar.
 
+### Uppdatering 2026-07-31
+
+Punkt 3-6 är nu uppmätta för steady-state: 300 frames med rörelse- och
+attackinput kör 50.30 fps i genomsnitt vid 60k och håller guest state utan
+halt. Nästa kritiska desktopsteg är därför inte mer generell prestandajakt,
+utan att identifiera och stoppa den diagnostiska textköägaren före
+`0x800c4efc/0x800c4fc8`, utan att filtrera bort HUD eller annan speltext.
+Direkt därefter ska samma f4733-checkpoint göras laddningsbar i Avalonia så
+att tangentbordskontrollerna kan speltestas i ett riktigt desktopfönster.
+
 Detta är den kortaste evidensbaserade vägen från dagens checkpoint till
 faktiskt spelbar kontroll.

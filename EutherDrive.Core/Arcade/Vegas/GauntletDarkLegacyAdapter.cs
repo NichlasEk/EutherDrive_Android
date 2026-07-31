@@ -27,7 +27,8 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
     private static readonly (string Name, string Value)[] BaselineBringupEnvironment =
     [
         ("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1"),
-        ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "200000"),
+        ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "60000"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STEADY_STATE_FAST_DISPATCH", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_BRIDGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INTERRUPT_SUPPRESS", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_DIAGNOSTIC_EXIT_BRIDGE", "1"),
@@ -684,7 +685,8 @@ internal sealed class GauntletDarkLegacyMachine
                 $"callbacksMs={Stopwatch.GetElapsedTime(frameStart, cpuStart).TotalMilliseconds:F2} " +
                 $"cpuMs={Stopwatch.GetElapsedTime(cpuStart, devicesStart).TotalMilliseconds:F2} " +
                 $"devicesMs={Stopwatch.GetElapsedTime(devicesStart, renderStart).TotalMilliseconds:F2} " +
-                $"renderMs={Stopwatch.GetElapsedTime(renderStart, frameEnd).TotalMilliseconds:F2}");
+                $"renderMs={Stopwatch.GetElapsedTime(renderStart, frameEnd).TotalMilliseconds:F2} " +
+                Voodoo.ConsumeRuntimeProfile());
         }
     }
 
@@ -1032,6 +1034,9 @@ internal sealed class MipsR5000Core
     private int _bootGlideStateEmitTraceCount;
     private readonly bool _traceBootGlideStateEmit = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BOOT_GLIDE_STATE_EMIT") == "1";
     private readonly bool _profileHotPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1";
+    private readonly bool _enableRuntimeSteadyStateFastDispatch =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STEADY_STATE_FAST_DISPATCH");
     private readonly Dictionary<ulong, ulong> _hotPcCounts = [];
     private readonly bool _enableFdSlotHandleFastPath = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_FD_SLOT_HANDLE");
     private readonly bool _enableRd0AsyncCallbackKick = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RD0_ASYNC_CALLBACK");
@@ -2894,6 +2899,14 @@ internal sealed class MipsR5000Core
 
     public bool StartKnownRuntimeTempleWeaponsLoadPreservingContext()
     {
+        if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
+            _runtimeTempleWeaponsLoadRequested ||
+            _halted ||
+            _insideContextPreservingRuntimeTimerTick)
+        {
+            return false;
+        }
+
         const ulong powerupsLoadEntry = 0xffffffff8003b198UL;
         const ulong weaponsHandle = 0xffffffff80227c00UL;
         const ulong sourceTable = 0xffffffff802529a0UL;
@@ -2922,11 +2935,7 @@ internal sealed class MipsR5000Core
         bool recoveringTempleCheckpoint =
             ReadAsciiTraceString(0xffffffff8024fb60UL, 0x20) == "levels/levelE1" &&
             powerupsReady;
-        if (!_enableRuntimeBgLoadModelAssetNameExperiment ||
-            _runtimeTempleWeaponsLoadRequested ||
-            _halted ||
-            _insideContextPreservingRuntimeTimerTick ||
-            !powerupsReady ||
+        if (!powerupsReady ||
             (!atNativeProducer && !recoveringTempleCheckpoint) ||
             _memory.Read32(weaponsHandle) != uint.MaxValue)
         {
@@ -3133,6 +3142,16 @@ internal sealed class MipsR5000Core
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ApplyKnownRuntimeTempleWeaponsDistinctResourceSourceRepair();
         ulong pc = Pc;
+        bool steadyStateFastDispatch =
+            _enableRuntimeSteadyStateFastDispatch &&
+            _memory.Read32(0xffffffff80227ab0UL) == 0x400cU;
+        if (steadyStateFastDispatch)
+        {
+            _memory.SetTraceCpuPc(pc);
+            if (TryFastPathKnownGauntletGlideHotPath(pc))
+                return;
+            goto ExecuteInstruction;
+        }
         ApplyRuntimeAssetStreamArenaFix(pc);
         if (TryApplyRuntimeAssetObjectArenaFix(pc))
             return;
@@ -3646,53 +3665,65 @@ internal sealed class MipsR5000Core
         if (TryFastPathKnownGlideBufferSwapPacketTail(pc))
             return;
 
+    ExecuteInstruction:
         uint op = _memory.Read32(pc);
         LastFetchedInstruction = op;
-        TraceMainRamPointerReferences();
+        if (!steadyStateFastDispatch)
+            TraceMainRamPointerReferences();
         ulong nextPc = pc + 4;
         bool branchFromPreviousInstruction = _hasPendingBranch;
         ulong branchTarget = _pendingBranchTarget;
         _hasPendingBranch = false;
         _hasImmediatePcOverride = false;
 
-        TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
-        TraceTextureMipCaller(pc, op);
-        TraceTextureUploadSourceSelectorSetup(pc, op, "pre");
-        ApplyRuntimeFontStoryGebBacking(pc, 0xffffffff803129a0UL, 0x803129a4U);
-        ApplyKnownRuntimeWorldTextureUploadSourceRepair(pc, op);
-        TraceTextureUploadSourceSelector(pc, op);
-        TraceTextureUploadSourceProducer(pc, op, "pre");
-        TraceRuntimeBgLoadModelTextureSourceOffsets(pc);
-        TraceTextureUploadSourceProducerLoad(pc, op);
-        TraceMainRamReadWatch(pc, op);
-        TraceTextureUploadPageSelection(pc, op);
-        TraceTextureSourceCallA3Producer(pc, op);
-        TraceTextureUploadSourceLimitTable(pc, op, "pre");
-        TraceInstruction(pc, op);
-        TextureUploadCallerTransitionSnapshot textureUploadCallerBefore =
-            CaptureTextureUploadCallerTransitionSnapshot(pc);
+        TextureUploadCallerTransitionSnapshot textureUploadCallerBefore = default;
+        if (!steadyStateFastDispatch)
+        {
+            TraceTextureUploadPayloadCallerPrep(pc, op, branchFromPreviousInstruction, branchTarget);
+            TraceTextureMipCaller(pc, op);
+            TraceTextureUploadSourceSelectorSetup(pc, op, "pre");
+            ApplyRuntimeFontStoryGebBacking(pc, 0xffffffff803129a0UL, 0x803129a4U);
+            ApplyKnownRuntimeWorldTextureUploadSourceRepair(pc, op);
+            TraceTextureUploadSourceSelector(pc, op);
+            TraceTextureUploadSourceProducer(pc, op, "pre");
+            TraceRuntimeBgLoadModelTextureSourceOffsets(pc);
+            TraceTextureUploadSourceProducerLoad(pc, op);
+            TraceMainRamReadWatch(pc, op);
+            TraceTextureUploadPageSelection(pc, op);
+            TraceTextureSourceCallA3Producer(pc, op);
+            TraceTextureUploadSourceLimitTable(pc, op, "pre");
+            TraceInstruction(pc, op);
+            textureUploadCallerBefore = CaptureTextureUploadCallerTransitionSnapshot(pc);
+        }
 
         ulong s8BeforeExecute = _gpr[30];
-        Execute(pc, op);
+        Execute(pc, op, steadyStateFastDispatch);
         _gpr[0] = 0;
         ApplyRuntimeFullrectRightClipPositiveTExperiment(pc);
-        TraceRuntimeFullrectDescriptor(pc);
-        TraceRuntimeFullrectClipper(pc);
-        TraceTextureUploadSourceSelectorSetup(pc, op, "post");
-        TraceTextureUploadSourceProducer(pc, op, "post");
-        TraceTextureUploadSourceLimitTable(pc, op, "post");
-        TraceTextureUploadCallerTransition(pc, op, textureUploadCallerBefore);
+        if (!steadyStateFastDispatch)
+        {
+            TraceRuntimeFullrectDescriptor(pc);
+            TraceRuntimeFullrectClipper(pc);
+            TraceTextureUploadSourceSelectorSetup(pc, op, "post");
+            TraceTextureUploadSourceProducer(pc, op, "post");
+            TraceTextureUploadSourceLimitTable(pc, op, "post");
+            TraceTextureUploadCallerTransition(pc, op, textureUploadCallerBefore);
+        }
         AdvanceCp0Count(_cp0CountStep);
         if (op == 0x42000018U) // eret
             _memory.CompleteRuntimeTimerInterrupt();
         _instructionCounter++;
-        TraceSuspiciousS8Transition(pc, op, s8BeforeExecute);
-        TraceSuspiciousS8DeadState(pc, "post");
+        if (!steadyStateFastDispatch)
+        {
+            TraceSuspiciousS8Transition(pc, op, s8BeforeExecute);
+            TraceSuspiciousS8DeadState(pc, "post");
+        }
 
         ulong resolvedPc = branchFromPreviousInstruction
             ? branchTarget
             : _hasImmediatePcOverride ? _immediatePcOverride : nextPc;
-        TraceSuspiciousLowPcTransition(pc, op, resolvedPc, branchFromPreviousInstruction, branchTarget);
+        if (!steadyStateFastDispatch)
+            TraceSuspiciousLowPcTransition(pc, op, resolvedPc, branchFromPreviousInstruction, branchTarget);
         Pc = resolvedPc;
     }
 
@@ -28480,7 +28511,7 @@ internal sealed class MipsR5000Core
         return diskWord;
     }
 
-    private void Execute(ulong pc, uint op)
+    private void Execute(ulong pc, uint op, bool steadyStateFastDispatch)
     {
         if (op == 0)
             return;
@@ -28585,8 +28616,13 @@ internal sealed class MipsR5000Core
             case 0x28:
                 {
                     ulong address = _gpr[rs] + (ulong)(long)simm;
-                    byte oldValue = IsMainRamRange(address, 1) ? _memory.Read8(address) : (byte)0;
                     byte value = (byte)_gpr[rt];
+                    if (steadyStateFastDispatch)
+                    {
+                        _memory.Write8(address, value);
+                        break;
+                    }
+                    byte oldValue = IsMainRamRange(address, 1) ? _memory.Read8(address) : (byte)0;
                     _memory.Write8(address, value);
                     TraceMainRamWriteWatch(pc, op, "sb", $"r{rt}->[r{rs}+0x{simm:x4}]", address, 1, oldValue, value);
                 }
@@ -28594,8 +28630,13 @@ internal sealed class MipsR5000Core
             case 0x29:
                 {
                     ulong address = _gpr[rs] + (ulong)(long)simm;
-                    ushort oldValue = IsMainRamRange(address, 2) ? _memory.Read16(address) : (ushort)0;
                     ushort value = (ushort)_gpr[rt];
+                    if (steadyStateFastDispatch)
+                    {
+                        _memory.Write16(address, value);
+                        break;
+                    }
+                    ushort oldValue = IsMainRamRange(address, 2) ? _memory.Read16(address) : (ushort)0;
                     _memory.Write16(address, value);
                     TraceMainRamWriteWatch(pc, op, "sh", $"r{rt}->[r{rs}+0x{simm:x4}]", address, 2, oldValue, value);
                 }
@@ -28607,6 +28648,20 @@ internal sealed class MipsR5000Core
                 {
                     ulong address = _gpr[rs] + (ulong)(long)simm;
                     uint value = (uint)_gpr[rt];
+                    if (steadyStateFastDispatch)
+                    {
+                        bool tracksGlideFifoSource = TrySetKnownGlideFifoGuestWriteSource(pc, address);
+                        try
+                        {
+                            _memory.Write32(address, value);
+                        }
+                        finally
+                        {
+                            if (tracksGlideFifoSource)
+                                _memory.ClearVoodooCommandFifoBulkWriteSource();
+                        }
+                        break;
+                    }
                     uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
                     value = ApplyKnownRuntimeBgLoadModelTextureSourceLimitStackRemap(pc, rt, address, value);
                     value = ApplyDirectTextureWriterDiskPayloadRemapExperiment(pc, rt, value);
@@ -28651,8 +28706,13 @@ internal sealed class MipsR5000Core
             case 0x39:
                 {
                     ulong address = _gpr[rs] + (ulong)(long)simm;
-                    uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
                     uint value = (uint)_fpr[rt];
+                    if (steadyStateFastDispatch)
+                    {
+                        _memory.Write32(address, value);
+                        break;
+                    }
+                    uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
                     _memory.Write32(address, value);
                     TraceMainRamWriteWatch(pc, op, "swc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, 4, oldValue, value);
                     TraceRuntimeVertexSourceWrite(pc, op, "swc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
@@ -28662,8 +28722,13 @@ internal sealed class MipsR5000Core
             case 0x3d:
                 {
                     ulong address = _gpr[rs] + (ulong)(long)simm;
-                    ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
                     ulong value = _fpr[rt];
+                    if (steadyStateFastDispatch)
+                    {
+                        _memory.Write64(address, value);
+                        break;
+                    }
+                    ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
                     _memory.Write64(address, value);
                     TraceMainRamWriteWatch(pc, op, "sdc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, 8, oldValue, value);
                     TraceRuntimeVertexSourceWrite64(pc, op, "sdc1", $"f{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
@@ -28672,8 +28737,13 @@ internal sealed class MipsR5000Core
             case 0x3f:
                 {
                     ulong address = _gpr[rs] + (ulong)(long)simm;
-                    ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
                     ulong value = _gpr[rt];
+                    if (steadyStateFastDispatch)
+                    {
+                        _memory.Write64(address, value);
+                        break;
+                    }
+                    ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
                     _memory.Write64(address, value);
                     TraceMainRamWriteWatch(pc, op, "sd", $"r{rt}->[r{rs}+0x{simm:x4}]", address, 8, oldValue, value);
                     TraceRuntimeVertexSourceWrite64(pc, op, "sd", $"r{rt}->[r{rs}+0x{simm:x4}]", address, oldValue, value);
@@ -31275,6 +31345,13 @@ internal sealed class VegasMemoryMap
 
     public byte Read8(ulong address)
     {
+        if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
+        {
+            byte value = _mainRam[physical];
+            Trace("read8", address, value, "mainram");
+            return value;
+        }
+
         if (TryReadFpgaConfig8(address, out byte fpgaValue))
         {
             Trace("read8", address, fpgaValue, "FPGA config");
@@ -31302,19 +31379,19 @@ internal sealed class VegasMemoryMap
         if (TryReadChipSelect8(address, out byte chipSelectValue))
             return chipSelectValue;
 
-        if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
-        {
-            byte value = _mainRam[physical];
-            Trace("read8", address, value, "mainram");
-            return value;
-        }
-
         Trace("read8", address, 0xff, "unmapped");
         return 0xff;
     }
 
     public ushort Read16(ulong address)
     {
+        if (TryTranslatePhysical(address, out uint physical) && physical + 1 < _mainRam.Length)
+        {
+            ushort ramValue = BinaryPrimitives.ReadUInt16LittleEndian(_mainRam.AsSpan((int)physical, 2));
+            Trace("read16", address, ramValue, "mainram");
+            return ramValue;
+        }
+
         if (TryReadPciWindow16(address, out ushort pciValue))
         {
             Trace("read16", address, pciValue, "PCI");
@@ -31330,6 +31407,13 @@ internal sealed class VegasMemoryMap
 
     public uint Read32(ulong address)
     {
+        if (TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
+        {
+            uint ramValue = BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4));
+            Trace("read32", address, ramValue, "mainram");
+            return ramValue;
+        }
+
         if (TryReadBootRom32(address, out uint value))
         {
             Trace("read32", address, value, "PCI_ID_NILE:rom");
@@ -31351,19 +31435,19 @@ internal sealed class VegasMemoryMap
         if (TryReadChipSelect32(address, out value))
             return value;
 
-        if (TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
-        {
-            value = BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4));
-            Trace("read32", address, value, "mainram");
-            return value;
-        }
-
         Trace("read32", address, UnmappedReadValue, "unmapped");
         return UnmappedReadValue;
     }
 
     public ulong Read64(ulong address)
     {
+        if (TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
+        {
+            ulong value = BinaryPrimitives.ReadUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8));
+            Trace("read64", address, unchecked((uint)value), "mainram");
+            return value;
+        }
+
         if (TryReadNile64(address, out ulong nileValue))
         {
             Trace("read64", address, unchecked((uint)nileValue), "NILE");
@@ -31373,13 +31457,6 @@ internal sealed class VegasMemoryMap
         if (TryReadChipSelect64(address, out ulong chipSelectValue))
             return chipSelectValue;
 
-        if (TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
-        {
-            ulong value = BinaryPrimitives.ReadUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8));
-            Trace("read64", address, unchecked((uint)value), "mainram");
-            return value;
-        }
-
         ulong low = Read32(address);
         ulong high = Read32(address + 4);
         return low | (high << 32);
@@ -31387,6 +31464,13 @@ internal sealed class VegasMemoryMap
 
     public void Write8(ulong address, byte value)
     {
+        if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
+        {
+            _mainRam[physical] = value;
+            Trace("write8", address, value, "mainram");
+            return;
+        }
+
         if (TryWriteFpgaConfig8(address, value))
         {
             Trace("write8", address, value, "FPGA config");
@@ -31408,18 +31492,18 @@ internal sealed class VegasMemoryMap
         if (TryWriteChipSelect8(address, value))
             return;
 
-        if (TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
-        {
-            _mainRam[physical] = value;
-            Trace("write8", address, value, "mainram");
-            return;
-        }
-
         Trace("write8", address, value, "unmapped");
     }
 
     public void Write16(ulong address, ushort value)
     {
+        if (TryTranslatePhysical(address, out uint physical) && physical + 1 < _mainRam.Length)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(_mainRam.AsSpan((int)physical, 2), value);
+            Trace("write16", address, value, "mainram");
+            return;
+        }
+
         if (TryWritePciWindow16(address, value))
         {
             Trace("write16", address, value, "PCI");
@@ -31435,21 +31519,6 @@ internal sealed class VegasMemoryMap
 
     public void Write32(ulong address, uint value)
     {
-        if (TryWriteNile32(address, value))
-        {
-            Trace("write32", address, value, "NILE");
-            return;
-        }
-
-        if (TryWritePciWindow32(address, value))
-        {
-            Trace("write32", address, value, "PCI");
-            return;
-        }
-
-        if (TryWriteChipSelect32(address, value))
-            return;
-
         if (TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
         {
             if (_experimentSuppressDiagnosticRenderEnable &&
@@ -31470,11 +31539,33 @@ internal sealed class VegasMemoryMap
             return;
         }
 
+        if (TryWriteNile32(address, value))
+        {
+            Trace("write32", address, value, "NILE");
+            return;
+        }
+
+        if (TryWritePciWindow32(address, value))
+        {
+            Trace("write32", address, value, "PCI");
+            return;
+        }
+
+        if (TryWriteChipSelect32(address, value))
+            return;
+
         Trace("write32", address, value, "unmapped");
     }
 
     public void Write64(ulong address, ulong value)
     {
+        if (TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8), value);
+            Trace("write64", address, unchecked((uint)value), "mainram");
+            return;
+        }
+
         if (TryWriteNile64(address, value))
         {
             Trace("write64", address, unchecked((uint)value), "NILE");
@@ -31483,13 +31574,6 @@ internal sealed class VegasMemoryMap
 
         if (TryWriteChipSelect64(address, value))
             return;
-
-        if (TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
-        {
-            BinaryPrimitives.WriteUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8), value);
-            Trace("write64", address, unchecked((uint)value), "mainram");
-            return;
-        }
 
         Write32(address, (uint)value);
         Write32(address + 4, (uint)(value >> 32));
@@ -36110,6 +36194,10 @@ internal sealed class VoodooFacade : IVoodooBackend
         _backend.ClearCommandFifoBulkWriteSource();
     }
     public void RenderFrame(EutherFrameTarget target) => _backend.RenderFrame(target);
+    public string ConsumeRuntimeProfile()
+        => _backend is VoodooBringupBackend bringup
+            ? bringup.ConsumeRuntimeProfile()
+            : "voodooProfile=off";
     public void BeginCommandFifoBulkWrite()
     {
         if (_backend is VoodooBringupBackend bringup)
@@ -36150,6 +36238,11 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const byte CmdFifoStorageWriteSourceFifo = 1;
     private const byte CmdFifoStorageWriteSourceLfbMirror = 2;
     private const byte CmdFifoStorageWriteSourceType5Space0 = 3;
+    private readonly bool _profileRuntimeCosts =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_FRAME_PHASES"));
+    private long _commandFifoDecodeTicks;
+    private int _commandFifoDecodeCalls;
     private static readonly ulong[] DefaultCommandFifoSourceChainStorageOffsets =
     [
         0x20,
@@ -40764,6 +40857,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (_decodingCommandFifo)
             return;
 
+        long profileStart = _profileRuntimeCosts ? Stopwatch.GetTimestamp() : 0;
         _decodingCommandFifo = true;
         string previousTrigger = _commandFifoDecodeTrigger;
         _commandFifoDecodeTrigger = trigger;
@@ -41124,9 +41218,26 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
         finally
         {
+            if (_profileRuntimeCosts)
+            {
+                _commandFifoDecodeTicks += Stopwatch.GetTimestamp() - profileStart;
+                _commandFifoDecodeCalls++;
+            }
             _commandFifoDecodeTrigger = previousTrigger;
             _decodingCommandFifo = false;
         }
+    }
+
+    internal string ConsumeRuntimeProfile()
+    {
+        if (!_profileRuntimeCosts)
+            return "voodooProfile=off";
+
+        double decodeMs = _commandFifoDecodeTicks * 1000.0 / Stopwatch.Frequency;
+        int decodeCalls = _commandFifoDecodeCalls;
+        _commandFifoDecodeTicks = 0;
+        _commandFifoDecodeCalls = 0;
+        return $"fifoDecodeMs={decodeMs:F2} fifoDecodeCalls={decodeCalls}";
     }
 
     private void DecodeCommandFifoPacketsIfNotPending(string trigger = "direct")
