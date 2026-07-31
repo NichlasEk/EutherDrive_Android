@@ -938,3 +938,52 @@ texture-write-, fill- och swapaktivitet, men alla tre färgbuffertar samt
 exporterad framebuffer är helt noll. Nästa renderarbete ska börja vid den
 första övergången mellan den fortfarande synliga f4234-bilden och de tomma
 buffertarna, inte med ytterligare display-buffer-val eller syntetisk output.
+
+## Desktopfortsättning 2026-07-31: första svarta frame avgränsad
+
+En binärsökning från f4232-snapshotten avgränsade rendergränsen till en enda
+frame:
+
+```text
+f4245  frameHash=0xdc79dc3a  nonBlack=212410  colored=207347
+f4246  frameHash=0x30e41dc5  nonBlack=0       colored=0
+```
+
+Sista synliga läget är sparat repo-lokalt som:
+
+```text
+.build-tmp/euther-native-phase5-last-visible-f4245.warm.gz
+SHA-256 d2b004a026fdc31ac8b0e87d570458f65c28057b9a52eb7b5200f9939fd5b0c2
+```
+
+En bounded enframesdiagnos från den snapshotten visade att den svarta
+övergången inte orsakas av en ny triangel:
+
+```text
+draw packets     330348 -> 330348
+fast fills       326 -> 327
+swaps            2792 -> 2832
+LFB writes       142427595 -> 142581195
+```
+
+Den enda nya fillen är ett legitimt svart `fastfillCMD` från FIFO-paket
+`0x0104824c`, vid guest-PC `0x801027cc`. Samma frame verkställer dessutom
+20 direkta och 20 FIFO-dekodade `swapbufferCMD=0` från
+`0x80102a80` respektive `0x80102ab4`. En registertrace verifierade att den
+direkta vägen skriver via `s3=0xffffffffa8000000`, medan den andra vägen
+dekodar type-1-paket `0x00010251`.
+
+MAME:s Voodoo-modell bekräftar att bit 0 noll betyder omedelbar swap, men
+den köar FIFO-märkta registerskrivningar medan en operation är pending och
+gör en scanline-partial-update innan buffertrotationen. EutherDrive saknar
+fortfarande båda dessa tidsdelar och konsumerar därför hela burstsekvensen
+omedelbart mot sina förenklade hela-frame-buffertar.
+
+Den befintliga default-avstängda
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_OPERATION_PENDING_GATE`
+ändrade inte f4246-resultatet, eftersom den endast stoppar fortsatt
+command-FIFO-dekodning efter renderarbete och inte köar direkta
+FIFO-registerskrivningar. Nästa implementation ska därför modellera den
+generella Voodoo busy/PCI-FIFO-kön och dess swap-presentation. Den ska inte
+specialfalla de två Gauntlet-PC-adresserna, behålla en gammal framebuffer
+eller kopiera fram en syntetisk bild.
