@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Globalization;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -1344,6 +1345,27 @@ public partial class MainWindow : Window
         if (e.Key == Key.Escape && IsMouseCaptureActive())
         {
             DeactivateMouseCapture();
+            e.Handled = true;
+            return;
+        }
+
+        if (_core != null &&
+            IsArcadeInputCore(_core) &&
+            _inputMappings.Arcade.KeyboardMappings.TryGetValue("Coin", out Key coinKey) &&
+            (e.Key == coinKey || (coinKey == Key.D5 && e.Key == Key.NumPad5)))
+        {
+            bool firstPress;
+            lock (_keysDown)
+                firstPress = _keysDown.Add(e.Key);
+            if (firstPress)
+            {
+                // A short desktop key tap can otherwise begin and end between
+                // two emulation input samples. Queue the same bounded arcade
+                // pulse as the on-screen Insert Coin action.
+                Interlocked.Exchange(ref _coinPulseFrames, 2);
+                StatusText.Text = "Coin inserted";
+                Console.WriteLine($"[INPUT] Arcade coin hotkey key={e.Key}");
+            }
             e.Handled = true;
             return;
         }
@@ -3283,16 +3305,79 @@ public partial class MainWindow : Window
 
     private async Task LoadRomIntoCoreAsync(IEmulatorCore core, string romPath)
     {
-        if (core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter)
+        if (core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter gauntlet)
         {
             StatusText.Text = "Gauntlet initializing...";
             Console.WriteLine("[UI] Loading Gauntlet ROM on worker thread.");
-            await Task.Run(() => core.LoadRom(romPath));
+            await Task.Run(() =>
+            {
+                core.LoadRom(romPath);
+                LoadGauntletBringupSnapshotIfRequested(gauntlet);
+            });
             Console.WriteLine("[UI] Gauntlet ROM loaded into core.");
             return;
         }
 
         core.LoadRom(romPath);
+    }
+
+    private static void LoadGauntletBringupSnapshotIfRequested(
+        EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter adapter)
+    {
+        string? snapshotPath = Environment.GetEnvironmentVariable(
+            "EUTHERDRIVE_GAUNTDL_UI_WARMUP_STATE");
+        if (string.IsNullOrWhiteSpace(snapshotPath))
+            return;
+
+        snapshotPath = Path.GetFullPath(snapshotPath);
+        if (!File.Exists(snapshotPath))
+            throw new FileNotFoundException("Gauntlet UI warm snapshot was not found", snapshotPath);
+
+        if (!int.TryParse(
+                Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_UI_WARMUP_FRAMES"),
+                out int frames) || frames < 0)
+        {
+            throw new InvalidOperationException(
+                "EUTHERDRIVE_GAUNTDL_UI_WARMUP_FRAMES must match the snapshot frame number");
+        }
+
+        int cpuStepsPerFrame = 60_000;
+        string? configuredCpuSteps = Environment.GetEnvironmentVariable(
+            "EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME");
+        if (!string.IsNullOrWhiteSpace(configuredCpuSteps) &&
+            (!int.TryParse(configuredCpuSteps, out cpuStepsPerFrame) || cpuStepsPerFrame <= 0))
+        {
+            throw new InvalidOperationException(
+                "EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME must be a positive integer");
+        }
+
+        string probeAssemblyPath = Path.GetFullPath(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROBE_DLL") ??
+            Path.Combine("tools", "GauntletProbe", "bin", "Release", "net8.0", "GauntletProbe.dll"));
+        if (!File.Exists(probeAssemblyPath))
+            throw new FileNotFoundException("GauntletProbe snapshot loader was not found", probeAssemblyPath);
+
+        Assembly probeAssembly = Assembly.LoadFrom(probeAssemblyPath);
+        MethodInfo loader = probeAssembly
+            .GetTypes()
+            .SelectMany(type => type.GetMethods(BindingFlags.Static | BindingFlags.NonPublic))
+            .Single(method =>
+                method.Name.Contains("LoadWarmupSnapshot", StringComparison.Ordinal) &&
+                method.GetParameters().Length == 5);
+        try
+        {
+            loader.Invoke(null, [adapter, snapshotPath, frames, cpuStepsPerFrame, false]);
+        }
+        catch (TargetInvocationException ex) when (ex.InnerException is not null)
+        {
+            throw new InvalidOperationException(
+                $"Could not load Gauntlet UI warm snapshot: {ex.InnerException.Message}",
+                ex.InnerException);
+        }
+
+        Console.WriteLine(
+            $"[UI] Gauntlet warm snapshot loaded: {snapshotPath} " +
+            $"frame={frames} cpuStepsPerFrame={cpuStepsPerFrame}");
     }
 
     private async Task<bool> ShouldBlockSportTitleLaunchAsync()

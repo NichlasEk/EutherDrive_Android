@@ -399,3 +399,43 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   `frameHash=0x667f3b94` både med fixarna på och explicit avstängda. De nya
   phase-5-vägarna påverkar alltså inte steady-state-körningen när inget
   phase-5-exitanrop pågår.
+
+### 2026-07-31: desktopbrygga och verifierad kvarvarande blockerare
+
+- Den naturliga main-state-vägen före phase-5-exiten har ytterligare en gate:
+  `0x80046fa0` returnerar ett aktivt transientobjekt så länge räknaren vid
+  `0x8019c4f8` är ett. Ett isolerat prov med räknaren noll nådde gästens egen
+  caller `0x80013e7c -> 0x80086cec` och state `0x400a -> 0x400c`. Ingen sådan
+  RAM-patch har promoterats; kallstartsfixen ska återställa transientens riktiga
+  livscykel.
+- Att återanropa hela main-state-rutinen context-preserving i `0x400c` är inte
+  rätt fortsättning. Varje tick ritade exakt 76 trianglar av gästmeddelandet
+  `AllocMem() called while mem reserved` och registrerade ingen scen. Experimentet
+  och alla dess tillfälliga checkpoints togs bort.
+- Avalonia-desktopappen kan nu explicit ladda GauntletProbens komprimerade
+  warm-snapshot efter ROM-laddningen. Bryggan är helt avstängd utan
+  `EUTHERDRIVE_GAUNTDL_UI_WARMUP_STATE`; vanlig kallstart ändras inte och inga
+  nya snapshot- eller loggfiler skapas under spel.
+- `scripts/run-gauntdl-desktop-warm.sh` startar den lokala f4733-checkpointen med
+  dess verifierade metadata, 4733 frames och 200000 CPU-steg per frame. Ett live
+  desktopprov laddade checkpointen, startade emuleringstråden och visade den
+  riktiga `Easy`/credits/join-skärmen vid cirka 22 fps.
+- Ett kort desktoptryck på coin kunde tidigare falla helt mellan två
+  inputsamplingar. UI:n köar nu omedelbart samma tvåframespuls som Insert Coin
+  när den konfigurerade coin-tangenten trycks. Liveprovet verifierade att `5`
+  ändrar `INSERT 2 COINS` till `BUY 500 HEALTH PER CREDIT`; coin-kedjan fungerar.
+- Liveprovet verifierade samtidigt att checkpointen **inte är spelbar**:
+  credits/start kan nås, men 3D-världen saknas, gamla glyph-/recordposter ligger
+  kvar och state fortsätter inte till en rörlig scen. Den äldre f2960-orakeln
+  innehåller korrekt kamera-/scen-RAM och en bevarad 3D-frame, men ett UI-A/B
+  visade att den inte fortsätter att emittera scenen i dagens runtime.
+- En CPU-watch från både f2960 och f4733 visar inga naturliga träffar på
+  `0x80015390 -> 0x80013a10`, medan hostens isolerade inneranrop ger
+  reservationsfelet ovan. Nästa kärnfix är därför den yttre game-frame-dispatch
+  som äger rätt anropsordning, allocator-livscykel och scenregistrering efter
+  `0x400c`; fler RAM-patchar eller statiska framebufferkopior är inte giltiga.
+- Avsedda tangentbordskontroller när den gränsen är löst: `5` coin, `Enter`
+  start, piltangenter rörelse, `Z` fight, `X` magic och `C` turbo.
+- Tempdisciplin: de tre experimentcheckpoints och två bilder som skapades under
+  avgränsningen raderades. `.build-tmp` återgick till 144 MB; `/tmp` låg runt
+  442 MB och fick inga Gauntlet-snapshots eller växande loggar.
