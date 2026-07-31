@@ -1225,3 +1225,19 @@ diagnostikrenderingen ligger kvar över den nya scenen. De två återstående
 desktopblockerarna före praktiskt speltest är därför en läsbar framebuffer
 utan stale diagnostikposter och runtimeprestanda över probens nuvarande
 cirka `0.2-0.27 fps`.
+
+En default-avstängd `EUTHERDRIVE_GAUNTDL_PROFILE_FRAME_PHASES` delar en frame
+i callbacks, CPU/Voodoo, devices och presentation. På f4733 gav 200k-budgeten:
+
+```text
+callbacks    393 ms
+CPU/Voodoo  4586 ms
+devices       <1 ms
+render        13 ms
+```
+
+60k och 10k CPU-steg behöll main state, phase och guest-timerns `+3`-tick men
+gav cirka `0.40` respektive `0.89 fps`. Ett prov att batcha MAME:s nio
+clockcallbacks och sjutton coincallbacks tappade däremot timerticket och togs
+bort. Nästa prestandasteg ska därför profilera/optimera den generella
+CPU/Voodoo-hotpathen med korrekt callbackkadens.

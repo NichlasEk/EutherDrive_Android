@@ -1,6 +1,7 @@
 using System;
 using System.Buffers.Binary;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.IO.Compression;
@@ -414,6 +415,9 @@ internal sealed class GauntletDarkLegacyMachine
             1);
     private bool _loggedRuntimePlayerScheduler;
     private bool _runtimeInitialsEntered;
+    private readonly bool _profileFramePhases =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_FRAME_PHASES"));
     private readonly int _vblankCpuSteps = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_VBLANK_CPU_STEPS", 2048);
 
     public VegasMemoryMap MemoryMap { get; } = new();
@@ -459,6 +463,7 @@ internal sealed class GauntletDarkLegacyMachine
 
     public void RunFrame(EutherFrameTarget target)
     {
+        long frameStart = Stopwatch.GetTimestamp();
         Voodoo.OnVblankStart();
         Sio.PulseVblank(state: true);
         if (_enableVblankTickBridge)
@@ -651,6 +656,7 @@ internal sealed class GauntletDarkLegacyMachine
                 }
             }
         }
+        long cpuStart = Stopwatch.GetTimestamp();
         if (_splitVblankCpu)
         {
             Cpu.RunProbeSteps(_vblankCpuSteps);
@@ -662,12 +668,24 @@ internal sealed class GauntletDarkLegacyMachine
             Cpu.RunProbeFrame();
             Sio.PulseVblank(state: false);
         }
+        long devicesStart = Stopwatch.GetTimestamp();
         PollRuntimeInput(allowInitialsTransition: true);
         MemoryMap.StepFrame();
         Audio.RunFrame();
         if (MemoryMap.ConsumeWatchdogResetRequest())
             Reset();
+        long renderStart = Stopwatch.GetTimestamp();
         RenderFrame(target);
+        if (_profileFramePhases)
+        {
+            long frameEnd = Stopwatch.GetTimestamp();
+            Console.WriteLine(
+                $"[GAUNTDL:PROFILE] frame-phases " +
+                $"callbacksMs={Stopwatch.GetElapsedTime(frameStart, cpuStart).TotalMilliseconds:F2} " +
+                $"cpuMs={Stopwatch.GetElapsedTime(cpuStart, devicesStart).TotalMilliseconds:F2} " +
+                $"devicesMs={Stopwatch.GetElapsedTime(devicesStart, renderStart).TotalMilliseconds:F2} " +
+                $"renderMs={Stopwatch.GetElapsedTime(renderStart, frameEnd).TotalMilliseconds:F2}");
+        }
     }
 
     private void RunRuntimeClockCallbacksForFrame()
