@@ -343,3 +343,26 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
 - Input and scheduling are alive in state `0x400c`. The native player scheduler reaches its gameplay branch every few frames, and held inputs reach both the runtime table and normalized guest words (`Up=0x03`, `Down=0x0c`, `Left=0x30`, `Right=0xc0`, `Fight=0x400`). A 1200-frame Fight continuation advances the player timer at 71--73 fps but cannot create the missing scene.
 - The first real divergence is the scene/camera root at `0x80213618`. The working post-loader 3D oracle contains camera matrices, object pointers and transforms there and reaches `0x800b89b0 -> 0x800b4b40 -> 0x800b4d9c -> 0x800ba020`, producing arbitrary Type 3 packets at `0x800bc8ec/0x800bc91c`. The f4733 gameplay checkpoint leaves the same root almost entirely zero and never reaches that call chain.
 - Two differing static-root words at `0x8016291c/0x80162938` were tested individually and together; all probes were hash-identical and reached no scene caller, so no state patch was retained. Next: trace the gameplay-owned registration writer that should populate `0x80213618` or enqueue its `0x805xxxxx` scene objects, starting at the level-init/scene-manager caller rather than patching matrices or copying the diagnostic oracle's scene state.
+
+### 2026-07-31: phase-5-exiten blockeras av synkrona async-väntor
+
+- `0x80086cec` skriver huvudstate `0x400c` tidigt men ska därefter slutföra
+  cleanup, level-loader och scenregistrering innan den returnerar. Den
+  context-preserving hostkörningen når inte returen inom sin 8M-budget och
+  återställer därför CPU-kontexten efter den tidiga state-skrivningen.
+- Den första verifierade spärren var UI-kommandoloopen vid `0x800c83b0`.
+  Gauntlet 2.4 har anropet vid `+0x20`, retur-PC `0x800c83d8` och loopen vid
+  `+0x28..+0x34`; den gamla signaturen låg fyra byte för tidigt. Den korrigerade
+  signaturen och samma fastpath i `0x400c`-dispatchen tar bort cirka 788 000
+  loopvarv per 8M-probe. Steady-state-regressionen från f4733 behåller
+  `frameHash=0xb58f5f59` över 300 frames.
+- Nästa synkrona gräns är QIO-väntan vid `0x800edac4` på objektets `+0x14`.
+  Ett live-transfer-experiment visade att den riktiga scheduler/IDE-kedjan kan
+  föra objekt `0x80295440` till handle `-1`, status `0x0500`, men den ad hoc
+  CPU-injektionen gav senare en ogiltig låg PC och har därför tagits bort.
+- Nästa säkra implementation ska inte forcera QIO-status eller injicera
+  `0x80086cec` ovanpå en godtycklig renderstack. Gör i stället phase-5-anropet
+  resumable med en separat serialiserad CPU-kontext, serva en vanlig frame
+  mellan yields och återställ ursprungskontexten först när guestfunktionen
+  faktiskt returnerar. Kräv därefter att `0x80213618` blir aktiv innan den nya
+  vägen får gå in i baselinen.

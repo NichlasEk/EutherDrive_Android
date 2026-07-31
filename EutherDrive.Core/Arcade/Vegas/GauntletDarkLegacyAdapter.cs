@@ -3174,6 +3174,8 @@ internal sealed class MipsR5000Core
                 return;
             if (TryFastPathKnownRuntimeGameplayDiagnosticTextRecord(pc))
                 return;
+            if (TryFastPathKnownRuntimeUiCommandCompleteWait(pc))
+                return;
             if (TryFastPathKnownGauntletGlideHotPath(pc))
                 return;
             goto ExecuteInstruction;
@@ -26279,11 +26281,11 @@ internal sealed class MipsR5000Core
             return false;
         }
 
-        if (_memory.Read32(entry + 0x1cUL) != 0x0c03202dU ||
-            _memory.Read32(entry + 0x24UL) != 0x50400001U ||
-            _memory.Read32(entry + 0x28UL) != 0xa2000000U ||
-            _memory.Read32(entry + 0x2cUL) != 0x8e227c38U ||
-            _memory.Read32(entry + 0x30UL) != 0x1040fffaU)
+        if (_memory.Read32(entry + 0x20UL) != 0x0c03202dU ||
+            _memory.Read32(entry + 0x28UL) != 0x50400001U ||
+            _memory.Read32(entry + 0x2cUL) != 0xa2000000U ||
+            _memory.Read32(entry + 0x30UL) != 0x8e227c38U ||
+            _memory.Read32(entry + 0x34UL) != 0x1040fffaU)
         {
             return false;
         }
