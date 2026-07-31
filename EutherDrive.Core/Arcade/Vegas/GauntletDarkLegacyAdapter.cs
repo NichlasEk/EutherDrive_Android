@@ -43,6 +43,8 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PLAYER_SCHEDULER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_MAIN_STATE_SCHEDULER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_EXIT", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PAIRED_WORD_COPY", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_LITERAL_DESTINATION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
@@ -1039,6 +1041,14 @@ internal sealed class MipsR5000Core
     private int _bootGlideStateEmitTraceCount;
     private readonly bool _traceBootGlideStateEmit = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BOOT_GLIDE_STATE_EMIT") == "1";
     private readonly bool _profileHotPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1";
+    private readonly bool _enableRuntimePhaseFiveQioWaitService =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
+    private readonly bool _enableRuntimePairedWordCopy =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PAIRED_WORD_COPY");
+    private readonly int _runtimePhaseFiveExitMaxSteps =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PHASE_FIVE_EXIT_MAX_STEPS", 8_000_000);
     private readonly bool _enableRuntimeSteadyStateFastDispatch =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STEADY_STATE_FAST_DISPATCH");
@@ -1914,6 +1924,7 @@ internal sealed class MipsR5000Core
     private int _runtimeDiagnosticMenuScanFastPathTraceCount;
     private int _runtimeDiagnosticStateZeroMaskFastPathTraceCount;
     private int _runtimeStringCopyFastPathTraceCount;
+    private int _runtimePairedWordCopyFastPathTraceCount;
     private int _runtimeTempleItemsBoundaryTraceCount;
     private int _runtimeTemplePowerupsRecordLoopTraceCount;
     private int _runtimeTempleItemsStringTraceCount;
@@ -1952,6 +1963,13 @@ internal sealed class MipsR5000Core
     private bool _insideContextPreservingRuntimeTimerTick;
     private bool _insideContextPreservingRuntimeInputPoll;
     private ulong _lastContextPreservingReturnValue;
+    private ulong _lastContextPreservingTimeoutPc;
+    private uint _lastContextPreservingTimeoutInstruction;
+    private ulong _lastContextPreservingTimeoutS0;
+    private uint _lastContextPreservingTimeoutS0Handle;
+    private uint _lastContextPreservingTimeoutS0Status;
+    private bool _insideRuntimePhaseFiveExit;
+    private int _runtimePhaseFiveQioWaitServiceAttempts;
     private bool _runtimeTempleWeaponsLoadRequested;
     private bool _runtimeTempleWeaponsResourceBuilt;
     private ulong _runtimeTempleWeaponsTextureStream;
@@ -2331,11 +2349,33 @@ internal sealed class MipsR5000Core
     public bool RunRuntimePhaseFiveExitPreservingContext()
     {
         const ulong runtimePhaseFiveExit = 0xffffffff80086cecUL;
-        return RunGuestFunctionPreservingContext(
-            runtimePhaseFiveExit,
-            argument0: null,
-            maxSteps: 8_000_000,
-            bypassRuntimeInputPollFastPath: false);
+        _runtimePhaseFiveQioWaitServiceAttempts = 0;
+        _insideRuntimePhaseFiveExit = true;
+        bool returned;
+        try
+        {
+            returned = RunGuestFunctionPreservingContext(
+                runtimePhaseFiveExit,
+                argument0: null,
+                maxSteps: _runtimePhaseFiveExitMaxSteps,
+                bypassRuntimeInputPollFastPath: false,
+                captureTimeoutPc: true);
+        }
+        finally
+        {
+            _insideRuntimePhaseFiveExit = false;
+        }
+        if (!returned)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:TRACE] runtime-phase-five-exit-timeout " +
+                $"pc={_lastContextPreservingTimeoutPc:x16} " +
+                $"op={_lastContextPreservingTimeoutInstruction:x8} " +
+                $"s0={_lastContextPreservingTimeoutS0:x16} " +
+                $"handle={_lastContextPreservingTimeoutS0Handle:x8} " +
+                $"status={_lastContextPreservingTimeoutS0Status:x8}");
+        }
+        return returned;
     }
 
     public bool StartRuntimeInitialsTransition()
@@ -2370,7 +2410,8 @@ internal sealed class MipsR5000Core
         uint? argument0,
         int maxSteps,
         bool bypassRuntimeInputPollFastPath,
-        bool freezeCp0CountAdvance = false)
+        bool freezeCp0CountAdvance = false,
+        bool captureTimeoutPc = false)
     {
         const ulong returnSentinel = 0xffffffff80000000UL;
         if (_halted || _insideContextPreservingRuntimeInputPoll || !IsRuntimeCodeAddress(Pc))
@@ -2416,6 +2457,16 @@ internal sealed class MipsR5000Core
                     break;
                 }
                 Step();
+            }
+            if (captureTimeoutPc && !returned)
+            {
+                _lastContextPreservingTimeoutPc = Pc;
+                _lastContextPreservingTimeoutInstruction = LastFetchedInstruction;
+                _lastContextPreservingTimeoutS0 = _gpr[16];
+                _lastContextPreservingTimeoutS0Handle =
+                    IsMainRamRange(_gpr[16] + 0x0cUL, 4) ? _memory.Read32(_gpr[16] + 0x0cUL) : 0;
+                _lastContextPreservingTimeoutS0Status =
+                    IsMainRamRange(_gpr[16] + 0x14UL, 4) ? _memory.Read32(_gpr[16] + 0x14UL) : 0;
             }
             _lastContextPreservingReturnValue = returned ? _gpr[2] : 0;
         }
@@ -3152,6 +3203,8 @@ internal sealed class MipsR5000Core
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ApplyKnownRuntimeTempleWeaponsDistinctResourceSourceRepair();
         ulong pc = Pc;
+        if (TryFastPathKnownRuntimePairedWordCopy(pc))
+            return;
         bool steadyStateFastDispatch =
             _enableRuntimeSteadyStateFastDispatch &&
             _memory.Read32(0xffffffff80227ab0UL) == 0x400cU;
@@ -3174,11 +3227,13 @@ internal sealed class MipsR5000Core
                 return;
             if (TryFastPathKnownRuntimeGameplayDiagnosticTextRecord(pc))
                 return;
+            ServiceKnownRuntimePhaseFiveQioWait(pc);
             if (TryFastPathKnownRuntimeUiCommandCompleteWait(pc))
                 return;
             if (TryFastPathKnownGauntletGlideHotPath(pc))
                 return;
-            goto ExecuteInstruction;
+            if (!_insideRuntimePhaseFiveExit || !_enableRuntimePhaseFiveQioWaitService)
+                goto ExecuteInstruction;
         }
         ApplyRuntimeAssetStreamArenaFix(pc);
         if (TryApplyRuntimeAssetObjectArenaFix(pc))
@@ -3203,6 +3258,7 @@ internal sealed class MipsR5000Core
         ApplyKnownRuntimeWorldSelectedPointerRepair(pc);
         ApplyKnownRuntimeUiCommandCompletion(pc);
         ApplyKnownRuntimeWaitForQioCompletion(pc);
+        ServiceKnownRuntimePhaseFiveQioWait(pc);
         TraceKnownLateRenderPump(pc);
         if (TryFastPathKnownRuntimeDiagnosticTextPumpSkip(pc))
             return;
@@ -11828,6 +11884,99 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:QIO] generic-wait-complete pc={pc:x16} object={obj:x16} " +
                 $"state={_memory.Read32(obj + 0x0cUL):x8} status={status:x8} " +
                 $"next={_memory.Read32(obj + 0x18UL):x8} buf={_memory.Read32(obj + 0x2cUL):x8}");
+        }
+        return true;
+    }
+
+    private void ServiceKnownRuntimePhaseFiveQioWait(ulong pc)
+    {
+        const ulong loadStatusPc = 0xffffffff800edac4UL;
+        const ulong cleanupQioObject = 0xffffffff80295440UL;
+        const int maxServiceAttempts = 8;
+        if (!_enableRuntimePhaseFiveQioWaitService ||
+            !_insideRuntimePhaseFiveExit ||
+            _insideContextPreservingRuntimeTimerTick ||
+            pc != loadStatusPc ||
+            _gpr[16] != cleanupQioObject ||
+            _runtimePhaseFiveQioWaitServiceAttempts >= maxServiceAttempts ||
+            _memory.Read32(loadStatusPc) != 0x8e020014U ||
+            _memory.Read32(loadStatusPc + 0x04UL) != 0x1040fffeU ||
+            _memory.Read32(cleanupQioObject + 0x14UL) != 0)
+        {
+            return;
+        }
+
+        _runtimePhaseFiveQioWaitServiceAttempts++;
+        _memory.RequestRuntimeTimerInterrupt();
+        Console.WriteLine(
+            $"[GAUNTDL:FIX] runtime-phase-five-qio-wait-service " +
+            $"attempt={_runtimePhaseFiveQioWaitServiceAttempts} " +
+            $"handle={_memory.Read32(cleanupQioObject + 0x0cUL):x8} " +
+            $"status={_memory.Read32(cleanupQioObject + 0x14UL):x8}");
+    }
+
+    private bool TryFastPathKnownRuntimePairedWordCopy(ulong pc)
+    {
+        const ulong loop = 0xffffffff800fe7bcUL;
+        const ulong exit = 0xffffffff800fe7e4UL;
+        if (!_enableRuntimePairedWordCopy ||
+            !_insideRuntimePhaseFiveExit || pc != loop ||
+            _memory.Read32(loop + 0x00UL) != 0x8e620000U ||
+            _memory.Read32(loop + 0x04UL) != 0x8e630004U ||
+            _memory.Read32(loop + 0x08UL) != 0xac820000U ||
+            _memory.Read32(loop + 0x10UL) != 0xac830000U ||
+            _memory.Read32(loop + 0x1cUL) != 0x00b4102bU ||
+            _memory.Read32(loop + 0x20UL) != 0x1440fff7U)
+        {
+            return false;
+        }
+
+        ulong completedPairs = _gpr[5];
+        ulong totalPairs = _gpr[20];
+        if (completedPairs >= totalPairs)
+            return false;
+
+        ulong remainingPairs = totalPairs - completedPairs;
+        ulong byteCount = remainingPairs * 8UL;
+        ulong source = _gpr[19];
+        ulong destination = _gpr[4];
+        uint destinationPhysical = unchecked((uint)destination);
+        bool destinationIsVoodoo =
+            destination == SignExtend32(destinationPhysical) &&
+            destinationPhysical >= 0xa8000000U &&
+            (ulong)destinationPhysical + byteCount <= 0xa8400000UL;
+        if (remainingPairs > 0x400000UL ||
+            !IsMainRamRange(source, byteCount) ||
+            (!IsMainRamRange(destination, byteCount) && !destinationIsVoodoo))
+        {
+            return false;
+        }
+
+        if (destinationIsVoodoo)
+            _memory.BeginVoodooCommandFifoBulkWrite();
+        try
+        {
+            for (ulong offset = 0; offset < byteCount; offset += 4UL)
+                _memory.Write32(destination + offset, _memory.Read32(source + offset));
+        }
+        finally
+        {
+            if (destinationIsVoodoo)
+                _memory.EndVoodooCommandFifoBulkWrite();
+        }
+
+        _gpr[4] = destination + byteCount;
+        _gpr[5] = totalPairs;
+        _gpr[19] = source + byteCount;
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        Pc = exit;
+        CompleteFastPathStep();
+        if (_runtimePairedWordCopyFastPathTraceCount++ == 0)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] runtime-paired-word-copy " +
+                $"src={source:x16} dst={destination:x16} bytes={byteCount:x}");
         }
         return true;
     }

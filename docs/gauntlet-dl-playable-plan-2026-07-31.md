@@ -366,3 +366,36 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   mellan yields och återställ ursprungskontexten först när guestfunktionen
   faktiskt returnerar. Kräv därefter att `0x80213618` blir aktiv innan den nya
   vägen får gå in i baselinen.
+
+### 2026-07-31: phase-5-exiten returnerar via riktig IRQ/QIO-kedja
+
+- Timeout-PC och QIO-state visade att `0x80086cec` skapar en ny request på
+  `0x80295440` (`handle=0x1009`, `status=0`) efter den tidigare färdiga
+  requesten. Problemet var därför inte en stale status utan att den
+  context-bevarande callbacken inte gav gästsystemets interrupt/scheduler
+  möjlighet att slutföra den nya requesten.
+- Vid den signerade väntan `0x800edac4` pulserar baselinen nu det emulerade
+  timeravbrottet, högst åtta gånger. Under just phase-5-anropet får den vanliga
+  fulla dispatchkedjan köras efter steady-state-fastpathsen. Gästens egen
+  timer-, IDE- och software-IRQ-kedja för då samma objekt naturligt till
+  `handle=-1`, `status=0x0500`; hosten skriver aldrig completion-statusen.
+- Loadern når därefter Voodoo-kopieringsslingan `0x800fe7bc..0x800fe7e0`.
+  Den kopierar par av 32-bitarsord från main RAM till det mappade
+  `0xa8000000..0xa83fffff`-fönstret. En signerad bulkfastpath behåller varje
+  `Write32`-sideffekt men tar bort gästloopens instruktioner.
+- Från den rena f4264-checkpointen returnerar `0x80086cec` nu inom ordinarie
+  8M-budget: `returned=1`, state `0x400a -> 0x400c`, QIO `-1/0x0500` och
+  `frameHash=0xc59cfdee`. Den komprimerade kontrollcheckpointen är
+  `.build-tmp/euther-native-world-init-f4265.warm.gz`, SHA-256
+  `b65ab50ec6e5b5779c758fb1c0593867197fa7fc6fde7bfcd34a354269671192`.
+- `0x80213618` är fortfarande noll efter returen och efter 300 normala frames.
+  Ett default-avstängt prov av main-state-rutinen i state `0x400c` kunde också
+  returnera via den riktiga QIO-kedjan men registrerade ingen scen. Nästa steg
+  är därför att hitta state-400c-callern som äger scene-init, inte att återgå
+  till syntetisk RAM-state eller kopiera scene-root från oraklet.
+- En negativ A/B med båda nya fixarna avstängda och 1M-budget stannar åter med
+  `returned=0` och oförändrad svart hash `0x30e41dc5`; den rena baselinen med
+  fixarna når returen. En separat 300-frame-fortsättning från f4733 gav samma
+  `frameHash=0x667f3b94` både med fixarna på och explicit avstängda. De nya
+  phase-5-vägarna påverkar alltså inte steady-state-körningen när inget
+  phase-5-exitanrop pågår.
