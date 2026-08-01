@@ -614,6 +614,21 @@ public partial class MainWindow : Window
         _ymResampleLinear = IsEnvEnabled("EUTHERDRIVE_YM_RESAMPLE_LINEAR")
             || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_YM_RESAMPLE"), "linear", StringComparison.OrdinalIgnoreCase);
         LoadSettings();
+        if (!string.IsNullOrWhiteSpace(
+                Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_UI_WARMUP_STATE")))
+        {
+            if (IsEnvEnabled("EUTHERDRIVE_GAUNTDL_UI_FORCE_SPEED_LOCK"))
+                _speedLockEnabled = true;
+            if (double.TryParse(
+                    Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_UI_SPEED_SCALE"),
+                    System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out double warmSpeedScale) &&
+                double.IsFinite(warmSpeedScale))
+            {
+                _speedScale = Math.Clamp(warmSpeedScale, 0.05, 4.0);
+            }
+        }
         _ambientMusicController = new AmbientMusicController(GetAmbientMusicCachePath());
         _machineRoomMiniPlayerController = new MachineRoomMiniPlayerController(GetMachineRoomCoverCachePath());
         _ambientMusicController.StateChanged += OnAmbientMusicStateChanged;

@@ -553,3 +553,26 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   modellproveniens, inte kräva att just detta ord blir en scenpekare.
 - Tempdisciplin: samtliga PPM/PNG-provdumpar raderades direkt efter visuell
   kontroll; `/tmp` innehåller inga kvarvarande `gauntdl-*`-filer.
+
+### 2026-08-01: visuellt desktoporakel återställt
+
+- f4733/f4734-kedjan är värdefull för ren modellproveniens men är inte en bra
+  användarstart: den visar främst join-/diagnostiklager och ännu ingen vettig
+  3D-värld. Den ska inte längre vara desktopstandard.
+- Det lokala f1140-oraklet
+  `artifacts/gauntlet-probe/gaunt-mame-oracle-precycle2-f1140-60k.warm.gz`
+  fortsätter i dagens runtime med portal, figurer, golv, dimma och credits.
+  Efter 20 frames gav det 191 590 icke-svarta och 190 894 färgade pixlar.
+- Den återkommande diagnostikoverlayn ägs av den exakta skrivningen
+  `0x80019ef0 -> 0x80227b9c = 1`. Det befintliga default-avstängda,
+  signaturvaktade experimentet som håller just den flaggan noll verifierades
+  över 20 frames: världen och 193 061 icke-svarta pixlar blev kvar medan
+  `DIAGNOSTIC MENU` försvann. Inga Voodoo- eller framebufferdata patchas.
+- Desktopstartaren använder nu f1140 och aktiverar den smala overlayspärren.
+  Det ger en ärligt mycket bättre visuell PC-start, även om vägen från attract
+  till full spelarstyrd level fortfarande måste verifieras separat.
+- Warm-startskriptet tvingar dessutom speed-lock och 25 procent hastighet.
+  Persistenta UI-inställningar kunde annars lämna speed-lock avstängd och låta
+  emulatorn rusa igenom den bra attract-scenen till en svart övergång innan
+  användaren hann se den. Override gäller bara när detta skript sätter en
+  explicit Gauntlet-warm-state.
