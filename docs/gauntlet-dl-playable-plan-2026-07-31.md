@@ -518,3 +518,38 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
 - Desktopskriptet använder nu den rena f5008-checkpointen, v18-laddaren och
   60 000 CPU-steg per frame som standard. Inga runtime-loggar eller snapshots
   skapas när användaren startar spelet via skriptet.
+
+### 2026-08-01: ren assetproveniens och fortsatt game-task efter 0x400c
+
+- f5008-checkpointens player/model-blobbar är redan korrumperade innan den
+  fortsatta spelkörningen: `0x802f4a28=0x0fff0fff` och
+  `0x80348428=0x00060006`. Det förklarar de orimliga model-recordpekare som
+  kodintegritetsskyddet senare avvisar. Den äldre f4733-checkpointen innehåller
+  däremot de giltiga blobhuvudena `1` respektive `0x13` och behåller dem genom
+  alla nya prov.
+- Den separata game-tasken får nu fortsätta efter att huvudläget lämnar
+  `0x400c`. Från ren f4733 går gästen naturligt `0x400c -> 0x400e` efter 1 900
+  accelererade slices, rasteriserar 1 786 texturerade trianglar och lämnar
+  modellblobbarna orörda. Den tidigare direkta host-completionen av mount-QIO
+  behövs inte och är borttagen.
+- Signaturvaktade QIO-pollningar vid `0x800edac4` och `0x800edba4` yieldar nu
+  den serialiserade tasken till nästa maskinframe. Pollens Count/Nile-tid
+  fast-forwardas motsvarande den gamla tomma loopbudgeten och den befintliga
+  timer/IRQ-servicen pulseras; inga handle-, status- eller requestfält skrivs
+  syntetiskt. Gästens riktiga kedja går vidare mellan de två väntorna.
+- En ny lokal kontrollcheckpoint,
+  `.build-tmp/euther-native-game-state400e-clean-f4734.warm.gz`, ligger efter
+  den verifierade `0x400c -> 0x400e`-övergången. Desktopstartaren använder den
+  i stället för kontaminerade f5008. Checkpointen är 6,8 MB och vanlig desktop
+  skriver fortfarande inga snapshots eller loggar.
+- Två separerade coinpulser når nu det riktiga `PRESS START`-läget från den
+  rena checkpointen. En för tidig respektive senare kort Start-puls har ännu
+  inte aktiverat spelaren; nästa inputgräns är start-debounce/sampling medan
+  tasken gör filesystem-QIO, följd av kontroll att level-/scenobjekten
+  registreras.
+- Rättelse till äldre analys ovan: `0x80213618` är en statisk funktions-/method-
+  tabell som konstruktorn vid `0x800b7be8` fyller, inte ett fristående
+  scene-root-bevis. Fortsatt grafikdiagnostik ska därför följa objekt- och
+  modellproveniens, inte kräva att just detta ord blir en scenpekare.
+- Tempdisciplin: samtliga PPM/PNG-provdumpar raderades direkt efter visuell
+  kontroll; `/tmp` innehåller inga kvarvarande `gauntdl-*`-filer.

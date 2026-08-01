@@ -739,7 +739,9 @@ internal sealed class GauntletDarkLegacyMachine
             }
         }
         if (_enableRuntimeGameTask &&
-            (currentMainState == 0x400cU || runPretransitionGameTask))
+            (currentMainState == 0x400cU ||
+             runPretransitionGameTask ||
+             Cpu.HasRuntimeGameTaskContext))
         {
             uint taskStartMainState = MemoryMap.Read32(runtimeMainState);
             for (int slice = 0; slice < _runtimeGameTaskSlicesPerFrame; slice++)
@@ -2106,6 +2108,8 @@ internal sealed class MipsR5000Core
     public ulong Cp0Epc => _cp0[14];
     public ulong Cp0ErrorEpc => _cp0[30];
     public bool RuntimeTempleItemsBoundaryReached { get; private set; }
+    public bool HasRuntimeGameTaskContext
+        => _runtimeGameTaskContext is not null && !_runtimeGameTaskContext.Halted;
     public ulong TileWriteCount => _tileWriteCount;
     public ulong TileWriteMin => _tileWriteMin;
     public ulong TileWriteMax => _tileWriteMax;
@@ -2113,6 +2117,11 @@ internal sealed class MipsR5000Core
     public string RuntimeDiagnosticStatus
         => $"rtxt={_runtimeTextCallCount}@0x{_lastRuntimeTextPc:X8}/ra=0x{_lastRuntimeTextRa:X8}" +
            (string.IsNullOrWhiteSpace(LastRuntimeText) ? "" : $" \"{LastRuntimeText}\"") +
+           (_runtimeGameTaskContext is null
+               ? " gtask=none"
+               : $" gtask=0x{_runtimeGameTaskContext.Pc:X16}/ra=0x{_runtimeGameTaskContext.Gpr[31]:X16}/sp=0x{_runtimeGameTaskContext.Gpr[29]:X16}" +
+                 $"/s0=0x{_runtimeGameTaskContext.Gpr[16]:X16}/s1=0x{_runtimeGameTaskContext.Gpr[17]:X16}" +
+                 $"/s2=0x{_runtimeGameTaskContext.Gpr[18]:X16}/halt={(_runtimeGameTaskContext.Halted ? 1 : 0)}") +
            GetTileWriteStatus();
     public string HotPcStatus => GetHotPcStatus();
 
@@ -2505,6 +2514,20 @@ internal sealed class MipsR5000Core
             _insideRuntimeGameTask = true;
             for (; steps < maxSteps && !_halted; steps++)
             {
+                if (IsRuntimeGameTaskPendingQioWait())
+                {
+                    // This task is polling an async filesystem request. Let
+                    // the ordinary machine frame run the RTOS/IDE interrupt
+                    // chain, then resume the exact guest PC next frame.
+                    // No request fields or completion status are synthesized.
+                    int skippedPollSteps = Math.Max(1, maxSteps - steps);
+                    AdvanceCp0Count(_cp0CountStep * (ulong)skippedPollSteps);
+                    _instructionCounter += (ulong)skippedPollSteps;
+                    steps += skippedPollSteps;
+                    ServiceKnownRuntimePhaseFiveQioWait(Pc);
+                    yielded = true;
+                    break;
+                }
                 if (Pc == runtimeFrameDelayEntry && IsRuntimeCodeAddress(_gpr[31]))
                 {
                     // prc_delay blocks the game task until a later scheduler
@@ -2561,6 +2584,37 @@ internal sealed class MipsR5000Core
         }
 
         return yielded;
+    }
+
+    private bool IsRuntimeGameTaskPendingQioWait()
+    {
+        ulong directStatusLoadPc = Pc switch
+        {
+            0xffffffff800edac4UL or 0xffffffff800edac8UL or 0xffffffff800edaccUL
+                => 0xffffffff800edac4UL,
+            0xffffffff800edba4UL or 0xffffffff800edba8UL or 0xffffffff800edbacUL
+                => 0xffffffff800edba4UL,
+            _ => 0
+        };
+        bool directStatusLoop =
+            directStatusLoadPc != 0 &&
+            _memory.Read32(directStatusLoadPc - 0x08UL) == 0x14400004U &&
+            _memory.Read32(directStatusLoadPc) == 0x8e020014U &&
+            _memory.Read32(directStatusLoadPc + 0x04UL) == 0x1040fffeU &&
+            IsMainRamRange(_gpr[16] + 0x14UL, 4) &&
+            _memory.Read32(_gpr[16] + 0x14UL) == 0;
+        if (directStatusLoop)
+            return true;
+
+        if (!IsKnownRuntimeWaitForQioLoopPc(Pc) ||
+            !IsMainRamRange(_gpr[30] + 0x20UL, 4))
+        {
+            return false;
+        }
+
+        ulong objectAddress = SignExtend32(_memory.Read32(_gpr[30] + 0x20UL));
+        return IsMainRamRange(objectAddress + 0x14UL, 4) &&
+               _memory.Read32(objectAddress + 0x14UL) == 0;
     }
 
     private RuntimeTaskContext CaptureRuntimeTaskContext()
@@ -12387,12 +12441,20 @@ internal sealed class MipsR5000Core
 
     private void ServiceKnownRuntimePhaseFiveQioWait(ulong pc)
     {
-        const ulong loadStatusPc = 0xffffffff800edac4UL;
         const ulong cleanupQioObject = 0xffffffff80295440UL;
         const int maxServiceAttempts = 8;
+        ulong loadStatusPc = pc switch
+        {
+            0xffffffff800edac4UL or 0xffffffff800edac8UL or 0xffffffff800edaccUL
+                => 0xffffffff800edac4UL,
+            0xffffffff800edba4UL or 0xffffffff800edba8UL or 0xffffffff800edbacUL
+                => 0xffffffff800edba4UL,
+            _ => 0
+        };
         bool directStatusLoop =
-            pc == loadStatusPc &&
+            loadStatusPc != 0 &&
             _gpr[16] == cleanupQioObject &&
+            _memory.Read32(loadStatusPc - 0x08UL) == 0x14400004U &&
             _memory.Read32(loadStatusPc) == 0x8e020014U &&
             _memory.Read32(loadStatusPc + 0x04UL) == 0x1040fffeU;
         bool genericWaitLoop =
