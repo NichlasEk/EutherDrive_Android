@@ -604,3 +604,28 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
 - Alla prov kördes med komprimerade `.warm.gz` under repo-lokala
   `.build-tmp`. Mellancheckpoints rensades löpande och inga växande råa
   snapshots eller loggar skrevs till `/tmp`.
+
+### 2026-08-01: QIO-budgeten följer requesten i obruten desktopkörning
+
+- Den första 64-försöksfixen räknade fortfarande alla senare QIO-requests mot
+  samma processglobala budget. De korta bringupsegmenten dolde felet eftersom
+  räknaren inte ingår i warm-formatet och därför började om vid varje reload.
+  En riktig desktopprocess skulle till slut förbruka budgeten och åter fastna.
+- Serviceräknaren binds nu till det aktuella guest-handle-värdet vid
+  `0x8029544c`. Ett nytt handle börjar på försök ett; samma handle får högst 64
+  chanser. Status, handle och requestfält skrivs fortfarande endast av
+  gästens RTOS/IDE-kedja.
+- Ett obrutet 60k-prov från f4754 till f4849 körde 95 maskinframes utan
+  snapshot-reload eller task-escape. Handles `0x6389..0x6f09` gick vidare,
+  speltråden slutade i normal `prc_delay` vid `0x80015c38`, Voodoo nådde swap
+  3838 och de rena modellhuvudena förblev `1` respektive `0x13`.
+- 20k CPU-steg per frame är inte en giltig desktopvalidering här. Den nivån
+  svälter den ordinarie RTOS/IDE-kedjan så att en request kan lämna den
+  syntetiska game-taskkontexten innan värdtråden hunnit serva den. 60k är den
+  verifierade bringupnivån och ligger kvar i desktopstartaren.
+- Coin, Start och Fight efter den stabila QIO-kedjan ger en ren
+  `BUY ... / CREDITS`-bild och inputflaggan återgår korrekt efter pulsen, men
+  Player 1 ligger kvar i fas 1 och ingen identifierbar 3D-värld registreras.
+  Den kvarvarande spelbarhetsgränsen är fortfarande den yttre
+  game-frame-/world-producerkedjan; varken mer QIO-pollning, syntetiska
+  nodepekare eller framebufferpatchning är motiverad.

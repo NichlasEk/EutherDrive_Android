@@ -2086,6 +2086,7 @@ internal sealed class MipsR5000Core
     private uint _lastContextPreservingTimeoutS0Status;
     private bool _insideRuntimePhaseFiveExit;
     private int _runtimePhaseFiveQioWaitServiceAttempts;
+    private uint _runtimePhaseFiveQioWaitServiceHandle = uint.MaxValue;
     private bool _runtimeTempleWeaponsLoadRequested;
     private bool _runtimeTempleWeaponsResourceBuilt;
     private ulong _runtimeTempleWeaponsTextureStream;
@@ -2751,6 +2752,7 @@ internal sealed class MipsR5000Core
     {
         const ulong runtimePhaseFiveExit = 0xffffffff80086cecUL;
         _runtimePhaseFiveQioWaitServiceAttempts = 0;
+        _runtimePhaseFiveQioWaitServiceHandle = uint.MaxValue;
         _insideRuntimePhaseFiveExit = true;
         bool returned;
         try
@@ -12444,9 +12446,12 @@ internal sealed class MipsR5000Core
         const ulong cleanupQioObject = 0xffffffff80295440UL;
         // A later gameplay filesystem request can legitimately stay pending
         // for more than the eight scheduler opportunities needed by the
-        // original phase-five cleanup. Keep the guard bounded, but allow one
-        // guest-routed timer opportunity per machine frame long enough for
-        // the native worker/IDE chain to publish completion.
+        // original phase-five cleanup. Keep each distinct guest request
+        // bounded, but allow one guest-routed timer opportunity per machine
+        // frame long enough for the native worker/IDE chain to publish
+        // completion. The handle changes for every successive request; a
+        // process-global budget would eventually deadlock desktop play while
+        // short snapshot probes appeared healthy because reload reset it.
         const int maxServiceAttempts = 64;
         ulong loadStatusPc = pc switch
         {
@@ -12470,18 +12475,26 @@ internal sealed class MipsR5000Core
             (!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
             _insideContextPreservingRuntimeTimerTick ||
             (!directStatusLoop && !genericWaitLoop) ||
-            _runtimePhaseFiveQioWaitServiceAttempts >= maxServiceAttempts ||
             _memory.Read32(cleanupQioObject + 0x14UL) != 0)
         {
             return;
         }
+
+        uint handle = _memory.Read32(cleanupQioObject + 0x0cUL);
+        if (handle != _runtimePhaseFiveQioWaitServiceHandle)
+        {
+            _runtimePhaseFiveQioWaitServiceHandle = handle;
+            _runtimePhaseFiveQioWaitServiceAttempts = 0;
+        }
+        if (_runtimePhaseFiveQioWaitServiceAttempts >= maxServiceAttempts)
+            return;
 
         _runtimePhaseFiveQioWaitServiceAttempts++;
         _memory.RequestRuntimeTimerInterrupt();
         Console.WriteLine(
             $"[GAUNTDL:FIX] runtime-phase-five-qio-wait-service " +
             $"attempt={_runtimePhaseFiveQioWaitServiceAttempts} " +
-            $"handle={_memory.Read32(cleanupQioObject + 0x0cUL):x8} " +
+            $"handle={handle:x8} " +
             $"status={_memory.Read32(cleanupQioObject + 0x14UL):x8}");
     }
 
