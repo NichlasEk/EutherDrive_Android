@@ -2473,6 +2473,7 @@ internal sealed class MipsR5000Core
     public bool RunRuntimeGameTaskSlice(int maxSteps, out int steps, out ulong taskPc)
     {
         const ulong runtimeGameTaskEntry = 0xffffffff80014b70UL;
+        const ulong runtimeGameTaskLoopEntry = 0xffffffff80014c00UL;
         const ulong runtimeFrameDelayEntry = 0xffffffff80010fbcUL;
         const ulong returnSentinel = 0xffffffff80000000UL;
         // Keep this synthetic RTOS task away from the live host task's deep
@@ -2502,10 +2503,36 @@ internal sealed class MipsR5000Core
                 // The warm snapshot is stopped in a different RTOS task. A
                 // resumed game loop must not share that task's live stack,
                 // whose top is also used for temporary text/IO buffers.
-                _gpr[29] = runtimeGameTaskStackTop;
+                bool resumeInitializedLoop =
+                    GauntletDarkLegacyAdapter.IsTruthy(
+                        Environment.GetEnvironmentVariable(
+                            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GAME_TASK_RESUME_LOOP")) &&
+                    _memory.Read32(0xffffffff80227ab0UL) is 0x400aU or 0x400cU;
+                _gpr[29] = resumeInitializedLoop
+                    ? runtimeGameTaskStackTop - 0xb0UL
+                    : runtimeGameTaskStackTop;
                 _gpr[31] = returnSentinel;
                 _gpr[0] = 0;
-                Pc = runtimeGameTaskEntry;
+                if (resumeInitializedLoop)
+                {
+                    // Warm phase-1 snapshots predate the serialized task
+                    // context, but their guest globals have already passed
+                    // this task's one-time prologue. Re-running that prologue
+                    // clears the live object/resource state and advances the
+                    // game to 0x400e. Resume at the measured loop head with
+                    // the callee-saved values established by the prologue.
+                    _gpr[17] = 1;
+                    _gpr[19] = 0;
+                    _gpr[21] = 0;
+                    _gpr[22] = 0xffffffff80220000UL;
+                    _gpr[23] = 0xffffffff80220000UL;
+                    _gpr[30] = 0xffffffff80220000UL;
+                    Pc = runtimeGameTaskLoopEntry;
+                }
+                else
+                {
+                    Pc = runtimeGameTaskEntry;
+                }
             }
             else
             {

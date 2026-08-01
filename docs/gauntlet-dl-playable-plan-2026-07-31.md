@@ -629,3 +629,31 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   Den kvarvarande spelbarhetsgränsen är fortfarande den yttre
   game-frame-/world-producerkedjan; varken mer QIO-pollning, syntetiska
   nodepekare eller framebufferpatchning är motiverad.
+
+### 2026-08-01: MAME phase-1 isolerar den saknade world-producern
+
+- Samma phase-1-gräns mättes i MAME från den repo-lokala phase-4-staten.
+  MAME går från 12 till 552 objekt och flyttar resource-heapens cursor till
+  `0x002f85c8` innan phase 1 stabiliseras. Den rena Euther f4733-staten hade
+  bara 49 objekt och cursor `0x00278aa0`; f4734 hade redan rivit ned detta
+  till 2--7 objekt och `0x000062d8`. Felet är därför inte långsam rendering.
+- f4733 saknar serialiserad game-taskkontext. Att starta `0x80014b70` från
+  funktionens prolog kör engångsinitieringen en andra gång. Ett avstängt
+  experiment kan i stället börja vid den verifierade loop-headen
+  `0x80014c00`; det håller `0x400c` och yieldar normalt utan heap-teardown.
+- Ett bounded MAME-orakel kan nu dumpa main RAM på ett valt relativt
+  phase-5-frame. En enda 32 MiB-dump vid relative 207 importerades endast
+  över `0x80160000..0x805fffff`, så Euthers CPU-stack och Voodoo-state
+  behölls. Rådumpen används bara för att skapa en komprimerad warm-state och
+  raderas därefter.
+- Den nya lokala desktopstaten
+  `.build-tmp/euther-mame-phase1-native-f4783.warm.gz` reloadar med 552
+  objekt, phase 1 och heapcursor `0x002f85c8`. Den vanliga CPU-kontexten når
+  själv den riktiga game-loopen vid `0x800158bc`; den syntetiska tasken ska
+  därför vara avstängd för denna checkpoint.
+- Ett 100-frame reloadprov höll state och objektantal, gjorde riktiga swaps
+  och körde 20--30 fps. Right når rå input `0x80` och gästens normaliserade
+  word `0xc0`. För första gången syns faktisk world-geometri, men stora
+  trianglar och texturer är fortfarande fel och displayheuristiken väljer en
+  statisk buffer. Nästa gräns är därför Voodoo setup/clip samt levande
+  frontbuffer-val, inte loader, coin eller task-QIO.

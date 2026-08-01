@@ -14,6 +14,9 @@ local phase5_input_start = tonumber(os.getenv("GAUNTDL_PHASE5_INPUT_START")) or 
 local phase5_observation_frames = tonumber(os.getenv("GAUNTDL_PHASE5_OBSERVATION_FRAMES")) or 44
 local trace_phase5_edge = os.getenv("GAUNTDL_PHASE5_TRACE") == "1"
 local snapshot_phase5 = os.getenv("GAUNTDL_PHASE5_SNAPSHOT") == "1"
+local mainram_output_path = os.getenv("GAUNTDL_PHASE5_MAINRAM_OUT")
+local mainram_dump_relative = tonumber(os.getenv("GAUNTDL_PHASE5_MAINRAM_REL")) or 207
+local mainram_dumped = false
 local frame = 0
 local phase5_frame = nil
 local phase4_frame = nil
@@ -104,6 +107,25 @@ local function install_phase5_breakpoints()
 	machine.debugger:command("g")
 	breakpoints_installed = true
 	print("[phase5-oracle] bounded caller breakpoints installed")
+end
+
+local function dump_main_ram(path)
+	local file, message = io.open(path, "wb")
+	if not file then
+		error(string.format("main RAM open failed path=%s error=%s", path, message))
+	end
+	local chunk_size = 4096
+	for base = 0, 0x01ffffff, chunk_size do
+		local bytes = {}
+		for offset = 0, chunk_size - 1 do
+			bytes[offset + 1] = string.char(program:read_u8(base + offset))
+		end
+		file:write(table.concat(bytes))
+	end
+	file:close()
+	print(string.format(
+		"[phase5-mainram] frame=%d rel=%d path=%s bytes=0x02000000",
+		frame, frame - phase5_frame, path))
 end
 
 local function drive_boot_inputs()
@@ -260,17 +282,25 @@ emu.register_frame_done(function()
 		(phase >= 4 and frame % 20 == 0) or
 		(phase5_frame and frame <= phase5_frame + phase5_observation_frames) then
 		print(string.format(
-			"[phase5-poll] frame=%d rel=%d mode=%s pc=%08x state=%08x active=%08x phase=%08x timer=%08x input=%08x norm=%08x words=%08x/%08x/%08x/%08x",
+			"[phase5-poll] frame=%d rel=%d mode=%s pc=%08x state=%08x active=%08x phase=%08x timer=%08x input=%08x norm=%08x objects=%08x heap=%08x words=%08x/%08x/%08x/%08x",
 			frame,
 			phase5_frame and (frame - phase5_frame) or -1,
 			mode, pc, state, active_mask, phase,
 			program:read_u32(0x00227bd0),
 			program:read_u32(0x00262b90),
 			program:read_u32(0x00227ba8),
+			program:read_u32(0x001620bc),
+			program:read_u32(0x002280fc),
 			program:read_u32(0x00229484),
 			program:read_u32(0x00229488),
 			program:read_u32(0x0022948c),
 			program:read_u32(0x00229490)))
+	end
+
+	if mainram_output_path and phase5_frame and not mainram_dumped and
+		frame - phase5_frame >= mainram_dump_relative then
+		mainram_dumped = true
+		dump_main_ram(mainram_output_path)
 	end
 
 	if (exit_frame and frame >= exit_frame) or frame >= max_frames then
