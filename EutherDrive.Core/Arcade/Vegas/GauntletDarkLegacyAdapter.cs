@@ -12442,7 +12442,12 @@ internal sealed class MipsR5000Core
     private void ServiceKnownRuntimePhaseFiveQioWait(ulong pc)
     {
         const ulong cleanupQioObject = 0xffffffff80295440UL;
-        const int maxServiceAttempts = 8;
+        // A later gameplay filesystem request can legitimately stay pending
+        // for more than the eight scheduler opportunities needed by the
+        // original phase-five cleanup. Keep the guard bounded, but allow one
+        // guest-routed timer opportunity per machine frame long enough for
+        // the native worker/IDE chain to publish completion.
+        const int maxServiceAttempts = 64;
         ulong loadStatusPc = pc switch
         {
             0xffffffff800edac4UL or 0xffffffff800edac8UL or 0xffffffff800edaccUL
@@ -15110,9 +15115,10 @@ internal sealed class MipsR5000Core
         const ulong epilogue = 0xffffffff800b0d28UL;
         const ulong diagnosticTextStart = 0xffffffff8020f268UL;
         const ulong diagnosticTextEnd = 0xffffffff8020f606UL;
+        uint mainState = _memory.Read32(0xffffffff80227ab0UL);
         if (!_enableRuntimeGameplayDiagnosticTextRecordFix ||
             pc is not (firstTriangleCall or secondTriangleCall) ||
-            _memory.Read32(0xffffffff80227ab0UL) != 0x400cU)
+            mainState is not (0x400cU or 0x400eU))
         {
             return false;
         }
@@ -17575,9 +17581,10 @@ internal sealed class MipsR5000Core
         const ulong tail = 0xffffffff800b1fecUL;
         const ulong diagnosticTextStart = 0xffffffff8020f268UL;
         const ulong diagnosticTextEnd = 0xffffffff8020f606UL;
+        uint mainState = _memory.Read32(0xffffffff80227ab0UL);
         if (!_enableRuntimeGameplayDiagnosticTextRecordFix ||
             pc != body ||
-            _memory.Read32(0xffffffff80227ab0UL) != 0x400cU)
+            mainState is not (0x400cU or 0x400eU))
         {
             return false;
         }

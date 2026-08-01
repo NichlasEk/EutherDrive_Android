@@ -577,3 +577,30 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   state `0x400e`, där den serialiserade game-tasken och inputkedjan fortsätter.
   Speed-lock gäller på 100 procent. f1140 behålls endast som visuell
   renderoracle och får inte beskrivas som spelbar warm-start.
+
+### 2026-08-01: QIO-deadlock efter 0x400e borttagen
+
+- Den fortsatta game-tasken hade en reproducerbar senare filesystem-request
+  som behövde fler än åtta maskinframes. Med den gamla servicegränsen stannade
+  f4754 på handle `0x0a`, status `0x0500` och poll-PC `0x800edac4`; inga fler
+  timer-/schedulerchanser gavs efter försök åtta.
+- Den signaturvaktade servicen tillåter nu högst 64 försök, fortfarande exakt
+  en gäst-routad timerchans per maskinframe och utan syntetiska handle-, status-
+  eller requestskrivningar. Samma fortsättning avslutar naturligt requesten,
+  sätter handle till `-1`, når `0x800edba4` och återgår till main state
+  `0x400e`. Senare handles genom `0x6f09` slutförs på samma sätt.
+- Voodoo-swaps börjar åter röra sig (`3794 -> 3838`) och fortsättningen
+  rasteriserar riktiga texturerade trianglar. De rena modellhuvudena
+  `0x802f4a28=1` och `0x80348428=0x13` är oförändrade genom f4999.
+- De befintliga, signaturvaktade skipparna för den gamla
+  `DIAGNOSTIC MENU`-recordblobben gäller nu även state `0x400e`. Efter att
+  gästen själv ritat om skärmen försvinner overlayn; join-/creditslagret och
+  Voodoo-arbetet fortsätter. Ingen framebuffer eller Voodoo-RAM nollas.
+- PC-inputen är inte längre en okänd gräns. En coin-puls syns på IOASIC som
+  `port1=fffe`. En lång Fight-hold når runtime-record `0x80262b90=0x200` och
+  gästens normaliserade held-word `0x80227ba8=0x200`, följt av korrekt release
+  till noll. State ligger ändå kvar på `0x400e`; nästa blockerare är därför den
+  yttre game-frame-/scenregistreringen, inte desktopens knappsampling.
+- Alla prov kördes med komprimerade `.warm.gz` under repo-lokala
+  `.build-tmp`. Mellancheckpoints rensades löpande och inga växande råa
+  snapshots eller loggar skrevs till `/tmp`.
