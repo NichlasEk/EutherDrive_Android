@@ -568,11 +568,12 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   signaturvaktade experimentet som håller just den flaggan noll verifierades
   över 20 frames: världen och 193 061 icke-svarta pixlar blev kvar medan
   `DIAGNOSTIC MENU` försvann. Inga Voodoo- eller framebufferdata patchas.
-- Desktopstartaren använder nu f1140 och aktiverar den smala overlayspärren.
-  Det ger en ärligt mycket bättre visuell PC-start, även om vägen från attract
-  till full spelarstyrd level fortfarande måste verifieras separat.
-- Warm-startskriptet tvingar dessutom speed-lock och 25 procent hastighet.
-  Persistenta UI-inställningar kunde annars lämna speed-lock avstängd och låta
-  emulatorn rusa igenom den bra attract-scenen till en svart övergång innan
-  användaren hann se den. Override gäller bara när detta skript sätter en
-  explicit Gauntlet-warm-state.
+- En fortsatt kontroll visade att f1140 inte är en giltig användarstart:
+  Voodoo-swapräknaren ligger kvar på 988 även efter 20 emulerade frames. f520
+  byter buffer 40 gånger under tio frames men går därefter in i samma
+  stillastående attract-kedja. Den tidigare 25-procentsinställningen förlängde
+  bara övergången och var inte en schedulerfix.
+- Desktopstartaren använder därför åter den rena f4734-checkpointen i guest
+  state `0x400e`, där den serialiserade game-tasken och inputkedjan fortsätter.
+  Speed-lock gäller på 100 procent. f1140 behålls endast som visuell
+  renderoracle och får inte beskrivas som spelbar warm-start.
