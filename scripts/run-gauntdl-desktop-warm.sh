@@ -25,6 +25,9 @@ export EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
 # This checkpoint already contains MAME's live phase-1 task/RAM state. Starting
 # the synthetic fallback task would duplicate the game loop and tear it down.
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=0
+# Phase-1 currently rasterizes only buffer 0; the generic coherence heuristic
+# otherwise keeps presenting the cleaner but stale buffer 1.
+export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX=0
 export EUTHERDRIVE_GAUNTDL_EXPERIMENT_SUPPRESS_DIAGNOSTIC_RENDER_ENABLE=1
 export EUTHERDRIVE_GAUNTDL_UI_WARMUP_STATE="$SNAPSHOT_PATH"
 export EUTHERDRIVE_GAUNTDL_UI_WARMUP_FRAMES="$SNAPSHOT_FRAMES"

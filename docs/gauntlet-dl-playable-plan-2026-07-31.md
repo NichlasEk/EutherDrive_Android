@@ -655,5 +655,6 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   och körde 20--30 fps. Right når rå input `0x80` och gästens normaliserade
   word `0xc0`. För första gången syns faktisk world-geometri, men stora
   trianglar och texturer är fortfarande fel och displayheuristiken väljer en
-  statisk buffer. Nästa gräns är därför Voodoo setup/clip samt levande
-  frontbuffer-val, inte loader, coin eller task-QIO.
+  statisk buffer. Desktopstartaren visar därför uttryckligen den levande
+  buffer 0 för denna checkpoint. Nästa gräns är Voodoo setup/clip samt ett
+  generellt korrekt frontbuffer-val, inte loader, coin eller task-QIO.
