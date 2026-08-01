@@ -5,9 +5,9 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 
 ROM_PATH="${1:-/home/nichlas/roms/MAME/Midway/Vegas/gauntd}"
-SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/euther-native-game-phase1-f4733.warm.gz}"
-SNAPSHOT_FRAMES="${3:-4733}"
-CPU_STEPS="${4:-200000}"
+SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/euther-native-world-init-return-clean-f5008.warm.gz}"
+SNAPSHOT_FRAMES="${3:-5008}"
+CPU_STEPS="${4:-60000}"
 UI_DLL="$REPO_ROOT/EutherDrive.UI/bin/Release/net8.0/EutherDrive.UI.dll"
 PROBE_DLL="$REPO_ROOT/tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll"
 
@@ -22,6 +22,7 @@ fi
 
 export EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME="$CPU_STEPS"
 export EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
+export EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GAME_TASK_PRETRANSITION=1
 export EUTHERDRIVE_GAUNTDL_UI_WARMUP_STATE="$SNAPSHOT_PATH"
 export EUTHERDRIVE_GAUNTDL_UI_WARMUP_FRAMES="$SNAPSHOT_FRAMES"
 export EUTHERDRIVE_GAUNTDL_UI_WARMUP_IGNORE_CPU_STEPS=1

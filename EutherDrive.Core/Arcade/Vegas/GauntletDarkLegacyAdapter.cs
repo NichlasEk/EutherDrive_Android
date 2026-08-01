@@ -88,6 +88,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_TEMPLE_WEAPONS_DISTINCT_RESOURCE_SOURCE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_ASSET_OBJECT_ARENA", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_ASSET_STREAM_ARENA", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_MODEL_RECORD_RANGE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_PATH_LIFECYCLE", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_STATIC_TEXTURE_STREAM", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_REJECT_IMPLAUSIBLE_DESCRIPTOR_LENGTH", "1"),
@@ -383,6 +384,7 @@ internal sealed class GauntletDarkLegacyMachine
     private int _runtimeClockFrameRemainder;
     private int _runtimeInitialsPlayerUpdatePhase;
     private uint _runtimeInitialsPlayersCompletedMask;
+    private int _runtimeInitialsCompletionTraceCount;
     private int _vblankGuestTimerInterruptCountdown;
     private readonly bool _splitVblankCpu = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_SPLIT_VBLANK_CPU");
     private readonly bool _enableVblankTickBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_VBLANK_TICK_BRIDGE");
@@ -405,6 +407,8 @@ internal sealed class GauntletDarkLegacyMachine
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_ENTER_RUNTIME_INITIALS"));
     private readonly int _runtimePhaseThreeSchedulerTicksPerService =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PHASE_THREE_SCHEDULER_TICKS_PER_SERVICE", 1);
+    private readonly int _runtimeInitialsSchedulerTicksPerService =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_INITIALS_SCHEDULER_TICKS_PER_SERVICE", 1);
     private readonly bool _enableRuntimePlayerScheduler =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PLAYER_SCHEDULER");
@@ -421,6 +425,14 @@ internal sealed class GauntletDarkLegacyMachine
     private readonly bool _enableRuntimeGameTask =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK");
+    private readonly bool _enableRuntimeGameTaskPretransition =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable(
+                "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GAME_TASK_PRETRANSITION"));
+    private readonly int _runtimeGameTaskMaxStepsPerSlice =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_RUNTIME_GAME_TASK_MAX_STEPS_PER_SLICE", 25_000);
+    private readonly int _runtimeGameTaskSlicesPerFrame =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GAME_TASK_SLICES_PER_FRAME", 1);
     private int _runtimeGameTaskTraceCount;
     private readonly int _runtimePlayerSchedulerTicksPerFrame =
         ParsePositiveInt(
@@ -528,19 +540,42 @@ internal sealed class GauntletDarkLegacyMachine
                 $"enabled={(_enableRuntimeGameTask ? 1 : 0)} " +
                 $"state=0x{MemoryMap.Read32(runtimeMainState):x}");
         }
+        uint currentMainState = MemoryMap.Read32(runtimeMainState);
+        bool runPretransitionGameTask =
+            _enableRuntimeGameTask &&
+            _enableRuntimeGameTaskPretransition &&
+            currentMainState == 0x400aU;
         if (_enableRuntimeClockCallback &&
-            MemoryMap.Read32(runtimeMainState) == 0x400aU)
+            currentMainState == 0x400aU)
         {
             const ulong runtimeActivePlayerMask = 0xffffffff80227af4UL;
             uint activePlayers = MemoryMap.Read32(runtimeActivePlayerMask);
             bool serviceThirtyHertzPlayerPhase =
                 (_runtimeInitialsPlayerUpdatePhase++ & 1) == 0;
             bool servicedNativePlayerScheduler = false;
+            const ulong runtimePlayerBase = 0xffffffff80229270UL;
+            const ulong runtimePlayerStride = 0x964UL;
+            const ulong runtimePlayerPhaseOffset = 0xc8UL;
+
+            // A completed phase-5 cycle can return the same player slot to a
+            // fresh phase-2 initials session. The snapshot-persisted mask is
+            // a one-session latch; phase 2 proves that its old bit is stale.
+            for (uint player = 0; player < 4; player++)
+            {
+                uint playerBit = 1U << (int)player;
+                if ((activePlayers & playerBit) != 0 &&
+                    (_runtimeInitialsPlayersCompletedMask & playerBit) != 0 &&
+                    MemoryMap.Read32(
+                        runtimePlayerBase +
+                        player * runtimePlayerStride +
+                        runtimePlayerPhaseOffset) == 2U)
+                {
+                    _runtimeInitialsPlayersCompletedMask &= ~playerBit;
+                }
+            }
+
             if (_enableRuntimePlayerScheduler)
             {
-                const ulong runtimePlayerBase = 0xffffffff80229270UL;
-                const ulong runtimePlayerStride = 0x964UL;
-                const ulong runtimePlayerPhaseOffset = 0xc8UL;
                 for (uint player = 0; player < 4; player++)
                 {
                     uint playerBit = 1U << (int)player;
@@ -594,17 +629,43 @@ internal sealed class GauntletDarkLegacyMachine
                         if (!serviceThirtyHertzPlayerPhase)
                             continue;
 
-                        bool returned = Cpu.RunRuntimeInitialsPlayerUpdatePreservingContext(
-                            player,
-                            out bool completed);
+                        bool returned = false;
+                        bool completed = false;
+                        int completedTicks = 0;
+                        for (int tick = 0; tick < _runtimeInitialsSchedulerTicksPerService; tick++)
+                        {
+                            if (MemoryMap.Read32(
+                                    runtimePlayerBase +
+                                    player * runtimePlayerStride +
+                                    runtimePlayerPhaseOffset) != 2U)
+                            {
+                                break;
+                            }
+
+                            returned = Cpu.RunRuntimeInitialsPlayerUpdatePreservingContext(
+                                player,
+                                out completed);
+                            if (!returned)
+                                break;
+                            completedTicks++;
+                            if (completed)
+                                break;
+                        }
+                        if (_runtimeInitialsCompletionTraceCount++ < 12)
+                        {
+                            Console.WriteLine(
+                                $"[GAUNTDL:FIX] runtime-initials-player " +
+                                $"player={player} returned={(returned ? 1 : 0)} " +
+                                $"completed={(completed ? 1 : 0)} " +
+                                $"ticks={completedTicks} " +
+                                $"phase={MemoryMap.Read32(runtimePlayerBase + player * runtimePlayerStride + runtimePlayerPhaseOffset)} " +
+                                $"word=0x{MemoryMap.Read32(runtimePlayerBase + player * runtimePlayerStride + 0x20cUL):x8}");
+                        }
                         if (returned && completed)
                             _runtimeInitialsPlayersCompletedMask |= playerBit;
                         continue;
                     }
 
-                    const ulong runtimePlayerBase = 0xffffffff80229270UL;
-                    const ulong runtimePlayerStride = 0x964UL;
-                    const ulong runtimePlayerPhaseOffset = 0xc8UL;
                     uint phase = MemoryMap.Read32(
                         runtimePlayerBase +
                         player * runtimePlayerStride +
@@ -677,18 +738,38 @@ internal sealed class GauntletDarkLegacyMachine
                 }
             }
         }
-        else if (_enableRuntimeGameTask && MemoryMap.Read32(runtimeMainState) == 0x400cU)
+        if (_enableRuntimeGameTask &&
+            (currentMainState == 0x400cU || runPretransitionGameTask))
         {
-            bool yielded = Cpu.RunRuntimeGameTaskSlice(
-                maxSteps: 500_000,
-                out int taskSteps,
-                out ulong taskPc);
-            if (_runtimeGameTaskTraceCount++ < 16)
+            uint taskStartMainState = MemoryMap.Read32(runtimeMainState);
+            for (int slice = 0; slice < _runtimeGameTaskSlicesPerFrame; slice++)
             {
-                Console.WriteLine(
-                    $"[GAUNTDL:FIX] runtime-game-task " +
-                    $"yielded={(yielded ? 1 : 0)} steps={taskSteps} pc={taskPc:x16} " +
-                    $"scene=0x{MemoryMap.Read32(0xffffffff80213618UL):x8}");
+                if (slice > 0)
+                {
+                    RunRuntimeClockCallbacksForFrame();
+                    if (_enableRuntimeCoinCallback)
+                    {
+                        for (int callback = 0; callback < 17; callback++)
+                            Cpu.RunRuntimeCoinCallbackPreservingContext();
+                    }
+                }
+
+                bool yielded = Cpu.RunRuntimeGameTaskSlice(
+                    maxSteps: _runtimeGameTaskMaxStepsPerSlice,
+                    out int taskSteps,
+                    out ulong taskPc);
+                uint taskMainState = MemoryMap.Read32(runtimeMainState);
+                if (_runtimeGameTaskTraceCount++ < 16 || taskMainState != taskStartMainState)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:FIX] runtime-game-task " +
+                        $"slice={slice + 1}/{_runtimeGameTaskSlicesPerFrame} " +
+                        $"yielded={(yielded ? 1 : 0)} steps={taskSteps} pc={taskPc:x16} " +
+                        $"state=0x{taskStartMainState:x}->0x{taskMainState:x} " +
+                        $"scene=0x{MemoryMap.Read32(0xffffffff80213618UL):x8}");
+                }
+                if (taskMainState != taskStartMainState)
+                    break;
             }
         }
         long cpuStart = Stopwatch.GetTimestamp();
@@ -1126,6 +1207,8 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeAssetStreamArena =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_ASSET_STREAM_ARENA") ||
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_ASSET_STREAM_ARENA"));
+    private readonly bool _enableRuntimeModelRecordRange =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_MODEL_RECORD_RANGE");
     private readonly bool _enableDiagnosticRuntimeFastPaths = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_DIAGNOSTIC_RUNTIME");
     private readonly bool _enableRuntimeFormatBufferInFlightFastPath =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FASTPATH_FORMAT_BUFFER_INFLIGHT");
@@ -1952,6 +2035,7 @@ internal sealed class MipsR5000Core
     private int _runtimeDiagnosticStateZeroMaskFastPathTraceCount;
     private int _runtimeStringCopyFastPathTraceCount;
     private int _runtimePairedWordCopyFastPathTraceCount;
+    private int _runtimeModelRecordRangeTraceCount;
     private int _runtimeTempleItemsBoundaryTraceCount;
     private int _runtimeTemplePowerupsRecordLoopTraceCount;
     private int _runtimeTempleItemsStringTraceCount;
@@ -1990,6 +2074,7 @@ internal sealed class MipsR5000Core
     private bool _insideContextPreservingRuntimeTimerTick;
     private bool _insideContextPreservingRuntimeInputPoll;
     private bool _insideRuntimeGameTask;
+    private int _runtimeGameTaskWaitTraceCount;
     private RuntimeTaskContext? _runtimeGameTaskContext;
     private ulong _lastContextPreservingReturnValue;
     private ulong _lastContextPreservingTimeoutPc;
@@ -2380,7 +2465,11 @@ internal sealed class MipsR5000Core
         const ulong runtimeGameTaskEntry = 0xffffffff80014b70UL;
         const ulong runtimeFrameDelayEntry = 0xffffffff80010fbcUL;
         const ulong returnSentinel = 0xffffffff80000000UL;
-        const ulong runtimeGameTaskStackTop = 0xffffffff807f0000UL;
+        // Keep this synthetic RTOS task away from the live host task's deep
+        // 0x807e/0x807f scratch frames and from the loaded asset arenas below
+        // 0x80800000. Vegas exposes 32 MiB of main RAM, so reserve the final
+        // 64 KiB for this resumable task stack.
+        const ulong runtimeGameTaskStackTop = 0xffffffff81ff0000UL;
         steps = 0;
         taskPc = 0;
         if (maxSteps <= 0 || _halted || _insideContextPreservingRuntimeInputPoll || !IsRuntimeCodeAddress(Pc))
@@ -2433,9 +2522,36 @@ internal sealed class MipsR5000Core
                 }
                 if (Pc == returnSentinel)
                     break;
+                ulong previousPc = Pc;
                 Step();
+                if (!IsRuntimeCodeAddress(Pc))
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:GAME-TASK-ESCAPE] frame={_memory.VoodooRenderFrameCount} " +
+                        $"from={previousPc:x16} " +
+                        $"op={LastFetchedInstruction:x8} to={Pc:x16} " +
+                        $"ra={_gpr[31]:x16} sp={_gpr[29]:x16} " +
+                        $"pending={_hasPendingBranch}:{_pendingBranchTarget:x16} " +
+                        $"override={_hasImmediatePcOverride}:{_immediatePcOverride:x16}");
+                    _halted = true;
+                    break;
+                }
             }
             taskPc = Pc;
+            if (yielded &&
+                IsKnownRuntimeWaitForQioLoopPc(Pc) &&
+                _runtimeGameTaskWaitTraceCount++ < 12)
+            {
+                ulong framePointer = _gpr[30];
+                ulong objectAddress = IsMainRamRange(framePointer + 0x20UL, 4)
+                    ? SignExtend32(_memory.Read32(framePointer + 0x20UL))
+                    : 0;
+                Console.WriteLine(
+                    $"[GAUNTDL:GAME-TASK-WAIT] pc={Pc:x16} fp={framePointer:x16} " +
+                    $"object={objectAddress:x16} " +
+                    $"state={(IsMainRamRange(objectAddress + 0x0cUL, 4) ? _memory.Read32(objectAddress + 0x0cUL) : 0):x8} " +
+                    $"status={(IsMainRamRange(objectAddress + 0x14UL, 4) ? _memory.Read32(objectAddress + 0x14UL) : 0):x8}");
+            }
             _runtimeGameTaskContext = CaptureRuntimeTaskContext();
         }
         finally
@@ -2486,6 +2602,76 @@ internal sealed class MipsR5000Core
         _timerInterruptPending = context.TimerInterruptPending;
         _remainingProbeSteps = context.RemainingProbeSteps;
         _probeStepDebt = context.ProbeStepDebt;
+    }
+
+    public void SaveRuntimeGameTaskState(BinaryWriter writer)
+    {
+        RuntimeTaskContext? context = _runtimeGameTaskContext;
+        writer.Write(context is not null);
+        if (context is null)
+            return;
+
+        foreach (ulong value in context.Gpr)
+            writer.Write(value);
+        foreach (ulong value in context.Cp0)
+            writer.Write(value);
+        foreach (ulong value in context.Fpr)
+            writer.Write(value);
+        foreach (uint value in context.Fcr)
+            writer.Write(value);
+        writer.Write(context.Pc);
+        writer.Write(context.LastFetchedInstruction);
+        writer.Write(context.Halted);
+        writer.Write(context.HasPendingBranch);
+        writer.Write(context.PendingBranchTarget);
+        writer.Write(context.HasImmediatePcOverride);
+        writer.Write(context.ImmediatePcOverride);
+        writer.Write(context.Hi);
+        writer.Write(context.Lo);
+        writer.Write(context.InstructionCounter);
+        writer.Write(context.TimerInterruptPending);
+        writer.Write(context.RemainingProbeSteps);
+        writer.Write(context.ProbeStepDebt);
+    }
+
+    public void LoadRuntimeGameTaskState(BinaryReader reader)
+    {
+        if (!reader.ReadBoolean())
+        {
+            _runtimeGameTaskContext = null;
+            return;
+        }
+
+        ulong[] gpr = new ulong[32];
+        ulong[] cp0 = new ulong[32];
+        ulong[] fpr = new ulong[32];
+        uint[] fcr = new uint[32];
+        for (int i = 0; i < gpr.Length; i++)
+            gpr[i] = reader.ReadUInt64();
+        for (int i = 0; i < cp0.Length; i++)
+            cp0[i] = reader.ReadUInt64();
+        for (int i = 0; i < fpr.Length; i++)
+            fpr[i] = reader.ReadUInt64();
+        for (int i = 0; i < fcr.Length; i++)
+            fcr[i] = reader.ReadUInt32();
+        _runtimeGameTaskContext = new RuntimeTaskContext(
+            gpr,
+            cp0,
+            fpr,
+            fcr,
+            reader.ReadUInt64(),
+            reader.ReadUInt32(),
+            reader.ReadBoolean(),
+            reader.ReadBoolean(),
+            reader.ReadUInt64(),
+            reader.ReadBoolean(),
+            reader.ReadUInt64(),
+            reader.ReadUInt64(),
+            reader.ReadUInt64(),
+            reader.ReadUInt64(),
+            reader.ReadBoolean(),
+            reader.ReadInt32(),
+            reader.ReadInt32());
     }
 
     private sealed record RuntimeTaskContext(
@@ -3393,11 +3579,14 @@ internal sealed class MipsR5000Core
                 return;
             if (TryFastPathKnownGauntletGlideHotPath(pc))
                 return;
-            if (!_insideRuntimePhaseFiveExit || !_enableRuntimePhaseFiveQioWaitService)
+            if ((!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
+                !_enableRuntimePhaseFiveQioWaitService)
                 goto ExecuteInstruction;
         }
         ApplyRuntimeAssetStreamArenaFix(pc);
         if (TryApplyRuntimeAssetObjectArenaFix(pc))
+            return;
+        if (TryGuardKnownRuntimeModelRecordRange(pc))
             return;
         TraceWatchedPc(pc);
         TraceRuntimeVertexFifoPacker(pc);
@@ -3505,6 +3694,11 @@ internal sealed class MipsR5000Core
             return;
         if (TryFastPathKnownBootA420Handshake(pc))
             return;
+        // This host-owned task context is not registered in the guest RTOS.
+        // Letting an interrupt enter here allows the guest scheduler to switch
+        // to a different task, whose context would then be mistaken for the
+        // resumable game task at the end of the slice. Machine/QIO interrupts
+        // are serviced by the ordinary host context between task slices.
         if (!_insideRuntimeGameTask)
         {
             UpdateInterruptPendingBits();
@@ -4289,6 +4483,128 @@ internal sealed class MipsR5000Core
                 $"result={result:x16} bytes=00000070");
         }
 
+        return true;
+    }
+
+    private bool TryGuardKnownRuntimeModelRecordRange(ulong pc)
+    {
+        const ulong entry = 0xffffffff8006f9e0UL;
+        const ulong listEntry = 0xffffffff8006eb3cUL;
+        const ulong recordLoop = 0xffffffff8006fa30UL;
+        const ulong epilogue = 0xffffffff8006fa84UL;
+        const ulong recordOffsetLoop = 0xffffffff8006eb0cUL;
+        const uint maximumRecordCount = 4096U;
+        const uint recordStride = 0x28U;
+        const uint runtimeCodeStart = 0x00010000U;
+        const uint runtimeCodeEnd = 0x00170000U;
+        if (!_enableRuntimeModelRecordRange)
+            return false;
+
+        if (pc == listEntry &&
+            _memory.Read32(listEntry + 0x00UL) == 0x27bdffd0U &&
+            _memory.Read32(listEntry + 0x0cUL) == 0xafb50024U &&
+            _memory.Read32(listEntry + 0x30UL) == 0x8e420000U &&
+            IsMainRamRange(_gpr[4], 4UL))
+        {
+            uint listCount = _memory.Read32(_gpr[4]);
+            if (listCount > maximumRecordCount)
+            {
+                if (_runtimeModelRecordRangeTraceCount++ < 16)
+                {
+                    Console.WriteLine(
+                        $"[GAUNTDL:FIX] runtime-model-list-count-reject " +
+                        $"list={_gpr[4]:x16} count={listCount:x8} " +
+                        $"owner={_gpr[5]:x16} increment={_gpr[6]:x16} " +
+                        $"ra={_gpr[31]:x16}");
+                }
+
+                _gpr[2] = 0;
+                _gpr[0] = 0;
+                Pc = _gpr[31];
+                CompleteFastPathStep();
+                return true;
+            }
+        }
+
+        if (pc == recordOffsetLoop &&
+            _memory.Read32(recordOffsetLoop - 0x10UL) == 0x18a0000dU &&
+            _memory.Read32(recordOffsetLoop + 0x20UL) == 0x1440fff5U &&
+            unchecked((long)_gpr[5]) > maximumRecordCount)
+        {
+            if (_runtimeModelRecordRangeTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:FIX] runtime-model-record-count-reject " +
+                    $"target={_gpr[4]:x16} count={_gpr[5]:x16} " +
+                    $"increment={_gpr[6]:x16} index={_gpr[7]:x16} " +
+                    $"ra={_gpr[31]:x16}");
+            }
+
+            Pc = _gpr[31];
+            CompleteFastPathStep();
+            return true;
+        }
+
+        if (pc == recordLoop &&
+            _memory.Read32(recordLoop + 0x00UL) == 0x1040000dU &&
+            _memory.Read32(recordLoop + 0x1cUL) == 0xae220000U &&
+            TryGetMainRamPhysical(_gpr[17], out uint writePhysical) &&
+            writePhysical < runtimeCodeEnd && writePhysical + 4U > runtimeCodeStart)
+        {
+            if (_runtimeModelRecordRangeTraceCount++ < 16)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:FIX] runtime-model-record-code-write-reject " +
+                    $"target={_gpr[17]:x16} index={_gpr[18]:x16} " +
+                    $"source={_gpr[16]:x16} descriptor={_gpr[19]:x16} " +
+                    $"ra={_gpr[31]:x16}");
+            }
+
+            Pc = epilogue;
+            CompleteFastPathStep();
+            return true;
+        }
+
+        if (pc != entry ||
+            _memory.Read32(entry + 0x00UL) != 0x27bdffd0U ||
+            _memory.Read32(entry + 0x0cUL) != 0xafb50024U ||
+            _memory.Read32(entry + 0x30UL) != 0x8e620000U ||
+            _memory.Read32(entry + 0x34UL) != 0x8e630004U ||
+            !IsMainRamRange(_gpr[4], 8UL))
+        {
+            return false;
+        }
+
+        uint relativeOffset = _memory.Read32(_gpr[4]);
+        int signedRecordCount = unchecked((int)_memory.Read32(_gpr[4] + 4UL));
+        if (signedRecordCount <= 0)
+            return false;
+
+        uint recordCount = (uint)signedRecordCount;
+        ulong recordBytes = (ulong)recordCount * recordStride;
+        ulong recordBase = SignExtend32(unchecked((uint)_gpr[4] + relativeOffset));
+        bool mapped = recordBytes <= int.MaxValue && IsMainRamRange(recordBase, recordBytes);
+        uint recordPhysical = unchecked((uint)recordBase) & 0x1fffffffU;
+        ulong recordPhysicalEnd = (ulong)recordPhysical + recordBytes;
+        bool overlapsRuntimeCode =
+            recordPhysical < runtimeCodeEnd && recordPhysicalEnd > runtimeCodeStart;
+        if (recordCount <= maximumRecordCount && mapped && !overlapsRuntimeCode)
+            return false;
+
+        if (_runtimeModelRecordRangeTraceCount++ < 16)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] runtime-model-record-range-reject " +
+                $"descriptor={_gpr[4]:x16} offset={relativeOffset:x8} " +
+                $"count={recordCount:x8} base={recordBase:x16} bytes={recordBytes:x} " +
+                $"mapped={(mapped ? 1 : 0)} codeOverlap={(overlapsRuntimeCode ? 1 : 0)} " +
+                $"ra={_gpr[31]:x16}");
+        }
+
+        _gpr[2] = 0;
+        _gpr[0] = 0;
+        Pc = _gpr[31];
+        CompleteFastPathStep();
         return true;
     }
 
@@ -12074,14 +12390,20 @@ internal sealed class MipsR5000Core
         const ulong loadStatusPc = 0xffffffff800edac4UL;
         const ulong cleanupQioObject = 0xffffffff80295440UL;
         const int maxServiceAttempts = 8;
+        bool directStatusLoop =
+            pc == loadStatusPc &&
+            _gpr[16] == cleanupQioObject &&
+            _memory.Read32(loadStatusPc) == 0x8e020014U &&
+            _memory.Read32(loadStatusPc + 0x04UL) == 0x1040fffeU;
+        bool genericWaitLoop =
+            IsKnownRuntimeWaitForQioLoopPc(pc) &&
+            IsMainRamRange(_gpr[30] + 0x20UL, 4) &&
+            SignExtend32(_memory.Read32(_gpr[30] + 0x20UL)) == cleanupQioObject;
         if (!_enableRuntimePhaseFiveQioWaitService ||
-            !_insideRuntimePhaseFiveExit ||
+            (!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
             _insideContextPreservingRuntimeTimerTick ||
-            pc != loadStatusPc ||
-            _gpr[16] != cleanupQioObject ||
+            (!directStatusLoop && !genericWaitLoop) ||
             _runtimePhaseFiveQioWaitServiceAttempts >= maxServiceAttempts ||
-            _memory.Read32(loadStatusPc) != 0x8e020014U ||
-            _memory.Read32(loadStatusPc + 0x04UL) != 0x1040fffeU ||
             _memory.Read32(cleanupQioObject + 0x14UL) != 0)
         {
             return;
@@ -12101,7 +12423,7 @@ internal sealed class MipsR5000Core
         const ulong loop = 0xffffffff800fe7bcUL;
         const ulong exit = 0xffffffff800fe7e4UL;
         if (!_enableRuntimePairedWordCopy ||
-            !_insideRuntimePhaseFiveExit || pc != loop ||
+            (!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) || pc != loop ||
             _memory.Read32(loop + 0x00UL) != 0x8e620000U ||
             _memory.Read32(loop + 0x04UL) != 0x8e630004U ||
             _memory.Read32(loop + 0x08UL) != 0xac820000U ||

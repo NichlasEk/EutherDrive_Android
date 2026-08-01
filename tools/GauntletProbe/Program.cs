@@ -1346,7 +1346,7 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using (var writer = new BinaryWriter(stream))
     {
         writer.Write(0x314d5241574c4447UL);
-        writer.Write(17);
+        writer.Write(18);
         writer.Write(frames);
         writer.Write(cpuStepsPerFrame);
         writer.Write(adapter.FrameCounter.GetValueOrDefault());
@@ -1365,6 +1365,9 @@ static void SaveWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
         writer.Write(GetFieldValue<int>(machine, "_runtimeInitialsPlayerUpdatePhase"));
         writer.Write(GetFieldValue<int>(machine, "_vblankGuestTimerInterruptCountdown"));
         writer.Write(GetFieldValue<bool>(machine, "_runtimeInitialsEntered"));
+        GetProperty(machine, "Cpu").GetType()
+            .GetMethod("SaveRuntimeGameTaskState")!
+            .Invoke(GetProperty(machine, "Cpu"), [writer]);
     }
 
     File.Move(tempPath, path, overwrite: true);
@@ -1486,7 +1489,7 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
     using var reader = new BinaryReader(stream);
     ulong magic = reader.ReadUInt64();
     int version = reader.ReadInt32();
-    if (magic != 0x314d5241574c4447UL || version < 1 || version > 17)
+    if (magic != 0x314d5241574c4447UL || version < 1 || version > 18)
         throw new InvalidDataException($"Unsupported warmup snapshot: magic=0x{magic:x16} version={version}");
 
     int savedFrames = reader.ReadInt32();
@@ -1528,6 +1531,11 @@ static void LoadWarmupSnapshot(GauntletDarkLegacyAdapter adapter, string path, i
         uint mainState = ReadMem32(memory, 0xffffffff80227ab0UL);
         if (mainState is 0x400aU or 0x400cU)
             SetField(machine, "_runtimeInitialsEntered", true);
+    }
+    if (version >= 18)
+    {
+        object cpu = GetProperty(machine, "Cpu");
+        cpu.GetType().GetMethod("LoadRuntimeGameTaskState")!.Invoke(cpu, [reader]);
     }
 
     if (stream.CanSeek)

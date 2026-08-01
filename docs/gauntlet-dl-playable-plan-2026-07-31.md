@@ -485,3 +485,36 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   60k-nivån; frame-id och snapshotformat kontrolleras fortfarande. Nästa
   blockerare är scene-registreringen och de
   felaktiga texture/FIFO-paketen, inte längre en frusen game-task.
+
+### 2026-08-01: riktig phase-5-retur, serialiserad task och kodintegritetsgräns
+
+- Warm-format v18 serialiserar nu den separata game-taskens fulla CPU-kontext.
+  Tasken använder `0x81ff0000` som stacktopp; den tidigare `0x807f0000`-stacken
+  kolliderade med värdtaskens aktiva callbackramar.
+- Initialsfasen kan köras med en default-avstängd native scheduler-accelerator.
+  Ett verifierat prov behövde 42 riktiga updater-anrop för att lämna phase 2;
+  completionordet gick naturligt `0x00030001 -> 0x00030000` utan RAM-patch.
+- Phase 4/5, cleanup-QIO och hela `0x80086cec` har därefter körts till en riktig
+  retur. Kontrollkedjan gav `returned=1`, state `0x400a -> 0x400c`, varefter
+  game-tasken nådde sitt första riktiga `prc_delay`-yield efter 5 174 steg.
+  Den rena checkpointen är
+  `.build-tmp/euther-native-world-init-return-clean-f5008.warm.gz`.
+- Fulla RTOS-avbrott är åter spärrade inne i den hostägda taskkontexten. QIO och
+  timer-IRQ servas i den vanliga värdkontexten mellan slices; annars kan gästens
+  scheduler byta task och den främmande taskens register råka sparas som
+  game-taskens kontext.
+- En längre fortsättning hittade en gästproducerad skrivning vid `0x8006fa4c`:
+  `0xffffffff` skrevs oalignerat till `0x8006fa36` och `0x8006fa5e`, vilket
+  ändrade instruktioner till bland annat `0x0801ffff`. Skrivningen kommer från
+  en modell-recordkedja med orimliga count/ranges, inte från disk-DMA eller
+  Voodoo. Baselinen avvisar nu signaturvaktat modellistor över 4 096 records,
+  motsvarande offsetloopar och varje recordskrivning som skulle överlappa
+  runtimekod. Samma accelererade belastning lämnar kodorden bit-identiska.
+- Detta är en integritetsfix, inte ett spelbarhetskvitto. State stannar ännu på
+  `0x400c`, credits/input lever, men scene-root `0x80213618` är fortsatt noll.
+  Nästa gräns är producenten som lägger felaktiga player/model-listpekare i
+  kedjan före `0x8006eb3c -> 0x8006f9e0`; skydden ska tas bort eller snävas in
+  när den riktiga producenten är korrigerad.
+- Desktopskriptet använder nu den rena f5008-checkpointen, v18-laddaren och
+  60 000 CPU-steg per frame som standard. Inga runtime-loggar eller snapshots
+  skapas när användaren startar spelet via skriptet.
