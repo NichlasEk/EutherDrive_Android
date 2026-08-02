@@ -658,3 +658,23 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
   statisk buffer. Desktopstartaren visar därför uttryckligen den levande
   buffer 0 för denna checkpoint. Nästa gräns är Voodoo setup/clip samt ett
   generellt korrekt frontbuffer-val, inte loader, coin eller task-QIO.
+
+### 2026-08-02: självbärande phase-1 GPU-checkpoint
+
+- MAME:s phase-1-orakel exporterades bounded som två 512x384 RGB565-ytor,
+  auxytan och två 4 MiB TMU-banker. Proben kan läsa in dessa en gång; den nya
+  `.build-tmp/euther-mame-phase1-fullgpu-f4783.warm.gz` serialiserar därefter
+  allt i en enda komprimerad checkpoint och behöver inga råfiler vid desktopstart.
+- En reload utan externa grafikfiler verifierades fem frames. Den koherenta
+  frontbufferten visar värld, HUD och korrekta texturer; 183 979 pixlar är
+  icke-svarta. Desktopstartaren använder denna checkpoint och tvingar inte
+  längre buffer 0.
+- Kvarvarande redrawfel är nu exakt avgränsat. Efter nästa fast-fill töms
+  buffer 0, men Euthers FIFO/rasterkedja återskapar bara 39 texturerade
+  trianglar och lämnar stora svarta områden. MAME-aux-depth-importen kan
+  avvisa dessa pass men ersätter inte de saknade scenpassen. Nästa steg är
+  därför packet-/pass-komplettering mellan fast-fill och swap, inte fler
+  framebuffer-, input- eller registerpatchar.
+- En full, blind import av MAME:s 256 FBI-register avvisades och togs bort ur
+  proben. Den skrev över runtime-/initregister utan att återskapa tillhörande
+  intern Voodoo-state och gav en vit, trasig bild.

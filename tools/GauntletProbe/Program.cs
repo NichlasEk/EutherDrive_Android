@@ -68,6 +68,7 @@ ApplyRequestedGuestMemoryFilePatch(adapter);
 ApplyRequestedDiskTextureMemoryCopy(adapter);
 ApplyRequestedTextureMemoryCopy(adapter);
 LoadRequestedVoodooTextureBanks(adapter);
+LoadRequestedMameVoodooFramebuffer(adapter);
 LoadRequestedTextureWriterSidecar(adapter);
 PrintRequestedGuestMemoryWords(adapter, "start");
 
@@ -508,6 +509,54 @@ static void LoadRequestedVoodooTextureBanks(GauntletDarkLegacyAdapter adapter)
             throw new InvalidDataException($"TMU{bank} image must be exactly 4 MiB");
         Buffer.BlockCopy(bytes, 0, textureMemory, bank * bankBytes, bankBytes);
         Console.WriteLine($"voodooTextureBankLoad bank={bank} path={paths[bank]} bytes=0x{bankBytes:x}");
+    }
+}
+
+static void LoadRequestedMameVoodooFramebuffer(GauntletDarkLegacyAdapter adapter)
+{
+    string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_MAME_VOODOO_FRAMEBUFFER");
+    if (string.IsNullOrWhiteSpace(path))
+        return;
+    if (!File.Exists(path))
+        throw new FileNotFoundException("MAME Voodoo memory image is unavailable", path);
+
+    byte[] memory = File.ReadAllBytes(path);
+    const int width = 512;
+    const int height = 384;
+    const int surfaceBytes = width * height * sizeof(ushort);
+    const int color0Offset = 0x000000;
+    const int color1Offset = 0x060000;
+    const int auxOffset = 0x0c0000;
+    if (memory.Length < auxOffset + surfaceBytes)
+        throw new InvalidDataException("MAME Voodoo memory image does not contain both RGB buffers and aux surface");
+
+    object backend = GetField(GetProperty(GetField(adapter, "_machine"), "Voodoo"), "_backend");
+    ushort[][] colorBuffers = GetFieldValue<ushort[][]>(backend, "_colorBuffers");
+    ushort[] auxBuffer = GetFieldValue<ushort[]>(backend, "_auxBuffer");
+    const int destinationStride = 1024;
+    foreach (ushort[] colorBuffer in colorBuffers)
+        Array.Clear(colorBuffer);
+    Array.Clear(auxBuffer);
+
+    CopySurface(memory, color0Offset, colorBuffers[0]);
+    CopySurface(memory, color1Offset, colorBuffers[1]);
+    CopySurface(memory, auxOffset, auxBuffer);
+    Console.WriteLine(
+        $"mameVoodooFramebufferLoad path={path} rgb=0x{color0Offset:x}/0x{color1Offset:x} " +
+        $"aux=0x{auxOffset:x} size={width}x{height} stride={destinationStride}");
+
+    static void CopySurface(byte[] source, int sourceOffset, ushort[] destination)
+    {
+        for (int y = 0; y < height; y++)
+        {
+            int sourceRow = sourceOffset + y * width * sizeof(ushort);
+            int destinationRow = y * destinationStride;
+            for (int x = 0; x < width; x++)
+            {
+                destination[destinationRow + x] = BinaryPrimitives.ReadUInt16LittleEndian(
+                    source.AsSpan(sourceRow + x * sizeof(ushort), sizeof(ushort)));
+            }
+        }
     }
 }
 

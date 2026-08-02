@@ -5,7 +5,7 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 
 ROM_PATH="${1:-/home/nichlas/roms/MAME/Midway/Vegas/gauntd}"
-SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/euther-mame-phase1-native-f4783.warm.gz}"
+SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/euther-mame-phase1-fullgpu-f4783.warm.gz}"
 SNAPSHOT_FRAMES="${3:-4783}"
 CPU_STEPS="${4:-60000}"
 UI_DLL="$REPO_ROOT/EutherDrive.UI/bin/Release/net8.0/EutherDrive.UI.dll"
@@ -25,9 +25,10 @@ export EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
 # This checkpoint already contains MAME's live phase-1 task/RAM state. Starting
 # the synthetic fallback task would duplicate the game loop and tear it down.
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=0
-# Phase-1 currently rasterizes only buffer 0; the generic coherence heuristic
-# otherwise keeps presenting the cleaner but stale buffer 1.
-export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX=0
+# The imported checkpoint starts with MAME's matching front/back surfaces.
+# Keep the coherence selector active: buffer 0 is cleared before Euther has
+# reconstructed every world pass, while buffer 1 remains the valid front.
+unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX
 export EUTHERDRIVE_GAUNTDL_EXPERIMENT_SUPPRESS_DIAGNOSTIC_RENDER_ENABLE=1
 export EUTHERDRIVE_GAUNTDL_UI_WARMUP_STATE="$SNAPSHOT_PATH"
 export EUTHERDRIVE_GAUNTDL_UI_WARMUP_FRAMES="$SNAPSHOT_FRAMES"

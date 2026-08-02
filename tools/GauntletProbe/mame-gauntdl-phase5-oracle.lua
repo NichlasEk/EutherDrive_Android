@@ -17,6 +17,14 @@ local snapshot_phase5 = os.getenv("GAUNTDL_PHASE5_SNAPSHOT") == "1"
 local mainram_output_path = os.getenv("GAUNTDL_PHASE5_MAINRAM_OUT")
 local mainram_dump_relative = tonumber(os.getenv("GAUNTDL_PHASE5_MAINRAM_REL")) or 207
 local mainram_dumped = false
+local frame_snapshot_path = os.getenv("GAUNTDL_PHASE5_FRAME_SNAPSHOT")
+local frame_snapshot_relative = tonumber(os.getenv("GAUNTDL_PHASE5_FRAME_SNAPSHOT_REL")) or 207
+local frame_snapshot_dumped = false
+local voodoo_memory_output_path = os.getenv("GAUNTDL_PHASE5_VOODOO_MEMORY_OUT")
+local voodoo_memory_dump_relative = tonumber(os.getenv("GAUNTDL_PHASE5_VOODOO_MEMORY_REL")) or 207
+local voodoo_memory_dumped = false
+local trace_voodoo_save_items = os.getenv("GAUNTDL_PHASE5_VOODOO_ITEMS") == "1"
+local voodoo_state_output_prefix = os.getenv("GAUNTDL_PHASE5_VOODOO_STATE_PREFIX")
 local frame = 0
 local phase5_frame = nil
 local phase4_frame = nil
@@ -126,6 +134,73 @@ local function dump_main_ram(path)
 	print(string.format(
 		"[phase5-mainram] frame=%d rel=%d path=%s bytes=0x02000000",
 		frame, frame - phase5_frame, path))
+end
+
+local function dump_voodoo_memory(path)
+	for tag, device in pairs(machine.devices) do
+		for name, index in pairs(device.items) do
+			local item = emu.item(index)
+			local bytes = item.size * item.count
+			if string.find(name, "m_fbram", 1, true) and bytes >= 0x00a00000 then
+					local file, message = io.open(path, "wb")
+					if not file then
+						error(string.format("Voodoo memory open failed path=%s error=%s", path, message))
+					end
+					local chunk_size = 0x10000
+					for offset = 0, bytes - 1, chunk_size do
+						local length = math.min(chunk_size, bytes - offset)
+						file:write(item:read_block(offset, length))
+					end
+					file:close()
+					print(string.format(
+						"[phase5-voodoo-memory] frame=%d rel=%d tag=%s item=%s bytes=0x%x path=%s",
+						frame, frame - phase5_frame, tag, name, bytes, path))
+					for metadata_name, metadata_index in pairs(device.items) do
+						if trace_voodoo_save_items then
+							local traced_item = emu.item(metadata_index)
+							print(string.format(
+								"[phase5-voodoo-item] tag=%s item=%s index=%d size=%d count=%d",
+								tag, metadata_name, metadata_index, traced_item.size, traced_item.count))
+						end
+						if string.find(metadata_name, "m_rgboffs", 1, true) or
+							string.find(metadata_name, "m_auxoffs", 1, true) or
+							string.find(metadata_name, "m_frontbuf", 1, true) or
+							string.find(metadata_name, "m_backbuf", 1, true) or
+							string.find(metadata_name, "m_width", 1, true) or
+							string.find(metadata_name, "m_height", 1, true) then
+							local metadata = emu.item(metadata_index)
+							local values = {}
+							for value_index = 0, metadata.count - 1 do
+								values[#values + 1] = string.format("%x", metadata:read(value_index))
+							end
+							print(string.format(
+								"[phase5-voodoo-metadata] tag=%s item=%s values=%s",
+								tag, metadata_name, table.concat(values, ",")))
+						end
+						if voodoo_state_output_prefix and
+							(metadata_name == "0/m_reg/m_regs" or
+							 metadata_name == "0/m_tmu[0]/m_reg/m_regs" or
+							 metadata_name == "0/m_tmu[1]/m_reg/m_regs") then
+							local register_item = emu.item(metadata_index)
+							local suffix = metadata_name == "0/m_reg/m_regs" and "fbi" or
+								(metadata_name == "0/m_tmu[0]/m_reg/m_regs" and "tmu0" or "tmu1")
+							local register_path = voodoo_state_output_prefix .. "-" .. suffix .. "-regs.bin"
+							local register_file, register_message = io.open(register_path, "wb")
+							if not register_file then
+								error(string.format("Voodoo registers open failed path=%s error=%s", register_path, register_message))
+							end
+							register_file:write(register_item:read_block(0, register_item.size * register_item.count))
+							register_file:close()
+							print(string.format(
+								"[phase5-voodoo-registers] item=%s bytes=0x%x path=%s",
+								metadata_name, register_item.size * register_item.count, register_path))
+						end
+					end
+				return
+			end
+		end
+	end
+	error("Voodoo m_fbram save item was not found")
 end
 
 local function drive_boot_inputs()
@@ -301,6 +376,22 @@ emu.register_frame_done(function()
 		frame - phase5_frame >= mainram_dump_relative then
 		mainram_dumped = true
 		dump_main_ram(mainram_output_path)
+	end
+
+	if frame_snapshot_path and screen and phase5_frame and
+		not frame_snapshot_dumped and
+		frame - phase5_frame >= frame_snapshot_relative then
+		frame_snapshot_dumped = true
+		screen:snapshot(frame_snapshot_path)
+		print(string.format(
+			"[phase5-frame-snapshot] frame=%d rel=%d path=%s",
+			frame, frame - phase5_frame, frame_snapshot_path))
+	end
+
+	if voodoo_memory_output_path and phase5_frame and not voodoo_memory_dumped and
+		frame - phase5_frame >= voodoo_memory_dump_relative then
+		voodoo_memory_dumped = true
+		dump_voodoo_memory(voodoo_memory_output_path)
 	end
 
 	if (exit_frame and frame >= exit_frame) or frame >= max_frames then

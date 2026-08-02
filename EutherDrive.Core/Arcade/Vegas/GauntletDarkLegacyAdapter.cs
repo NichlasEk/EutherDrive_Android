@@ -14873,27 +14873,26 @@ internal sealed class MipsR5000Core
     private bool TryCompleteKnownRuntimeMountWaitForQio(ulong objectAddress, uint state, out uint status)
     {
         status = 0;
-        const ulong mountObject = 0xffffffff80295670UL;
-
-        if (objectAddress != mountObject || state is < 5U or > 0xffU)
+        if (state is < 5U or > 0xffU || !IsMainRamRange(objectAddress, 0x40UL))
             return false;
-        if (_memory.Read32(mountObject + 0x00UL) != 0x8021e88cU ||
-            _memory.Read32(mountObject + 0x20UL) != 0x80218518U ||
-            _memory.Read32(mountObject + 0x38UL) != 0x800f087cU ||
-            _memory.Read32(mountObject + 0x3cUL) != 0x80295670U)
+        uint objectAddress32 = unchecked((uint)objectAddress);
+        if (_memory.Read32(objectAddress + 0x00UL) != 0x8021e88cU ||
+            _memory.Read32(objectAddress + 0x20UL) != 0x80218518U ||
+            _memory.Read32(objectAddress + 0x38UL) != 0x800f087cU ||
+            _memory.Read32(objectAddress + 0x3cUL) != objectAddress32)
         {
             return false;
         }
 
-        if (_preserveLinkedMountQio && _memory.Read32(mountObject + 0x30UL) != 0)
+        if (_preserveLinkedMountQio && _memory.Read32(objectAddress + 0x30UL) != 0)
             return false;
 
         status = state == 5U ? 0x0800U : 0x3000U;
-        _memory.Write32(mountObject + 0x14UL, status);
+        _memory.Write32(objectAddress + 0x14UL, status);
         if (_traceRd0Home && _bootCountDelayTraceCount++ < 16)
         {
             Console.WriteLine(
-                $"[GAUNTDL:FSYS] complete-mount-waitforqio object={mountObject:x16} " +
+                $"[GAUNTDL:FSYS] complete-mount-waitforqio object={objectAddress:x16} " +
                 $"state={state:x8} status={status:x8}");
         }
         return true;
