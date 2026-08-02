@@ -74,6 +74,49 @@ Detta checkpoint använder en direkt main-RAM-läsning för runtime-state och
 steady-state instruction fetch. Resultatet är exakt; vinsten är liten och ska
 inte beskrivas som lösningen på genomströmningsproblemet.
 
+## Fortsättning: PC-dispatch för steady-state
+
+Den linjära kedjan med aktiva steady-state-acceleratorer är ersatt av två
+PC-switchar på varsin sida om phase-5-QIO-servicen. Acceleratorernas befintliga
+gästkodssignaturer och inbördes ordning är bevarade. Den vanliga avvisningsvägen
+för paired-word-copy och phase-5-QIO testar nu billiga PC-/contextvillkor innan
+den läser eller klassificerar gäststate.
+
+Tre identiska 1 200 000-stegsprov före ändringen gav CPU-fas:
+
+```text
+1202.83 ms
+1164.64 ms
+ 956.39 ms
+median 1164.64 ms
+```
+
+Tre identiska prov efter den behållna ändringen gav:
+
+```text
+1000.09 ms
+1012.72 ms
+ 937.22 ms
+median 1000.09 ms
+```
+
+Medianvinsten är cirka 14,1 procent. Ett separat slutligt kontrollprov gav
+1022,95 ms. Alla behållna prov slutade bit-/state-exakt på:
+
+```text
+pc=0xffffffff800c4fa4
+frameHash=0x5e902479
+fifoDecodeCalls=4139
+rast=438034/117/0/823/5/818/2/0/816/117
+```
+
+Ett försök att lägga de vilande BGLoadModel-prolog/epilog- och
+`strncmp`-acceleratorerna i samma switch avvisades. Hashen råkade vara samma,
+men slut-PC, FIFO-anrop och rasterräknare drev. De acceleratorerna är därför
+inte aktiverade i steady-state-checkpointet. Nästa CPU-steg ska optimera den
+ordinarie R5000-dispatchen eller en uppmätt rutin utan att ändra gästernas
+instruktions-/interrupt-kadens; målet under 700 ms är ännu inte nått.
+
 ## Swap-slutsats
 
 Vid renderer-frame 4777 ses två legitima omedelbara `swapbufferCMD=0`:
@@ -137,13 +180,13 @@ cirka 463 MiB vid pausen; skapa inte en ny warm-state för varje prov.
 
 ## Nästa arbetsordning
 
-1. Ersätt kedjan av steady-state `TryFastPath...`-anrop per instruktion med en
-   PC-dispatchtabell/switch. Varje befintlig accelerator ska fortfarande
-   signaturkontrollera gästkoden. Verifiera exakt slut-PC, hash och Voodoo-
-   räknare före och efter.
+1. Fortsätt CPU-profileringen från den verifierade PC-dispatchen. Optimera
+   ordinarie R5000-dispatch eller en uppmätt rutin utan att aktivera vilande
+   fastpaths som ändrar instruktions-/interrupt-kadensen.
 2. Mät minst tre identiska 1 200 000-stegsprov och använd medianen. Första
-   delmålet är CPU-fas under 700 ms utan state-drift; därefter under 500 ms.
-3. Profilera de återstående 4 139 FIFO-dekoderanropen och batcha endast
+   delmålet är fortfarande CPU-fas under 700 ms utan state-drift; därefter
+   under 500 ms.
+3. Profilera därefter de återstående 4 139 FIFO-dekoderanropen och batcha endast
    kompletta packetgenerationer. Packetordning och 1 200 000-stegsresultat
    måste förbli exakta.
 4. När guest-takten är tydligt förbättrad: jämför Type 3-pass från fast-fill

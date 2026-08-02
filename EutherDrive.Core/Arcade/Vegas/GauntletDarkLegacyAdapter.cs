@@ -3646,22 +3646,10 @@ internal sealed class MipsR5000Core
             if (_profileHotPcs)
                 CountHotPc(pc);
             _memory.SetTraceCpuPc(pc);
-            if (TryFastPathKnownRuntimeGameplayDiagnosticRenderRecord(pc))
-                return;
-            if (TryFastPathKnownRuntimeRenderRecordNullBody(pc))
-                return;
-            if (TryFastPathKnownRuntimeStackRecordCopy(pc))
-                return;
-            if (TryFastPathKnownRuntimeByteMove(pc))
-                return;
-            if (TryFastPathKnownRuntimeStringCopy(pc))
-                return;
-            if (TryFastPathKnownRuntimeGameplayDiagnosticTextRecord(pc))
+            if (TryFastPathKnownRuntimeSteadyStateBeforeQioService(pc))
                 return;
             ServiceKnownRuntimePhaseFiveQioWait(pc);
-            if (TryFastPathKnownRuntimeUiCommandCompleteWait(pc))
-                return;
-            if (TryFastPathKnownGauntletGlideHotPath(pc))
+            if (TryFastPathKnownRuntimeSteadyStateAfterQioService(pc))
                 return;
             if ((!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
                 !_enableRuntimePhaseFiveQioWaitService)
@@ -4274,6 +4262,32 @@ internal sealed class MipsR5000Core
         if (!steadyStateFastDispatch)
             TraceSuspiciousLowPcTransition(pc, op, resolvedPc, branchFromPreviousInstruction, branchTarget);
         Pc = resolvedPc;
+    }
+
+    private bool TryFastPathKnownRuntimeSteadyStateBeforeQioService(ulong pc)
+    {
+        return (pc & 0x1fffffffUL) switch
+        {
+            0x000b0d0cUL or 0x000b0d20UL => TryFastPathKnownRuntimeGameplayDiagnosticTextRecord(pc),
+            0x000b1e7cUL =>
+                TryFastPathKnownRuntimeGameplayDiagnosticRenderRecord(pc) ||
+                TryFastPathKnownRuntimeRenderRecordNullBody(pc),
+            >= 0x000b1edcUL and <= 0x000b1ef8UL => TryFastPathKnownRuntimeStackRecordCopy(pc),
+            0x0011df40UL or >= 0x0011df78UL and <= 0x0011df84UL => TryFastPathKnownRuntimeByteMove(pc),
+            0x0011f7acUL => TryFastPathKnownRuntimeStringCopy(pc),
+            _ => false
+        };
+    }
+
+    private bool TryFastPathKnownRuntimeSteadyStateAfterQioService(ulong pc)
+    {
+        return (pc & 0x1fffffffUL) switch
+        {
+            0x000c80b4UL or 0x000c80b8UL or 0x000c80bcUL or 0x000c80c0UL or
+            0x000c83ccUL or 0x000c83d0UL or 0x000c83d4UL or 0x000c83d8UL or
+            0x000c83dcUL or 0x000c83e0UL or 0x000c83e4UL => TryFastPathKnownRuntimeUiCommandCompleteWait(pc),
+            _ => TryFastPathKnownGauntletGlideHotPath(pc)
+        };
     }
 
     private void ApplyKnownRuntimeTempleNaturalItemsAllocatorRepair(ulong pc)
@@ -12483,6 +12497,13 @@ internal sealed class MipsR5000Core
         // process-global budget would eventually deadlock desktop play while
         // short snapshot probes appeared healthy because reload reset it.
         const int maxServiceAttempts = 64;
+        if (!_enableRuntimePhaseFiveQioWaitService ||
+            (!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
+            _insideContextPreservingRuntimeTimerTick)
+        {
+            return;
+        }
+
         ulong loadStatusPc = pc switch
         {
             0xffffffff800edac4UL or 0xffffffff800edac8UL or 0xffffffff800edaccUL
@@ -12501,10 +12522,7 @@ internal sealed class MipsR5000Core
             IsKnownRuntimeWaitForQioLoopPc(pc) &&
             IsMainRamRange(_gpr[30] + 0x20UL, 4) &&
             SignExtend32(_memory.Read32(_gpr[30] + 0x20UL)) == cleanupQioObject;
-        if (!_enableRuntimePhaseFiveQioWaitService ||
-            (!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
-            _insideContextPreservingRuntimeTimerTick ||
-            (!directStatusLoop && !genericWaitLoop) ||
+        if ((!directStatusLoop && !genericWaitLoop) ||
             _memory.Read32(cleanupQioObject + 0x14UL) != 0)
         {
             return;
@@ -12532,8 +12550,9 @@ internal sealed class MipsR5000Core
     {
         const ulong loop = 0xffffffff800fe7bcUL;
         const ulong exit = 0xffffffff800fe7e4UL;
-        if (!_enableRuntimePairedWordCopy ||
-            (!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) || pc != loop ||
+        if (pc != loop ||
+            !_enableRuntimePairedWordCopy ||
+            (!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
             _memory.Read32(loop + 0x00UL) != 0x8e620000U ||
             _memory.Read32(loop + 0x04UL) != 0x8e630004U ||
             _memory.Read32(loop + 0x08UL) != 0xac820000U ||
