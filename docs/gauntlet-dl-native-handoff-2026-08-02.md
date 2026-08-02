@@ -132,6 +132,30 @@ undertryckas och ingen PC-specialregel ska läggas till. Full PCI-FIFO/busy- och
 partial-update-semantik behövs senare, men dubbel-swappen förklarar inte den
 nuvarande låga guest-takten.
 
+## 2026-08-02 kväll: W-depth och spelbar desktopbild
+
+Type 3-paketen bär `Wb` per vertex. Rasterizern använde tidigare ett gammalt
+register-W och skalade både setup-W och fog-W som 32.32, trots att Voodoo-
+vägen nedströms läser dem som 16.48. Med packetets `FogW` som Wb och korrekt
+48-bitars fractional scale ökade samma synkbild från 117 till 144 477
+texturerade pixlar och från 5 till 462 täckta trianglar.
+
+En andra vitkorruption kom från den tidiga diagnostikfallbacken: en helt
+depth-avvisad texturtriangel föll igenom till solid vit raster och wireframe.
+Texturerade primitives som inte skriver färg avslutas nu korrekt utan en
+sådan fallback. Den levande buffer 0 gick därmed från tiotusentals vita pixlar
+till en ren `SELECT A JOURNEY`/`SKY EASY`-yta.
+
+Den varma gästkontexten måste behållas i desktopappen. CPU-oraklet vid
+relative-207 är endast för synkroniserade regressionstest; om det laddas som
+desktop-PC stannar den normaliserade inputkedjan. Med warm-stateens egen CPU
+och den riktiga inputpollen når Fight omedelbart runtime-recordet och gästens
+normaliserade held-word. Desktopstartaren aktiverar därför native input poll
+och visar coherent buffer 1 med icke-tom native redraw från buffer 0. Efter en
+Fight/Right/Fight-sekvens försvinner journey-texten och scenen går vidare;
+fortsatt Up/Fight/Magic producerar en ny world-frame vid cirka 30--35 probe-
+frames/s.
+
 ## Avvisade vägar
 
 - MAME som dold permanent backend: spelbart, men inte produkten vi bygger.

@@ -1152,6 +1152,11 @@ internal sealed class MipsR5000Core
     private int _bootGlideStateEmitTraceCount;
     private readonly bool _traceBootGlideStateEmit = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BOOT_GLIDE_STATE_EMIT") == "1";
     private readonly bool _profileHotPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1";
+    private readonly bool _profileOpcodes = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_OPCODES") == "1";
+    private readonly ulong[] _opcodeProfileCounts = new ulong[64];
+    private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
+    private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
+    private readonly ulong[] _cop1xFunctionProfileCounts = new ulong[64];
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2126,6 +2131,7 @@ internal sealed class MipsR5000Core
                  $"/s2=0x{_runtimeGameTaskContext.Gpr[18]:X16}/halt={(_runtimeGameTaskContext.Halted ? 1 : 0)}") +
            GetTileWriteStatus();
     public string HotPcStatus => GetHotPcStatus();
+    public string OpcodeProfileStatus => GetOpcodeProfileStatus();
 
     public void Reset()
     {
@@ -2142,6 +2148,10 @@ internal sealed class MipsR5000Core
         LastFetchedInstruction = 0xffffffff;
         LastRuntimeText = "";
         RuntimeTempleItemsBoundaryReached = false;
+        Array.Clear(_opcodeProfileCounts);
+        Array.Clear(_specialOpcodeProfileCounts);
+        Array.Clear(_cop1FormatProfileCounts);
+        Array.Clear(_cop1xFunctionProfileCounts);
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -28245,6 +28255,42 @@ internal sealed class MipsR5000Core
                 .Select(item => $"0x{item.Key:x16}:{item.Value}"));
     }
 
+    private string GetOpcodeProfileStatus()
+    {
+        if (!_profileOpcodes)
+            return "opcodes=disabled";
+
+        string opcodes = string.Join(
+            ",",
+            _opcodeProfileCounts
+                .Select((count, opcode) => (Count: count, Opcode: opcode))
+                .Where(item => item.Count != 0)
+                .OrderByDescending(item => item.Count)
+                .Select(item => $"{item.Opcode:x2}:{item.Count}"));
+        string special = string.Join(
+            ",",
+            _specialOpcodeProfileCounts
+                .Select((count, funct) => (Count: count, Funct: funct))
+                .Where(item => item.Count != 0)
+                .OrderByDescending(item => item.Count)
+                .Select(item => $"{item.Funct:x2}:{item.Count}"));
+        string cop1 = string.Join(
+            ",",
+            _cop1FormatProfileCounts
+                .Select((count, format) => (Count: count, Format: format))
+                .Where(item => item.Count != 0)
+                .OrderByDescending(item => item.Count)
+                .Select(item => $"{item.Format:x2}:{item.Count}"));
+        string cop1x = string.Join(
+            ",",
+            _cop1xFunctionProfileCounts
+                .Select((count, funct) => (Count: count, Funct: funct))
+                .Where(item => item.Count != 0)
+                .OrderByDescending(item => item.Count)
+                .Select(item => $"{item.Funct:x2}:{item.Count}"));
+        return $"cop1={cop1} cop1x={cop1x} opcodes={opcodes} special={special}";
+    }
+
     private bool TryFastPathKnownGlideSetupPacketHelper(ulong pc)
     {
         bool gauntletState = pc == 0xffffffff80103f70UL;
@@ -29470,9 +29516,19 @@ internal sealed class MipsR5000Core
     private void Execute(ulong pc, uint op, bool steadyStateFastDispatch)
     {
         if (op == 0)
+        {
+            if (_profileOpcodes)
+                _specialOpcodeProfileCounts[0]++;
             return;
+        }
 
         uint opcode = op >> 26;
+        if (_profileOpcodes)
+        {
+            _opcodeProfileCounts[opcode]++;
+            if (opcode == 0)
+                _specialOpcodeProfileCounts[op & 0x3f]++;
+        }
         int rs = (int)((op >> 21) & 0x1f);
         int rt = (int)((op >> 16) & 0x1f);
         int rd = (int)((op >> 11) & 0x1f);
@@ -29546,28 +29602,40 @@ internal sealed class MipsR5000Core
                 _gpr[rt] = unchecked((ulong)((long)_gpr[rs] + simm));
                 break;
             case 0x20:
-                _gpr[rt] = unchecked((ulong)(sbyte)_memory.Read8(_gpr[rs] + (ulong)(long)simm));
+                _gpr[rt] = unchecked((ulong)(sbyte)(steadyStateFastDispatch
+                    ? _memory.ReadRuntimeData8(_gpr[rs] + (ulong)(long)simm)
+                    : _memory.Read8(_gpr[rs] + (ulong)(long)simm)));
                 break;
             case 0x21:
-                _gpr[rt] = unchecked((ulong)(short)_memory.Read16(_gpr[rs] + (ulong)(long)simm));
+                _gpr[rt] = unchecked((ulong)(short)(steadyStateFastDispatch
+                    ? _memory.ReadRuntimeData16(_gpr[rs] + (ulong)(long)simm)
+                    : _memory.Read16(_gpr[rs] + (ulong)(long)simm)));
                 break;
             case 0x22:
                 _gpr[rt] = LoadWordLeft(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
                 break;
             case 0x23:
-                _gpr[rt] = unchecked((ulong)(int)_memory.Read32(_gpr[rs] + (ulong)(long)simm));
+                _gpr[rt] = unchecked((ulong)(int)(steadyStateFastDispatch
+                    ? _memory.ReadRuntimeData32(_gpr[rs] + (ulong)(long)simm)
+                    : _memory.Read32(_gpr[rs] + (ulong)(long)simm)));
                 break;
             case 0x24:
-                _gpr[rt] = _memory.Read8(_gpr[rs] + (ulong)(long)simm);
+                _gpr[rt] = steadyStateFastDispatch
+                    ? _memory.ReadRuntimeData8(_gpr[rs] + (ulong)(long)simm)
+                    : _memory.Read8(_gpr[rs] + (ulong)(long)simm);
                 break;
             case 0x25:
-                _gpr[rt] = _memory.Read16(_gpr[rs] + (ulong)(long)simm);
+                _gpr[rt] = steadyStateFastDispatch
+                    ? _memory.ReadRuntimeData16(_gpr[rs] + (ulong)(long)simm)
+                    : _memory.Read16(_gpr[rs] + (ulong)(long)simm);
                 break;
             case 0x26:
                 _gpr[rt] = LoadWordRight(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
                 break;
             case 0x27:
-                _gpr[rt] = _memory.Read32(_gpr[rs] + (ulong)(long)simm);
+                _gpr[rt] = steadyStateFastDispatch
+                    ? _memory.ReadRuntimeData32(_gpr[rs] + (ulong)(long)simm)
+                    : _memory.Read32(_gpr[rs] + (ulong)(long)simm);
                 break;
             case 0x28:
                 {
@@ -29575,7 +29643,7 @@ internal sealed class MipsR5000Core
                     byte value = (byte)_gpr[rt];
                     if (steadyStateFastDispatch)
                     {
-                        _memory.Write8(address, value);
+                        _memory.WriteRuntimeData8(address, value);
                         break;
                     }
                     byte oldValue = IsMainRamRange(address, 1) ? _memory.Read8(address) : (byte)0;
@@ -29589,7 +29657,7 @@ internal sealed class MipsR5000Core
                     ushort value = (ushort)_gpr[rt];
                     if (steadyStateFastDispatch)
                     {
-                        _memory.Write16(address, value);
+                        _memory.WriteRuntimeData16(address, value);
                         break;
                     }
                     ushort oldValue = IsMainRamRange(address, 2) ? _memory.Read16(address) : (ushort)0;
@@ -29609,7 +29677,7 @@ internal sealed class MipsR5000Core
                         bool tracksGlideFifoSource = TrySetKnownGlideFifoGuestWriteSource(pc, address);
                         try
                         {
-                            _memory.Write32(address, value);
+                            _memory.WriteRuntimeData32(address, value);
                         }
                         finally
                         {
@@ -29651,13 +29719,19 @@ internal sealed class MipsR5000Core
             case 0x2f:
                 break;
             case 0x31:
-                _fpr[rt] = _memory.Read32(_gpr[rs] + (ulong)(long)simm);
+                _fpr[rt] = steadyStateFastDispatch
+                    ? _memory.ReadRuntimeData32(_gpr[rs] + (ulong)(long)simm)
+                    : _memory.Read32(_gpr[rs] + (ulong)(long)simm);
                 break;
             case 0x35:
-                _fpr[rt] = _memory.Read64(_gpr[rs] + (ulong)(long)simm);
+                _fpr[rt] = steadyStateFastDispatch
+                    ? _memory.ReadRuntimeData64(_gpr[rs] + (ulong)(long)simm)
+                    : _memory.Read64(_gpr[rs] + (ulong)(long)simm);
                 break;
             case 0x37:
-                _gpr[rt] = _memory.Read64(_gpr[rs] + (ulong)(long)simm);
+                _gpr[rt] = steadyStateFastDispatch
+                    ? _memory.ReadRuntimeData64(_gpr[rs] + (ulong)(long)simm)
+                    : _memory.Read64(_gpr[rs] + (ulong)(long)simm);
                 break;
             case 0x39:
                 {
@@ -29665,7 +29739,7 @@ internal sealed class MipsR5000Core
                     uint value = (uint)_fpr[rt];
                     if (steadyStateFastDispatch)
                     {
-                        _memory.Write32(address, value);
+                        _memory.WriteRuntimeData32(address, value);
                         break;
                     }
                     uint oldValue = IsMainRamRange(address, 4) ? _memory.Read32(address) : 0;
@@ -29681,7 +29755,7 @@ internal sealed class MipsR5000Core
                     ulong value = _fpr[rt];
                     if (steadyStateFastDispatch)
                     {
-                        _memory.Write64(address, value);
+                        _memory.WriteRuntimeData64(address, value);
                         break;
                     }
                     ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
@@ -29696,7 +29770,7 @@ internal sealed class MipsR5000Core
                     ulong value = _gpr[rt];
                     if (steadyStateFastDispatch)
                     {
-                        _memory.Write64(address, value);
+                        _memory.WriteRuntimeData64(address, value);
                         break;
                     }
                     ulong oldValue = IsMainRamRange(address, 8) ? _memory.Read64(address) : 0;
@@ -30255,6 +30329,8 @@ internal sealed class MipsR5000Core
 
     private void ExecuteCop1(ulong pc, uint op, int rs, int rt, int rd)
     {
+        if (_profileOpcodes)
+            _cop1FormatProfileCounts[rs]++;
         int fd = (int)((op >> 6) & 0x1f);
         uint funct = op & 0x3f;
         switch (rs)
@@ -30302,6 +30378,8 @@ internal sealed class MipsR5000Core
         int fs = (int)((op >> 11) & 0x1f);
         int fd = (int)((op >> 6) & 0x1f);
         uint funct = op & 0x3f;
+        if (_profileOpcodes)
+            _cop1xFunctionProfileCounts[funct]++;
         ulong address = _gpr[rs] + _gpr[rt];
 
         switch (funct)
@@ -31422,6 +31500,86 @@ internal sealed class VegasMemoryMap
             ? BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4))
             : Read32(address);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public byte ReadRuntimeData8(ulong address)
+    {
+        if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
+            return _mainRam[physical];
+        return Read8(address);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ushort ReadRuntimeData16(ulong address)
+    {
+        if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 1 < _mainRam.Length)
+            return BinaryPrimitives.ReadUInt16LittleEndian(_mainRam.AsSpan((int)physical, 2));
+        return Read16(address);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public uint ReadRuntimeData32(ulong address)
+    {
+        if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
+            return BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4));
+        return Read32(address);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public ulong ReadRuntimeData64(ulong address)
+    {
+        if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
+            return BinaryPrimitives.ReadUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8));
+        return Read64(address);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void WriteRuntimeData8(ulong address, byte value)
+    {
+        if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical < _mainRam.Length)
+        {
+            _mainRam[physical] = value;
+            return;
+        }
+        Write8(address, value);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void WriteRuntimeData16(ulong address, ushort value)
+    {
+        if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 1 < _mainRam.Length)
+        {
+            BinaryPrimitives.WriteUInt16LittleEndian(_mainRam.AsSpan((int)physical, 2), value);
+            return;
+        }
+        Write16(address, value);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void WriteRuntimeData32(ulong address, uint value)
+    {
+        if (!_traceEnabled &&
+            !_experimentSuppressDiagnosticRenderEnable &&
+            TryTranslatePhysical(address, out uint physical) &&
+            physical + 3 < _mainRam.Length)
+        {
+            BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4), value);
+            return;
+        }
+        Write32(address, value);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public void WriteRuntimeData64(ulong address, ulong value)
+    {
+        if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
+        {
+            BinaryPrimitives.WriteUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8), value);
+            return;
+        }
+        Write64(address, value);
+    }
+
     private ulong _timekeeperReadTicks;
     private int _timekeeperWatchdogFrameCountdown;
     private bool _timekeeperWatchdogResetRequested;
@@ -41815,6 +41973,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         int bufferIndex = GetDrawBufferIndex();
+        if ((_registers[RegFbzMode] & 0x400U) != 0)
+            FastFillAuxBuffer(x0, x1, y0, y1, (ushort)_registers[RegZaColor]);
         if ((_experimentSuppressNonNeutralFastFill && color != 0 && color != 0xffff) ||
             (_experimentSuppressWhiteFastFillAfterRaster &&
              color == 0xffff &&
@@ -41858,6 +42018,15 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         _fastFillCount++;
         _lfbWriteCount += Math.Max(1, (width * (y1 - y0) + 1) / 2);
+    }
+
+    private void FastFillAuxBuffer(int x0, int x1, int y0, int y1, ushort value)
+    {
+        for (int y = y0; y < y1; y++)
+        {
+            int row = GetRasterBufferY(y) * LfbRowPixels;
+            _auxBuffer.AsSpan(row + x0, x1 - x0).Fill(value);
+        }
     }
 
     private void DecodeCommandFifoPackets(string trigger = "direct")
@@ -46695,9 +46864,14 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         if (textured)
+        {
             _texturedTriangleRejectedCount++;
-        if (textured && _treatZeroTextureTexelAsTransparent)
+            // A textured primitive that produces no color pixels was clipped,
+            // culled by depth, or fully transparent.  Falling through to the
+            // old solid diagnostic raster overwrote the winning depth surface
+            // with large white triangles and wire edges.
             return;
+        }
         DrawTriangleWire(_setupVertices[0].X, _setupVertices[0].Y, _setupVertices[1].X, _setupVertices[1].Y, _setupVertices[2].X, _setupVertices[2].Y, color, "stri");
     }
 
@@ -47274,6 +47448,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         // setup gradient numerators below.
         double setupDivisor = -1.0 / area;
         const double TextureSetupScale = 65536.0 * 65536.0;
+        const double WSetupScale = 65536.0 * 65536.0 * 65536.0;
         long startS = MameSetupCastToInt64(a.S * TextureSetupScale);
         long startT = MameSetupCastToInt64(a.T * TextureSetupScale);
         long dSdX = MameSetupCastToInt64(((a.S - b.S) * dx1 - (a.S - c.S) * dx2) * TextureSetupScale * setupDivisor);
@@ -47283,9 +47458,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         long textureStartW = MameSetupCastToInt64(a.Q * TextureSetupScale);
         long textureDwDx = MameSetupCastToInt64(((a.Q - b.Q) * dx1 - (a.Q - c.Q) * dx2) * TextureSetupScale * setupDivisor);
         long textureDwDy = MameSetupCastToInt64(((a.Q - c.Q) * dy1 - (a.Q - b.Q) * dy2) * TextureSetupScale * setupDivisor);
-        long fogStartW = MameSetupCastToInt64(a.FogW * TextureSetupScale);
-        long fogDwDx = MameSetupCastToInt64(((a.FogW - b.FogW) * dx1 - (a.FogW - c.FogW) * dx2) * TextureSetupScale * setupDivisor);
-        long fogDwDy = MameSetupCastToInt64(((a.FogW - c.FogW) * dy1 - (a.FogW - b.FogW) * dy2) * TextureSetupScale * setupDivisor);
+        long fogStartW = MameSetupCastToInt64(a.FogW * WSetupScale);
+        long fogDwDx = MameSetupCastToInt64(((a.FogW - b.FogW) * dx1 - (a.FogW - c.FogW) * dx2) * WSetupScale * setupDivisor);
+        long fogDwDy = MameSetupCastToInt64(((a.FogW - c.FogW) * dy1 - (a.FogW - b.FogW) * dy2) * WSetupScale * setupDivisor);
         float textureS1A = _experimentType3SeparateTmuSt ? a.S1 : a.S;
         float textureT1A = _experimentType3SeparateTmuSt ? a.T1 : a.T;
         float textureQ1A = _experimentType3SeparateTmuSt ? a.Q1 : a.Q;
@@ -47350,9 +47525,19 @@ internal class VoodooBringupBackend : IVoodooBackend
         int setupStartZ = unchecked((int)_registers[RegFstartZ]);
         int setupDzDx = unchecked((int)_registers[RegFdZdX]);
         int setupDzDy = unchecked((int)_registers[RegFdZdY]);
-        long setupStartW = MameFloatToInt64(_registers[RegFstartW], 32);
-        long setupDwDx = MameFloatToInt64(_registers[RegFdWdX], 32);
-        long setupDwDy = MameFloatToInt64(_registers[RegFdWdY], 32);
+        bool type3CarriesWb =
+            _decodingCommandFifo &&
+            (_currentCommandFifoCommand & 7u) == 3u &&
+            (_currentCommandFifoCommand & (1u << 13)) != 0;
+        long setupStartW = type3CarriesWb
+            ? fogStartW
+            : MameFloatToInt64(_registers[RegFstartW], 48);
+        long setupDwDx = type3CarriesWb
+            ? fogDwDx
+            : MameFloatToInt64(_registers[RegFdWdX], 48);
+        long setupDwDy = type3CarriesWb
+            ? fogDwDy
+            : MameFloatToInt64(_registers[RegFdWdY], 48);
         float edge0Dy = c.Y - b.Y;
         float edge0Dx = c.X - b.X;
         float edge1Dy = a.Y - c.Y;
@@ -48312,6 +48497,7 @@ sampledTexel:
             $"pixels={coveredPixels} zero={zeroPixels} mode=0x{mode:X8} lod=0x{lod:X8} regbase=0x{registerBase:X8} base=0x{resolvedBase:X6} " +
             $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
+            $"fogw={a.FogW:F6}/{b.FogW:F6}/{c.FogW:F6} " +
             $"setup=0x{_registers[0x98]:X8} fbz=0x{_registers[RegFbzMode]:X8} fbzcp=0x{_registers[RegFbzColorPath]:X8} " +
             $"cmd=0x{_currentCommandFifoCommand:X8}:{_currentCommandFifoWordsNeeded}:0x{_currentCommandFifoPacketStart * 4:X8}:rd0x{_cmdFifoReadIndex * 4:X8}{pcStatus}");
     }
@@ -48554,6 +48740,7 @@ sampledTexel:
             $"bbox=({minX},{minY})-({maxX},{maxY}) clip=({clipX0},{clipY0})-({clipX1},{clipY1}) " +
             $"xy=({a.X:F3},{a.Y:F3})/({b.X:F3},{b.Y:F3})/({c.X:F3},{c.Y:F3}) " +
             $"stq=({a.S:F3},{a.T:F3},{a.Q:F6})/({b.S:F3},{b.T:F3},{b.Q:F6})/({c.S:F3},{c.T:F3},{c.Q:F6}) " +
+            $"fogw={a.FogW:F6}/{b.FogW:F6}/{c.FogW:F6} " +
             $"rawxy=0x{_registers[0x99]:X8}/0x{_registers[0x9A]:X8} setup=0x{_registers[0x98]:X8} " +
             $"cmd=0x{_currentCommandFifoCommand:X8} rd=0x{_cmdFifoReadIndex * 4:X8} fbz=0x{_registers[RegFbzMode]:X8} fbi3=0x{_registers[RegFbiInit3]:X8}{pcStatus}");
     }

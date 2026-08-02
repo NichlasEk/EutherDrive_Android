@@ -151,6 +151,8 @@ Console.WriteLine($"pc=0x{GetProperty(cpu, "Pc"):x16}");
 Console.WriteLine($"lastOp=0x{GetProperty(cpu, "LastFetchedInstruction"):x8}");
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1")
     Console.WriteLine(GetProperty(cpu, "HotPcStatus"));
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_OPCODES") == "1")
+    Console.WriteLine(GetProperty(cpu, "OpcodeProfileStatus"));
 
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_GPRS") == "1")
     DumpCpuState(cpu);
