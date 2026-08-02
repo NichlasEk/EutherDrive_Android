@@ -540,6 +540,7 @@ internal sealed class GauntletDarkLegacyMachine
                 $"[GAUNTDL:FIX] runtime-game-task-config " +
                 $"enabled={(_enableRuntimeGameTask ? 1 : 0)} " +
                 $"state=0x{MemoryMap.Read32(runtimeMainState):x}");
+            _runtimeGameTaskTraceCount++;
         }
         uint currentMainState = MemoryMap.Read32(runtimeMainState);
         bool runPretransitionGameTask =
@@ -1852,6 +1853,7 @@ internal sealed class MipsR5000Core
     private int _bootSerialCopyLoopTraceCount;
     private int _bootA420HandshakeTraceCount;
     private int _bootCountDelayTraceCount;
+    private int _audioInitCountDelayTraceCount;
     private int _runtimeBgLoadModelQioCompleteTraceCount;
     private int _runtimeBgLoadModelQioCreateAliasTraceCount;
     private int _runtimeBgLoadModelQioRequestMetadataTraceCount;
@@ -3661,6 +3663,7 @@ internal sealed class MipsR5000Core
             ServiceKnownRuntimePhaseFiveQioWait(pc);
             if (TryFastPathKnownRuntimeSteadyStateAfterQioService(pc))
                 return;
+            AccelerateKnownAudioInitCountDelay(pc);
             if ((!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
                 !_enableRuntimePhaseFiveQioWaitService)
                 goto ExecuteInstruction;
@@ -13711,41 +13714,56 @@ internal sealed class MipsR5000Core
         const ulong enableAddress = 0xffffffff80227c80UL;
         const uint limit = 0x02faf080U;
 
-        if (!_enableAudioInitCountDelay || pc != comparePc ||
+        if (pc != comparePc)
+            return;
+
+        bool signatureMatches =
+            _memory.Read32(entry + 0x00UL) == 0x27bdffe0U &&
+            _memory.Read32(entry + 0x08UL) == 0x0080802dU &&
+            _memory.Read32(entry + 0x18UL) == 0xafbf0018U &&
+            _memory.Read32(entry + 0x20UL) == 0xa0400000U &&
+            _memory.Read32(entry + 0x24UL) == 0x0c02dcbfU &&
+            _memory.Read32(entry + 0x30UL) == 0x8e227c80U &&
+            _memory.Read32(entry + 0x38UL) == 0x3c0202faU &&
+            _memory.Read32(entry + 0x40UL) == 0x8c83bbe8U &&
+            _memory.Read32(entry + 0x44UL) == 0x3442f080U &&
+            _memory.Read32(entry + 0x48UL) == 0x00701821U &&
+            _memory.Read32(entry + 0x4cUL) == 0x0043102aU &&
+            _memory.Read32(entry + 0x50UL) == 0x10400014U &&
+            _memory.Read32(entry + 0x54UL) == 0xac83bbe8U &&
+            _memory.Read32(entry + 0xa0UL) == 0xac40bbe8U &&
+            _memory.Read32(entry + 0xb8UL) == 0x03e00008U &&
+            _memory.Read32(entry + 0xbcUL) == 0x27bd0020U;
+
+        if (_traceRd0Home && pc == comparePc && _audioInitCountDelayTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:BOOT] audio-init-count-delay probe enabled={(_enableAudioInitCountDelay ? 1 : 0)} " +
+                $"s0={_gpr[16]:x8} v0={_gpr[2]:x8} v1={_gpr[3]:x8} " +
+                $"flag={_memory.Read32(enableAddress):x8} sig={(signatureMatches ? 1 : 0)}");
+        }
+
+        if (!_enableAudioInitCountDelay ||
             _gpr[16] != 1UL ||
             (uint)_gpr[2] != limit ||
             (uint)_gpr[3] >= limit ||
-            _memory.Read32(enableAddress) != 1U ||
-            !IsMainRamRange(_gpr[29] + 0x18UL, 4UL) ||
-            _memory.Read32(_gpr[29] + 0x18UL) != 0x80046048U)
+            _memory.Read32(enableAddress) != 1U)
         {
             return;
         }
 
-        if (_memory.Read32(entry + 0x00UL) != 0x27bdffe0U ||
-            _memory.Read32(entry + 0x08UL) != 0x0080802dU ||
-            _memory.Read32(entry + 0x18UL) != 0xafbf0018U ||
-            _memory.Read32(entry + 0x20UL) != 0xa0400000U ||
-            _memory.Read32(entry + 0x24UL) != 0x0c02dcbfU ||
-            _memory.Read32(entry + 0x30UL) != 0x8e227c80U ||
-            _memory.Read32(entry + 0x38UL) != 0x3c0202faU ||
-            _memory.Read32(entry + 0x40UL) != 0x8c83bbe8U ||
-            _memory.Read32(entry + 0x44UL) != 0x3442f080U ||
-            _memory.Read32(entry + 0x48UL) != 0x00701821U ||
-            _memory.Read32(entry + 0x4cUL) != 0x0043102aU ||
-            _memory.Read32(entry + 0x50UL) != 0x10400014U ||
-            _memory.Read32(entry + 0x54UL) != 0xac83bbe8U ||
-            _memory.Read32(entry + 0xa0UL) != 0xac40bbe8U ||
-            _memory.Read32(entry + 0xb8UL) != 0x03e00008U ||
-            _memory.Read32(entry + 0xbcUL) != 0x27bd0020U)
+        if (!signatureMatches)
         {
             return;
         }
 
         // The helper has already performed its LED/callback side effects here.
+        // The exact helper signature and count operands above identify this
+        // delay even when a restored scheduler stack has reused its saved-RA
+        // slot between callbacks.
         // Let the guest's own branch, delay-slot store, cleanup, and return run.
         _gpr[3] = limit + 1U;
-        if (_traceRd0Home && _bootCountDelayTraceCount++ < 8)
+        if (_traceRd0Home && _audioInitCountDelayTraceCount++ < 8)
         {
             Console.WriteLine(
                 $"[GAUNTDL:BOOT] audio-init-count-delay accelerated " +

@@ -235,3 +235,35 @@ tools/GauntletProbe/mame-gauntdl-mainram.lua
 ```
 
 Staga eller radera dem inte av misstag.
+
+## 2026-08-02 natt: koherent MAME-RAM och native portalutgång
+
+Den äldre phase-1-checkpointen blandade MAME:s övre RAM med EutherDrives
+gamla schedulerstack. En ny lokal checkpoint innehåller hela 32 MiB main RAM,
+matchande R5000-register samt befintligt Voodoo/TMU-tillstånd:
+
+```text
+.build-tmp/euther-mame-phase1-coherent-fullgpu-f4783.warm.gz
+```
+
+Lång `Up` från den checkpointen passerar den riktiga SKY-portalen. Vid f5583
+väntar gästen i audio-init-hjälparen `0x800457f8`; dess signaturvaktade
+count-delay-accelerator anropades tidigare aldrig eftersom state `0x400c`
+gick direkt från steady-state-dispatchen till instruktionstolkningen. Samma
+accelerator körs nu också i den dispatchvägen. Det verifierade anropet hade
+`s0=1`, `v0=0x02faf080`, `v1=0x0008eec8`, flagga 1 och full kodsignatur.
+
+Efter fixen går gästen omedelbart `0x400c -> 0x400e`, startar sin ordinarie
+asset-QIO och ritar en ny native world-yta. Första 10-frame-provet gav två nya
+swaps, 717 texturerade trianglar, 708 täckta trianglar och 546 712 pixlar.
+Den lokala fortsättningspunkten är:
+
+```text
+.build-tmp/coherent-world-f5593.warm.gz
+frameHash=0x5f91e7bc
+```
+
+Den fortsatta levelK2-laddningen når f5793 med 3 836 nya täckta Type-3-
+trianglar och 138 096 rasterpixlar. Den presenterade fronten är ännu den gamla
+SKY/world-ytan medan buffer 0 byggs vidare; fortsätt därifrån tills nästa swap
+innan coin/start och kontrollprov räknas som spelbarhetsbevis.
