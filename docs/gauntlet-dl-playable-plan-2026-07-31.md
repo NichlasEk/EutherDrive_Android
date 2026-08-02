@@ -692,3 +692,25 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
 - Detta är uttryckligen ett phase-1-speltestläge, inte den slutliga Voodoo-
   lösningen. Den korrekta slutpunkten är fortfarande att återskapa samtliga
   draw-pass mellan fast-fill och swap så att kompositen kan tas bort.
+
+### 2026-08-02: spelbar PC-referens och avvisad komposit
+
+- Liveöverlägget avvisades efter verkligt skrivbordstest: det växlade mellan
+  ett äldre komplett MAME-frame och Euthers ofullständiga backbuffer och gav
+  därför sken av rörelse utan en koherent spelbild. Desktop-warm-startaren
+  aktiverar inte längre kompositen.
+- `scripts/run-gauntdl-desktop.sh` startar i stället den lokala verifierade
+  MAME/ Vegas-kärnan med repo-lokala cfg-, nvram-, state- och diff-kataloger.
+  Den återanvänder phase-4-staten när den finns och skriver ingenting under
+  `/tmp`. Kontroller: `5` coin, `1` start, piltangenter samt vänster
+  Ctrl/Alt/Space.
+- Ett bounded CPU-orakel exporterar nu MAME:s GPR, CP0 och FPU-state vid exakt
+  samma relative-207-punkt som phase-1-grafiken. Synkad Euther-körning går
+  genom riktig gästkod och producerar 672 texturerade trianglar på 25 frames,
+  men bara cirka 27 draw-paket per UI-frame mot MAMEs cirka 555. Det gör
+  genomströmnings-/schedulergränsen mätbar och visar att fler framebufferlager
+  inte är en lösning.
+- PC är därmed spelbart via referenskärnan medan Euther-kärnans nästa mål är
+  verklig guest-/FIFO-throughput och koherent swap-presentation. MAME-läget är
+  ett medvetet kompatibilitetsläge, inte ett påstående att den egna Vegas-
+  emuleringen är färdig.

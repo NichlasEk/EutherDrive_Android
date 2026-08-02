@@ -25,6 +25,7 @@ local voodoo_memory_dump_relative = tonumber(os.getenv("GAUNTDL_PHASE5_VOODOO_ME
 local voodoo_memory_dumped = false
 local trace_voodoo_save_items = os.getenv("GAUNTDL_PHASE5_VOODOO_ITEMS") == "1"
 local voodoo_state_output_prefix = os.getenv("GAUNTDL_PHASE5_VOODOO_STATE_PREFIX")
+local trace_cpu_state = os.getenv("GAUNTDL_PHASE5_CPU_STATE") == "1"
 local frame = 0
 local phase5_frame = nil
 local phase4_frame = nil
@@ -137,6 +138,35 @@ local function dump_main_ram(path)
 end
 
 local function dump_voodoo_memory(path)
+	if trace_cpu_state then
+		local wanted_cpu_states = {
+			zero = true, at = true, v0 = true, v1 = true,
+			a0 = true, a1 = true, a2 = true, a3 = true,
+			t0 = true, t1 = true, t2 = true, t3 = true,
+			t4 = true, t5 = true, t6 = true, t7 = true,
+			s0 = true, s1 = true, s2 = true, s3 = true,
+			s4 = true, s5 = true, s6 = true, s7 = true,
+			t8 = true, t9 = true, k0 = true, k1 = true,
+			gp = true, sp = true, fp = true, ra = true,
+			PC = true, HI = true, LO = true, SR = true,
+			Cause = true, EPC = true, Count = true, Compare = true,
+			CCR31 = true,
+		}
+		for index = 0, 31 do
+			wanted_cpu_states["FPR" .. index] = true
+		end
+		local states = {}
+		for name, entry in pairs(maincpu.state) do
+			if wanted_cpu_states[name] then
+				states[#states + 1] = { name = name, value = tostring(entry) }
+			end
+		end
+		table.sort(states, function(a, b) return a.name < b.name end)
+		for _, entry in ipairs(states) do
+			print(string.format(
+				"[phase5-cpu-state] name=%s value=%s", entry.name, entry.value))
+		end
+	end
 	for tag, device in pairs(machine.devices) do
 		for name, index in pairs(device.items) do
 			local item = emu.item(index)
@@ -176,6 +206,23 @@ local function dump_voodoo_memory(path)
 							print(string.format(
 								"[phase5-voodoo-metadata] tag=%s item=%s values=%s",
 								tag, metadata_name, table.concat(values, ",")))
+						end
+						if metadata_name == "0/m_reg/m_regs" then
+							local stats = emu.item(metadata_index)
+							print(string.format(
+								"[phase5-voodoo-stats] pixelsIn=%x chromaFail=%x zFail=%x aFail=%x pixelsOut=%x trianglesOut=%x",
+								stats:read(0x53), stats:read(0x54), stats:read(0x55),
+								stats:read(0x56), stats:read(0x57), stats:read(0x97)))
+						end
+						if string.find(metadata_name, "m_cmdfifo/", 1, true) then
+							local cmdfifo_item = emu.item(metadata_index)
+							local values = {}
+							for value_index = 0, cmdfifo_item.count - 1 do
+								values[#values + 1] = string.format("%x", cmdfifo_item:read(value_index))
+							end
+							print(string.format(
+								"[phase5-voodoo-cmdfifo] item=%s values=%s",
+								metadata_name, table.concat(values, ",")))
 						end
 						if voodoo_state_output_prefix and
 							(metadata_name == "0/m_reg/m_regs" or

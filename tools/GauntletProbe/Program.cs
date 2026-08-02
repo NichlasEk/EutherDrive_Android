@@ -69,6 +69,7 @@ ApplyRequestedDiskTextureMemoryCopy(adapter);
 ApplyRequestedTextureMemoryCopy(adapter);
 LoadRequestedVoodooTextureBanks(adapter);
 LoadRequestedMameVoodooFramebuffer(adapter);
+ApplyRequestedMameCpuState(adapter);
 LoadRequestedTextureWriterSidecar(adapter);
 PrintRequestedGuestMemoryWords(adapter, "start");
 
@@ -558,6 +559,78 @@ static void LoadRequestedMameVoodooFramebuffer(GauntletDarkLegacyAdapter adapter
             }
         }
     }
+}
+
+static void ApplyRequestedMameCpuState(GauntletDarkLegacyAdapter adapter)
+{
+    string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_MAME_CPU_STATE");
+    if (string.IsNullOrWhiteSpace(path))
+        return;
+    if (!File.Exists(path))
+        throw new FileNotFoundException("MAME CPU state file is unavailable", path);
+
+    var values = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
+    foreach (string sourceLine in File.ReadLines(path))
+    {
+        string line = sourceLine.Split('#', 2)[0].Trim();
+        if (line.Length == 0)
+            continue;
+        int separator = line.IndexOf('=');
+        if (separator <= 0 || !TryParseHexUlong(line[(separator + 1)..].Trim(), out ulong value))
+            throw new InvalidDataException($"Invalid MAME CPU state line: {sourceLine}");
+        values[line[..separator].Trim()] = value;
+    }
+
+    string[] gprNames =
+    [
+        "zero", "at", "v0", "v1", "a0", "a1", "a2", "a3",
+        "t0", "t1", "t2", "t3", "t4", "t5", "t6", "t7",
+        "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7",
+        "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra"
+    ];
+    object cpu = GetProperty(GetField(adapter, "_machine"), "Cpu");
+    ulong[] gpr = GetFieldValue<ulong[]>(cpu, "_gpr");
+    for (int index = 0; index < gprNames.Length; index++)
+    {
+        if (!values.TryGetValue(gprNames[index], out ulong value))
+            throw new InvalidDataException($"MAME CPU state is missing {gprNames[index]}");
+        gpr[index] = value;
+    }
+    gpr[0] = 0;
+
+    ulong[] fpr = GetFieldValue<ulong[]>(cpu, "_fpr");
+    for (int index = 0; index < fpr.Length; index++)
+    {
+        if (values.TryGetValue($"FPR{index}", out ulong value))
+            fpr[index] = value;
+    }
+    if (values.TryGetValue("CCR31", out ulong fcr31))
+        GetFieldValue<uint[]>(cpu, "_fcr")[31] = unchecked((uint)fcr31);
+
+    ulong[] cp0 = GetFieldValue<ulong[]>(cpu, "_cp0");
+    cp0[9] = Require("Count");
+    cp0[11] = Require("Compare");
+    cp0[12] = Require("SR");
+    cp0[13] = Require("Cause");
+    cp0[14] = Require("EPC");
+    SetField(cpu, "_hi", Require("HI"));
+    SetField(cpu, "_lo", Require("LO"));
+    SetProperty(cpu, "Pc", Require("PC"));
+    SetProperty(cpu, "LastFetchedInstruction", 0u);
+    SetField(cpu, "_halted", false);
+    SetField(cpu, "_hasPendingBranch", false);
+    SetField(cpu, "_pendingBranchTarget", 0UL);
+    SetField(cpu, "_hasImmediatePcOverride", false);
+    SetField(cpu, "_immediatePcOverride", 0UL);
+    SetField(cpu, "_timerInterruptPending", (cp0[13] & 0x8000UL) != 0);
+    Console.WriteLine(
+        $"mameCpuStateLoad path={path} pc=0x{Require("PC"):x16} sp=0x{gpr[29]:x16} " +
+        $"count=0x{cp0[9]:x8} status=0x{cp0[12]:x8} cause=0x{cp0[13]:x8}");
+
+    ulong Require(string name)
+        => values.TryGetValue(name, out ulong value)
+            ? value
+            : throw new InvalidDataException($"MAME CPU state is missing {name}");
 }
 
 static int StepCpu(Action step, int count, object? cpu = null, ulong? stopPc = null)

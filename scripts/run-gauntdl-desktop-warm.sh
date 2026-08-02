@@ -25,13 +25,13 @@ export EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
 # This checkpoint already contains MAME's live phase-1 task/RAM state. Starting
 # the synthetic fallback task would duplicate the game loop and tear it down.
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=0
-# The imported checkpoint starts with MAME's matching front/back surfaces.
-# Keep the coherence selector active: buffer 0 is cleared before Euther has
-# reconstructed every world pass, while buffer 1 remains the valid front.
-unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX
-export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BACK_BUFFER_OVER_COHERENT_FRAME=1
-export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BASE_BUFFER_INDEX=1
-export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_LIVE_BUFFER_INDEX=0
+# Never manufacture a frame by layering the incomplete live back buffer over
+# an older front buffer.  That looked busy, but it was not a coherent game
+# frame.  Show the live diagnostic surface until native redraw is complete.
+export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX=0
+unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BACK_BUFFER_OVER_COHERENT_FRAME
+unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BASE_BUFFER_INDEX
+unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_LIVE_BUFFER_INDEX
 export EUTHERDRIVE_GAUNTDL_EXPERIMENT_SUPPRESS_DIAGNOSTIC_RENDER_ENABLE=1
 export EUTHERDRIVE_GAUNTDL_UI_WARMUP_STATE="$SNAPSHOT_PATH"
 export EUTHERDRIVE_GAUNTDL_UI_WARMUP_FRAMES="$SNAPSHOT_FRAMES"
