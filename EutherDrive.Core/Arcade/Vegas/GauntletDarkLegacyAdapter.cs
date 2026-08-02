@@ -73,6 +73,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_TMU_ST", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_STANDARD_FIFO_DECODE_COMPLETE_PACKETS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE3_PRODUCER_HEADER_PCS", "0x800bc8ec,0x800bc91c,0x800c5b80"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER", "1"),
@@ -37862,6 +37863,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS"));
     private readonly bool _experimentStandardCommandFifoGlobalPacketState =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE"));
+    private readonly bool _fixStandardCommandFifoDecodeCompletePackets =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_STANDARD_FIFO_DECODE_COMPLETE_PACKETS"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
@@ -39009,8 +39012,21 @@ internal class VoodooBringupBackend : IVoodooBackend
         ulong writePc = CpuPcProvider?.Invoke() ?? 0;
         bool deferWriteDecodeForPc = _experimentCommandFifoDeferWriteDecodePcs.Any(
             candidate => (candidate & 0xffffffffUL) == (writePc & 0xffffffffUL));
+        bool deferIncompleteStandardPacket = false;
+        if (_fixStandardCommandFifoDecodeCompletePackets &&
+            !_fixMameCommandFifoModel &&
+            _experimentStandardCommandFifoGenerations)
+        {
+            int writtenStorage = CommandFifoStorageIndex(logicalWriteIndex);
+            bool writtenPacketComplete =
+                _cmdFifoStoragePacketOwnerValid[writtenStorage] &&
+                _cmdFifoCompletePacketHeaders.Contains(
+                    _cmdFifoStoragePacketOwnerHeaderLogicalIndex[writtenStorage]);
+            deferIncompleteStandardPacket = !writtenPacketComplete;
+        }
         if (_cmdFifoBulkWriteDepth == 0 &&
             !deferWriteDecodeForPc &&
+            !deferIncompleteStandardPacket &&
             (!_fixMameCommandFifoModel || !_experimentMameCommandFifoDeferWriteDecode))
         {
             if (ShouldResyncCommandFifoOutsideStaleWriteRead(out string outsideStaleWriteResyncReason))
@@ -47271,6 +47287,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         int setupAx = unchecked((short)(int)(a.X * 16.0f)) >> 4;
         int setupAy = unchecked((short)(int)(a.Y * 16.0f)) >> 4;
         uint fbzMode = _registers[RegFbzMode];
+        uint textureMode = ReadTextureSampleRegister(RegTextureMode);
+        uint textureLod = ReadTextureSampleRegister(RegTextureLod);
+        bool traceTexturedPixels =
+            _traceTexturedPixelX >= 0 &&
+            _traceTexturedPixelY >= 0 &&
+            _traceTexturedPixelLimit > 0;
         bool useMameAuxDepth = _experimentSetupMameAuxDepth;
         bool mameRgbMask =
             IsColorDrawBufferSelected(fbzMode) &&
@@ -47279,7 +47301,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool mameDepthTest = useMameAuxDepth && (fbzMode & 0x10u) != 0;
         bool mameAlphaPlanes = useMameAuxDepth && (fbzMode & 0x40000u) != 0;
         bool alpha8Mask = _experimentTextureAlpha8Mask &&
-            ((ReadTextureSampleRegister(RegTextureMode) >> 8) & 0x0fu) == 2u;
+            ((textureMode >> 8) & 0x0fu) == 2u;
         ushort zaColor = (ushort)_registers[RegZaColor];
         int setupStartZ = unchecked((int)_registers[RegFstartZ]);
         int setupDzDx = unchecked((int)_registers[RegFdZdX]);
@@ -47302,7 +47324,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                     continue;
 
                 int pixel = (row + x) & (LfbPixels - 1);
-                TraceTexturedPixel("coverage", x, y, bufferIndex, buffer[pixel], _auxBuffer[pixel], 0, fbzMode);
+                if (traceTexturedPixels)
+                    TraceTexturedPixel("coverage", x, y, bufferIndex, buffer[pixel], _auxBuffer[pixel], 0, fbzMode);
                 int setupDx = x - setupAx;
                 int setupDy = y - setupAy;
                 int setupIterZ = unchecked(setupStartZ + (int)((long)setupDy * setupDzDy) + (int)((long)setupDx * setupDzDx));
@@ -47315,14 +47338,21 @@ internal class VoodooBringupBackend : IVoodooBackend
                     int depthSource = (fbzMode & 0x100000u) == 0 ? depthValue : zaColor;
                     if (mameDepthTest && !MameDepthTest(fbzMode, _auxBuffer[pixel], depthSource))
                     {
-                        TraceTexturedPixel("depth-reject", x, y, bufferIndex, buffer[pixel], _auxBuffer[pixel], depthSource, fbzMode);
+                        if (traceTexturedPixels)
+                            TraceTexturedPixel("depth-reject", x, y, bufferIndex, buffer[pixel], _auxBuffer[pixel], depthSource, fbzMode);
                         continue;
                     }
                 }
 
-                float wa = e0 * invArea;
-                float wb = e1 * invArea;
-                float wc = e2 * invArea;
+                float wa = 0.0f;
+                float wb = 0.0f;
+                float wc = 0.0f;
+                if (!_experimentTextureMameSetupGradients)
+                {
+                    wa = e0 * invArea;
+                    wb = e1 * invArea;
+                    wc = e2 * invArea;
+                }
                 float s;
                 float t;
                 ushort texel;
@@ -47345,8 +47375,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                                 iterW,
                                 x,
                                 y,
-                                ReadTextureSampleRegister(RegTextureMode),
-                                ReadTextureSampleRegister(RegTextureLod));
+                                textureMode,
+                                textureLod);
                             _experimentTextureMamePixelLodCounts[targetLod]++;
                         }
                         if (_experimentMameTwoTmuCombine)
@@ -47417,8 +47447,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                         iterW,
                         x,
                         y,
-                        ReadTextureSampleRegister(RegTextureMode),
-                        ReadTextureSampleRegister(RegTextureLod));
+                        textureMode,
+                        textureLod);
                     _experimentTextureMamePixelLodCounts[targetLod]++;
                 }
                 texel = SampleTextureRgb565(s, t, targetLod);
@@ -47475,7 +47505,8 @@ sampledTexel:
                     {
                         if (!_visualizeZeroTextureFallback)
                         {
-                            TraceTexturedPixel("zero-transparent", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
+                            if (traceTexturedPixels)
+                                TraceTexturedPixel("zero-transparent", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                             coveredAny = true;
                             continue;
                         }
@@ -47484,7 +47515,8 @@ sampledTexel:
 
                 if (_experimentMameTwoTmuCombine && (fbzMode & 0x2000u) != 0 && (textureAlpha & 1) == 0)
                 {
-                    TraceTexturedPixel("alpha-bit-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
+                    if (traceTexturedPixels)
+                        TraceTexturedPixel("alpha-bit-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                     coveredAny = true;
                     continue;
                 }
@@ -47499,7 +47531,8 @@ sampledTexel:
                     int alpha = Rgb565ToGrayscale8(texel);
                     if (alpha == 0)
                     {
-                        TraceTexturedPixel("alpha8-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
+                        if (traceTexturedPixels)
+                            TraceTexturedPixel("alpha8-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                         coveredAny = true;
                         continue;
                     }
@@ -47508,9 +47541,11 @@ sampledTexel:
 
                 if (mameRgbMask)
                 {
-                    TraceTexturedPixel("texture-write", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
+                    if (traceTexturedPixels)
+                        TraceTexturedPixel("texture-write", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                     buffer[pixel] = texel;
-                    TrackPixelLastWriter(bufferIndex, x, screenY, writerId);
+                    if (_profilePixelLastWriters)
+                        TrackPixelLastWriter(bufferIndex, x, screenY, writerId);
                     _texturedRasterPixelCount++;
                     if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
                         _rasterBufferPixelCounts[bufferIndex]++;
@@ -47518,7 +47553,8 @@ sampledTexel:
                 }
                 else
                 {
-                    TraceTexturedPixel("rgb-mask-disabled", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
+                    if (traceTexturedPixels)
+                        TraceTexturedPixel("rgb-mask-disabled", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                 }
                 if (mameAuxMask)
                     _auxBuffer[pixel] = mameAlphaPlanes ? (ushort)(texel >> 8) : (ushort)depthValue;
@@ -48640,7 +48676,8 @@ sampledTexel:
         TextureRgba c00 = ReadTextureRgbaAt(tmu, x0, y0, layout.Width, format, mode, layout.BaseAddress);
         uint byteAddress00 = _lastTextureSampleByteAddress;
         uint raw00 = _lastTextureSampleRaw;
-        uint word00 = ReadTexture32(byteAddress00 & ~3u);
+        bool traceSample = _traceTextureSamples || _traceTextureSampleWriters;
+        uint word00 = traceSample ? ReadTexture32(byteAddress00 & ~3u) : 0;
         TextureRgba result = c00;
         if (filtered)
         {
@@ -48657,23 +48694,27 @@ sampledTexel:
         }
 
         ushort rgb565 = result.Rgb565;
-        TrackZeroTextureSample(byteAddress00, rgb565);
+        if (_debugTextureZeroSampleBuckets)
+            TrackZeroTextureSample(byteAddress00, rgb565);
         TrackTextureSampleDebug(byteAddress00, raw00, rgb565);
-        TraceTextureSample(
-            s24_8 / 256.0f,
-            t24_8 / 256.0f,
-            layout.Width,
-            layout.Height,
-            x0,
-            y0,
-            mode,
-            textureLod,
-            textureBase,
-            layout.BaseAddress,
-            byteAddress00,
-            word00,
-            raw00,
-            rgb565);
+        if (traceSample)
+        {
+            TraceTextureSample(
+                s24_8 / 256.0f,
+                t24_8 / 256.0f,
+                layout.Width,
+                layout.Height,
+                x0,
+                y0,
+                mode,
+                textureLod,
+                textureBase,
+                layout.BaseAddress,
+                byteAddress00,
+                word00,
+                raw00,
+                rgb565);
+        }
         return result;
     }
 

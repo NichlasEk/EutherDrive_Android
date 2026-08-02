@@ -1286,3 +1286,41 @@ i praktiken löst för phase-1/gameplay-checkpointen. Den kvarvarande synliga
 blockeraren är diagnostikmenyn som fortfarande ritas ovanpå den växande
 guestscenen; de gamla flagg- och textpump-experimenten träffade inte den
 aktuella ägaren och lämnades avstängda.
+
+## Desktopfortsättning 2026-08-02: spelbar referens och synkad Voodoo-profil
+
+`scripts/run-gauntdl-desktop.sh` är nu den ärliga spelbara PC-vägen: den kör
+Gauntlet Dark Legacy i den lokala MAME-installationen med ROM-länk, NVRAM,
+diff och savestate under repoets begränsade `.build-tmp/mame-phase5-state`.
+Den skapar inte växande loggar eller snapshots i `/tmp`. `5` matar kredit och
+`1` startar Player 1. Detta är referens-/fallbackläget medan den egna Vegas-
+kärnan färdigställs.
+
+Den gamla presenterade bilden plus ny backbuffer får inte kompositeras. Den
+gav skenbar rörelse men var inte en sammanhängande emulerad frame. Native-
+launchern visar därför uttryckligen live buffer 0.
+
+MAME:s fas-1 CPU-, FPU- och CP0-register kan nu laddas över den matchande
+Euther-snapshoten. Ett synkat 25-framesprov gav reproducerbart:
+
+```text
+frameHash             0xc55838b4
+textured triangles    672 (649 covered)
+rasterized pixels     250323
+buffer 0 nonzero      75849
+buffer 1 nonzero      183979
+```
+
+Profilen visade att standard-FIFO:n tidigare försökte avkoda samma ofullständiga
+paket efter nästan varje ordskrivning. Den nya komplettpaketsgaten minskar ett
+1,2M-stegsprov från 29 754 till 4 139 decode-anrop utan att ändra framehash,
+trianglar, pixlar eller bufferinnehåll. Samma gate ingår nu i baseline och
+desktop-warm-launchern. Rastervägen hoppar dessutom över avstängda pixeltraces,
+oanvända barycentriska vikter och en trace-exklusiv extra texturminnesläsning.
+
+Det synkade 25-framesprovet når cirka 9,8 host-frames/s, men producerar bara
+672 trianglar totalt medan MAME gör ungefär 555 trianglar per verklig
+videoframe. Nästa native-gräns är därför både guest/Voodoo-genomströmning och
+en komplett swap-yta; den äldre buffer 1 är fortfarande statisk. Fortsätt med
+triangelrastrets sampler/layout-hotpath och kräv samma `0xc55838b4`-hash vid
+varje prestandaändring.
