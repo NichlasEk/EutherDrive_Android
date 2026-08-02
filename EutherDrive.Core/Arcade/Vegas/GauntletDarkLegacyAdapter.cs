@@ -3638,7 +3638,7 @@ internal sealed class MipsR5000Core
             return;
         bool steadyStateFastDispatch =
             _enableRuntimeSteadyStateFastDispatch &&
-            _memory.Read32(0xffffffff80227ab0UL) == 0x400cU;
+            _memory.RuntimeMainState == 0x400cU;
         if (steadyStateFastDispatch)
         {
             if (_traceWatchPcs.Length > 0)
@@ -4196,7 +4196,9 @@ internal sealed class MipsR5000Core
             return;
 
     ExecuteInstruction:
-        uint op = _memory.Read32(pc);
+        uint op = steadyStateFastDispatch
+            ? _memory.ReadRuntimeInstruction32(pc)
+            : _memory.Read32(pc);
         LastFetchedInstruction = op;
         if (!steadyStateFastDispatch)
             TraceMainRamPointerReferences();
@@ -31391,6 +31393,16 @@ internal sealed class VegasMemoryMap
     private readonly bool _disableTimekeeperWatchdogReset =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_DISABLE_TIMEKEEPER_WATCHDOG_RESET");
     private ulong _traceCpuPc;
+
+    public uint RuntimeMainState => BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan(0x00227ab0, 4));
+
+    public uint ReadRuntimeInstruction32(ulong address)
+    {
+        uint physical = (uint)(address & 0x1fffffffUL);
+        return physical + 3 < _mainRam.Length
+            ? BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4))
+            : Read32(address);
+    }
     private ulong _timekeeperReadTicks;
     private int _timekeeperWatchdogFrameCountdown;
     private bool _timekeeperWatchdogResetRequested;
