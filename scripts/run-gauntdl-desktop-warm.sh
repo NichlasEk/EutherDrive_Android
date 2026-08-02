@@ -5,8 +5,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 
 ROM_PATH="${1:-/home/nichlas/roms/MAME/Midway/Vegas/gauntd}"
-SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/euther-mame-phase1-fullgpu-f4783.warm.gz}"
-SNAPSHOT_FRAMES="${3:-4783}"
+SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/coherent-desktop-f5821.warm.gz}"
+SNAPSHOT_FRAMES="${3:-5821}"
 CPU_STEPS="${4:-60000}"
 UI_DLL="$REPO_ROOT/EutherDrive.UI/bin/Release/net8.0/EutherDrive.UI.dll"
 PROBE_DLL="$REPO_ROOT/tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll"
@@ -22,8 +22,9 @@ fi
 
 export EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME="$CPU_STEPS"
 export EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
-# This checkpoint already contains MAME's live phase-1 task/RAM state. Starting
-# the synthetic fallback task would duplicate the game loop and tear it down.
+# This checkpoint contains matching MAME task/RAM state after the SKY portal
+# and the native audio-init transition. Starting the synthetic fallback task
+# would duplicate the live game loop and tear it down.
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=0
 # The guest performs two immediate swaps around its live update.  Keep the
 # last coherent native front as the base and publish non-empty pixels from

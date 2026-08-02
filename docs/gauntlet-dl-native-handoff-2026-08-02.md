@@ -267,3 +267,19 @@ Den fortsatta levelK2-laddningen når f5793 med 3 836 nya täckta Type-3-
 trianglar och 138 096 rasterpixlar. Den presenterade fronten är ännu den gamla
 SKY/world-ytan medan buffer 0 byggs vidare; fortsätt därifrån tills nästa swap
 innan coin/start och kontrollprov räknas som spelbarhetsbevis.
+
+Desktop-preseten fortsätter med diagnostic-render-suppression och når f5821
+med Player 1 redan aktiv (`0x80227af4=1`). Från den checkpointen når både
+frontendrecordet och gästens normaliserade held-word rätt separata värden:
+
+```text
+Fight  0x80262b90=0x00000400  0x80227ba8=0x00000400
+Magic  0x80262b90=0x00000200  0x80227ba8=0x00000200
+```
+
+Ett kombinerat Up/Fight-prov till f5851 gav composite-hash `0x91132263`,
+medan den byte-exakta no-input-kontrollen från samma f5821-checkpoint gav
+`0xc6b43182`. Inputen påverkar alltså den levande guest-/renderkedjan kausalt.
+Desktopstartaren använder nu `.build-tmp/coherent-desktop-f5821.warm.gz`.
+Kvarvarande blockerare för visuellt spelbar status är glyph-/diagnostikblocket
+i live-buffer 0 samt korrekt presentation/skaling av gästens 512x384-yta.
