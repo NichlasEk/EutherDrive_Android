@@ -1324,3 +1324,28 @@ videoframe. Nästa native-gräns är därför både guest/Voodoo-genomströmning
 en komplett swap-yta; den äldre buffer 1 är fortfarande statisk. Fortsätt med
 triangelrastrets sampler/layout-hotpath och kräv samma `0xc55838b4`-hash vid
 varje prestandaändring.
+
+### Bildexakt TMU-triangelcache
+
+Den aktiva två-TMU-samplern läste tidigare mode, LOD, base, format och hela
+LOD-layouten på nytt för varje pixel. Dessa värden är stabila under en
+triangel och förbereds nu en gång per TMU och triangel, inklusive alla nio
+LOD-layouts och 16-bitars byteswapval. Debug-exklusiva minnesläsningar är
+fortsatt kvar när respektive trace är aktiv.
+
+Den synkade 25-frameskontrollen är bitidentisk med föregående referens men
+snabbare:
+
+```text
+före cache   runMs=2544.9   9.82 host-frames/s
+efter cache  runMs=1703.9  14.67 host-frames/s
+frameHash=0xc55838b4, triangles=672/649, pixels=250323
+```
+
+En swaptrace förklarar samtidigt varför den äldre buffer 1 återkommer: två
+legitima `swapbufferCMD=0` sker rygg mot rygg vid `0x80102a80` och via
+Type-1 `0x00010251` vid `0x80102ab4`, utan rasterarbete emellan. Detta är den
+redan kända Voodoo-resetfamiljen, inte ett paket som får specialundertryckas.
+Korrekt presentation kräver den generella PCI-FIFO/busy- och scanline-partial-
+update-modellen; tills dess ska native-launchern fortsätta visa rå live buffer
+0 och aldrig den falska gamla/nya kompositen.

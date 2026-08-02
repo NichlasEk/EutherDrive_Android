@@ -47284,6 +47284,19 @@ internal class VoodooBringupBackend : IVoodooBackend
             bufferIndex,
             out int triangleLodBase8p8);
         int triangleLodBase1_8p8 = ComputeTextureLodBase8p8(dS1dX, dS1dY, dT1dX, dT1dY);
+        bool hasTmu0TriangleState = false;
+        bool hasTmu1TriangleState = false;
+        MameTextureTriangleState tmu0TriangleState = default;
+        MameTextureTriangleState tmu1TriangleState = default;
+        if (_experimentMameTwoTmuCombine)
+        {
+            hasTmu0TriangleState = _tmuRegisterValid[0][RegTextureMode] && _tmuRegisterValid[0][RegTextureLod];
+            hasTmu1TriangleState = _tmuRegisterValid[1][RegTextureMode] && _tmuRegisterValid[1][RegTextureLod];
+            if (hasTmu0TriangleState)
+                tmu0TriangleState = BuildMameTextureTriangleState(0);
+            if (hasTmu1TriangleState)
+                tmu1TriangleState = BuildMameTextureTriangleState(1);
+        }
         int setupAx = unchecked((short)(int)(a.X * 16.0f)) >> 4;
         int setupAy = unchecked((short)(int)(a.Y * 16.0f)) >> 4;
         uint fbzMode = _registers[RegFbzMode];
@@ -47395,7 +47408,11 @@ internal class VoodooBringupBackend : IVoodooBackend
                                 triangleLodBase1_8p8,
                                 x,
                                 y,
-                                bufferIndex);
+                                bufferIndex,
+                                hasTmu0TriangleState,
+                                in tmu0TriangleState,
+                                hasTmu1TriangleState,
+                                in tmu1TriangleState);
                             texel = combined.Rgb565;
                             textureAlpha = combined.A;
                         }
@@ -48634,16 +48651,51 @@ sampledTexel:
         public ushort Rgb565 => Rgb888ToRgb565(R, G, B);
     }
 
-    private TextureRgba SampleTextureMameFixedForTmu(int tmu, long iterS, long iterT, long iterW, int targetLodOverride)
+    private readonly record struct MameTextureTriangleState(
+        uint Mode,
+        uint Lod,
+        uint Base,
+        int Format,
+        bool Filtered,
+        bool Swap16BitBytes,
+        TextureFetchLayout[] Layouts);
+
+    private MameTextureTriangleState BuildMameTextureTriangleState(int tmu)
     {
         uint mode = ReadTextureRegisterForTmu(tmu, RegTextureMode);
-        uint textureLod = ReadTextureRegisterForTmu(tmu, RegTextureLod);
+        uint lod = ReadTextureRegisterForTmu(tmu, RegTextureLod);
         uint textureBase = ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr);
+        TextureFetchLayout[] layouts = new TextureFetchLayout[9];
+        for (int level = 0; level < layouts.Length; level++)
+            layouts[level] = GetMameTextureFetchLayout(level, mode, tmu);
+
+        return new MameTextureTriangleState(
+            mode,
+            lod,
+            textureBase,
+            ResolveTextureSampleFormat(mode, lod, textureBase),
+            IsTextureFilteringEnabled(mode),
+            _experimentTexture16BitByteSwapRegisterBase.HasValue &&
+                textureBase == (uint)_experimentTexture16BitByteSwapRegisterBase.Value,
+            layouts);
+    }
+
+    private TextureRgba SampleTextureMameFixedForTmu(
+        int tmu,
+        long iterS,
+        long iterT,
+        long iterW,
+        int targetLodOverride,
+        in MameTextureTriangleState triangleState)
+    {
+        uint mode = triangleState.Mode;
+        uint textureLod = triangleState.Lod;
+        uint textureBase = triangleState.Base;
         int targetLod = targetLodOverride >= 0
             ? Math.Clamp(targetLodOverride, 0, 8)
             : GetTextureTargetLod(textureLod, textureBase);
-        int format = ResolveTextureSampleFormat(mode, textureLod, textureBase);
-        TextureFetchLayout layout = GetMameTextureFetchLayout(targetLod, mode, tmu);
+        int format = triangleState.Format;
+        TextureFetchLayout layout = triangleState.Layouts[targetLod];
 
         int s24_8;
         int t24_8;
@@ -48661,7 +48713,7 @@ sampledTexel:
         if ((mode & 0x20u) != 0 && iterW < 0)
             s24_8 = t24_8 = 0;
 
-        bool filtered = IsTextureFilteringEnabled(mode);
+        bool filtered = triangleState.Filtered;
         if (filtered)
         {
             s24_8 -= 0x80;
@@ -48673,7 +48725,7 @@ sampledTexel:
         int y0 = Coordinate24_8ToTexelIndex(t24_8, layout.Height, targetLod, clampT);
         if (_fixTextureTOriginFlip)
             y0 = layout.Height - 1 - y0;
-        TextureRgba c00 = ReadTextureRgbaAt(tmu, x0, y0, layout.Width, format, mode, layout.BaseAddress);
+        TextureRgba c00 = ReadTextureRgbaAt(tmu, x0, y0, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes);
         uint byteAddress00 = _lastTextureSampleByteAddress;
         uint raw00 = _lastTextureSampleRaw;
         bool traceSample = _traceTextureSamples || _traceTextureSampleWriters;
@@ -48685,9 +48737,9 @@ sampledTexel:
             int y1 = Coordinate24_8ToTexelIndex(t24_8 + (1 << (targetLod + 8)), layout.Height, targetLod, clampT);
             if (_fixTextureTOriginFlip)
                 y1 = layout.Height - 1 - y1;
-            TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress);
-            TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress);
-            TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress);
+            TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes);
+            TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes);
+            TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes);
             int fx = (int)(Coordinate24_8Fraction(s24_8, targetLod) * 256.0f);
             int fy = (int)(Coordinate24_8Fraction(t24_8, targetLod) * 256.0f);
             result = BilinearTextureRgba(c00, c10, c01, c11, fx, fy);
@@ -48718,7 +48770,15 @@ sampledTexel:
         return result;
     }
 
-    private TextureRgba ReadTextureRgbaAt(int tmu, int x, int y, int width, int format, uint mode, uint baseAddress)
+    private TextureRgba ReadTextureRgbaAt(
+        int tmu,
+        int x,
+        int y,
+        int width,
+        int format,
+        uint mode,
+        uint baseAddress,
+        bool swap16BitBytes)
     {
         bool sixteenBit = IsTextureFormat16Bit(format);
         uint texelIndex = (uint)(y * width + x);
@@ -48730,11 +48790,8 @@ sampledTexel:
         {
             uint laneAddress = GetTexture16BitLaneByteAddress(byteAddress);
             raw = (ushort)((word >> (int)((laneAddress & 2u) * 8u)) & 0xffffu);
-            if (_experimentTexture16BitByteSwapRegisterBase.HasValue &&
-                ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr) == (uint)_experimentTexture16BitByteSwapRegisterBase.Value)
-            {
+            if (swap16BitBytes)
                 raw = BinaryPrimitives.ReverseEndianness(raw);
-            }
         }
         else
         {
@@ -48884,7 +48941,11 @@ sampledTexel:
         int lodBase1_8p8,
         int x,
         int y,
-        int bufferIndex)
+        int bufferIndex,
+        bool hasTmu0TriangleState,
+        in MameTextureTriangleState tmu0TriangleState,
+        bool hasTmu1TriangleState,
+        in MameTextureTriangleState tmu1TriangleState)
     {
         TextureRgba combined = default;
         bool captureTrace = _traceTwoTmuSamples &&
@@ -48895,14 +48956,14 @@ sampledTexel:
         ushort raw1 = 0;
         TextureRgba local1 = default;
         TextureSampleWriterKey writer1 = default;
-        if (_tmuRegisterValid[1][RegTextureMode] && _tmuRegisterValid[1][RegTextureLod])
+        if (hasTmu1TriangleState)
         {
-            uint mode1 = ReadTextureRegisterForTmu(1, RegTextureMode);
-            uint lod1 = ReadTextureRegisterForTmu(1, RegTextureLod);
+            uint mode1 = tmu1TriangleState.Mode;
+            uint lod1 = tmu1TriangleState.Lod;
             targetLod1 = lodBase1_8p8 == int.MinValue
-                ? GetTextureTargetLod(lod1, ReadTextureRegisterForTmu(1, RegTextureBaseAddr))
+                ? GetTextureTargetLod(lod1, tmu1TriangleState.Base)
                 : ComputeMameTexturePixelLod(lodBase1_8p8, iterW1, x, y, mode1, lod1);
-            local1 = SampleTextureMameFixedForTmu(1, iterS1, iterT1, iterW1, targetLod1);
+            local1 = SampleTextureMameFixedForTmu(1, iterS1, iterT1, iterW1, targetLod1, in tmu1TriangleState);
             if (_traceTmu1SamplePages)
             {
                 uint sampleAddress = _lastTextureSampleByteAddress;
@@ -48912,7 +48973,7 @@ sampledTexel:
                     TextureSampleWriterKey pageWriter = GetTextureSampleWriterKey(sampleAddress);
                     Console.WriteLine(
                         $"[GAUNTDL:TMU1-SAMPLE-PAGE] frame={_renderFrame} page=0x{localPage:X3} " +
-                        $"address=0x{sampleAddress:X6} base=0x{ReadTextureRegisterForTmu(1, RegTextureBaseAddr):X8} " +
+                        $"address=0x{sampleAddress:X6} base=0x{tmu1TriangleState.Base:X8} " +
                         $"lod={targetLod1} raw=0x{_lastTextureSampleRaw:X4} " +
                         $"writer={(pageWriter.Equals(default(TextureSampleWriterKey)) ? 0 : 1)} " +
                         $"source=0x{pageWriter.Source:X8} sourceBase=0x{pageWriter.SourceBase:X8} " +
@@ -48939,14 +49000,14 @@ sampledTexel:
         ushort raw0 = 0;
         TextureRgba local0 = default;
         TextureSampleWriterKey writer0 = default;
-        if (_tmuRegisterValid[0][RegTextureMode] && _tmuRegisterValid[0][RegTextureLod])
+        if (hasTmu0TriangleState)
         {
-            uint mode0 = ReadTextureRegisterForTmu(0, RegTextureMode);
-            uint lod0 = ReadTextureRegisterForTmu(0, RegTextureLod);
+            uint mode0 = tmu0TriangleState.Mode;
+            uint lod0 = tmu0TriangleState.Lod;
             targetLod0 = lodBase0_8p8 == int.MinValue
-                ? GetTextureTargetLod(lod0, ReadTextureRegisterForTmu(0, RegTextureBaseAddr))
+                ? GetTextureTargetLod(lod0, tmu0TriangleState.Base)
                 : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, mode0, lod0);
-            local0 = SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, targetLod0);
+            local0 = SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, targetLod0, in tmu0TriangleState);
             if (captureTrace)
             {
                 address0 = _lastTextureSampleByteAddress;
