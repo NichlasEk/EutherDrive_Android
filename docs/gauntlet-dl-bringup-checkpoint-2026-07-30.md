@@ -1349,3 +1349,11 @@ redan kända Voodoo-resetfamiljen, inte ett paket som får specialundertryckas.
 Korrekt presentation kräver den generella PCI-FIFO/busy- och scanline-partial-
 update-modellen; tills dess ska native-launchern fortsätta visa rå live buffer
 0 och aldrig den falska gamla/nya kompositen.
+
+Rasterloopen förbereder nu också triangelns sex kantdifferenser en gång och
+power-of-two-texturer wrappar med bitmask i stället för heltalsdivision. Den
+varma 1,2M-proben behöll `0xc55838b4` och sjönk vidare till cirka
+`1122 ms` CPU / `541 ms` FIFO-raster i bästa av tre jämförbara pass. Den
+längre 25-frameskontrollen behöll samtliga referensräknare och hash; dess
+wall-clock varierar mer med JIT och systemlast och används därför främst som
+korrekthetskontroll.

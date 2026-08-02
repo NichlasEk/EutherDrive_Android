@@ -47322,6 +47322,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         long setupStartW = MameFloatToInt64(_registers[RegFstartW], 32);
         long setupDwDx = MameFloatToInt64(_registers[RegFdWdX], 32);
         long setupDwDy = MameFloatToInt64(_registers[RegFdWdY], 32);
+        float edge0Dy = c.Y - b.Y;
+        float edge0Dx = c.X - b.X;
+        float edge1Dy = a.Y - c.Y;
+        float edge1Dx = a.X - c.X;
+        float edge2Dy = b.Y - a.Y;
+        float edge2Dx = b.X - a.X;
         for (int y = minY; y < maxY; y++)
         {
             float py = y + 0.5f;
@@ -47330,9 +47336,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             for (int x = minX; x < maxX; x++)
             {
                 float px = x + 0.5f;
-                float e0 = Edge(b.X, b.Y, c.X, c.Y, px, py);
-                float e1 = Edge(c.X, c.Y, a.X, a.Y, px, py);
-                float e2 = Edge(a.X, a.Y, b.X, b.Y, px, py);
+                float e0 = (px - b.X) * edge0Dy - (py - b.Y) * edge0Dx;
+                float e1 = (px - c.X) * edge1Dy - (py - c.Y) * edge1Dx;
+                float e2 = (px - a.X) * edge2Dy - (py - a.Y) * edge2Dx;
                 if (!(positive ? e0 >= 0 && e1 >= 0 && e2 >= 0 : e0 <= 0 && e1 <= 0 && e2 <= 0))
                     continue;
 
@@ -49113,6 +49119,8 @@ sampledTexel:
             return Math.Clamp(texel, 0, Math.Max(0, size - 1));
         if (size <= 1)
             return 0;
+        if ((size & (size - 1)) == 0)
+            return texel & (size - 1);
         texel %= size;
         if (texel < 0)
             texel += size;
