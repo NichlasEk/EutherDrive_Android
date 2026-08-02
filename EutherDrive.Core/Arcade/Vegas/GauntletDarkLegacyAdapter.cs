@@ -37588,6 +37588,15 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_RENDER_BUFFER_CHOICE_LIMIT"), 32);
     private readonly int _experimentForceRenderBufferIndex =
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX"), -1);
+    private readonly bool _experimentCompositeBackBufferOverCoherentFrame =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BACK_BUFFER_OVER_COHERENT_FRAME"));
+    private readonly int _experimentCompositeBaseBufferIndex =
+        ParseOptionalInt(Environment.GetEnvironmentVariable(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BASE_BUFFER_INDEX"), -1);
+    private readonly int _experimentCompositeLiveBufferIndex =
+        ParseOptionalInt(Environment.GetEnvironmentVariable(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_LIVE_BUFFER_INDEX"), -1);
     private readonly bool _traceNonNeutralFastFill = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_NON_NEUTRAL_FASTFILL") == "1";
     private readonly bool _traceType0Packets = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_PACKETS"));
     private readonly bool _traceType0JumpsOnly = GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TYPE0_JUMPS_ONLY"));
@@ -41467,6 +41476,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         int copyWidth = Math.Min(target.Width, 640);
         int copyHeight = Math.Min(target.Height, 480);
         int renderBufferIndex = ChooseRenderBufferIndex();
+        if (_experimentCompositeBackBufferOverCoherentFrame &&
+            (uint)_experimentCompositeBaseBufferIndex < (uint)_colorBuffers.Length)
+        {
+            renderBufferIndex = _experimentCompositeBaseBufferIndex;
+        }
         TraceRenderBufferChoice(renderBufferIndex);
         _lastRenderBufferIndex = renderBufferIndex;
         if (ShouldMaterializePendingClearForRender(renderBufferIndex))
@@ -41479,6 +41493,16 @@ internal class VoodooBringupBackend : IVoodooBackend
                          (!_fixDisplayBufferSelection || renderBufferIndex == _frontBufferIndex)
             ? _presentedColorBuffer
             : _colorBuffers[renderBufferIndex];
+        int liveOverlayIndex =
+            (uint)_experimentCompositeLiveBufferIndex < (uint)_colorBuffers.Length
+                ? _experimentCompositeLiveBufferIndex
+                : _backBufferIndex;
+        ushort[]? liveOverlay =
+            _experimentCompositeBackBufferOverCoherentFrame &&
+            renderBufferIndex != liveOverlayIndex &&
+            (uint)liveOverlayIndex < (uint)_colorBuffers.Length
+                ? _colorBuffers[liveOverlayIndex]
+                : null;
         for (int y = 0; y < copyHeight; y++)
         {
             int sourceY = _fixMameMediumResolutionOutput ? y * 384 / copyHeight : y;
@@ -41487,7 +41511,10 @@ internal class VoodooBringupBackend : IVoodooBackend
             for (int x = 0; x < copyWidth; x++)
             {
                 int sourceX = _fixMameMediumResolutionOutput ? x * 512 / copyWidth : x;
-                ushort rgb = front[(src + sourceX) & (LfbPixels - 1)];
+                int sourcePixel = (src + sourceX) & (LfbPixels - 1);
+                ushort rgb = front[sourcePixel];
+                if (liveOverlay is not null && liveOverlay[sourcePixel] != 0)
+                    rgb = liveOverlay[sourcePixel];
                 uint bgra = Rgb565ToBgra(rgb);
                 target.Buffer[dst + 0] = (byte)(bgra & 0xff);
                 target.Buffer[dst + 1] = (byte)((bgra >> 8) & 0xff);

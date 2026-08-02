@@ -678,3 +678,17 @@ Type3-paket inte emitteras; diagnosmenyn ska inte återinföras som förklaring.
 - En full, blind import av MAME:s 256 FBI-register avvisades och togs bort ur
   proben. Den skrev över runtime-/initregister utan att återskapa tillhörande
   intern Voodoo-state och gav en vit, trasig bild.
+
+### 2026-08-02: koherent bas med liveöverlägg
+
+- Att enbart välja den rena buffer 1 gav korrekt men helt stillastående bild.
+  Desktopstartaren låser nu den checkpoint-specifika rena buffer 1 som bas och
+  kompositerar icke-svarta, nyritade pixlar från buffer 0 ovanpå den. Fast-fill-
+  hålen får därmed inte radera den verifierade scenen.
+- Ett 25-frame-prov med coin, start, höger och fight höll 183 999 icke-svarta
+  pixlar, rasteriserade 580 texturerade trianglar och ändrade frame-hashen från
+  `0xc55838b4` till `0xefcd0e12`. Ytterligare fem frames ändrade hundratals
+  presenterade pixlar utan att scenen föll tillbaka till svart.
+- Detta är uttryckligen ett phase-1-speltestläge, inte den slutliga Voodoo-
+  lösningen. Den korrekta slutpunkten är fortfarande att återskapa samtliga
+  draw-pass mellan fast-fill och swap så att kompositen kan tas bort.
