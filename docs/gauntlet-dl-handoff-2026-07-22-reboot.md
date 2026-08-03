@@ -6143,3 +6143,21 @@ nu detta till exakt den PC:n (eller alla instruktioner när minnestrace faktiskt
 `6.072 s` och behöll exakt `frameHash=0x2b6b81d0` samt samtliga verifierade
 gästord. Ett bredare straight-line-blockexperiment gav ingen rastervinst och
 blev långsammare i launcherprofilen; det togs därför bort helt.
+
+Fortsatta A/B-prov avgränsade nästa prestandasteg ytterligare. Global
+`DOTNET_TieredCompilation=0` sänkte ett sexmiljoners CPU/rasterdiscard-prov
+från `1.624-1.731 s` till `1.181-1.212 s`, men gjorde Voodoo-rastret långsamt
+nog att det fulla 300-frame-provet försämrades från `6.072 s` till `6.223 s`.
+Selektiv `AggressiveOptimization` på `Step`/`Execute` gick ännu sämre
+(`1.964-1.982 s`), vilket visar att dynamisk PGO är viktig för den stora
+instruktionsswitchen. Samma attribut enbart på ytterloopen var neutralt.
+
+En statisk karta som undvek de glesa steady-state-PC-switcharna gav också bara
+normal körvariation (`1.478-1.576 s`). En separat gameplay-instruktionscache
+var bitidentisk men långsammare (`1.644-1.670 s`), och direkt oalignerad
+`Unsafe`-RAM-access var cirka 2-3 procent långsammare än nuvarande
+`BinaryPrimitives`-väg. Alla dessa experiment är helt borttagna. Den återstående
+CPU-gränsen är själva per-instruktionsdispatchningen; nästa meningsfulla större
+spår är en fördekodad/kompilerad 400f-blockväg som kan elimineras eller falla
+tillbaka vid kontrollflöde, kända fastpath-PC:n och spårning, med
+`0x2b6b81d0` och de sju gameplayorden som obligatoriskt orakel.
