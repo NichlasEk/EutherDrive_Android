@@ -15570,7 +15570,11 @@ internal sealed class MipsR5000Core
     private bool IsKnownRuntimeGameplayDiagnosticText(uint mainState, ulong text)
     {
         const ulong diagnosticTextStart = 0xffffffff8020f268UL;
-        const ulong diagnosticTextEnd = 0xffffffff8020f606UL;
+        // The complete diagnostic bank includes the render-mode controls and
+        // their short value strings through 0x8020f6ce. Keeping the old f606
+        // boundary left the lower half of the menu live after the loader had
+        // reused its render list in gameplay.
+        const ulong diagnosticTextEnd = 0xffffffff8020f700UL;
         bool exactRuntimeWarning =
             MatchesAscii(text, "AllocMem() called while mem reserved") ||
             MatchesAscii(text, "GetMemBase() called while mem reserved") ||
@@ -15581,16 +15585,22 @@ internal sealed class MipsR5000Core
         if (mainState == 0x400dU)
         {
             // The reservation warnings are copied into several distinct diagnostic
-            // line buffers while the loader is active. Later in the same state the
-            // regular menu bank is rebuilt after those warning rows, with its
-            // sentinel shifted to 0x8020f470. Recognize both complete layouts; do
-            // not infer diagnostic ownership from this reused arena alone.
+            // line buffers while the loader is active. Depending on which render
+            // list survives the loading-to-gameplay handoff, the complete menu bank
+            // can retain its original base or be rebuilt after those warning rows
+            // with its sentinel shifted to 0x8020f470. Recognize both complete
+            // layouts; do not infer diagnostic ownership from this reused arena
+            // alone.
             const ulong shiftedDiagnosticTextStart = 0xffffffff8020f470UL;
+            bool originalDiagnosticMenu =
+                text >= diagnosticTextStart &&
+                text < diagnosticTextEnd &&
+                MatchesAscii(diagnosticTextStart, "DIAGNOSTIC MENU");
             bool shiftedDiagnosticMenu =
                 text >= shiftedDiagnosticTextStart &&
                 text < diagnosticTextEnd &&
                 MatchesAscii(shiftedDiagnosticTextStart, "DIAGNOSTIC MENU");
-            return shiftedDiagnosticMenu;
+            return originalDiagnosticMenu || shiftedDiagnosticMenu;
         }
 
         return mainState is 0x400cU or 0x400eU &&

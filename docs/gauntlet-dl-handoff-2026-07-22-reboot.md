@@ -5962,3 +5962,55 @@ fullborda sina återstående riktiga chunks tills index 14 lämnar state 3 och
 loadern går naturligt till state 32. Patcha inte completion, aktivt index eller
 loader state. Separata lokala probe-filer och övriga untracked mappar tillhör
 arbetskopian och ska fortsatt lämnas orörda.
+
+#### Gameplaygräns och ren world-bild 2026-08-03
+
+Den fortsatta loaderkedjan slutförde index 14 och nådde den riktiga
+loader-complete-gränsen vid f8363. Den äldre snapshotgrenen bar dock med sig
+ett historiskt DCS-underflöde i `0x80227c80=0xffffffff`, vilket blockerade
+huvudstateövergången trots att loaderns övriga slutvillkor var giltiga.
+Replay från den rena föregångaren f6383 med dagens signaturvaktade fix fångade
+den exakta gästägda skrivningen:
+
+```text
+[GAUNTDL:FIX] runtime-audio-active-count-underflow
+pc=0xffffffff80045b90 address=0xffffffff80227c80
+value=ffffffff->00000000
+```
+
+För att validera den redan bevisade fixens följd korrigerades endast detta
+historiska snapshotvärde i en lokal probegren. Gästkoden skrev därefter själv
+`0x80227ab0: 0x400e -> 0x400d` vid `0x800520ec`; inga state-, PC- eller
+spelarpositionsvärden patchades. Resource heap gick samtidigt till
+`0x00474650` och Voodoo fortsatte med riktiga draw-, LFB- och texturwrites.
+
+Den första gameplayframen innehöll stale `DIAGNOSTIC MENU`-records. Den
+källägda recordspärren känner nu igen både originalbanken vid `0x8020f268`
+och den skiftade banken vid `0x8020f470` i state `0x400d`. Det verifierade
+diagnostikintervallet sträcker sig till `0x8020f6ce`, så den exklusiva vakten
+slutar vid `0x8020f700`. Efter detta är f8393 en sammanhängande mörkgrön
+levelbild med väggar, tunnor och gångar, utan diagnostikmenyn:
+
+```text
+.build-tmp/reconstructed-diagclean2-f8393.warm.gz
+.build-tmp/reconstructed-diagclean2-f8393.png
+main state=0x400d
+loader=-1
+audio active count=0
+player xyz=200/150/600
+```
+
+Inputkedjan är också explicit avgränsad. Med native input poll och sexton
+game-task-slices når Right/Fight/Magic gästens runtime-record och normaliserade
+held-word. En isolerad Right-checkpoint gav `0x80262b90=0xc0` och
+`0x80227ba8=0x80`. Den kompletta native player-schedulern `0x80020ab4` går
+därefter in i phase-1-dispatchen `0x80021290` och world/collisionkedjan, men
+returnerar inte inom fyra miljoner gästinstruktioner och ändrar ännu inte
+spelarens koordinater. Ett brett gameplayanrop testades därför endast lokalt
+och togs bort igen; det ska inte promoveras som en spelbarhetsfix.
+
+Nästa native-gräns är prestanda/termination i phase-1 world-queryn som går via
+`0x800346fc` och den täta loopen vid `0x8007767c..0x80077744`. Separera den
+från render-tasken och optimera bara en signatur- och datavaktad ägare.
+Desktop-warm-startaren pekar fortfarande på den äldre SKY-checkpointen och ska
+inte bytas till f8393 förrän rörelse och action faktiskt är verifierade.
