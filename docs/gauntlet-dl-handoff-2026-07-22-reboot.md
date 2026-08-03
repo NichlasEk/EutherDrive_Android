@@ -6014,3 +6014,56 @@ Nästa native-gräns är prestanda/termination i phase-1 world-queryn som går v
 från render-tasken och optimera bara en signatur- och datavaktad ägare.
 Desktop-warm-startaren pekar fortfarande på den äldre SKY-checkpointen och ska
 inte bytas till f8393 förrän rörelse och action faktiskt är verifierade.
+
+## 2026-08-03: native gameplay state 400f och verifierad input
+
+MAME:s `journey`-sekvens bekräftade hela huvudtillståndskedjan utan hostpatch:
+
+```text
+400c -> 400e  pc=800edac8
+400e -> 400d  pc=800c86e8
+400d -> 400b  pc=800e2c6c
+400b -> 400f  pc=800158b8
+```
+
+Ett rel-1400-orakel exporterades med state `400f`, aktiv Player 1 i fas 1,
+fullt main RAM samt CPU/FPU/CP0. Det synkades över den tidigare full-GPU-
+checkpointen och fortsatte 300 native hostframes utan halt. Den resulterande
+hållbara lokala checkpointen är:
+
+```text
+.build-tmp/euther-journey-mixed-f5083.warm.gz
+main state       0x400f
+active mask      0x00000001
+player phase     0x00000001
+run              300 frames / 6.785 s / 44.22 host fps
+live buffer 0    hash 0x2b6b81d0
+```
+
+Buffer 0 visar nu en verklig gameplay-frame med Sorceress, HUD och level-
+geometri. Under samma native körning steg draw packets med cirka 7700 och
+swapräknaren med 16. Buffer 1 är fortfarande den äldre kompletta båtbilden;
+desktop-launchern tvingar därför live buffer 0 och kompositerar inte två
+olika gästframes.
+
+Input är verifierad genom spelets egna råa och normaliserade ord samt olika
+player-state-resultat:
+
+```text
+Right   raw 0x0080  normalized 0x00c0  ändrar Player 1-fysikposten
+Fight   raw 0x0200  normalized 0x0200  action 0x01
+Magic   raw 0x0400  normalized 0x0400  action 0x0b
+Turbo   raw 0x0800  normalized 0x0800  action 0x02
+```
+
+Steady-state-fastdispatch omfattar nu `400c`, `400d`, `400e` och `400f`.
+300 frames i den naturliga syntetiska game-task-vägen i `400d` var stabila,
+men visade att direkt host-anrop av player-schedulern är fel caller/context
+och därför togs det experimentet bort.
+
+Kvarvarande native blockerare är hastigheten för en komplett gäst-videoframe.
+Vid 60k CPU-steg per hostframe är hostpresentationen 44 fps, men en komplett
+Voodoo-speluppdatering ligger bara kring 1-2 fps. Att kasta type-3-raster höjde
+hosttakten till cirka 64 fps men löser inte CPU/RTOS-genomströmningen. Nästa
+arbete ska därför profilera den generella `400f`-CPU/FIFO-hotpathen och hålla
+`0x2b6b81d0` som live-scenreferens.

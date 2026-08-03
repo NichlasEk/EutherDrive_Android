@@ -441,6 +441,11 @@ internal sealed class GauntletDarkLegacyMachine
     private readonly int _runtimeGameTaskSlicesPerFrame =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GAME_TASK_SLICES_PER_FRAME", 1);
     private int _runtimeGameTaskTraceCount;
+    private readonly bool _traceRuntimeMainStateTransitions =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable(
+                "EUTHERDRIVE_GAUNTDL_TRACE_RUNTIME_MAIN_STATE_TRANSITIONS"));
+    private uint? _lastTracedRuntimeMainState;
     private readonly int _runtimePlayerSchedulerTicksPerFrame =
         ParsePositiveInt(
             "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_PLAYER_SCHEDULER_TICKS_PER_FRAME",
@@ -544,6 +549,13 @@ internal sealed class GauntletDarkLegacyMachine
             _runtimeGameTaskTraceCount++;
         }
         uint currentMainState = MemoryMap.Read32(runtimeMainState);
+        if (_traceRuntimeMainStateTransitions && _lastTracedRuntimeMainState != currentMainState)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:MAIN-STATE] frame-state=0x{currentMainState:x} " +
+                $"previous={(_lastTracedRuntimeMainState.HasValue ? $"0x{_lastTracedRuntimeMainState.Value:x}" : "none")}");
+            _lastTracedRuntimeMainState = currentMainState;
+        }
         bool runPretransitionGameTask =
             _enableRuntimeGameTask &&
             _enableRuntimeGameTaskPretransition &&
@@ -3709,7 +3721,7 @@ internal sealed class MipsR5000Core
             return;
         bool steadyStateFastDispatch =
             _enableRuntimeSteadyStateFastDispatch &&
-            _memory.RuntimeMainState == 0x400cU;
+            _memory.RuntimeMainState is 0x400cU or 0x400dU or 0x400eU or 0x400fU;
         if (steadyStateFastDispatch)
         {
             if (_traceWatchPcs.Length > 0)
