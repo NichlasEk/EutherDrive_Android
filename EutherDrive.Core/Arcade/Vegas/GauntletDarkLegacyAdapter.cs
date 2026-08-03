@@ -2128,6 +2128,7 @@ internal sealed class MipsR5000Core
     private bool _insideRuntimePhaseFiveExit;
     private int _runtimePhaseFiveQioWaitServiceAttempts;
     private uint _runtimePhaseFiveQioWaitServiceHandle = uint.MaxValue;
+    private ulong _runtimePhaseFiveQioWaitServiceObject;
     private bool _runtimeTempleWeaponsLoadRequested;
     private bool _runtimeTempleWeaponsResourceBuilt;
     private ulong _runtimeTempleWeaponsTextureStream;
@@ -2826,6 +2827,7 @@ internal sealed class MipsR5000Core
         const ulong runtimePhaseFiveExit = 0xffffffff80086cecUL;
         _runtimePhaseFiveQioWaitServiceAttempts = 0;
         _runtimePhaseFiveQioWaitServiceHandle = uint.MaxValue;
+        _runtimePhaseFiveQioWaitServiceObject = 0;
         _insideRuntimePhaseFiveExit = true;
         bool returned;
         try
@@ -12638,7 +12640,6 @@ internal sealed class MipsR5000Core
 
     private void ServiceKnownRuntimePhaseFiveQioWait(ulong pc)
     {
-        const ulong cleanupQioObject = 0xffffffff80295440UL;
         // A later gameplay filesystem request can legitimately stay pending
         // for more than the eight scheduler opportunities needed by the
         // original phase-five cleanup. Keep each distinct guest request
@@ -12665,23 +12666,32 @@ internal sealed class MipsR5000Core
         };
         bool directStatusLoop =
             loadStatusPc != 0 &&
-            _gpr[16] == cleanupQioObject &&
+            IsMainRamRange(_gpr[16], 0x18UL) &&
             _memory.Read32(loadStatusPc - 0x08UL) == 0x14400004U &&
             _memory.Read32(loadStatusPc) == 0x8e020014U &&
             _memory.Read32(loadStatusPc + 0x04UL) == 0x1040fffeU;
+        ulong genericQioObject =
+            IsKnownRuntimeWaitForQioLoopPc(pc) &&
+            IsMainRamRange(_gpr[30] + 0x20UL, 4)
+                ? SignExtend32(_memory.Read32(_gpr[30] + 0x20UL))
+                : 0;
         bool genericWaitLoop =
             IsKnownRuntimeWaitForQioLoopPc(pc) &&
-            IsMainRamRange(_gpr[30] + 0x20UL, 4) &&
-            SignExtend32(_memory.Read32(_gpr[30] + 0x20UL)) == cleanupQioObject;
-        if ((!directStatusLoop && !genericWaitLoop) ||
-            _memory.Read32(cleanupQioObject + 0x14UL) != 0)
+            IsMainRamRange(genericQioObject, 0x18UL);
+        if (!directStatusLoop && !genericWaitLoop)
         {
             return;
         }
 
-        uint handle = _memory.Read32(cleanupQioObject + 0x0cUL);
-        if (handle != _runtimePhaseFiveQioWaitServiceHandle)
+        ulong qioObject = directStatusLoop ? _gpr[16] : genericQioObject;
+        if (_memory.Read32(qioObject + 0x14UL) != 0)
+            return;
+
+        uint handle = _memory.Read32(qioObject + 0x0cUL);
+        if (qioObject != _runtimePhaseFiveQioWaitServiceObject ||
+            handle != _runtimePhaseFiveQioWaitServiceHandle)
         {
+            _runtimePhaseFiveQioWaitServiceObject = qioObject;
             _runtimePhaseFiveQioWaitServiceHandle = handle;
             _runtimePhaseFiveQioWaitServiceAttempts = 0;
         }
@@ -12693,8 +12703,9 @@ internal sealed class MipsR5000Core
         Console.WriteLine(
             $"[GAUNTDL:FIX] runtime-phase-five-qio-wait-service " +
             $"attempt={_runtimePhaseFiveQioWaitServiceAttempts} " +
+            $"object={qioObject:x16} " +
             $"handle={handle:x8} " +
-            $"status={_memory.Read32(cleanupQioObject + 0x14UL):x8}");
+            $"status={_memory.Read32(qioObject + 0x14UL):x8}");
     }
 
     private bool TryFastPathKnownRuntimePairedWordCopy(ulong pc)
@@ -20876,6 +20887,15 @@ internal sealed class MipsR5000Core
             if (conversion == (byte)'c')
             {
                 output.Add(unchecked((byte)argument));
+                continue;
+            }
+
+            if (conversion == (byte)'d')
+            {
+                string decimalValue = unchecked((int)argument).ToString(CultureInfo.InvariantCulture);
+                if (output.Count + decimalValue.Length > 0x200)
+                    return false;
+                output.AddRange(Encoding.ASCII.GetBytes(decimalValue));
                 continue;
             }
 
@@ -30930,7 +30950,8 @@ internal sealed class MipsR5000Core
             $"pc={pc:x16} op={op:x8} {DisassembleBrief(op)} " +
             $"ra={_gpr[31]:x16} a0={_gpr[4]:x16} a1={_gpr[5]:x16} a2={_gpr[6]:x16} a3={_gpr[7]:x16} " +
             $"v0={_gpr[2]:x16} v1={_gpr[3]:x16} s0={_gpr[16]:x16} s1={_gpr[17]:x16} " +
-            $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} " +
+            $"s2={_gpr[18]:x16} s3={_gpr[19]:x16} s4={_gpr[20]:x16} s5={_gpr[21]:x16} " +
+            $"s6={_gpr[22]:x16} s7={_gpr[23]:x16} " +
             $"t0={_gpr[8]:x16} t1={_gpr[9]:x16} t2={_gpr[10]:x16} t3={_gpr[11]:x16} sp={_gpr[29]:x16} " +
             $"status={_cp0[12]:x16} cause={_cp0[13]:x16} epc={_cp0[14]:x16} " +
             $"{_memory.GetNileInterruptDebugStatus()} stack10={stackArguments}{fprSummary}");

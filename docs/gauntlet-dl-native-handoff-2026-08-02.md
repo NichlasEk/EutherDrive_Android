@@ -411,3 +411,37 @@ trianglar och flera level-pass. Bilden ändras kausalt men inget nytt
 Nästa arbete ska hitta den naturliga frame-end-vägen efter world-passen eller
 den callback som undertrycker den; behåll vRetrace-fixen och den rena
 checkpointkedjan.
+
+## 2026-08-03: spelarasset och senare QIO-kedja reparerade
+
+Jämförelsen mot MAME visade att gameplaymodellen faktiskt var korrekt vid
+f5583 men att gästens `sprintf`-kedja returnerade en tom sträng för formatet
+`players/%s/%s%d0`. Baseline-acceleratorn stödde `%s` och `%c`, men föll
+tillbaka till den trasiga långvägen vid `%d`. Acceleratorn formaterar nu även
+signerade decimaltal. Vid f5590 matchar descriptor 0--8 MAME, inklusive:
+
+```text
+slot 1  ptr=0x802f2628 count=4 size=0xb1fc players/sor/yel00
+slot 2  ptr=0x80340954 count=32 size=0x13118 players/sor/sfxyel
+```
+
+Den serialiserade game-tasken fastnade därefter i `WaitForQio` på objekt
+`0x802954b0`. Timer-servicen var trots sin senare-gameplay-kommentar hårdkodad
+till cleanup-objektet `0x80295440`. Den använder nu det signaturverifierade
+QIO-objektet från den aktiva direkta eller generiska wait-loopen och avgränsar
+försöksbudgeten med både objektadress och handle. Request `0x3005` slutfördes
+efter fem gästtimer/IDE-varv utan att status syntetiserades, varefter loadern
+fortsatte genom modell- och texture-streaming.
+
+Lokala checkpoints för den fortsatta rena kedjan:
+
+```text
+.build-tmp/qio-general-f5703.warm.gz  state=0x400d, QIO-wait passerad
+.build-tmp/qio-general-f5953.warm.gz  state=0x400d, swap=4466, Sorceress kvar
+```
+
+Vid f5953 förändras både naturliga swaps och presenterad frame-hash, men
+loader/game-task arbetar fortfarande i de stora texture-passagen. Bilden är
+ännu inte en spelbar level och input-A/B återstår. Fortsätt från f5953 tills
+tasken återgår till frame-loopen; verifiera därefter HUD/spelare och ändrade
+Player 1-koordinater med riktad input innan spelbarhet deklareras.
