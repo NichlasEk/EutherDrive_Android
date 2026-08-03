@@ -5934,3 +5934,31 @@ Lokala, reproducerbara checkpoints:
 .build-tmp/short-qio-f8073.warm.gz
 .build-tmp/post-short-qio-f8113.warm.gz
 ```
+
+#### Pauscheckpoint 2026-08-03
+
+Loader/QIO-förbättringen är byggd, verifierad och pushad på `main` som
+`de6d9e79` (`Advance Gauntlet async world loading`). Release-bygget av
+GauntletProbe lyckades med noll fel.
+
+En efterföljande långtidsprobe startades från f8113. Den fortsatte arbeta i
+loader state 31/index 14, visade ny gäst-QIO med handles `0x7705` och
+`0x7785`, fortsatta render-/texturpaket samt gästens `Spire`- och
+`CREDITS`-text. Körningen pausades på begäran innan den nådde första planerade
+checkpoint f8163, så den lämnade ingen ny användbar warm-state.
+
+Återuppta därför exakt från:
+
+```text
+.build-tmp/post-short-qio-f8113.warm.gz
+warmup frames=8113
+CPU steps/frame=60000
+baseline preset required
+loader=31, active index=14, entry state=3
+```
+
+Nästa verifieringsgräns är oförändrad: låt `/d0/weapons/textures.rom`
+fullborda sina återstående riktiga chunks tills index 14 lämnar state 3 och
+loadern går naturligt till state 32. Patcha inte completion, aktivt index eller
+loader state. Separata lokala probe-filer och övriga untracked mappar tillhör
+arbetskopian och ska fortsatt lämnas orörda.
