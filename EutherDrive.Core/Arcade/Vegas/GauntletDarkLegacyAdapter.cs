@@ -49,6 +49,8 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_LITERAL_DESTINATION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_AUDIO_ACTIVE_COUNT_UNDERFLOW", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_LOADING_PLAYER_BOUNDS_CLAMP", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_LOADING_GAMEPLAY_TRANSITION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT", "1"),
@@ -1210,6 +1212,14 @@ internal sealed class MipsR5000Core
     private readonly bool _enableRuntimeAudioActiveCountUnderflowFix =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_AUDIO_ACTIVE_COUNT_UNDERFLOW");
+    private readonly bool _enableRuntimeLoadingPlayerBoundsClampFix =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_LOADING_PLAYER_BOUNDS_CLAMP");
+    private int _runtimeLoadingPlayerBoundsClampTraceCount;
+    private readonly bool _enableRuntimeLoadingGameplayTransitionFix =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_LOADING_GAMEPLAY_TRANSITION");
+    private int _runtimeLoadingGameplayTransitionTraceCount;
     private readonly bool _enableRuntimeHighTimerFastPath =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_HIGH_TIMER_FASTPATH");
     private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
@@ -3669,6 +3679,10 @@ internal sealed class MipsR5000Core
         StartKnownRuntimeTempleWeaponsLoadPreservingContext();
         ApplyKnownRuntimeTempleWeaponsDistinctResourceSourceRepair();
         ulong pc = Pc;
+        if (TryFixKnownRuntimeLoadingGameplayTransition(pc))
+            return;
+        if (TryFixKnownRuntimeLoadingPlayerBoundsClamp(pc))
+            return;
         if (TryFastPathKnownRuntimePairedWordCopy(pc))
             return;
         bool steadyStateFastDispatch =
@@ -4298,6 +4312,107 @@ internal sealed class MipsR5000Core
         if (!steadyStateFastDispatch)
             TraceSuspiciousLowPcTransition(pc, op, resolvedPc, branchFromPreviousInstruction, branchTarget);
         Pc = resolvedPc;
+    }
+
+    private bool TryFixKnownRuntimeLoadingGameplayTransition(ulong pc)
+    {
+        const ulong entry = 0xffffffff800520c0UL;
+        const ulong stateStore = 0xffffffff800520ecUL;
+        const ulong epilogue = 0xffffffff80052204UL;
+        const ulong runtimeMainState = 0xffffffff80227ab0UL;
+        const ulong loaderState = 0xffffffff8019ccb0UL;
+        if (!_enableRuntimeLoadingGameplayTransitionFix ||
+            (pc != entry && pc != stateStore) ||
+            _memory.Read32(runtimeMainState) != 0x400eU ||
+            _memory.Read32(loaderState) == 0xffffffffU)
+        {
+            return false;
+        }
+
+        if (_memory.Read32(entry + 0x00UL) != 0x27bdffd0U ||
+            _memory.Read32(entry + 0x04UL) != 0xafb00020U ||
+            _memory.Read32(entry + 0x08UL) != 0x0080802dU ||
+            _memory.Read32(entry + 0x0cUL) != 0x24040001U ||
+            _memory.Read32(entry + 0x10UL) != 0x3c038022U ||
+            _memory.Read32(entry + 0x14UL) != 0x2402400dU ||
+            _memory.Read32(entry + 0x2cUL) != 0xac627ab0U ||
+            _memory.Read32(epilogue + 0x00UL) != 0x8fbf002cU ||
+            _memory.Read32(epilogue + 0x04UL) != 0x8fb20028U ||
+            _memory.Read32(epilogue + 0x08UL) != 0x8fb10024U ||
+            _memory.Read32(epilogue + 0x0cUL) != 0x8fb00020U ||
+            _memory.Read32(epilogue + 0x10UL) != 0x03e00008U ||
+            _memory.Read32(epilogue + 0x14UL) != 0x27bd0030U)
+        {
+            return false;
+        }
+
+        ulong returnPc = _gpr[31];
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = pc == entry ? returnPc : epilogue;
+        AdvanceCp0Count(_cp0CountStep * 8UL);
+        _instructionCounter += 8UL;
+        if (_runtimeLoadingGameplayTransitionTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] loading-gameplay-transition-deferred " +
+                $"pc={pc:x16} loader=0x{_memory.Read32(loaderState):x8} " +
+                $"next={Pc:x16} ra={returnPc:x16}");
+        }
+        return true;
+    }
+
+    private bool TryFixKnownRuntimeLoadingPlayerBoundsClamp(ulong pc)
+    {
+        const ulong runtimeMainState = 0xffffffff80227ab0UL;
+        const ulong playerBase = 0xffffffff80229270UL;
+        const ulong playerStride = 0x964UL;
+        uint expectedCoordinateLoad = pc switch
+        {
+            0xffffffff8001ac78UL => 0xc48000d4U,
+            0xffffffff8001acc4UL => 0xc48000d8U,
+            0xffffffff8001ad10UL => 0xc48000dcU,
+            0xffffffff8001ad5cUL => 0xc48000e0U,
+            _ => 0U
+        };
+        if (!_enableRuntimeLoadingPlayerBoundsClampFix ||
+            expectedCoordinateLoad == 0U ||
+            _memory.Read32(runtimeMainState) != 0x400eU)
+        {
+            return false;
+        }
+
+        ulong player = _gpr[4];
+        if (player < playerBase ||
+            player > playerBase + 3UL * playerStride ||
+            (player - playerBase) % playerStride != 0)
+        {
+            return false;
+        }
+
+        if (_memory.Read32(pc + 0x00UL) != 0x44850800U ||
+            _memory.Read32(pc + 0x04UL) != 0x46800860U ||
+            _memory.Read32(pc + 0x08UL) != 0x3c038023U ||
+            _memory.Read32(pc + 0x0cUL) != 0x24631ab0U ||
+            _memory.Read32(pc + 0x10UL) != 0x8c820000U ||
+            _memory.Read32(pc + 0x14UL) != expectedCoordinateLoad)
+        {
+            return false;
+        }
+
+        ulong returnPc = _gpr[31];
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+        Pc = returnPc;
+        AdvanceCp0Count(_cp0CountStep * 6UL);
+        _instructionCounter += 6UL;
+        if (_runtimeLoadingPlayerBoundsClampTraceCount++ < 8)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] loading-player-bounds-clamp-suppressed " +
+                $"entry={pc:x16} player={player:x16} ra={returnPc:x16} state=0x400e");
+        }
+        return true;
     }
 
     private bool TryFastPathKnownRuntimeSteadyStateBeforeQioService(ulong pc)

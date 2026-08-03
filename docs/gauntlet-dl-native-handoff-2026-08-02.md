@@ -330,3 +330,49 @@ inte komplett: buffer 0 fast-fillas svart och de efterföljande Type 3-paketen
 producerar ingen sammanhängande gameplay-yta. Nästa kausala gräns är därför
 Type 3-passens draw-buffer/rasterresultat efter fast-fill i state `0x400d`,
 inte portalinput, loader eller fler state-patchar.
+
+## 2026-08-02 sen kväll: ren native loaderkedja når gameplayvärlden
+
+Det rekonstruerade f6284-spåret ovan visade sig ha ytterligare importerad
+RAM-korruption och ska inte längre användas som spelbarhetsbevis. Ett färskt
+MAME-orakel vid journey rel1000 verifierade i stället följande invariants:
+
+```text
+0x8019ccb0 = 0xffffffff       verklig loader klar
+0x80229344 = 200.0f          Player 1 X
+0x80229348 = 150.0f          Player 1 Y
+0x8022934c = 600.0f          Player 1 Z
+0x802280fc = 0x00474650      gameplay heap
+```
+
+Den rena audiofixade native-kedjan skrev sönder koordinaterna i state
+`0x400e` via fyra anrop till bounds-clampen vid `0x8001ac78`, `0x8001acc4`,
+`0x8001ad10` och `0x8001ad5c`. Level-loadern hade då redan återanvänt den
+gamla bounds-tabellen vid `0x804c5640`; bland annat blev X-värdet NaN. MAME
+gör inga motsvarande koordinatskrivningar under `0x400e`. Baseline-fixen
+hoppar därför endast över dessa fyra sex-instruktionssignaturer, endast för
+de fyra exakta player-recorden och endast medan loader-state är `0x400e`.
+
+Samma rena körning hittade därefter en för tidig `0x400e -> 0x400d` vid
+`0x800520ec`, medan den verkliga loaderflaggan `0x8019ccb0` ännu inte var
+`0xffffffff`. En andra signaturvaktad fix skjuter upp just transition-
+funktionen tills flaggan är klar. Inga state-, koordinat- eller RAM-patchar
+behövs därefter. Den verifierade kedjan är:
+
+```text
+.build-tmp/coherent-genuine-transitionfix3-f6253.warm.gz
+state=0x400e  loader=0xffffffff  xyz=200/150/600
+
+.build-tmp/coherent-genuine-gameplay2-f6263.warm.gz
+state=0x400d  heap=0x00474650   xyz=200/150/600
+```
+
+Efter transitionen renderar den permanenta R5000/Voodoo-vägen en faktisk
+SKY-värld med broar, skepp och komplett HUD. Vid f6315 innehöll den
+presenterade 640x480-ytan 222 397 icke-svarta pixlar och Voodoo hade rasterat
+1 245 085 gameplaypixlar i 3 038 texturerade trianglar sedan checkpointen.
+Detta är inte ännu ett spelbarhetsbevis: swapräknaren ligger kvar på 4363,
+bilden står still och höger/coin/start ändrar ännu varken den presenterade
+bilden eller Player 1-koordinaterna. Nästa exakta gräns är varför den första
+`0x400d`-renderpassagen fortsätter producera Type 3-paket men aldrig når
+`grBufferSwap`; forcera inte en framebuffer-sammansättning runt den.
