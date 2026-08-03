@@ -283,3 +283,50 @@ medan den byte-exakta no-input-kontrollen från samma f5821-checkpoint gav
 Desktopstartaren använder nu `.build-tmp/coherent-desktop-f5821.warm.gz`.
 Kvarvarande blockerare för visuellt spelbar status är glyph-/diagnostikblocket
 i live-buffer 0 samt korrekt presentation/skaling av gästens 512x384-yta.
+
+## 2026-08-03: SKY-spärren och callbackkostnaden är borta
+
+MAME-oraklet visar att levelK2-övergången håller den aktiva audioräknaren
+`0x80227c80` på noll. Native-spåret från den rena f5583-staten visade i stället
+den exakta avvikelsen:
+
+```text
+pc=0x80045884  0x80227c80: 1 -> 0
+pc=0x80045b90  0x80227c80: 0 -> -1
+```
+
+Det andra anropet är en försenad DCS-completion efter att gästen redan har
+nollställt räknaren. En ny signaturvaktad baseline-fix saturerar endast denna
+bevisade `0 -> -1`-skrivning. Samma f5583 -> f5593-prov lämnar därefter
+räknaren på noll och gästens egen kod går `0x400c -> 0x400e`.
+
+Den kompletta loadern når `loader=-1`, `cd90=1` och negativ `cd84`. Med den
+korrigerade audioräknaren returnerar `0x80051b0c` ett och den ordinarie
+state-writern `0x800520ec` gör `0x400e -> 0x400d`, samma väg som MAME. Det
+rekonstruerade kontrollcheckpointet är lokalt:
+
+```text
+.build-tmp/coherent-gameplay-reconstructed-f6284.warm.gz
+state=0x400d  audioActive=0  activePlayers=1
+```
+
+Den första gameplayprofilen hittade dessutom att coin-callback-bryggan
+återstartade samma icke-returnerande 100 000-stegs gästfunktion 17 gånger per
+frame. Callbackfasen kostade cirka 26,2 sekunder. Bryggan avbryter nu efter
+första icke-returnerande callback och undertrycker nya försök så länge samma
+main-state består. Ett tiobildsprov i `0x400d` gav därefter cirka 0,95 sekunder
+CPU per probe-frame; efter den första suppressionsbilden låg callbackfasen på
+20--35 ms i stället för 26 sekunder.
+
+Den nya lokala gameplay-checkpointen är:
+
+```text
+.build-tmp/coherent-gameplay-fast-f6297.warm.gz
+state=0x400d  heap=0x00474650  activePlayers=1
+```
+
+State- och loadergränsen är alltså passerad, men spelbarhetsbeviset är ännu
+inte komplett: buffer 0 fast-fillas svart och de efterföljande Type 3-paketen
+producerar ingen sammanhängande gameplay-yta. Nästa kausala gräns är därför
+Type 3-passens draw-buffer/rasterresultat efter fast-fill i state `0x400d`,
+inte portalinput, loader eller fler state-patchar.

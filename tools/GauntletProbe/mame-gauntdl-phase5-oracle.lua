@@ -13,6 +13,9 @@ local max_frames = tonumber(os.getenv("GAUNTDL_PHASE5_MAX_FRAMES")) or 4400
 local phase5_input_start = tonumber(os.getenv("GAUNTDL_PHASE5_INPUT_START")) or 12
 local phase5_observation_frames = tonumber(os.getenv("GAUNTDL_PHASE5_OBSERVATION_FRAMES")) or 44
 local trace_phase5_edge = os.getenv("GAUNTDL_PHASE5_TRACE") == "1"
+local trace_phase5_start = tonumber(os.getenv("GAUNTDL_PHASE5_TRACE_START")) or 11
+local trace_phase5_frames = tonumber(os.getenv("GAUNTDL_PHASE5_TRACE_FRAMES")) or 3
+local trace_debug_writers = os.getenv("GAUNTDL_PHASE5_DEBUG_WRITERS") == "1"
 local snapshot_phase5 = os.getenv("GAUNTDL_PHASE5_SNAPSHOT") == "1"
 local mainram_output_path = os.getenv("GAUNTDL_PHASE5_MAINRAM_OUT")
 local mainram_dump_relative = tonumber(os.getenv("GAUNTDL_PHASE5_MAINRAM_REL")) or 207
@@ -32,6 +35,7 @@ local phase4_frame = nil
 local exit_frame = nil
 local breakpoints_installed = false
 local phase4_saved = false
+local last_main_state = nil
 local writer_counts = {}
 local phase5_baseline = {}
 local compare_ranges = {
@@ -91,18 +95,20 @@ local player_tap = program:install_write_tap(
 	0x00229330, 0x002294a3, "gauntdl-phase5-player", record_writer)
 local state_tap = program:install_write_tap(
 	0x00227ab0, 0x00227af7, "gauntdl-phase5-main-state", record_writer)
+local state_kseg_tap = program:install_write_tap(
+	0x80227ab0, 0x80227af7, "gauntdl-phase5-main-state-kseg", record_writer)
 
 local function install_breakpoint(address, label)
-	if not machine.debugger then
+	if not maincpu.debug then
 		return
 	end
-	machine.debugger:command(string.format(
-		"bpset %08x,1,{printf \"PHASE5_CALL label=%s pc=%%08X a0=%%08X a1=%%08X v0=%%08X s1=%%08X s2=%%08X phase=%%08X state=%%08X input=%%08X norm=%%08X\",pc,a0,a1,v0,s1,s2,ppd@229338,ppd@227ab0,ppd@262b90,ppd@227ba8; g}",
-		address, label))
+	maincpu.debug:bpset(address, "1", string.format(
+		"logerror \"PHASE5_CALL label=%s pc=%%08X a0=%%08X a1=%%08X v0=%%08X s0=%%08X s1=%%08X s2=%%08X phase=%%08X state=%%08X input=%%08X norm=%%08X\\n\",pc,a0,a1,v0,s0,s1,s2,ppd@229338,ppd@227ab0,ppd@262b90,ppd@227ba8; g",
+		label))
 end
 
 local function install_phase5_breakpoints()
-	if breakpoints_installed or not machine.debugger then
+	if not trace_debug_writers or breakpoints_installed or not machine.debugger then
 		return
 	end
 	machine.debugger:command("focus maincpu")
@@ -111,9 +117,17 @@ local function install_phase5_breakpoints()
 	install_breakpoint(0x800218e8, "post-update")
 	install_breakpoint(0x800218f4, "state-refresh")
 	install_breakpoint(0x800659c0, "phase5-entry")
-	machine.debugger:command(
-		"wpset 80229338,4,w,1,{printf \"PHASE5_PHASE_WRITE pc=%08X address=%08X data=%08X mask=%08X\",pc,wpaddr,wpdata,wpmask; g}")
-	machine.debugger:command("g")
+	install_breakpoint(0x80013b04, "main-state-write-13b04")
+	install_breakpoint(0x80014158, "main-state-write-14158")
+	install_breakpoint(0x8001480c, "main-state-write-1480c")
+	install_breakpoint(0x800148c8, "main-state-write-148c8")
+	install_breakpoint(0x80015320, "main-state-save")
+	install_breakpoint(0x80015328, "main-state-store")
+	maincpu.debug:wpset(program, "w", 0x80229338, 4, "1",
+		"logerror \"PHASE5_PHASE_WRITE pc=%08X address=%08X data=%08X size=%08X\\n\",pc,wpaddr,wpdata,wpsize; g")
+	maincpu.debug:wpset(program, "w", 0x80227ab0, 4, "1",
+		"logerror \"PHASE5_STATE_WRITE pc=%08X address=%08X data=%08X size=%08X\\n\",pc,wpaddr,wpdata,wpsize; g")
+	maincpu.debug:go()
 	breakpoints_installed = true
 	print("[phase5-oracle] bounded caller breakpoints installed")
 end
@@ -270,7 +284,18 @@ end
 
 local function drive_phase5_input(relative)
 	release_phase5_inputs()
-	if mode == "right" then
+	if mode == "journey" then
+		-- Continue from the verified phase-5 oracle through the normal SKY
+		-- journey selection.  The first Fight confirms the character, Right
+		-- selects the neighbouring journey, the second Fight commits it, and
+		-- Up walks through the portal.  Keep every edge bounded so the dump is
+		-- reproducible and does not depend on a held host key.
+		set_active(fight1,
+			(relative >= phase5_input_start and relative < phase5_input_start + 4) or
+			(relative >= 360 and relative < 365))
+		set_active(right1, relative >= 320 and relative < 340)
+		set_active(up1, relative >= 405 and relative < 705)
+	elseif mode == "right" then
 		set_active(right1,
 			relative >= phase5_input_start and
 			relative < phase5_input_start + 8)
@@ -349,6 +374,23 @@ emu.register_frame_done(function()
 	local active_mask = program:read_u32(0x00227af4)
 	local phase = program:read_u32(0x00229338)
 	local pc = maincpu.state["PC"] and maincpu.state["PC"].value or 0
+	if last_main_state ~= nil and state ~= last_main_state then
+		print(string.format(
+			"[phase5-state-transition] frame=%d rel=%d pc=%08x before=%08x after=%08x loader=%08x/%08x/%08x/%08x/%08x gate=%08x/%08x/%08x handshake=%08x/%08x",
+			frame, phase5_frame and (frame - phase5_frame) or -1,
+			pc, last_main_state, state,
+			program:read_u32(0x0019ccb0),
+			program:read_u32(0x0019cd84),
+			program:read_u32(0x0019cd88),
+			program:read_u32(0x0019cd8c),
+			program:read_u32(0x0019cd90),
+			program:read_u32(0x00227a64),
+			program:read_u32(0x00227b48),
+			program:read_u32(0x00227ba0),
+			program:read_u32(0x00227c80),
+			program:read_u32(0x0016bbe8)))
+	end
+	last_main_state = state
 
 	if not phase4_frame and phase == 4 then
 		phase4_frame = frame
@@ -389,12 +431,12 @@ emu.register_frame_done(function()
 
 	if trace_phase5_edge and phase5_frame and machine.debugger then
 		local relative = frame - phase5_frame
-		if relative == 11 then
+		if relative == trace_phase5_start then
 			machine.debugger:command(
 				"trace /home/nichlas/EutherDrive_Android/.build-tmp/mame-phase5-edge.tr,maincpu")
 			machine.debugger:command("g")
 			print("[phase5-oracle] bounded edge trace on")
-		elseif relative == 14 then
+		elseif relative == trace_phase5_start + trace_phase5_frames then
 			machine.debugger:command("trace off")
 			print("[phase5-oracle] bounded edge trace off")
 		end
@@ -402,9 +444,9 @@ emu.register_frame_done(function()
 
 	if frame % 100 == 0 or
 		(phase >= 4 and frame % 20 == 0) or
-		(phase5_frame and frame <= phase5_frame + phase5_observation_frames) then
+		(phase5_frame and frame <= phase5_frame + math.min(phase5_observation_frames, 64)) then
 		print(string.format(
-			"[phase5-poll] frame=%d rel=%d mode=%s pc=%08x state=%08x active=%08x phase=%08x timer=%08x input=%08x norm=%08x objects=%08x heap=%08x words=%08x/%08x/%08x/%08x",
+			"[phase5-poll] frame=%d rel=%d mode=%s pc=%08x state=%08x active=%08x phase=%08x timer=%08x input=%08x norm=%08x objects=%08x heap=%08x loader=%08x/%08x/%08x/%08x/%08x gate=%08x/%08x/%08x handshake=%08x/%08x words=%08x/%08x/%08x/%08x",
 			frame,
 			phase5_frame and (frame - phase5_frame) or -1,
 			mode, pc, state, active_mask, phase,
@@ -413,6 +455,16 @@ emu.register_frame_done(function()
 			program:read_u32(0x00227ba8),
 			program:read_u32(0x001620bc),
 			program:read_u32(0x002280fc),
+			program:read_u32(0x0019ccb0),
+			program:read_u32(0x0019cd84),
+			program:read_u32(0x0019cd88),
+			program:read_u32(0x0019cd8c),
+			program:read_u32(0x0019cd90),
+			program:read_u32(0x00227a64),
+			program:read_u32(0x00227b48),
+			program:read_u32(0x00227ba0),
+			program:read_u32(0x00227c80),
+			program:read_u32(0x0016bbe8),
 			program:read_u32(0x00229484),
 			program:read_u32(0x00229488),
 			program:read_u32(0x0022948c),

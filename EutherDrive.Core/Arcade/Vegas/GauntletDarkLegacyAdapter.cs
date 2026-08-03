@@ -48,6 +48,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PAIRED_WORD_COPY", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIAGNOSTIC_LITERAL_DESTINATION", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_AUDIO_ACTIVE_COUNT_UNDERFLOW", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_DISPLAY_BUFFER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_FASTFILL_COLOR_MASK", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TEXTURE_BASE_ADDRESS_SHIFT", "1"),
@@ -395,6 +396,8 @@ internal sealed class GauntletDarkLegacyMachine
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_CLOCK_CALLBACK");
     private readonly bool _enableRuntimeCoinCallback =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_COIN_CALLBACK");
+    private uint? _runtimeCoinCallbackSuppressedMainState;
+    private int _runtimeCoinCallbackSuppressionTraceCount;
     private readonly bool _enableContextPreservingVblankTimerDispatch =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VBLANK_GUEST_TIMER_TICK"));
     private readonly bool _enableVblankGuestTimerInterrupt =
@@ -527,12 +530,7 @@ internal sealed class GauntletDarkLegacyMachine
         if (_enableRuntimeClockCallback)
             RunRuntimeClockCallbacksForFrame();
         if (_enableRuntimeCoinCallback)
-        {
-            // A four-frame MAME instruction trace records 68 invocations.
-            // Preserve that 17-per-frame cadence for the coin debouncer.
-            for (int i = 0; i < 17; i++)
-                Cpu.RunRuntimeCoinCallbackPreservingContext();
-        }
+            RunRuntimeCoinCallbacksForFrame(MemoryMap.Read32(runtimeMainState));
         if (_runtimeGameTaskTraceCount == 0 &&
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK") is not null)
         {
@@ -709,10 +707,7 @@ internal sealed class GauntletDarkLegacyMachine
                                 {
                                     RunRuntimeClockCallbacksForFrame();
                                     if (_enableRuntimeCoinCallback)
-                                    {
-                                        for (int callback = 0; callback < 17; callback++)
-                                            Cpu.RunRuntimeCoinCallbackPreservingContext();
-                                    }
+                                        RunRuntimeCoinCallbacksForFrame(MemoryMap.Read32(runtimeMainState));
                                 }
 
                                 if (!Cpu.RunRuntimeMainStateUpdatePreservingContext())
@@ -752,10 +747,7 @@ internal sealed class GauntletDarkLegacyMachine
                 {
                     RunRuntimeClockCallbacksForFrame();
                     if (_enableRuntimeCoinCallback)
-                    {
-                        for (int callback = 0; callback < 17; callback++)
-                            Cpu.RunRuntimeCoinCallbackPreservingContext();
-                    }
+                        RunRuntimeCoinCallbacksForFrame(MemoryMap.Read32(runtimeMainState));
                 }
 
                 bool yielded = Cpu.RunRuntimeGameTaskSlice(
@@ -820,6 +812,33 @@ internal sealed class GauntletDarkLegacyMachine
         {
             uint callbackTicks = (uint)(frameTicks / 9 + (i < frameTicks % 9 ? 1 : 0));
             Cpu.RunRuntimeClockCallbackPreservingContext(callbackTicks);
+        }
+    }
+
+    private void RunRuntimeCoinCallbacksForFrame(uint mainState)
+    {
+        if (_runtimeCoinCallbackSuppressedMainState == mainState)
+            return;
+        if (_runtimeCoinCallbackSuppressedMainState.HasValue)
+            _runtimeCoinCallbackSuppressedMainState = null;
+
+        // A four-frame MAME instruction trace records 68 invocations. Preserve
+        // that 17-per-frame cadence while the callback returns normally. A
+        // non-returning callback cannot be invoked again safely: doing so used
+        // to restart the same 100k-step guest context sixteen more times.
+        for (int callback = 0; callback < 17; callback++)
+        {
+            if (Cpu.RunRuntimeCoinCallbackPreservingContext())
+                continue;
+
+            _runtimeCoinCallbackSuppressedMainState = mainState;
+            if (_runtimeCoinCallbackSuppressionTraceCount++ < 8)
+            {
+                Console.WriteLine(
+                    $"[GAUNTDL:FIX] runtime-coin-callback-suppressed " +
+                    $"state=0x{mainState:x} callback={callback + 1}/17");
+            }
+            break;
         }
     }
 
@@ -1188,6 +1207,9 @@ internal sealed class MipsR5000Core
     private readonly bool _enableBootCountDelay = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_BOOT_COUNT_DELAY");
     private readonly bool _enableAudioInitCountDelay =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_AUDIO_INIT_COUNT_DELAY");
+    private readonly bool _enableRuntimeAudioActiveCountUnderflowFix =
+        GauntletDarkLegacyAdapter.IsBringupFixEnabled(
+            "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_AUDIO_ACTIVE_COUNT_UNDERFLOW");
     private readonly bool _enableRuntimeHighTimerFastPath =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_HIGH_TIMER_FASTPATH");
     private readonly bool _enableRuntimeInputPollBridge = GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_INPUT_POLL_BRIDGE");
@@ -1854,6 +1876,7 @@ internal sealed class MipsR5000Core
     private int _bootA420HandshakeTraceCount;
     private int _bootCountDelayTraceCount;
     private int _audioInitCountDelayTraceCount;
+    private int _runtimeAudioActiveCountUnderflowTraceCount;
     private int _runtimeBgLoadModelQioCompleteTraceCount;
     private int _runtimeBgLoadModelQioCreateAliasTraceCount;
     private int _runtimeBgLoadModelQioRequestMetadataTraceCount;
@@ -13769,6 +13792,43 @@ internal sealed class MipsR5000Core
                 $"[GAUNTDL:BOOT] audio-init-count-delay accelerated " +
                 $"pc={pc:x16} counter={_memory.Read32(counterAddress):x8}");
         }
+    }
+
+    private uint ApplyKnownRuntimeAudioActiveCountUnderflowFix(ulong pc, ulong address, uint value)
+    {
+        const ulong writerPc = 0xffffffff80045b90UL;
+        const ulong counterAddress = 0xffffffff80227c80UL;
+
+        if (!_enableRuntimeAudioActiveCountUnderflowFix ||
+            pc != writerPc ||
+            address != counterAddress ||
+            value != uint.MaxValue ||
+            _memory.Read32(counterAddress) != 0U)
+        {
+            return value;
+        }
+
+        bool signatureMatches =
+            _memory.Read32(writerPc - 0x10UL) == 0x3c048022U &&
+            _memory.Read32(writerPc - 0x0cUL) == 0x8c827c80U &&
+            _memory.Read32(writerPc - 0x08UL) == 0x8c637a68U &&
+            _memory.Read32(writerPc - 0x04UL) == 0x2442ffffU &&
+            _memory.Read32(writerPc) == 0xac827c80U;
+        if (!signatureMatches)
+            return value;
+
+        // The emulated DCS completion can arrive after the guest has timed out
+        // and cleared its active-audio count at 0x80045884. Real hardware and
+        // MAME keep this count at zero; wrapping it to -1 makes the portal load
+        // wait forever. Preserve the completion path while saturating only
+        // that proven stale zero-to-minus-one decrement.
+        if (_runtimeAudioActiveCountUnderflowTraceCount++ < 4)
+        {
+            Console.WriteLine(
+                $"[GAUNTDL:FIX] runtime-audio-active-count-underflow " +
+                $"pc={pc:x16} address={address:x16} value={value:x8}->00000000");
+        }
+        return 0U;
     }
 
     private bool TryFastPathKnownRuntimeDelayCallbackLoop(ulong pc)
@@ -29690,6 +29750,7 @@ internal sealed class MipsR5000Core
                 {
                     ulong address = _gpr[rs] + (ulong)(long)simm;
                     uint value = (uint)_gpr[rt];
+                    value = ApplyKnownRuntimeAudioActiveCountUnderflowFix(pc, address, value);
                     if (steadyStateFastDispatch)
                     {
                         bool tracksGlideFifoSource = TrySetKnownGlideFifoGuestWriteSource(pc, address);
