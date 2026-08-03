@@ -6075,3 +6075,23 @@ stores genom den långsamma MMIO/trace-vägen. `WriteRuntimeData32` använder nu
 direkt RAM för alla stores utom exakt `pc=0x80019ef0`, adress `0x80227b9c`,
 värde `1`. Ett 600k-stegsprov med suppressorn aktiv behåller hash
 `0x93cca255`; längre prov återfår samma genomströmning som utan suppressorn.
+
+Steady-state-dispatchen undviker nu dessutom loader-, QIO-, audio- och
+tracehjälpare när state `400c..400f` och aktuell PC visar att de inte kan
+träffa. Ett deterministiskt rasterdiscard-prov med sex miljoner
+gästinstruktioner behöll exakt state `400f`, main tick `0x7eb`, player phase
+`1`, playervärde `0x43327f75` och framebuffer-hash `0x93cca255`. Tiden sjönk
+från cirka `1.663 s` till `1.624 s`. Det fulla 300-frame-provet med raster och
+Right/Fight/Up/Magic/Turbo/Left behöll exakt `frameHash=0x2b6b81d0` samt
+samma gästord; uppmätt tid var `6.617 s` mot tidigare `6.485 s`, alltså inom
+den observerade körvariationen och inte ett påstående om rastervinst.
+
+En swaptrace från f5083 avgränsade samtidigt presentationsfelet. När live
+buffer 0 innehöll gameplay gjorde gästen först en direkt `swapbufferCMD=0`
+vid `0x80102a80` och omedelbart därefter Type1 target `0x4a` vid
+`0x80102ab4`, utan drawarbete mellan kommandona. Första swappen roterade
+`front/back 1/0 -> 0/1`; den andra roterade tillbaka till `1/0` och skrev över
+den presenterade kopian med den äldre båtbilden. Paret ska fortsatt inte
+undertryckas i gäst/Voodoo-logiken. Nästa avgränsade steg är i stället att
+hålla kvar den senaste koherenta, faktiskt färdigritade bufferkopian över en
+omedelbar swap utan mellanliggande drawarbete.

@@ -3710,31 +3710,48 @@ internal sealed class MipsR5000Core
 
     private void Step()
     {
-        StartKnownRuntimeTempleWeaponsLoadPreservingContext();
-        ApplyKnownRuntimeTempleWeaponsDistinctResourceSourceRepair();
         ulong pc = Pc;
-        if (TryFixKnownRuntimeLoadingGameplayTransition(pc))
-            return;
-        if (TryFixKnownRuntimeLoadingPlayerBoundsClamp(pc))
-            return;
-        if (TryFastPathKnownRuntimePairedWordCopy(pc))
-            return;
+        uint runtimeMainState = _memory.RuntimeMainState;
         bool steadyStateFastDispatch =
             _enableRuntimeSteadyStateFastDispatch &&
-            _memory.RuntimeMainState is 0x400cU or 0x400dU or 0x400eU or 0x400fU;
+            runtimeMainState is 0x400cU or 0x400dU or 0x400eU or 0x400fU;
+        if (!steadyStateFastDispatch)
+        {
+            StartKnownRuntimeTempleWeaponsLoadPreservingContext();
+            ApplyKnownRuntimeTempleWeaponsDistinctResourceSourceRepair();
+        }
+        if ((!steadyStateFastDispatch || runtimeMainState == 0x400eU) &&
+            TryFixKnownRuntimeLoadingGameplayTransition(pc))
+        {
+            return;
+        }
+        if (runtimeMainState == 0x400eU && TryFixKnownRuntimeLoadingPlayerBoundsClamp(pc))
+            return;
+        if ((_insideRuntimePhaseFiveExit || _insideRuntimeGameTask) &&
+            TryFastPathKnownRuntimePairedWordCopy(pc))
+            return;
         if (steadyStateFastDispatch)
         {
             if (_traceWatchPcs.Length > 0)
                 TraceWatchedPc(pc);
             if (_profileHotPcs)
                 CountHotPc(pc);
-            _memory.SetTraceCpuPc(pc);
+            if (_memory.NeedsRuntimeCpuPc)
+                _memory.SetTraceCpuPc(pc);
             if (TryFastPathKnownRuntimeSteadyStateBeforeQioService(pc))
                 return;
-            ServiceKnownRuntimePhaseFiveQioWait(pc);
+            if (_insideRuntimePhaseFiveExit ||
+                _insideRuntimeGameTask ||
+                pc is 0xffffffff800ac3d4UL or
+                      0xffffffff800ac460UL or
+                      0xffffffff8005121cUL)
+            {
+                ServiceKnownRuntimePhaseFiveQioWait(pc);
+            }
             if (TryFastPathKnownRuntimeSteadyStateAfterQioService(pc))
                 return;
-            AccelerateKnownAudioInitCountDelay(pc);
+            if (pc == 0xffffffff80045844UL)
+                AccelerateKnownAudioInitCountDelay(pc);
             if ((!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
                 !_enableRuntimePhaseFiveQioWaitService)
                 goto ExecuteInstruction;
@@ -4303,7 +4320,8 @@ internal sealed class MipsR5000Core
         ulong s8BeforeExecute = _gpr[30];
         Execute(pc, op, steadyStateFastDispatch);
         _gpr[0] = 0;
-        ApplyRuntimeFullrectRightClipPositiveTExperiment(pc);
+        if (_experimentRuntimeFullrectRightClipPositiveT)
+            ApplyRuntimeFullrectRightClipPositiveTExperiment(pc);
         if (!steadyStateFastDispatch)
         {
             TraceRuntimeFullrectDescriptor(pc);
@@ -31879,6 +31897,7 @@ internal sealed class VegasMemoryMap
     private ulong _traceCpuPc;
 
     public uint RuntimeMainState => BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan(0x00227ab0, 4));
+    public bool NeedsRuntimeCpuPc => _traceEnabled || _experimentSuppressDiagnosticRenderEnable;
 
     public uint ReadRuntimeInstruction32(ulong address)
     {
