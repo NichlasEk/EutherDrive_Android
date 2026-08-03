@@ -37859,6 +37859,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     ];
     private readonly ushort[] _presentedColorBuffer = new ushort[LfbPixels];
     private bool _presentedColorBufferValid;
+    private long _lastPresentedDrawActivity = long.MinValue;
     private static readonly string[] FullrectWriterLayoutCandidateTransforms = ["linear", "row2x", "row4x", "tile4", "tile8"];
     private static readonly string[] FullrectWriterLayoutPacketLocalCandidateTransforms = ["packet8x8", "packet8x8t", "packet64x", "packet64y"];
     private static readonly string[] FullrectWriterLayoutTargetLocalCandidateTransforms = ["targetword", "targetlinear", "targetrow2x", "targetrow4x", "targettile4", "targettile8"];
@@ -38196,6 +38197,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         ParseOptionalPositiveInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_RENDER_BUFFER_CHOICE_LIMIT"), 32);
     private readonly int _experimentForceRenderBufferIndex =
         ParseOptionalInt(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX"), -1);
+    private readonly bool _experimentPreservePresentedBufferWithoutDraw =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_PRESENTED_BUFFER_WITHOUT_DRAW"));
     private readonly bool _experimentCompositeBackBufferOverCoherentFrame =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable(
             "EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BACK_BUFFER_OVER_COHERENT_FRAME"));
@@ -41157,13 +41161,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         if (GetDrawBufferIndex() == _frontBufferIndex)
         {
             MaterializePendingClear(_frontBufferIndex);
-            Array.Copy(_colorBuffers[_frontBufferIndex], _presentedColorBuffer, LfbPixels);
-            _presentedRequestedPixelLastWriterId =
-                _frontBufferIndex == _requestedPixelLastWriterBuffer
-                    ? _requestedPixelLastWriterId
-                    : 0;
-            _presentedColorBufferValid = true;
-            RecordVoodooEvent($"vblank front-capture front={_frontBufferIndex}");
+            if (CapturePresentedColorBuffer(_frontBufferIndex))
+                RecordVoodooEvent($"vblank front-capture front={_frontBufferIndex}");
         }
     }
 
@@ -42113,7 +42112,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort[] front = _fixMameVblankSwapTiming &&
                          _presentedColorBufferValid &&
                          !forceRawRenderBuffer &&
-                         (!_fixDisplayBufferSelection || renderBufferIndex == _frontBufferIndex)
+                         (_experimentPreservePresentedBufferWithoutDraw ||
+                          !_fixDisplayBufferSelection ||
+                          renderBufferIndex == _frontBufferIndex)
             ? _presentedColorBuffer
             : _colorBuffers[renderBufferIndex];
         int liveOverlayIndex =
@@ -53002,12 +53003,7 @@ sampledTexel:
             }
 
             MaterializePendingClear(_frontBufferIndex);
-            Array.Copy(_colorBuffers[_frontBufferIndex], _presentedColorBuffer, LfbPixels);
-            _presentedRequestedPixelLastWriterId =
-                _frontBufferIndex == _requestedPixelLastWriterBuffer
-                    ? _requestedPixelLastWriterId
-                    : 0;
-            _presentedColorBufferValid = true;
+            CapturePresentedColorBuffer(_frontBufferIndex);
         }
 
         TraceFastFillSwapOrder(
@@ -53015,6 +53011,33 @@ sampledTexel:
             RegSwapbufferCommand,
             command,
             $"preFront={previousFront} preBack={previousBack} dont={(dontSwap ? 1 : 0)} vblankWait={vblankSwap}");
+    }
+
+    private bool CapturePresentedColorBuffer(int bufferIndex)
+    {
+        long drawActivity = unchecked(
+            _lfbWriteCount +
+            _solidRasterPixelCount +
+            _texturedRasterPixelCount +
+            _fastFillCount +
+            _directTriangleCommandCount +
+            _setupTriangleCommandCount);
+        if (_experimentPreservePresentedBufferWithoutDraw &&
+            _presentedColorBufferValid &&
+            drawActivity == _lastPresentedDrawActivity)
+        {
+            RecordVoodooEvent($"present preserve-no-draw front={bufferIndex}");
+            return false;
+        }
+
+        Array.Copy(_colorBuffers[bufferIndex], _presentedColorBuffer, LfbPixels);
+        _presentedRequestedPixelLastWriterId =
+            bufferIndex == _requestedPixelLastWriterBuffer
+                ? _requestedPixelLastWriterId
+                : 0;
+        _presentedColorBufferValid = true;
+        _lastPresentedDrawActivity = drawActivity;
+        return true;
     }
 
     private void SetPendingClear(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)

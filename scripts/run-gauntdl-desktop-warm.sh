@@ -22,14 +22,26 @@ fi
 
 export EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME="$CPU_STEPS"
 export EUTHERDRIVE_GAUNTDL_BRINGUP_BASELINE=1
+# Keep the desktop profile identical to the validated probe for the Voodoo
+# paths which are not part of the core's compact baseline preset.
+export EUTHERDRIVE_GAUNTDL_FIX_VOODOO_RGB_BUFFER_MASK=1
+export EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_VBLANK_SWAP_TIMING=1
+export EUTHERDRIVE_GAUNTDL_FIX_VOODOO_MAME_MEDIUM_RES_OUTPUT=1
+export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SETUP_MAME_AUX_DEPTH=1
+export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_SETUP_TRIANGLES=1
+export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TRIANGLES=1
+export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_REGISTER_BASE=0x1a0df
+export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GLIDE_WINOPEN_RGB_MASK=1
+export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_LIST_INVALID_SENTINEL_END=1
 # This checkpoint contains the native live game loop in main state 0x400f,
 # an active Sorceress and verified movement/fight/magic/turbo input state.
 # Starting the synthetic fallback task would duplicate the imported RTOS task.
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=0
-# Buffer 0 is the measured live gameplay surface at this checkpoint. Avoid
-# combining it with the older boat frame in buffer 1: that produces a frame
-# which never existed on the emulated Voodoo.
-export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX=0
+# The guest emits a direct swap followed immediately by a FIFO swap during its
+# reset family. Keep the coherent buffer captured by the first swap when no
+# draw work occurred before the second; do not combine two guest buffers.
+unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX
+export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_PRESENTED_BUFFER_WITHOUT_DRAW=1
 unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BACK_BUFFER_OVER_COHERENT_FRAME
 unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BASE_BUFFER_INDEX
 unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_LIVE_BUFFER_INDEX

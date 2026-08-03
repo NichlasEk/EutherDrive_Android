@@ -6095,3 +6095,29 @@ den presenterade kopian med den äldre båtbilden. Paret ska fortsatt inte
 undertryckas i gäst/Voodoo-logiken. Nästa avgränsade steg är i stället att
 hålla kvar den senaste koherenta, faktiskt färdigritade bufferkopian över en
 omedelbar swap utan mellanliggande drawarbete.
+
+Det avgränsade presentationsläget
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_PRESENTED_BUFFER_WITHOUT_DRAW`
+gör nu detta utan att ändra swapcount, front/back, raw color buffers eller
+gästens exekvering. En monoton drawaktivitetsräknare omfattar LFB-writes,
+rasterpixlar, fastfills samt direkta/setup-trianglar. En swap med oförändrad
+räknare får rotera de emulerade buffertarna men ersätter inte den presenterade
+koherenta kopian. När läget är aktivt visar hosten alltid denna kopia och kan
+därför inte falla tillbaka till en halvritad backbuffer mitt i nästa frame.
+
+Från f5083 gav 50 hostframes och det verifierade direkta/Type1-swap-paret:
+
+```text
+guest/Voodoo front/back efter paret  1/0  (oförändrat)
+swapcount                            3801 -> 3803
+utan presentationsskydd             hash 0x93cca255 (äldre båtbild)
+med presentationsskydd              hash 0x09cb9b82 (senaste gameplay)
+```
+
+Det kompletta 300-frame-inputprovet från f4783 behöll samtliga förväntade
+gästord och `frameHash=0x2b6b81d0`. Release-build av både `GauntletProbe` och
+`EutherDrive.UI` gick igenom med noll fel. Desktop-launchern använder nu
+presentationsskyddet i stället för att tvinga rå buffer 0, och sätter explicit
+de Voodoo/RGB/medium-resolution-flaggor som den validerade probeprofilen
+använder men som inte ingår i den kompakta core-baselineprofilen. Ingen
+bufferkompositering används.
