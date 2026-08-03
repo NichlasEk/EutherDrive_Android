@@ -34991,7 +34991,11 @@ internal sealed class VegasVoodooPciDevice
         if ((offset & 0x3ffu) == 0)
             return ReadStatus();
         if ((offset & 0x3ffu) == 0x204u)
-            return (_vRetraceCounter++ >> 1) & 0x7ffu;
+            // The guest samples vRetrace twice back-to-back and retries until
+            // both low-11-bit values agree. Keep each scan position visible
+            // for four MMIO reads so the pair cannot remain permanently
+            // straddled across a synthetic counter edge.
+            return (_vRetraceCounter++ >> 2) & 0x7ffu;
         if ((offset & 0x3ffu) is 0x1e8u or 0x1f4u or 0x1f8u)
             return _voodoo?.ReadRegister(offset) ?? 0;
         if ((offset & 0x3ffu) == 0x240u)

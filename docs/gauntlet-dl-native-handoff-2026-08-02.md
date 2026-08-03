@@ -376,3 +376,38 @@ bilden står still och höger/coin/start ändrar ännu varken den presenterade
 bilden eller Player 1-koordinaterna. Nästa exakta gräns är varför den första
 `0x400d`-renderpassagen fortsätter producera Type 3-paket men aldrig når
 `grBufferSwap`; forcera inte en framebuffer-sammansättning runt den.
+
+## 2026-08-02 natt: vRetrace-pollningen terminerar
+
+Hot-PC-profilen efter gameplaytransitionen hittade en verkligt omöjlig loop
+vid `0x800e1270..0x800e1284`. Gästen läser Voodoo-registret
+`0xa8000204` två gånger och försöker igen tills de lägre 11 vRetrace-bitarna
+är lika. Den syntetiska räknaren exponerade tidigare varje värde under bara
+två MMIO-läsningar. Beroende på räknarens fas hamnade varje gästpar permanent
+över en kant:
+
+```text
+0x10d / 0x10e
+0x10e / 0x10f
+0x10f / 0x110
+```
+
+Varje scan-position hålls nu i fyra MMIO-läsningar. Samma spår behöver högst
+en retry och når därefter `0x800e1288` med ett stabilt par. Ett 60k-stegsprov
+sjönk från cirka 13,3 till 2,0 sekunder när pollningen dominerade.
+
+Fortsatt ren native exekvering lämnar SKY-hubben och bygger en mörkgrön
+levelmiljö med tunnor och gångar i buffer 0. Den senaste lokala checkpointen
+är:
+
+```text
+.build-tmp/coherent-genuine-gameplay-vretr-40m-f6324.warm.gz
+state=0x400d  swap=4363  xyz=200/150/600
+```
+
+Sedan gameplaygränsen har den producerat omkring 45 000 nya texturerade
+trianglar och flera level-pass. Bilden ändras kausalt men inget nytt
+`swapbufferCMD` har ännu emitterats, så spelbarhetsbevis och input-A/B återstår.
+Nästa arbete ska hitta den naturliga frame-end-vägen efter world-passen eller
+den callback som undertrycker den; behåll vRetrace-fixen och den rena
+checkpointkedjan.
