@@ -445,3 +445,33 @@ loader/game-task arbetar fortfarande i de stora texture-passagen. Bilden är
 ännu inte en spelbar level och input-A/B återstår. Fortsätt från f5953 tills
 tasken återgår till frame-loopen; verifiera därefter HUD/spelare och ändrade
 Player 1-koordinater med riktad input innan spelbarhet deklareras.
+
+## 2026-08-03: ren resume-loop och world-select-loader
+
+Den tidigare `qio-general`-kedjan ovan är inte längre en betrodd fortsättning.
+Den syntetiska game-tasken startade om engångsprologen vid `0x80014b70` och
+skapade dubbla spelarassets, vilket försköt descriptor-tabellen. Baseline
+startar nu warm-state `0x400a/0x400c` vid den befintliga resume-loopen
+`0x80014c00`. Från den rena f5583-checkpointen ligger slot 1--8 därefter kvar
+i exakt MAME-ordning utan duplicerad Sorceress.
+
+Nästa riktiga QIO-gräns var statusloopen `0x800d7178..0x800d7180` på objekt
+`0x8021abf4`. Den känns nu igen med sin fulla instruktionssignatur. Fyra
+timer/IDE-försök yieldade game-tasken vid f5783 och den femte ordinarie
+gästpassagen lämnade loopen till `0x800da6ec`; ingen QIO-status skrevs
+syntetiskt. Både Core och GauntletProbe bygger utan fel.
+
+Den rena fortsättningen är:
+
+```text
+.build-tmp/resumeloop-qio2-f5833.warm.gz
+state=0x400d  swap=4007  textured triangles=1140
+```
+
+Vid f5833 har loadern lagt till `worldsel` och `movies/movie3`, och den
+presenterade bilden är fortfarande SKY-portalen. Ett A/B-prov f5833--5843
+visar att högerinput når båda I/O-speglarna (`0x00 -> 0x80` vid
+`0x80262b90/94`), men bild och Player 1-position `(200,150,600)` är ännu
+oförändrade. Fortsätt från den nya `resumeloop-qio2`-checkpointen; deklarera
+inte spelbarhet förrän en level är synlig och samma input ändrar spelarens
+position eller bild kausalt.

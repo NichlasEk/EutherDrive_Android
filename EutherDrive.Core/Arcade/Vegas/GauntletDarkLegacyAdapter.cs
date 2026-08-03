@@ -43,6 +43,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PLAYER_SCHEDULER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_MAIN_STATE_SCHEDULER", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GAME_TASK_RESUME_LOOP", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_EXIT", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PAIRED_WORD_COPY", "1"),
@@ -2663,17 +2664,35 @@ internal sealed class MipsR5000Core
 
     private bool IsRuntimeGameTaskPendingQioWait()
     {
+        if (Pc is (0xffffffff800d7178UL or 0xffffffff800d717cUL or 0xffffffff800d7180UL) &&
+            _memory.Read32(0xffffffff800d7170UL) == 0x14400012U &&
+            _memory.Read32(0xffffffff800d7174UL) == 0x2402fffdU &&
+            _memory.Read32(0xffffffff800d7178UL) == 0x8e020014U &&
+            _memory.Read32(0xffffffff800d717cUL) == 0x1040fffeU &&
+            IsMainRamRange(_gpr[16] + 0x14UL, 4) &&
+            _memory.Read32(_gpr[16] + 0x14UL) == 0)
+        {
+            return true;
+        }
+
         ulong directStatusLoadPc = Pc switch
         {
+            0xffffffff800d7178UL or 0xffffffff800d717cUL or 0xffffffff800d7180UL
+                => 0xffffffff800d7178UL,
             0xffffffff800edac4UL or 0xffffffff800edac8UL or 0xffffffff800edaccUL
                 => 0xffffffff800edac4UL,
             0xffffffff800edba4UL or 0xffffffff800edba8UL or 0xffffffff800edbacUL
                 => 0xffffffff800edba4UL,
             _ => 0
         };
+        bool directStatusSignature = directStatusLoadPc == 0xffffffff800d7178UL
+            ? _memory.Read32(directStatusLoadPc - 0x08UL) == 0x14400012U &&
+              _memory.Read32(directStatusLoadPc - 0x04UL) == 0x2402fffdU
+            : directStatusLoadPc != 0 &&
+              _memory.Read32(directStatusLoadPc - 0x08UL) == 0x14400004U;
         bool directStatusLoop =
             directStatusLoadPc != 0 &&
-            _memory.Read32(directStatusLoadPc - 0x08UL) == 0x14400004U &&
+            directStatusSignature &&
             _memory.Read32(directStatusLoadPc) == 0x8e020014U &&
             _memory.Read32(directStatusLoadPc + 0x04UL) == 0x1040fffeU &&
             IsMainRamRange(_gpr[16] + 0x14UL, 4) &&
@@ -12658,16 +12677,23 @@ internal sealed class MipsR5000Core
 
         ulong loadStatusPc = pc switch
         {
+            0xffffffff800d7178UL or 0xffffffff800d717cUL or 0xffffffff800d7180UL
+                => 0xffffffff800d7178UL,
             0xffffffff800edac4UL or 0xffffffff800edac8UL or 0xffffffff800edaccUL
                 => 0xffffffff800edac4UL,
             0xffffffff800edba4UL or 0xffffffff800edba8UL or 0xffffffff800edbacUL
                 => 0xffffffff800edba4UL,
             _ => 0
         };
+        bool directStatusSignature = loadStatusPc == 0xffffffff800d7178UL
+            ? _memory.Read32(loadStatusPc - 0x08UL) == 0x14400012U &&
+              _memory.Read32(loadStatusPc - 0x04UL) == 0x2402fffdU
+            : loadStatusPc != 0 &&
+              _memory.Read32(loadStatusPc - 0x08UL) == 0x14400004U;
         bool directStatusLoop =
             loadStatusPc != 0 &&
             IsMainRamRange(_gpr[16], 0x18UL) &&
-            _memory.Read32(loadStatusPc - 0x08UL) == 0x14400004U &&
+            directStatusSignature &&
             _memory.Read32(loadStatusPc) == 0x8e020014U &&
             _memory.Read32(loadStatusPc + 0x04UL) == 0x1040fffeU;
         ulong genericQioObject =
