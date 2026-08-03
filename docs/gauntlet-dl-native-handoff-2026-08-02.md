@@ -475,3 +475,39 @@ visar att högerinput når båda I/O-speglarna (`0x00 -> 0x80` vid
 oförändrade. Fortsätt från den nya `resumeloop-qio2`-checkpointen; deklarera
 inte spelbarhet förrän en level är synlig och samma input ändrar spelarens
 position eller bild kausalt.
+
+## 2026-08-03: stale reservationsdiagnostik kan inte presentera vit yta
+
+Den första trasiga fullrect-descriptorn efter den rena f5883-checkpointen var
+inte en ny levelyta. Gästen hade byggt diagnostikens glyph-records från arenan
+vid `0xffffffff804c8808`; nästa riktiga QIO-kopia från `0xffffffff802a0198`
+till `0xffffffff804c6b58`, längd `0x2000`, återanvände samma arena. De kvarvarande
+diagnostik-recorden pekade därefter på QIO-data och rasteriserade en stor vit
+yta. Reservationsvarningarna är fortfarande genuina och reservationsflaggan
+ska inte nollas.
+
+Den redan signatur- och state-vaktade diagnostikskippen omfattar nu även
+loader/gameplay-state `0x400d`. I detta state krävs hela den exakta texten
+`AllocMem() called while mem reserved` eller
+`GetMemBase() called while mem reserved`; de äldre state-värdena `0x400c` och
+`0x400e` behåller sitt tidigare snäva `DIAGNOSTIC MENU`-intervall. Detta behövs
+eftersom gästen kopierar samma varning till flera diagnostikbuffertar upp till
+minst `0xffffffff802101e5`; ett enda gammalt textintervall var inte korrekt.
+
+Ren A/B från `.build-tmp/resumeloop-qio2-f5883.warm.gz` gav:
+
+```text
+f5900 före fix: buffer 0 white ~= 108544
+f5900 efter fix: buffer 0 white = 0, halt=0, presented hash kvar koherent
+f5933 efter fix: front/presented PPM bitidentisk med f5900
+                 sha256 d00594dbef0126b8e0bb701f096cc76462bfefeef8d213623efd909e086a7cb7
+```
+
+Vid f5933 fyller gästen fortfarande en dold backbuffer monokromt, men den
+väljs inte längre som presenterad bild. Fortsatt naturlig exekvering lämnar
+SKY-portalen och visar level K2, vilket bekräftar levande rendering. Den senare
+levelbilden har fortfarande svarta rektangulära hål och ingen ny naturlig
+`grBufferSwap` efter ytterligare tio miljoner CPU-steg. Nästa blockerare är
+därför frame-end-vägen och Type 4/Type 5-paketägarskapet i world-passen, inte
+den nu eliminerade vita diagnostikytan. Coin/start/rörelse/fight/magic är ännu
+inte verifierade i den riktiga levande level-loopen.

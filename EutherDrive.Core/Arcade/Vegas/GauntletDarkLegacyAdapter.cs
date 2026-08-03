@@ -15415,12 +15415,10 @@ internal sealed class MipsR5000Core
         const ulong firstTriangleCall = 0xffffffff800b0d0cUL;
         const ulong secondTriangleCall = 0xffffffff800b0d20UL;
         const ulong epilogue = 0xffffffff800b0d28UL;
-        const ulong diagnosticTextStart = 0xffffffff8020f268UL;
-        const ulong diagnosticTextEnd = 0xffffffff8020f606UL;
         uint mainState = _memory.Read32(0xffffffff80227ab0UL);
         if (!_enableRuntimeGameplayDiagnosticTextRecordFix ||
             pc is not (firstTriangleCall or secondTriangleCall) ||
-            mainState is not (0x400cU or 0x400eU))
+            mainState is not (0x400cU or 0x400dU or 0x400eU))
         {
             return false;
         }
@@ -15443,8 +15441,7 @@ internal sealed class MipsR5000Core
             return false;
 
         ulong text = SignExtend32(_memory.Read32(coordinateRecord + 0x0cUL));
-        if (text < diagnosticTextStart || text >= diagnosticTextEnd ||
-            !MatchesAscii(diagnosticTextStart, "DIAGNOSTIC MENU"))
+        if (!IsKnownRuntimeGameplayDiagnosticText(mainState, text))
         {
             return false;
         }
@@ -15471,6 +15468,25 @@ internal sealed class MipsR5000Core
                 return false;
         }
         return true;
+    }
+
+    private bool IsKnownRuntimeGameplayDiagnosticText(uint mainState, ulong text)
+    {
+        const ulong diagnosticTextStart = 0xffffffff8020f268UL;
+        const ulong diagnosticTextEnd = 0xffffffff8020f606UL;
+        if (mainState == 0x400dU)
+        {
+            // The reservation warnings are copied into several distinct diagnostic
+            // line buffers while the loader is active. Match their complete text
+            // instead of assuming they remain in the original menu text arena.
+            return MatchesAscii(text, "AllocMem() called while mem reserved") ||
+                   MatchesAscii(text, "GetMemBase() called while mem reserved");
+        }
+
+        return mainState is 0x400cU or 0x400eU &&
+               text >= diagnosticTextStart &&
+               text < diagnosticTextEnd &&
+               MatchesAscii(diagnosticTextStart, "DIAGNOSTIC MENU");
     }
 
     private bool TryFastPathKnownRuntimeDiagnosticDrawCallsite(ulong pc)
@@ -17881,12 +17897,10 @@ internal sealed class MipsR5000Core
     {
         const ulong body = 0xffffffff800b1e7cUL;
         const ulong tail = 0xffffffff800b1fecUL;
-        const ulong diagnosticTextStart = 0xffffffff8020f268UL;
-        const ulong diagnosticTextEnd = 0xffffffff8020f606UL;
         uint mainState = _memory.Read32(0xffffffff80227ab0UL);
         if (!_enableRuntimeGameplayDiagnosticTextRecordFix ||
             pc != body ||
-            mainState is not (0x400cU or 0x400eU))
+            mainState is not (0x400cU or 0x400dU or 0x400eU))
         {
             return false;
         }
@@ -17907,8 +17921,7 @@ internal sealed class MipsR5000Core
             _memory.Read32(tail + 0x04UL) != 0x26940001U ||
             _memory.Read32(tail + 0x08UL) != 0x0282102aU ||
             _memory.Read32(tail + 0x0cUL) != 0x1440ff96U ||
-            _memory.Read32(tail + 0x10UL) != 0x2610002cU ||
-            !MatchesAscii(diagnosticTextStart, "DIAGNOSTIC MENU"))
+            _memory.Read32(tail + 0x10UL) != 0x2610002cU)
         {
             return false;
         }
@@ -17924,7 +17937,7 @@ internal sealed class MipsR5000Core
         ulong s7 = SignExtend32(_memory.Read32(record + 0x04UL));
         ulong tableOffset = (slotIndex & 0xffffffffUL) << 2;
         ulong tableEntry = tableBase + tableOffset;
-        if (s2 < diagnosticTextStart || s2 >= diagnosticTextEnd ||
+        if (!IsKnownRuntimeGameplayDiagnosticText(mainState, s2) ||
             !IsMainRamRange(tableEntry, 4UL))
         {
             return false;
