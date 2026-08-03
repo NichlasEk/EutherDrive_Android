@@ -3736,7 +3736,7 @@ internal sealed class MipsR5000Core
                 TraceWatchedPc(pc);
             if (_profileHotPcs)
                 CountHotPc(pc);
-            if (_memory.NeedsRuntimeCpuPc)
+            if (_memory.NeedsRuntimeCpuPcAt(pc))
                 _memory.SetTraceCpuPc(pc);
             if (TryFastPathKnownRuntimeSteadyStateBeforeQioService(pc))
                 return;
@@ -31909,11 +31909,11 @@ internal sealed class VegasMemoryMap
         }
     }
 
-    public bool NeedsRuntimeCpuPc
-    {
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        get => _traceEnabled || _experimentSuppressDiagnosticRenderEnable;
-    }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool NeedsRuntimeCpuPcAt(ulong pc) =>
+        _traceEnabled ||
+        (_experimentSuppressDiagnosticRenderEnable &&
+         (pc & 0x1fffffffUL) == 0x00019ef0UL);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public uint ReadRuntimeInstruction32(ulong address)

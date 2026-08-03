@@ -6132,3 +6132,14 @@ avstängt gick på `1.406 s` respektive `1.334 s`, jämfört med senaste
 `frameHash=0x2b6b81d0`. Det är en mätt cirka 6.6-procentig helkörningsvinst;
 komplett gäst-video är fortfarande långt under full fart och ska inte beskrivas
 som löst.
+
+Launcherprofilens diagnostikmeny-suppressor behövde dessutom bara aktuell
+CPU-PC för den enda render-enable-storen vid `pc=0x80019ef0`. Tidigare skrevs
+PC-spårningen ändå vid varje gästinstruktion. `NeedsRuntimeCpuPcAt` begränsar
+nu detta till exakt den PC:n (eller alla instruktioner när minnestrace faktiskt
+är aktiv). Två sexmiljonersprov med suppressorn aktiv sjönk från `1.701 s` till
+`1.498 s` och `1.500 s`, cirka 12 procent, med bitidentisk debugstate och
+`frameHash=0x93cca255`. Det fulla 300-frame-provet med raster och input gick på
+`6.072 s` och behöll exakt `frameHash=0x2b6b81d0` samt samtliga verifierade
+gästord. Ett bredare straight-line-blockexperiment gav ingen rastervinst och
+blev långsammare i launcherprofilen; det togs därför bort helt.
