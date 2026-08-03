@@ -5883,3 +5883,54 @@ sha256=1ac564bab00e42cb9b83867c59c161b9155cb8ca56872cd48bdd67f8c6de5df6
 /tmp/gaunt-f4230-fbi3-clean-baseline-v14.warm
 sha256=c3f40b1c4d484b988dd2fb02f8b0c1cb3c023b10ffc4a15b7b997349454f0714
 ```
+
+#### Async world-loader fortsätter genom state 13 och korta slutchunks
+
+Den rena K2-kedjan nådde loader state 13 med aktiv indexpost 13 och såg först
+ut att ligga kvar i modellbyggaren. Gästkoden vid `0x800511f8..0x80051278`
+visade i stället ett separat loaderägt async-QIO: callback-recordet publiceras
+via `0x8019cd00`, callbacken är `0x80050e84` och completion pollas vid
+`0x8005121c`. Begäran var `/d0/monsters/golem/levelK/anim.rom`; QIO-objektet
+var korrekt mappat men hade status noll eftersom denna poll inte fick någon
+timer opportunity.
+
+Den befintliga, begränsade QIO-servicen känner nu igen tre exakta asyncvägar:
+BgLoadModel objects state 1, textures state 3 och world-animation state 13.
+Alla kräver sina instruktioner, huvudstate, loader/entry-identitet, callback,
+record och mappade QIO-objekt. Servicen skriver varken status, completion,
+handle eller loader state; den begär endast samma gästtimer som den generiska
+WaitForQio-vägen redan använder.
+
+Replay från f7863 gav därefter naturlig completion:
+
+```text
+f7863 loader=13 callback completion=0 qio handle=0x0186 status=0
+f7893 loader=31 callback completion=-1 qio handle=-1 status=0x0500
+```
+
+I state 31 nådde index 14 `/d0/weapons/textures.rom`. Sista legitima
+QIO-chunken var `0x3f0` byte, medan den första vakten endast accepterade en
+full `0x2000`-chunk. Asyncvakten accepterar därför nu det faktiska
+chunkintervallet `1..0x2000`, fortfarande bakom samma callback-, entry- och
+stateidentitet. Replay från f8043 bekräftade att den korta chunken avslutades
+av gästen och att nästa riktiga streamchunk startade:
+
+```text
+f8043 index=14 entryState=3 request=0x03f0 completion=0 handle=0x7485
+f8073 index=14 entryState=3 request=0x1550 completion=2 handle=-1 status=0x0500
+f8113 index=14 entryState=3 request=0x2000 completion=0 handle=0x7605
+```
+
+Mellan f8043 och f8113 ökade texturskrivningarna från `10,174,731` till
+`10,372,039`, swaps från 4,833 till 4,858 och CPU:n förblev aktiv. State 31
+är alltså en pågående flerchunkström, inte en ny loaderblockering. Fortsätt
+från f8113 tills index 14 lämnar state 3; syntetisera inte completion eller
+state 32.
+
+Lokala, reproducerbara checkpoints:
+
+```text
+.build-tmp/state13-qio-f7893.warm.gz
+.build-tmp/short-qio-f8073.warm.gz
+.build-tmp/post-short-qio-f8113.warm.gz
+```

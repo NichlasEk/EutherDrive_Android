@@ -12669,8 +12669,14 @@ internal sealed class MipsR5000Core
         // process-global budget would eventually deadlock desktop play while
         // short snapshot probes appeared healthy because reload reset it.
         const int maxServiceAttempts = 64;
+        bool candidateAsyncWorldLoadPollPc =
+            pc is 0xffffffff800ac3d4UL or
+                  0xffffffff800ac460UL or
+                  0xffffffff8005121cUL;
         if (!_enableRuntimePhaseFiveQioWaitService ||
-            (!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
+            (!_insideRuntimePhaseFiveExit &&
+             !_insideRuntimeGameTask &&
+             !candidateAsyncWorldLoadPollPc) ||
             _insideContextPreservingRuntimeTimerTick)
         {
             return;
@@ -12705,12 +12711,96 @@ internal sealed class MipsR5000Core
         bool genericWaitLoop =
             IsKnownRuntimeWaitForQioLoopPc(pc) &&
             IsMainRamRange(genericQioObject, 0x18UL);
-        if (!directStatusLoop && !genericWaitLoop)
+
+        // LoadGauntWorld also owns asynchronous 0x2000-byte requests. Its
+        // BgLoadModel state 1 (objects.rom) and state 3 (textures.rom) poll a
+        // callback record once per frame instead of entering WaitForQio. The
+        // old service consequently stopped giving the RTOS/IDE worker timer
+        // opportunities while a real request (for example handles 6 or
+        // 0x6305) was still pending forever. Resolve that object through the
+        // guest-owned index/entry/record chain and route the same bounded
+        // timer opportunity; status and handle remain guest-written.
+        ulong asyncWorldLoadQioObject = 0;
+        bool asyncWorldLoadPoll = false;
+        const ulong asyncObjectPoll = 0xffffffff800ac3d4UL;
+        const ulong asyncTexturePoll = 0xffffffff800ac460UL;
+        const ulong asyncWorldAnimationPoll = 0xffffffff8005121cUL;
+        bool objectPollSignature =
+            pc == asyncObjectPoll &&
+            _memory.Read32(asyncObjectPoll - 0x04UL) == 0x8e030000U &&
+            _memory.Read32(asyncObjectPoll + 0x00UL) == 0x8c620014U &&
+            _memory.Read32(asyncObjectPoll + 0x04UL) == 0x10400040U;
+        bool texturePollSignature =
+            pc == asyncTexturePoll &&
+            _memory.Read32(asyncTexturePoll + 0x00UL) == 0x0c02af59U &&
+            _memory.Read32(asyncTexturePoll + 0x04UL) == 0x00000000U &&
+            _memory.Read32(asyncTexturePoll + 0x08UL) == 0x1040001cU;
+        if ((objectPollSignature || texturePollSignature) &&
+            _memory.Read32(0xffffffff80227ab0UL) == 0x400eU)
+        {
+            int activeIndex = unchecked((int)_memory.Read32(0xffffffff80228060UL));
+            if (activeIndex is >= 0 and < 32)
+            {
+                ulong entry = 0xffffffff80252da0UL + (ulong)activeIndex * 24UL;
+                uint expectedEntryState = objectPollSignature ? 1U : 3U;
+                ulong recordSlot = objectPollSignature ? entry : entry + 0x04UL;
+                ulong asyncRecord = SignExtend32(_memory.Read32(recordSlot));
+                uint expectedCallback = objectPollSignature ? 0x800ac11cU : 0x800ab4e4U;
+                if (_gpr[16] == entry &&
+                    _memory.Read32(entry + 0x0cUL) == expectedEntryState &&
+                    IsMainRamRange(asyncRecord, 0x18UL) &&
+                    _memory.Read32(asyncRecord + 0x04UL) == expectedCallback &&
+                    _memory.Read32(asyncRecord + 0x0cUL) is > 0U and <= 0x00002000U)
+                {
+                    asyncWorldLoadQioObject = SignExtend32(_memory.Read32(asyncRecord));
+                    asyncWorldLoadPoll =
+                        asyncWorldLoadQioObject != 0 &&
+                        IsMainRamRange(asyncWorldLoadQioObject, 0x18UL);
+                }
+            }
+        }
+
+        // Loader state 13 starts the level animation stream after the indexed
+        // BgLoadModel object/texture entries have completed. It publishes the
+        // callback record through a separate loader-owned global and polls the
+        // same +0x14 completion field once per game-task pass. Without another
+        // timer opportunity here the native QIO worker remains pending even
+        // though the preceding indexed requests completed normally.
+        bool worldAnimationPollSignature =
+            pc == asyncWorldAnimationPoll &&
+            _memory.Read32(asyncWorldAnimationPoll - 0x04UL) == 0x8c43cd00U &&
+            _memory.Read32(asyncWorldAnimationPoll + 0x00UL) == 0x8c620014U &&
+            _memory.Read32(asyncWorldAnimationPoll + 0x04UL) == 0x10400111U;
+        if (worldAnimationPollSignature &&
+            _gpr[16] == 0xffffffff801a0000UL &&
+            _memory.Read32(0xffffffff8019ccb0UL) == 13U &&
+            _memory.Read32(0xffffffff80227ab0UL) == 0x400eU)
+        {
+            ulong asyncRecord =
+                SignExtend32(_memory.Read32(0xffffffff8019cd00UL));
+            if (IsMainRamRange(asyncRecord, 0x18UL) &&
+                _gpr[3] == asyncRecord &&
+                _memory.Read32(asyncRecord + 0x04UL) == 0x80050e84U &&
+                _memory.Read32(asyncRecord + 0x0cUL) == 0x00002000U)
+            {
+                asyncWorldLoadQioObject =
+                    SignExtend32(_memory.Read32(asyncRecord));
+                asyncWorldLoadPoll =
+                    asyncWorldLoadQioObject != 0 &&
+                    IsMainRamRange(asyncWorldLoadQioObject, 0x18UL);
+            }
+        }
+
+        if (!directStatusLoop && !genericWaitLoop && !asyncWorldLoadPoll)
         {
             return;
         }
 
-        ulong qioObject = directStatusLoop ? _gpr[16] : genericQioObject;
+        ulong qioObject = directStatusLoop
+            ? _gpr[16]
+            : genericWaitLoop ? genericQioObject : asyncWorldLoadQioObject;
+        if (qioObject == 0 || !IsMainRamRange(qioObject, 0x18UL))
+            return;
         if (_memory.Read32(qioObject + 0x14UL) != 0)
             return;
 
@@ -13444,7 +13534,14 @@ internal sealed class MipsR5000Core
         if (threshold == 0 || threshold > 0x100000U)
             return false;
 
-        uint baseValue = (uint)_gpr[4];
+        // At the first accepted PC the guest has not executed `move a0,v1`
+        // yet. Using a0 there leaks whichever argument register belonged to
+        // the interrupted host task into both runtime frame counters. Resume
+        // snapshots commonly carry 0x80220000 in a0, turning the counter into
+        // a RAM-looking pointer and poisoning every later vblank comparison.
+        uint baseValue = pc == loopPrologMove
+            ? (uint)_gpr[3]
+            : (uint)_gpr[4];
         uint progress = unchecked(baseValue + threshold);
         _memory.Write32(progressCounter, progress);
         _memory.Write32(deltaCounter, threshold);
@@ -15474,13 +15571,26 @@ internal sealed class MipsR5000Core
     {
         const ulong diagnosticTextStart = 0xffffffff8020f268UL;
         const ulong diagnosticTextEnd = 0xffffffff8020f606UL;
+        bool exactRuntimeWarning =
+            MatchesAscii(text, "AllocMem() called while mem reserved") ||
+            MatchesAscii(text, "GetMemBase() called while mem reserved") ||
+            MatchesAscii(text, "Out of heap space:");
+        if (exactRuntimeWarning)
+            return true;
+
         if (mainState == 0x400dU)
         {
             // The reservation warnings are copied into several distinct diagnostic
-            // line buffers while the loader is active. Match their complete text
-            // instead of assuming they remain in the original menu text arena.
-            return MatchesAscii(text, "AllocMem() called while mem reserved") ||
-                   MatchesAscii(text, "GetMemBase() called while mem reserved");
+            // line buffers while the loader is active. Later in the same state the
+            // regular menu bank is rebuilt after those warning rows, with its
+            // sentinel shifted to 0x8020f470. Recognize both complete layouts; do
+            // not infer diagnostic ownership from this reused arena alone.
+            const ulong shiftedDiagnosticTextStart = 0xffffffff8020f470UL;
+            bool shiftedDiagnosticMenu =
+                text >= shiftedDiagnosticTextStart &&
+                text < diagnosticTextEnd &&
+                MatchesAscii(shiftedDiagnosticTextStart, "DIAGNOSTIC MENU");
+            return shiftedDiagnosticMenu;
         }
 
         return mainState is 0x400cU or 0x400eU &&
