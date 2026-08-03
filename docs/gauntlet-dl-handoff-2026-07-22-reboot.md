@@ -6067,3 +6067,11 @@ Voodoo-speluppdatering ligger bara kring 1-2 fps. Att kasta type-3-raster höjde
 hosttakten till cirka 64 fps men löser inte CPU/RTOS-genomströmningen. Nästa
 arbete ska därför profilera den generella `400f`-CPU/FIFO-hotpathen och hålla
 `0x2b6b81d0` som live-scenreferens.
+
+Desktop-smoken laddade checkpointen i riktiga Avalonia-UI:t och visade live
+gameplayytan. Samtidigt hittades en generell prestandafälla: den avgränsade
+diagnostikmeny-suppressorn tvingade tidigare samtliga 32-bitars main-RAM-
+stores genom den långsamma MMIO/trace-vägen. `WriteRuntimeData32` använder nu
+direkt RAM för alla stores utom exakt `pc=0x80019ef0`, adress `0x80227b9c`,
+värde `1`. Ett 600k-stegsprov med suppressorn aktiv behåller hash
+`0x93cca255`; längre prov återfår samma genomströmning som utan suppressorn.

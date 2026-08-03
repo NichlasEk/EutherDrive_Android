@@ -31946,12 +31946,19 @@ internal sealed class VegasMemoryMap
     public void WriteRuntimeData32(ulong address, uint value)
     {
         if (!_traceEnabled &&
-            !_experimentSuppressDiagnosticRenderEnable &&
             TryTranslatePhysical(address, out uint physical) &&
             physical + 3 < _mainRam.Length)
         {
-            BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4), value);
-            return;
+            bool needsDiagnosticRenderSuppression =
+                _experimentSuppressDiagnosticRenderEnable &&
+                physical == 0x00227b9cU &&
+                (_traceCpuPc & 0x1fffffffUL) == 0x00019ef0UL &&
+                value == 1U;
+            if (!needsDiagnosticRenderSuppression)
+            {
+                BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4), value);
+                return;
+            }
         }
         Write32(address, value);
     }
@@ -34788,6 +34795,7 @@ internal sealed class VegasMemoryMap
         return true;
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool TryTranslatePhysical(ulong address, out uint physical)
     {
         if (address >= 0xffffffff80000000UL && address <= 0xffffffffbfffffffUL)
