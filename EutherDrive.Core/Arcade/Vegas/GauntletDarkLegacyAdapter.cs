@@ -739,7 +739,7 @@ internal sealed class GauntletDarkLegacyMachine
             }
         }
         if (_enableRuntimeGameTask &&
-            (currentMainState == 0x400cU ||
+            (currentMainState is 0x400cU or 0x400dU or 0x400eU ||
              runPretransitionGameTask ||
              Cpu.HasRuntimeGameTaskContext))
         {
@@ -2555,7 +2555,7 @@ internal sealed class MipsR5000Core
                     GauntletDarkLegacyAdapter.IsTruthy(
                         Environment.GetEnvironmentVariable(
                             "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GAME_TASK_RESUME_LOOP")) &&
-                    _memory.Read32(0xffffffff80227ab0UL) is 0x400aU or 0x400cU;
+                    _memory.Read32(0xffffffff80227ab0UL) is 0x400aU or 0x400cU or 0x400dU or 0x400eU;
                 _gpr[29] = resumeInitializedLoop
                     ? runtimeGameTaskStackTop - 0xb0UL
                     : runtimeGameTaskStackTop;
@@ -2563,12 +2563,13 @@ internal sealed class MipsR5000Core
                 _gpr[0] = 0;
                 if (resumeInitializedLoop)
                 {
-                    // Warm phase-1 snapshots predate the serialized task
-                    // context, but their guest globals have already passed
-                    // this task's one-time prologue. Re-running that prologue
-                    // clears the live object/resource state and advances the
-                    // game to 0x400e. Resume at the measured loop head with
-                    // the callee-saved values established by the prologue.
+                    // Warm phase-1 snapshots and completed loop iterations
+                    // can have no serialized task context even though their
+                    // guest globals have already passed this task's one-time
+                    // prologue. Re-running that prologue clears live assets.
+                    // Resume each active loading/gameplay state at the
+                    // measured loop head with its established callee-saved
+                    // values, matching the persistent RTOS task.
                     _gpr[17] = 1;
                     _gpr[19] = 0;
                     _gpr[21] = 0;
