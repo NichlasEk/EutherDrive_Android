@@ -6121,3 +6121,14 @@ presentationsskyddet i stället för att tvinga rå buffer 0, och sätter explic
 de Voodoo/RGB/medium-resolution-flaggor som den validerade probeprofilen
 använder men som inte ingår i den kompakta core-baselineprofilen. Ingen
 bufferkompositering används.
+
+Interpreter-hotpathen undviker nu också en ny `Span`-vy för läsningen av
+runtime main state och markerar state-, tracebehovs- och instruktionsaccessorn
+för aggressiv inlining. Två deterministiska sexmiljonersprov med raster
+avstängt gick på `1.406 s` respektive `1.334 s`, jämfört med senaste
+`1.624 s`, och behöll exakt state/ticks/player/hash. Det fulla
+300-frame-provet med raster och hela inputsekvensen gick på `6.058 s`
+(`49.52` host-fps) mot tidigare bästa `6.485 s`, med exakt samma gästord och
+`frameHash=0x2b6b81d0`. Det är en mätt cirka 6.6-procentig helkörningsvinst;
+komplett gäst-video är fortfarande långt under full fart och ska inte beskrivas
+som löst.

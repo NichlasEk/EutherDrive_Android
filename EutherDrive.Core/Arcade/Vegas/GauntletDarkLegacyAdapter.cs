@@ -31896,9 +31896,26 @@ internal sealed class VegasMemoryMap
         GauntletDarkLegacyAdapter.IsBringupFixEnabled("EUTHERDRIVE_GAUNTDL_DISABLE_TIMEKEEPER_WATCHDOG_RESET");
     private ulong _traceCpuPc;
 
-    public uint RuntimeMainState => BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan(0x00227ab0, 4));
-    public bool NeedsRuntimeCpuPc => _traceEnabled || _experimentSuppressDiagnosticRenderEnable;
+    public uint RuntimeMainState
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get
+        {
+            const int offset = 0x00227ab0;
+            return (uint)(_mainRam[offset] |
+                _mainRam[offset + 1] << 8 |
+                _mainRam[offset + 2] << 16 |
+                _mainRam[offset + 3] << 24);
+        }
+    }
 
+    public bool NeedsRuntimeCpuPc
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        get => _traceEnabled || _experimentSuppressDiagnosticRenderEnable;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public uint ReadRuntimeInstruction32(ulong address)
     {
         uint physical = (uint)(address & 0x1fffffffUL);
