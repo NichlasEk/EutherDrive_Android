@@ -6,7 +6,7 @@ Den native EutherDrive-kärnan visar nu en sammanhängande, rörlig spelscen med
 spelare, fiender, tunnor, däck, ljus och HUD. De stora vita/gula polygonerna
 som täckte skärmen är borta. Körvägen använder inte MAME som backend.
 
-Två separata fel orsakade huvuddelen av korruptionen:
+Tre separata fel orsakade huvuddelen av korruptionen:
 
 1. Den vanliga Voodoo-command-FIFO:n kunde hoppa förbi en giltig header medan
    resten av paketet fortfarande skrevs. Tre äldre producentheuristiker gjorde
@@ -17,6 +17,12 @@ Två separata fel orsakade huvuddelen av korruptionen:
    och `alphaMode`. Genomskinlig geometri ritades därför som ogenomskinliga
    vita ytor. Rasterizern har nu alpha-test, RGB-blendfaktorer och alpha-plane-
    skrivning för den setup-baserade texturväg som Gauntlet använder.
+3. Type 3-paketens riktiga per-vertex-alpha kastades bort och iterated alpha
+   var hårdkodad till 255. Spåret visar verkliga värden från 102 till 255 i
+   samma scen. Rasterizern bär nu packetets RGBA per vertex, interpolerar alla
+   fyra kanaler med Voodoo-setupens 12-bitars färgprecision och använder
+   resultatet i `fbzColorPath`, fog, alpha-test och blend. Det riktar sig mot
+   de ryckvisa blå/röda helskärmsytorna och den stora rosa triangeln.
 
 Checkpointet innehåller även MIPS `movz/movn` för single/double, korrekt
 Y-origin när uppskjutna fast-fill-clear materialiseras samt gameplay-state
@@ -66,18 +72,28 @@ Starta sedan via den native warm-startaren:
 scripts/run-gauntdl-desktop-warm.sh
 ```
 
-Startaren använder som standard:
+Startaren använder nu som standard den tidigaste sammanhängande native-
+gameplaybilden direkt vid banningången:
 
 ```text
-.build-tmp/euther-gauntdl-native-alpha-f5383.warm.gz
-SHA-256 6b9b9f6a30c21021a255465185d2e4aef6fea177ed8b55cdf2c643c03715120a
+.build-tmp/euther-journey-native-f4808.warm.gz
+SHA-256 1e0312b5f4d2600688095c7902e38dcee6b75b6ea1498de5e7338b73f5f0b1df
 ```
 
-Snapshoten är 8,9 MiB och självbärande. MAME-dumpar behövs inte när den körs.
+Snapshoten är självbärande. MAME-dumpar behövs inte när den körs. Den tidigare
+f5383-standarden låg cirka 575 emulerade bilder senare och hade skapats efter
+en lång automatiserad Up-sekvens. Den var därför en felaktig användarstart,
+även om den var användbar som grafikdiagnostik.
+
+Ett 40-frame reloadprov från f4808 fortsatte utan halt i main state `0x400f`
+och behöll samma presenterade banningång. Ett riktigt Avalonia/OpenGL-prov
+visade rätt startposition men också kvarvarande mörk/röd felgeometri i däcket.
+Inga inputscript körs av desktopstartaren efter reload; all fortsatt rörelse
+kommer från användaren.
 
 ## Kvarvarande grafikfel
 
-En svart/ofylld yta finns fortfarande i nedre mitten av däcket. Scenen är
+Svarta/ofyllda ytor förekommer fortfarande i senare redraw-pass. Scenen är
 spelbar nog för input- och rörelseprov, men inte grafikfärdig. Nästa
 grafikarbete ska spåra just denna ytas Type 3-paket och avgöra om den försvinner
 i depth/alpha-test, texture lookup eller packet completion. Alpha ska inte

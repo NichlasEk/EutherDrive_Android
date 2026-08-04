@@ -5,8 +5,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 
 ROM_PATH="${1:-/home/nichlas/roms/MAME/Midway/Vegas/gauntd}"
-SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/euther-gauntdl-native-alpha-f5383.warm.gz}"
-SNAPSHOT_FRAMES="${3:-5383}"
+SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/euther-journey-native-f4808.warm.gz}"
+SNAPSHOT_FRAMES="${3:-4808}"
 CPU_STEPS="${4:-60000}"
 UI_DLL="$REPO_ROOT/EutherDrive.UI/bin/Release/net8.0/EutherDrive.UI.dll"
 PROBE_DLL="$REPO_ROOT/tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll"
@@ -33,8 +33,11 @@ export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TR
 export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_REGISTER_BASE=0x1a0df
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GLIDE_WINOPEN_RGB_MASK=1
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_LIST_INVALID_SENTINEL_END=1
-# This checkpoint contains the native live game loop in main state 0x400f,
-# an active Sorceress and verified movement/fight/magic/turbo input state.
+# This checkpoint contains the native live game loop in main state 0x400f at
+# the SKY level entrance, immediately after the journey transition.  The old
+# f5383 default had already replayed hundreds of frames plus a long Up hold,
+# so it dropped the player into a later point instead of the gameplay start.
+# Player input remains live and no prerecorded input is applied after reload.
 # Starting the synthetic fallback task would duplicate the imported RTOS task.
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=0
 # The guest emits a direct swap followed immediately by a FIFO swap during its
