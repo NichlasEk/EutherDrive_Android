@@ -511,3 +511,29 @@ levelbilden har fortfarande svarta rektangulära hål och ingen ny naturlig
 därför frame-end-vägen och Type 4/Type 5-paketägarskapet i world-passen, inte
 den nu eliminerade vita diagnostikytan. Coin/start/rörelse/fight/magic är ännu
 inte verifierade i den riktiga levande level-loopen.
+
+## 2026-08-04: verklig UI-mätning efter fyra native-regioner
+
+Desktop-launchern kör nu counter-wait-, vertex-transform-, render-state-chain-
+och table-clear-regionerna tillsammans från
+`.build-tmp/euther-journey-mixed-f5083.warm.gz`. En Release-byggd UI-körning
+med ljud, 60 Hz speed-lock och den riktiga Avalonia-presentationen profilerades
+i 22--25 sekunder. De fem första sekundproven räknades bort som warm-state-
+återinträde och shader/UI-uppstart.
+
+```text
+Bitmap: n=12  avg=52.121 fps  median=53.822  min=43.803  max=55.963
+        avg run=788.8 ms/s  audio=0.86 ms/s  render=250.1 ms/s
+OpenGL: n=9   avg=53.018 fps  median=53.685  min=50.086  max=55.397
+        avg run=754.6 ms/s  audio=0.80 ms/s  render=256.8 ms/s
+```
+
+Bitmap var den sparade aktiva renderern. OpenGL-provet använde bara
+`EUTHERDRIVE_RENDERER=opengl` för processen och ändrade inte inställningsfilen;
+ingen accelerated-to-bitmap-fallback loggades. UI- och emuleringstrådarnas
+tider överlappar, så `run_ms` och `render_ms` ska inte summeras. Resultatet
+visar ändå att ljudkostnaden är försumbar och att OpenGL huvudsakligen jämnar
+ut presentationens värsta dippar. Det ger inte de cirka sju fps som saknas
+till en stabil 60 Hz-körning. Nästa optimeringsarbete ska därför fortsätta i
+gästens heta CPU/rasterregioner; ett rendererbyte ensamt gör inte bygget
+spelbart i full hastighet.
