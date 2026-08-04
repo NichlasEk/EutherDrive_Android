@@ -6161,3 +6161,23 @@ CPU-gränsen är själva per-instruktionsdispatchningen; nästa meningsfulla st�
 spår är en fördekodad/kompilerad 400f-blockväg som kan elimineras eller falla
 tillbaka vid kontrollflöde, kända fastpath-PC:n och spårning, med
 `0x2b6b81d0` och de sju gameplayorden som obligatoriskt orakel.
+
+Ett första konkret blockförsök bekräftade att granulariteten är avgörande.
+Cachelagrade raka block om 2-32 instruktioner, stoppade före kontrollflöde och
+kända fastpath-PC:n, var bitidentiska men neutrala över 30 miljoner
+instruktioner (`4.247 s` mot `4.261 s`) så länge de fortfarande använde en
+C#-switch per op. Att unrolla samma små block till en `DynamicMethod` återfick
+bitidentisk PC/FIFO/Voodoo-state först när `Pc`, CP0 count, instruktionsräknare
+och remaining-steps bokfördes per instruktion, men blev då klart långsammare:
+`4.958 s` med helper-anrop och `7.260 s` med tusentals små rå-IL-kompileringar,
+mot `4.261 s` för tolken. Hela experimentet, inklusive Reflection.Emit och
+cachefälten, är borttaget.
+
+Ytterligare runtimeknappar ska inte upprepas: `DOTNET_TC_QuickJit=0` gav ett
+bra CPU/rasterdiscard-resultat (`1.250 s` mot `1.608 s`) men försämrade det
+fulla raster/input-oraklet till `6.250 s`. `DOTNET_TC_QuickJitForLoops=0` var
+neutralt, och aggressiv Tier1-promotion med call-count 1/delay 0 försämrade
+CPU-provet till `2.339 s`. Repoets MCS/Ryu64-träd innehåller ingen
+återanvändbar MIPS3/R5000-DRC. Nästa kompilatorspår måste därför använda större
+kontrollflödesregioner med en gemensam kodcache och sällsynta host exits; små
+straight-line-delegates kan inte amortera JIT- och anropskostnaden.
