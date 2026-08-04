@@ -1200,6 +1200,9 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeTransformRegion =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TRANSFORM_REGION"));
+    private readonly bool _experimentRuntimeRenderChainRegion =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_RENDER_CHAIN_REGION"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
@@ -1214,6 +1217,8 @@ internal sealed class MipsR5000Core
     private ulong _runtimeCounterWaitRegionInstructions;
     private bool _runtimeTransformRegionCodeValidated;
     private ulong _runtimeTransformRegionHits;
+    private bool _runtimeRenderChainRegionCodeValidated;
+    private ulong _runtimeRenderChainRegionHits;
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2210,6 +2215,9 @@ internal sealed class MipsR5000Core
     public string RuntimeTransformRegionStatus =>
         $"transformRegion=hits:{_runtimeTransformRegionHits}" +
         $"/instructions:{_runtimeTransformRegionHits * 76UL}";
+    public string RuntimeRenderChainRegionStatus =>
+        $"renderChainRegion=hits:{_runtimeRenderChainRegionHits}" +
+        $"/instructions:{_runtimeRenderChainRegionHits * 130UL}";
 
     public void Reset()
     {
@@ -2240,6 +2248,8 @@ internal sealed class MipsR5000Core
         _runtimeCounterWaitRegionInstructions = 0;
         _runtimeTransformRegionCodeValidated = false;
         _runtimeTransformRegionHits = 0;
+        _runtimeRenderChainRegionCodeValidated = false;
+        _runtimeRenderChainRegionHits = 0;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -4625,12 +4635,204 @@ internal sealed class MipsR5000Core
     {
         return (pc & 0x1fffffffUL) switch
         {
+            0x0010616cUL => TryRunKnownRuntimeRenderChainRegion(pc),
             0x000ca45cUL => TryRunKnownRuntimeTransformRegion(pc),
             0x000c80b4UL or 0x000c80b8UL or 0x000c80bcUL or 0x000c80c0UL or
             0x000c83ccUL or 0x000c83d0UL or 0x000c83d4UL or 0x000c83d8UL or
             0x000c83dcUL or 0x000c83e0UL or 0x000c83e4UL => TryFastPathKnownRuntimeUiCommandCompleteWait(pc),
             _ => TryFastPathKnownGauntletGlideHotPath(pc)
         };
+    }
+
+    private bool TryRunKnownRuntimeRenderChainRegion(ulong pc)
+    {
+        const ulong entry = 0xffffffff8010616cUL;
+        const ulong exit = 0xffffffff80103e48UL;
+        const ulong returnAddress = 0xffffffff80106474UL;
+        const int instructionCount = 130;
+        if (!_experimentRuntimeRenderChainRegion ||
+            pc != entry ||
+            _gpr[4] > 1UL ||
+            _gpr[5] != 1UL ||
+            _gpr[6] != 8UL ||
+            _gpr[7] != 1UL ||
+            _remainingProbeSteps < instructionCount ||
+            _probeStepDebt != 0 ||
+            _hasPendingBranch ||
+            _hasImmediatePcOverride ||
+            _traceEnabled ||
+            _traceWatchPcs.Length != 0 ||
+            _profileHotPcs ||
+            _profileOpcodes ||
+            _profileRuntimeRegions ||
+            _memory.NeedsRuntimeCpuPcAt(pc))
+        {
+            return false;
+        }
+
+        if (!_runtimeRenderChainRegionCodeValidated)
+        {
+            if (_memory.ReadRuntimeInstruction32(entry + 0x000UL) != 0x27bdffd8U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x08cUL) != 0x14c00002U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x098UL) != 0x10a90003U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x0a0UL) != 0x54a20004U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x0b4UL) != 0x000315c0U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x0f0UL) != 0x11600002U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x108UL) != 0x2da20011U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x124UL) != 0x00400008U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x134UL) != 0x3c030004U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x190UL) != 0x8d02025cU ||
+                _memory.ReadRuntimeInstruction32(entry + 0x1a0UL) != 0x2ce20011U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x1bcUL) != 0x00400008U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x1d0UL) != 0x080418e0U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x214UL) != 0x8d02025cU ||
+                _memory.ReadRuntimeInstruction32(entry + 0x22cUL) != 0x1040000cU ||
+                _memory.ReadRuntimeInstruction32(entry + 0x260UL) != 0x3c038016U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x294UL) != 0x10400005U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x2acUL) != 0x3c050001U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x300UL) != 0x0c040f92U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x304UL) != 0xae32029cU)
+            {
+                return false;
+            }
+            _runtimeRenderChainRegionCodeValidated = true;
+        }
+        else if (_memory.ReadRuntimeInstruction32(entry) != 0x27bdffd8U ||
+                 _memory.ReadRuntimeInstruction32(entry + 0x304UL) != 0xae32029cU)
+        {
+            _runtimeRenderChainRegionCodeValidated = false;
+            return false;
+        }
+
+        ulong originalSp = _gpr[29];
+        if (!IsMainRamRange(originalSp + 16UL, 12UL) ||
+            _memory.ReadRuntimeData32(originalSp + 16UL) != 0 ||
+            _memory.ReadRuntimeData32(originalSp + 20UL) != 0 ||
+            _memory.ReadRuntimeData32(originalSp + 24UL) != 0)
+        {
+            return false;
+        }
+
+        ulong state = SignExtend32(_memory.ReadRuntimeData32(0xffffffff80262c8cUL));
+        ulong record = state + _gpr[4] * 48UL;
+        if (!IsMainRamRange(state + 0x25cUL, 0x124UL) ||
+            !IsMainRamRange(record + 0x298UL, 0x2cUL))
+        {
+            return false;
+        }
+
+        uint sourceS0 = _memory.ReadRuntimeData32(record + 0x298UL);
+        uint sourceS2 = _memory.ReadRuntimeData32(record + 0x29cUL);
+        uint selector = _memory.ReadRuntimeData32(record + 0x2c0UL);
+        ulong selectorAddress = SignExtend32(unchecked(0x80158264U + (selector << 2)));
+        if ((sourceS0 & 0x40000000U) != 0 ||
+            !IsMainRamRange(selectorAddress, 4UL) ||
+            unchecked((int)_memory.ReadRuntimeData32(state + 0x37cUL)) < 12)
+        {
+            return false;
+        }
+        uint selectorMask = _memory.ReadRuntimeData32(selectorAddress);
+
+        _gpr[29] = SignExtend32((uint)(_gpr[29] - 40UL));
+        _memory.WriteRuntimeData32(_gpr[29] + 28UL, (uint)_gpr[19]);
+        _gpr[19] = _gpr[4];
+        _gpr[13] = _gpr[5];
+        _gpr[5] = SignExtend32(0xc0000000U) | 0x0fffUL;
+        _gpr[4] = SignExtend32(0xfffb0000U) | 0xffffUL;
+        _gpr[3] = SignExtend32(0x80260000U);
+        _gpr[2] = SignExtend32((uint)_gpr[19] << 1);
+        _gpr[2] = SignExtend32((uint)(_gpr[2] + _gpr[19]));
+        _gpr[2] = SignExtend32((uint)_gpr[2] << 4);
+        _gpr[8] = state;
+        _gpr[9] = 1UL;
+        _memory.WriteRuntimeData32(_gpr[29] + 32UL, (uint)_gpr[31]);
+        _memory.WriteRuntimeData32(_gpr[29] + 24UL, (uint)_gpr[18]);
+        _memory.WriteRuntimeData32(_gpr[29] + 20UL, (uint)_gpr[17]);
+        _memory.WriteRuntimeData32(_gpr[29] + 16UL, (uint)_gpr[16]);
+        _gpr[2] = record;
+        _gpr[16] = SignExtend32(sourceS0) & _gpr[5];
+        _gpr[18] = SignExtend32(sourceS2) & _gpr[4];
+        _gpr[3] = SignExtend32(_memory.ReadRuntimeData32(state + 0x25cUL));
+        _gpr[5] = 0;
+        _gpr[2] = 0;
+        _gpr[4] = SignExtend32(1U << (int)_gpr[19]);
+        _gpr[3] &= ~_gpr[4];
+        _gpr[6] = 8UL;
+        _memory.WriteRuntimeData32(state + 0x25cUL, (uint)_gpr[3]);
+        _gpr[10] = 0;
+        _gpr[11] = 0;
+        _gpr[12] = 0;
+        _gpr[2] = 3UL;
+        _gpr[3] = 0;
+        _gpr[2] = 0;
+        _gpr[16] |= 0x04000000UL;
+        _gpr[2] = 3UL;
+        _gpr[2] = 0x00100000UL;
+        _gpr[2] = 0x20000000UL;
+        _gpr[2] = 1UL;
+        _gpr[2] = SignExtend32(0x80157bc0U);
+        _gpr[3] = 4UL;
+        _gpr[3] = SignExtend32((uint)(_gpr[3] + _gpr[2]));
+        _gpr[2] = SignExtend32(0x801062a0U);
+        _gpr[3] = 0x00041000UL;
+        _gpr[2] = SignExtend32(_memory.ReadRuntimeData32(state + 0x25cUL));
+        _gpr[16] |= _gpr[3];
+        _gpr[2] |= _gpr[4];
+        _memory.WriteRuntimeData32(state + 0x25cUL, (uint)_gpr[2]);
+        _gpr[2] = 1UL;
+        _gpr[2] = SignExtend32(0x80157c08U);
+        _gpr[3] = 4UL;
+        _gpr[3] = SignExtend32((uint)(_gpr[3] + _gpr[2]));
+        _gpr[2] = SignExtend32(0x8010633cU);
+        _gpr[3] = 0x08200000UL;
+        _gpr[2] = SignExtend32(_memory.ReadRuntimeData32(state + 0x25cUL));
+        _gpr[16] |= _gpr[3];
+        _gpr[2] |= _gpr[4];
+        _memory.WriteRuntimeData32(state + 0x25cUL, (uint)_gpr[2]);
+        _gpr[2] = _gpr[16] & 0x1000UL;
+        _gpr[3] = SignExtend32(0x80160000U);
+        _gpr[2] = SignExtend32((uint)_gpr[19] << 1);
+        _gpr[2] = SignExtend32((uint)(_gpr[2] + _gpr[19]));
+        _gpr[2] = SignExtend32((uint)_gpr[2] << 4);
+        _gpr[17] = record;
+        _gpr[2] = SignExtend32(selector);
+        _gpr[3] = SignExtend32((uint)(_gpr[3] - 0x7d9cUL));
+        _gpr[2] = SignExtend32((uint)_gpr[2] << 2);
+        _gpr[2] = SignExtend32((uint)(_gpr[2] + _gpr[3]));
+        _gpr[2] = SignExtend32(selectorMask);
+        _gpr[18] |= _gpr[2];
+        _gpr[2] = SignExtend32(_memory.ReadRuntimeData32(state + 0x37cUL));
+        _gpr[2] = 0;
+        _gpr[5] = SignExtend32(0x80150000U);
+        _gpr[5] = 0x00018604UL;
+        _gpr[2] = SignExtend32(0x80260000U);
+        _gpr[3] = 0x1000UL;
+        _gpr[4] = state;
+        _gpr[3] = SignExtend32((uint)_gpr[3] << (int)(_gpr[19] & 0x1f));
+        _gpr[2] = SignExtend32(_memory.ReadRuntimeData32(state + 0x374UL));
+        _gpr[3] |= _gpr[5];
+        _memory.WriteRuntimeData32(_gpr[2], (uint)_gpr[3]);
+        _gpr[2] = SignExtend32((uint)(_gpr[2] + 4UL));
+        _memory.WriteRuntimeData32(_gpr[2], (uint)_gpr[16]);
+        _gpr[2] = SignExtend32((uint)(_gpr[2] + 4UL));
+        _memory.WriteRuntimeData32(_gpr[2], (uint)_gpr[18]);
+        _gpr[2] = SignExtend32((uint)(_gpr[2] + 4UL));
+        _gpr[5] = SignExtend32(_memory.ReadRuntimeData32(state + 0x374UL));
+        _gpr[3] = SignExtend32(_memory.ReadRuntimeData32(state + 0x37cUL));
+        _memory.WriteRuntimeData32(state + 0x374UL, (uint)_gpr[2]);
+        _gpr[2] = SignExtend32((uint)(_gpr[2] - _gpr[5]));
+        _gpr[3] = SignExtend32((uint)(_gpr[3] - _gpr[2]));
+        _memory.WriteRuntimeData32(state + 0x37cUL, (uint)_gpr[3]);
+        _memory.WriteRuntimeData32(record + 0x298UL, (uint)_gpr[16]);
+        _gpr[31] = returnAddress;
+        _memory.WriteRuntimeData32(record + 0x29cUL, (uint)_gpr[18]);
+        LastFetchedInstruction = 0xae32029cU;
+        FinishKnownRuntimeBudgetedFastPath(
+            instructionCount,
+            instructionCount - 1,
+            exit);
+        _runtimeRenderChainRegionHits++;
+        return true;
     }
 
     private static ReadOnlySpan<uint> RuntimeTransformRegionInstructions =>

@@ -6297,3 +6297,43 @@ borttaget. Att routa steady-state direkt från `0x80103e48` till den äldre
 bringup-fastpathen ersatte cirka 1,31M instruktioner men var inte semantiskt
 exakt: slut-PC, FIFO-paket och Voodoo-state divergerade. Den routningen och
 flaggan är helt borttagna. Stillbildshash ensam räcker inte som regionorakel.
+
+### 2026-08-04: sammanhängande render-state-region
+
+Den normala observerade kedjan från `0x8010616c` till `0x80103e48` är nu
+direktkompilerad bakom
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_RENDER_CHAIN_REGION=1` och aktiverad i
+desktop-warm-launchern. Regionen omfattar 130 gästinstruktioner över de
+tidigare profilerade småblocken och lämnar exekveringen vid den befintliga
+render-state-hjälpens ingång. Den vaktar exakt anropsform, stackargument,
+main-RAM-intervall, tillgängligt FIFO-utrymme, relevanta källbitar och 20
+kodankare innan någon state muteras. Vid avvikelse faller den tillbaka till
+den vanliga tolken. Instruktionsbudget, CP0/Nile-tid, GPR, RAM, delay slot och
+returadress bokförs som på den ursprungliga vägen.
+
+Två parvisa 30M discard-A/B-prov gav oförändrad `frameHash=0x93cca255`:
+
+```text
+transform+counter          4.3977 s   4.3261 s
++ render-state-region      4.1490 s   4.2140 s
+```
+
+Det motsvarar ungefär fyra procent lägre körkostnad i snitt. Ett separat
+förprov träffade regionen 13 622 gånger och ersatte 1 770 860 tolkade
+instruktioner med exakt samma slut-PC och fulla FIFO/Voodoo-debugrad.
+
+Det fulla 300-frame-provet från den koherenta f4783-snapshoten med
+Right/Fight/Up/Magic/Turbo/Left träffade regionen 8 820 gånger och ersatte
+1 146 600 instruktioner. Det körde på `5.944 s` (`50.47 fps` headless), behöll
+`frameHash=0x2b6b81d0`, samma fulla FIFO/Voodoo-state och exakt:
+
+```text
+80229280=3ee08c4b  80229288=bf661144  802292a0=3ee08c4b
+80229304=00000000  80229494=00000008  80229a7c=43343323
+80229b6c=10010000
+```
+
+Counter-, transform- och render-state-regionerna är därmed tre aktiva,
+bitexakta native-vägar. Den kvarvarande vägen till bekvämt spelbart läge är
+fortsatt bredare dispatch-eliminering i de heta render-/transformkedjorna;
+denna checkpoint är en mätbar förbättring men inte slutmålet.
