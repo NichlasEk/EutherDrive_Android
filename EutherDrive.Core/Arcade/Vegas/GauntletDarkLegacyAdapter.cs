@@ -1203,6 +1203,9 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeRenderChainRegion =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_RENDER_CHAIN_REGION"));
+    private readonly bool _experimentRuntimeTableClearRegion =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TABLE_CLEAR_REGION"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
@@ -1219,6 +1222,9 @@ internal sealed class MipsR5000Core
     private ulong _runtimeTransformRegionHits;
     private bool _runtimeRenderChainRegionCodeValidated;
     private ulong _runtimeRenderChainRegionHits;
+    private bool _runtimeTableClearRegionCodeValidated;
+    private ulong _runtimeTableClearRegionHits;
+    private ulong _runtimeTableClearRegionInstructions;
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2218,6 +2224,9 @@ internal sealed class MipsR5000Core
     public string RuntimeRenderChainRegionStatus =>
         $"renderChainRegion=hits:{_runtimeRenderChainRegionHits}" +
         $"/instructions:{_runtimeRenderChainRegionHits * 130UL}";
+    public string RuntimeTableClearRegionStatus =>
+        $"tableClearRegion=hits:{_runtimeTableClearRegionHits}" +
+        $"/instructions:{_runtimeTableClearRegionInstructions}";
 
     public void Reset()
     {
@@ -2250,6 +2259,9 @@ internal sealed class MipsR5000Core
         _runtimeTransformRegionHits = 0;
         _runtimeRenderChainRegionCodeValidated = false;
         _runtimeRenderChainRegionHits = 0;
+        _runtimeTableClearRegionCodeValidated = false;
+        _runtimeTableClearRegionHits = 0;
+        _runtimeTableClearRegionInstructions = 0;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -4644,6 +4656,70 @@ internal sealed class MipsR5000Core
         };
     }
 
+    private bool TryRunKnownRuntimeTableClearRegion(ulong pc)
+    {
+        const ulong entry = 0xffffffff8007a950UL;
+        const ulong exit = 0xffffffff8007a96cUL;
+        if (!_experimentRuntimeTableClearRegion ||
+            pc != entry ||
+            _gpr[4] >= 64UL ||
+            _probeStepDebt != 0 ||
+            _hasPendingBranch ||
+            _hasImmediatePcOverride ||
+            _traceEnabled ||
+            _traceWatchPcs.Length != 0 ||
+            _profileHotPcs ||
+            _profileOpcodes ||
+            _profileRuntimeRegions ||
+            _memory.NeedsRuntimeCpuPcAt(pc))
+        {
+            return false;
+        }
+
+        if (!_runtimeTableClearRegionCodeValidated)
+        {
+            if (_memory.ReadRuntimeInstruction32(entry + 0x00UL) != 0x00671021U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x04UL) != 0x24840001U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x08UL) != 0xa4460000U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x0cUL) != 0xa4460002U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x10UL) != 0x28820040U ||
+                _memory.ReadRuntimeInstruction32(entry + 0x14UL) != 0x1440fffaU ||
+                _memory.ReadRuntimeInstruction32(entry + 0x18UL) != 0x24630004U)
+            {
+                return false;
+            }
+            _runtimeTableClearRegionCodeValidated = true;
+        }
+        else if (_memory.ReadRuntimeInstruction32(entry) != 0x00671021U ||
+                 _memory.ReadRuntimeInstruction32(entry + 0x18UL) != 0x24630004U)
+        {
+            _runtimeTableClearRegionCodeValidated = false;
+            return false;
+        }
+
+        int iterations = 64 - (int)_gpr[4];
+        int instructionCount = iterations * 7;
+        ulong destination = unchecked(_gpr[3] + _gpr[7]);
+        int bytes = iterations * 4;
+        if (_remainingProbeSteps < instructionCount ||
+            (uint)_gpr[6] != uint.MaxValue ||
+            !IsMainRamRange(destination, (ulong)bytes) ||
+            !_memory.TryFillRuntimeDataBytes(destination, 0xff, bytes))
+            return false;
+
+        _gpr[2] = 0;
+        _gpr[3] = SignExtend32((uint)(_gpr[3] + (ulong)bytes));
+        _gpr[4] = 64UL;
+        LastFetchedInstruction = 0x24630004U;
+        FinishKnownRuntimeBudgetedFastPath(
+            instructionCount,
+            instructionCount - 1,
+            exit);
+        _runtimeTableClearRegionHits++;
+        _runtimeTableClearRegionInstructions += (ulong)instructionCount;
+        return true;
+    }
+
     private bool TryRunKnownRuntimeRenderChainRegion(ulong pc)
     {
         const ulong entry = 0xffffffff8010616cUL;
@@ -5508,6 +5584,7 @@ internal sealed class MipsR5000Core
     {
         return (pc & 0x1fffffffUL) switch
         {
+            0x0007a950UL => TryRunKnownRuntimeTableClearRegion(pc),
             0x00019360UL => TryFastPathKnownGlideStatusCounterNegativeLimit(pc),
             0x000641bcUL or 0x000641ccUL => TryFastPathKnownGlideStateSnapshotCopyLoop(pc),
             0x000653d8UL => TryFastPathKnownGlideFifoMakeRoom(pc),
@@ -32520,6 +32597,22 @@ internal sealed class VegasMemoryMap
             }
         }
         Write32(address, value);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool TryFillRuntimeDataBytes(ulong address, byte value, int byteCount)
+    {
+        if (_traceEnabled ||
+            byteCount < 0 ||
+            byteCount > _mainRam.Length ||
+            !TryTranslatePhysical(address, out uint physical) ||
+            physical > (uint)(_mainRam.Length - byteCount))
+        {
+            return false;
+        }
+
+        _mainRam.AsSpan((int)physical, byteCount).Fill(value);
+        return true;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

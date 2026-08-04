@@ -161,6 +161,8 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_T
     Console.WriteLine(GetProperty(cpu, "RuntimeTransformRegionStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_RENDER_CHAIN_REGION") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeRenderChainRegionStatus"));
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TABLE_CLEAR_REGION") == "1")
+    Console.WriteLine(GetProperty(cpu, "RuntimeTableClearRegionStatus"));
 
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_GPRS") == "1")
     DumpCpuState(cpu);

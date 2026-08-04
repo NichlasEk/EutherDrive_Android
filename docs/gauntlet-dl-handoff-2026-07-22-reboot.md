@@ -6337,3 +6337,38 @@ Counter-, transform- och render-state-regionerna är därmed tre aktiva,
 bitexakta native-vägar. Den kvarvarande vägen till bekvämt spelbart läge är
 fortsatt bredare dispatch-eliminering i de heta render-/transformkedjorna;
 denna checkpoint är en mätbar förbättring men inte slutmålet.
+
+### 2026-08-04: bitexakt 64-ords table-clear-region
+
+Den heta sjuminstruktionsloopen vid `0x8007a950..0x8007a968` är nu batchad
+bakom `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TABLE_CLEAR_REGION=1` och
+aktiverad i desktop-warm-launchern. Gästkoden fyller en 64x64-tabell med
+`0xffffffff`. Regionen validerar alla sju kodord, GPR-gränsen, main-RAM-
+intervallet, trace/profile-state och kvarvarande instruktionsbudget. Varje
+host exit fyller återstoden av en 64-ords rad med en direkt `Span.Fill` och
+bokför exakt samma GPR, PC, sista opcode, CP0/Nile-tid och stegskuld.
+
+Ett första försök att hoppa över hela den cirka 29 004 instruktioner långa
+nästlade loopen gav inga träffar eftersom regionen kunde korsa CPU-segmentets
+budget. Den varianten är borttagen. Radgränsen är högst 448 instruktioner och
+kan därför alltid falla tillbaka säkert om segmentet är för kort.
+
+I 30M CPU/raster-discard-provet träffade radregionen 832 gånger och ersatte
+372 736 gästinstruktioner. Två parvisa bulk-fill-A/B-prov förbättrades
+`4.1667 -> 4.0072 s` och `3.9300 -> 3.7681 s`, cirka fyra procent, med exakt
+samma hash och fulla FIFO/Voodoo-debugrad.
+
+Det fulla 300-frame-provet med Right/Fight/Up/Magic/Turbo/Left träffade 575
+gånger och ersatte 254 422 instruktioner. Ett direkt fullrasterpar förbättrades
+`6.0170 -> 5.7789 s` (`49.86 -> 51.91 fps`) och behöll exakt
+`frameHash=0x2b6b81d0`, FIFO/Voodoo-state och de sju gameplayorden:
+
+```text
+80229280=3ee08c4b  80229288=bf661144  802292a0=3ee08c4b
+80229304=00000000  80229494=00000008  80229a7c=43343323
+80229b6c=10010000
+```
+
+Detta är den fjärde aktiva bitexakta native-regionen. Den ger även mätbar
+fullrastervinst och flyttar den headless-profilen strax över 50 fps, men riktig
+desktop-presentation och ljud är fortfarande det relevanta spelbarhetsmåttet.
