@@ -38462,6 +38462,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int RegFstartG = 0x0a4 >> 2;
     private const int RegFstartB = 0x0a8 >> 2;
     private const int RegFstartZ = 0x0ac >> 2;
+    private const int RegFstartA = 0x0b0 >> 2;
     private const int RegFstartS = 0x0b4 >> 2;
     private const int RegFstartT = 0x0b8 >> 2;
     private const int RegFstartW = 0x0bc >> 2;
@@ -46745,6 +46746,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         ushort fallbackColor = GetDrawColor();
         int source = 1;
         ushort color = fallbackColor;
+        float alpha = 255.0f;
         float s0 = 0;
         float t0 = 0;
         float q0 = _experimentType3SeparateWbTextureQ ? 0 : 1;
@@ -46774,6 +46776,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                         return;
                     if (((command >> 10) & 1u) != 0)
                         color = PackedColorToRgb565(argb);
+                    if (((command >> 11) & 1u) != 0)
+                        alpha = argb >> 24;
                 }
             }
             else
@@ -46790,15 +46794,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 }
                 if (((command >> 11) & 1u) != 0)
                 {
-                    if (_experimentType3UseSkippedWordAsS || _experimentType3UseSkippedWordAsT)
-                    {
-                        if (!TryReadFloat(wordsNeeded, ref source, out skippedWordAsS))
-                            return;
-                    }
-                    else if (!SkipWord(wordsNeeded, ref source))
-                    {
+                    if (!TryReadFloat(wordsNeeded, ref source, out alpha))
                         return;
-                    }
                 }
             }
 
@@ -46893,6 +46890,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     SetupVertexCoordinate(x),
                     SetupType3VertexY(y),
                     color,
+                    alpha,
                     s0,
                     t0,
                     q0,
@@ -47855,6 +47853,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             SetupVertexCoordinate(_registers[0x99]),
             SetupVertexCoordinate(_registers[0x9a]),
             color,
+            GetCurrentSetupAlpha(),
             s,
             t,
             q,
@@ -47863,6 +47862,12 @@ internal class VoodooBringupBackend : IVoodooBackend
             q,
             q,
             _registers[RegFstartS] != 0 || _registers[RegFstartT] != 0 || _registers[0xa3] != 0 || _registers[0xa4] != 0);
+    }
+
+    private float GetCurrentSetupAlpha()
+    {
+        float alpha = FloatFromRegister(_registers[RegFstartA]);
+        return float.IsFinite(alpha) && alpha >= 0.0f && alpha <= 255.0f ? alpha : 255.0f;
     }
 
     private float SetupFloatOrFallback(int register, int fallbackRegister)
@@ -48535,8 +48540,24 @@ internal class VoodooBringupBackend : IVoodooBackend
         // Edge() uses the opposite determinant orientation from the Voodoo
         // setup gradient numerators below.
         double setupDivisor = -1.0 / area;
+        const double ColorSetupScale = 4096.0;
         const double TextureSetupScale = 65536.0 * 65536.0;
         const double WSetupScale = 65536.0 * 65536.0 * 65536.0;
+        Rgb565ToBytes(a.Color, out int vertexAr, out int vertexAg, out int vertexAb);
+        Rgb565ToBytes(b.Color, out int vertexBr, out int vertexBg, out int vertexBb);
+        Rgb565ToBytes(c.Color, out int vertexCr, out int vertexCg, out int vertexCb);
+        int setupStartR = (int)(vertexAr * ColorSetupScale);
+        int setupStartG = (int)(vertexAg * ColorSetupScale);
+        int setupStartB = (int)(vertexAb * ColorSetupScale);
+        int setupStartA = (int)(a.Alpha * ColorSetupScale);
+        int setupDrDx = (int)(((vertexAr - vertexBr) * dx1 - (vertexAr - vertexCr) * dx2) * ColorSetupScale * setupDivisor);
+        int setupDgDx = (int)(((vertexAg - vertexBg) * dx1 - (vertexAg - vertexCg) * dx2) * ColorSetupScale * setupDivisor);
+        int setupDbDx = (int)(((vertexAb - vertexBb) * dx1 - (vertexAb - vertexCb) * dx2) * ColorSetupScale * setupDivisor);
+        int setupDaDx = (int)(((a.Alpha - b.Alpha) * dx1 - (a.Alpha - c.Alpha) * dx2) * ColorSetupScale * setupDivisor);
+        int setupDrDy = (int)(((vertexAr - vertexCr) * dy1 - (vertexAr - vertexBr) * dy2) * ColorSetupScale * setupDivisor);
+        int setupDgDy = (int)(((vertexAg - vertexCg) * dy1 - (vertexAg - vertexBg) * dy2) * ColorSetupScale * setupDivisor);
+        int setupDbDy = (int)(((vertexAb - vertexCb) * dy1 - (vertexAb - vertexBb) * dy2) * ColorSetupScale * setupDivisor);
+        int setupDaDy = (int)(((a.Alpha - c.Alpha) * dy1 - (a.Alpha - b.Alpha) * dy2) * ColorSetupScale * setupDivisor);
         long startS = MameSetupCastToInt64(a.S * TextureSetupScale);
         long startT = MameSetupCastToInt64(a.T * TextureSetupScale);
         long dSdX = MameSetupCastToInt64(((a.S - b.S) * dx1 - (a.S - c.S) * dx2) * TextureSetupScale * setupDivisor);
@@ -48651,6 +48672,11 @@ internal class VoodooBringupBackend : IVoodooBackend
                     TraceTexturedPixel("coverage", x, y, bufferIndex, buffer[pixel], _auxBuffer[pixel], 0, fbzMode);
                 int setupDx = x - setupAx;
                 int setupDy = y - setupAy;
+                int iteratedR = ClampSetupColor(setupStartR, setupDrDx, setupDrDy, setupDx, setupDy);
+                int iteratedG = ClampSetupColor(setupStartG, setupDgDx, setupDgDy, setupDx, setupDy);
+                int iteratedB = ClampSetupColor(setupStartB, setupDbDx, setupDbDy, setupDx, setupDy);
+                int iteratedAlpha = ClampSetupColor(setupStartA, setupDaDx, setupDaDy, setupDx, setupDy);
+                ushort iteratedColor = BytesToRgb565(iteratedR, iteratedG, iteratedB);
                 int setupIterZ = unchecked(setupStartZ + (int)((long)setupDy * setupDzDy) + (int)((long)setupDx * setupDzDx));
                 long fogIterW = unchecked(fogStartW + setupDy * fogDwDy + setupDx * fogDwDx);
                 int depthValue = 0;
@@ -48840,7 +48866,9 @@ sampledTexel:
                     }
                 }
 
-                if (_experimentMameTwoTmuCombine && (fbzMode & 0x2000u) != 0 && (textureAlpha & 1) == 0)
+                if (_experimentMameTwoTmuCombine &&
+                    (fbzMode & 0x2000u) != 0 &&
+                    (ComputeFbzColorPathOtherAlpha(textureAlpha, iteratedAlpha) & 1) == 0)
                 {
                     if (traceTexturedPixels)
                         TraceTexturedPixel("alpha-bit-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
@@ -48849,11 +48877,11 @@ sampledTexel:
                 }
 
                 if (_experimentFbzColorPathRgbCombine)
-                    texel = ApplyFbzColorPathRgb(texel, fallbackColor, textureAlpha);
+                    texel = ApplyFbzColorPathRgb(texel, iteratedColor, textureAlpha, iteratedAlpha);
                 if (_experimentSetupMameFog)
-                    texel = ApplyMameSetupFog(texel, fogIterW, setupIterZ, x, y);
+                    texel = ApplyMameSetupFog(texel, fogIterW, setupIterZ, iteratedAlpha, x, y);
 
-                int pixelAlpha = ComputeFbzColorPathAlpha(textureAlpha);
+                int pixelAlpha = ComputeFbzColorPathAlpha(textureAlpha, iteratedAlpha, setupIterZ, fogIterW);
                 uint alphaMode = _registers[RegAlphaMode];
                 if ((alphaMode & 1u) != 0 && !PassVoodooAlphaTest(alphaMode, pixelAlpha))
                 {
@@ -48873,7 +48901,7 @@ sampledTexel:
                         coveredAny = true;
                         continue;
                     }
-                    texel = BlendRgb565(buffer[pixel], fallbackColor, alpha);
+                    texel = BlendRgb565(buffer[pixel], iteratedColor, alpha);
                 }
 
                 if ((alphaMode & 0x10u) != 0)
@@ -53962,12 +53990,16 @@ sampledTexel:
         return color == 0 ? (ushort)0xffff : color;
     }
 
-    private ushort ApplyFbzColorPathRgb(ushort texel, ushort iteratedColor, byte textureAlpha = 255)
+    private ushort ApplyFbzColorPathRgb(
+        ushort texel,
+        ushort iteratedColor,
+        byte textureAlpha = 255,
+        int iteratedAlpha = 255)
         => _experimentMameTwoTmuCombine
-            ? ApplyFbzColorPathRgbMame(texel, iteratedColor, textureAlpha)
+            ? ApplyFbzColorPathRgbMame(texel, iteratedColor, textureAlpha, iteratedAlpha)
             : ApplyFbzColorPathRgbLegacy(texel, iteratedColor);
 
-    private ushort ApplyMameSetupFog(ushort color, long iterW, int iterZ, int x, int y)
+    private ushort ApplyMameSetupFog(ushort color, long iterW, int iterZ, int iteratedAlpha, int x, int y)
     {
         uint fogMode = _registers[RegFogMode];
         if ((fogMode & 1u) == 0)
@@ -54005,8 +54037,8 @@ sampledTexel:
                 fogBlend = ClampMameSetupW(iterW, _registers[RegFbzColorPath]);
                 break;
             default:
-                // Iterated alpha is not yet carried by SetupVertex.
-                return color;
+                fogBlend = iteratedAlpha;
+                break;
         }
 
         return ApplyFogEquation(
@@ -54117,7 +54149,11 @@ sampledTexel:
         return BytesToRgb565(r, g, b);
     }
 
-    private ushort ApplyFbzColorPathRgbMame(ushort texel, ushort iteratedColor, byte textureAlpha)
+    private ushort ApplyFbzColorPathRgbMame(
+        ushort texel,
+        ushort iteratedColor,
+        byte textureAlpha,
+        int iteratedAlpha)
     {
         uint fbzcp = _registers[RegFbzColorPath];
         ushort color0 = ArgbToRgb565(_registers[RegColor0]);
@@ -54126,7 +54162,7 @@ sampledTexel:
         int color1Alpha = (int)(_registers[RegColor1] >> 24);
         int otherAlpha = ((fbzcp >> 2) & 0x03u) switch
         {
-            0 => 255,
+            0 => iteratedAlpha,
             1 => textureAlpha,
             2 => color1Alpha,
             _ => 0
@@ -54143,7 +54179,7 @@ sampledTexel:
             : (((fbzcp >> 4) & 1u) == 0 ? iteratedColor : color0);
         int localAlpha = ((fbzcp >> 5) & 0x03u) switch
         {
-            0 => 255,
+            0 => iteratedAlpha,
             1 => color0Alpha,
             _ => 255
         };
@@ -54223,27 +54259,33 @@ sampledTexel:
             (sb * clampedAlpha + db * inverseAlpha + 127) / 255);
     }
 
-    private int ComputeFbzColorPathAlpha(byte textureAlpha)
+    private int ComputeFbzColorPathOtherAlpha(byte textureAlpha, int iteratedAlpha)
     {
         uint fbzcp = _registers[RegFbzColorPath];
-        int color0Alpha = (int)(_registers[RegColor0] >> 24);
-        int color1Alpha = (int)(_registers[RegColor1] >> 24);
-        const int iteratedAlpha = 255;
-        int otherAlpha = ((fbzcp >> 2) & 3u) switch
+        return ((fbzcp >> 2) & 3u) switch
         {
             0 => iteratedAlpha,
             1 => textureAlpha,
-            2 => color1Alpha,
+            2 => (int)(_registers[RegColor1] >> 24),
             _ => 0
         };
+    }
+
+    private int ComputeFbzColorPathAlpha(
+        byte textureAlpha,
+        int iteratedAlpha,
+        int iteratedZ,
+        long iteratedW)
+    {
+        uint fbzcp = _registers[RegFbzColorPath];
+        int color0Alpha = (int)(_registers[RegColor0] >> 24);
+        int otherAlpha = ComputeFbzColorPathOtherAlpha(textureAlpha, iteratedAlpha);
         int localAlpha = ((fbzcp >> 5) & 3u) switch
         {
             0 => iteratedAlpha,
             1 => color0Alpha,
-            // Iterated Z/W alpha sources are not carried separately by the
-            // compact setup vertex yet. Their saturated value is the safest
-            // hardware-compatible fallback for the current Gauntlet path.
-            _ => 255
+            2 => MameClampedZ(iteratedZ, fbzcp) >> 8,
+            _ => ClampMameSetupW(iteratedW, fbzcp)
         };
 
         int alpha = (fbzcp & (1u << 17)) != 0 ? 0 : otherAlpha;
@@ -54264,6 +54306,9 @@ sampledTexel:
         alpha = Math.Clamp(alpha, 0, 255);
         return (fbzcp & (1u << 25)) != 0 ? 255 - alpha : alpha;
     }
+
+    private static int ClampSetupColor(int start, int dx, int dy, int pixelDx, int pixelDy)
+        => Math.Clamp(unchecked(start + pixelDx * dx + pixelDy * dy) >> 12, 0, 255);
 
     private static bool PassVoodooAlphaTest(uint alphaMode, int alpha)
     {
@@ -54638,6 +54683,7 @@ sampledTexel:
         float X,
         float Y,
         ushort Color,
+        float Alpha,
         float S,
         float T,
         float Q,
@@ -54648,7 +54694,7 @@ sampledTexel:
         bool HasTexture)
     {
         public SetupVertex(float x, float y, ushort color, float s, float t, float q, bool hasTexture)
-            : this(x, y, color, s, t, q, s, t, q, q, hasTexture)
+            : this(x, y, color, 255.0f, s, t, q, s, t, q, q, hasTexture)
         {
         }
     }
