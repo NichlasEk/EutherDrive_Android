@@ -1191,6 +1191,9 @@ internal sealed class MipsR5000Core
     private readonly bool _profileRuntimeRegions =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS"));
+    private readonly bool _experimentRuntimeCounterWaitRegion =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COUNTER_WAIT_REGION"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
@@ -1201,6 +1204,8 @@ internal sealed class MipsR5000Core
     private ulong _runtimeRegionProfileLastPc;
     private ulong _runtimeRegionProfileNormalSteps;
     private ulong _runtimeRegionProfileHostExitSteps;
+    private ulong _runtimeCounterWaitRegionHits;
+    private ulong _runtimeCounterWaitRegionInstructions;
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2191,6 +2196,9 @@ internal sealed class MipsR5000Core
     public string HotPcStatus => GetHotPcStatus();
     public string OpcodeProfileStatus => GetOpcodeProfileStatus();
     public string RuntimeRegionProfileStatus => GetRuntimeRegionProfileStatus();
+    public string RuntimeCounterWaitRegionStatus =>
+        $"counterWaitRegion=hits:{_runtimeCounterWaitRegionHits}" +
+        $"/instructions:{_runtimeCounterWaitRegionInstructions}";
 
     public void Reset()
     {
@@ -2217,6 +2225,8 @@ internal sealed class MipsR5000Core
         _runtimeRegionProfileLastPc = 0;
         _runtimeRegionProfileNormalSteps = 0;
         _runtimeRegionProfileHostExitSteps = 0;
+        _runtimeCounterWaitRegionHits = 0;
+        _runtimeCounterWaitRegionInstructions = 0;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -4541,6 +4551,7 @@ internal sealed class MipsR5000Core
     {
         return (pc & 0x1fffffffUL) switch
         {
+            0x000158b8UL => TryRunKnownRuntimeCounterWaitRegion(pc),
             0x000b0d0cUL or 0x000b0d20UL => TryFastPathKnownRuntimeGameplayDiagnosticTextRecord(pc),
             0x000b1e7cUL =>
                 TryFastPathKnownRuntimeGameplayDiagnosticRenderRecord(pc) ||
@@ -4550,6 +4561,51 @@ internal sealed class MipsR5000Core
             0x0011f7acUL => TryFastPathKnownRuntimeStringCopy(pc),
             _ => false
         };
+    }
+
+    private bool TryRunKnownRuntimeCounterWaitRegion(ulong pc)
+    {
+        const ulong loopLoadCurrent = 0xffffffff800158b8UL;
+        const ulong loopLoadTarget = 0xffffffff800158bcUL;
+        const ulong loopBranch = 0xffffffff800158c0UL;
+        const ulong loopDelay = 0xffffffff800158c4UL;
+        const uint delayInstruction = 0x3c02a420U;
+
+        if (!_experimentRuntimeCounterWaitRegion ||
+            pc != loopLoadCurrent ||
+            _remainingProbeSteps < 4 ||
+            _probeStepDebt != 0 ||
+            _hasPendingBranch ||
+            _hasImmediatePcOverride ||
+            _memory.Read32(loopLoadCurrent) != 0x8cc37af0U ||
+            _memory.Read32(loopLoadTarget) != 0x8c827b30U ||
+            _memory.Read32(loopBranch) != 0x1462fffdU ||
+            _memory.Read32(loopDelay) != delayInstruction)
+        {
+            return false;
+        }
+
+        ulong currentAddress = unchecked(_gpr[6] + (ulong)(long)(short)0x7af0);
+        ulong targetAddress = unchecked(_gpr[4] + (ulong)(long)(short)0x7b30);
+        if (!IsMainRamRange(currentAddress, 4UL) || !IsMainRamRange(targetAddress, 4UL))
+            return false;
+
+        uint current = _memory.Read32(currentAddress);
+        uint target = _memory.Read32(targetAddress);
+        if (current == target)
+            return false;
+
+        int skippedInstructions = _remainingProbeSteps & ~3;
+        _gpr[3] = SignExtend32(current);
+        _gpr[2] = SignExtend32(0xa4200000U);
+        LastFetchedInstruction = delayInstruction;
+        FinishKnownRuntimeBudgetedFastPath(
+            skippedInstructions,
+            skippedInstructions - 1,
+            loopLoadCurrent);
+        _runtimeCounterWaitRegionHits++;
+        _runtimeCounterWaitRegionInstructions += (ulong)skippedInstructions;
+        return true;
     }
 
     private bool TryFastPathKnownRuntimeSteadyStateAfterQioService(ulong pc)

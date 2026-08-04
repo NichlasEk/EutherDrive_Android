@@ -6226,3 +6226,30 @@ counter-wait-loopen med exakt instruktions-/CP0-budget och därefter länka de
 heta 21-76-instruktionskanterna i ett fåtal större `DynamicMethod`-regioner.
 Korrekthetsgränsen förblir bitidentisk slut-PC, FIFO/Voodoo-debugstate,
 `frameHash=0x2b6b81d0` och de sju gameplayorden i fulla inputprovet.
+
+Den första observerade regionen är nu implementerad opt-in bakom
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COUNTER_WAIT_REGION=1` och aktiverad i
+desktop-warm-launchern. Regionen känner bara igen den exakta fyrinstruktions-
+signaturen vid `0x800158b8`, kräver main-RAM-adresser och en ren branchstate,
+och går endast samman så länge counter-värdena skiljer sig. Den bokför exakt
+samma GPR-resultat, sista opcode, PC, CP0/Nile-tid och instruktionsbudget; vid
+minsta avvikelse används tolken.
+
+I ett 30M CPU/rasterdiscard-prov tog regionen 12 host exits och täckte
+4 150 172 gästinstruktioner. Upprepade jämförelser låg ungefär 5-9 procent
+snabbare (`3.853-3.987 s` mot `4.221-4.594 s`) med exakt samma slut-PC,
+framehash och hela FIFO/Voodoo-debugraden. Det fulla 300-frame-provet med
+Right/Fight/Up/Magic/Turbo/Left var rasterbegränsat och därför tidsneutralt
+(`6.583 s` mot `6.519 s`), men behöll `frameHash=0x2b6b81d0` och exakt:
+
+```text
+80229280=3ee08c4b  80229288=bf661144  802292a0=3ee08c4b
+80229304=00000000  80229494=00000008  80229a7c=43343323
+80229b6c=10010000
+```
+
+Detta är den första positiva, bitexakta native-regionen och bevisar att
+budgeterade host exits fungerar. Den gör inte komplett gästvideo spelbar på
+egen hand. Nästa vinst måste komma från direkt kompilerade 21-76-op-regioner,
+framför allt kedjorna kring `0x800ca45c`, `0x8010616c`, `0x801069f4` och
+`0x800a54a8`, där dispatch faktiskt kan elimineras utan busy-wait-specialfall.

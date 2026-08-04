@@ -155,6 +155,8 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_OPCODES") ==
     Console.WriteLine(GetProperty(cpu, "OpcodeProfileStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeRegionProfileStatus"));
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COUNTER_WAIT_REGION") == "1")
+    Console.WriteLine(GetProperty(cpu, "RuntimeCounterWaitRegionStatus"));
 
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_GPRS") == "1")
     DumpCpuState(cpu);
