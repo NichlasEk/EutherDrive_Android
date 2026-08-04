@@ -6193,3 +6193,36 @@ regionloopen gav `1.833-1.861 s`. Experimentet är helt borttaget. Slutsatsen
 generella `Execute`-switchen per instruktion. En framtida region måste generera
 ett sammanhängande native kontrollflöde med direkt register/RAM-access och
 sällsynta exits; en ny C#-ytterloop är inte ett gångbart mellansteg.
+
+En opt-in kontrollflödesprofilerare finns nu bakom
+`EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS=1`. Den grupperar verkligt körda
+400f-instruktioner genom branch-delay-slotten till `(start, end, target)` och
+räknar kända host-fastpaths separat. När flaggan är avstängd går `RunProbeSteps`
+direkt till `Step` utan profileringsläsningar eller dictionary-arbete.
+
+Från den koherenta f4783-snapshoten gav 30 000 000 begärda CPU-steg:
+
+```text
+frameHash                         0x93cca255
+normal profilerade instruktioner 29 974 754
+unika blockkanter                4 718
+kända host-fastpath-steg          1 399 116
+topp 24, viktat med blocklängd   11 972 765 (cirka 40 procent)
+```
+
+Den hetaste kanten var
+`0xffffffff800158b8-0xffffffff800158c4 -> 0xffffffff800158b8`, fyra
+instruktioner och 1 037 536 träffar, alltså 4 150 144 instruktioner eller
+cirka 13,8 procent av vanlig CPU-körning. Nästa kanter är riktiga längre
+regionkandidater: bland annat 76, 37, 31, 22 och 21 instruktioner med tusentals
+träffar. Ett sexmiljoners A/B-prov gav exakt samma slut-PC, Voodoo/FIFO-rad och
+`frameHash=0x93cca255` med och utan profileraren; profilerad körtid var
+`1.686 s` mot `1.530 s`, vilket är diagnostikkostnad och inte aktiv kostnad i
+normal körning.
+
+Nästa compilerarbete ska därför börja med den observerade CFG:n, inte en
+godtycklig maximal blockstorlek. Första beviset bör täcka den fyrinstruktions
+counter-wait-loopen med exakt instruktions-/CP0-budget och därefter länka de
+heta 21-76-instruktionskanterna i ett fåtal större `DynamicMethod`-regioner.
+Korrekthetsgränsen förblir bitidentisk slut-PC, FIFO/Voodoo-debugstate,
+`frameHash=0x2b6b81d0` och de sju gameplayorden i fulla inputprovet.

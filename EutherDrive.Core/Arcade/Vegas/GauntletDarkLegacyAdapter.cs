@@ -1188,10 +1188,19 @@ internal sealed class MipsR5000Core
     private readonly bool _traceBootGlideStateEmit = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_BOOT_GLIDE_STATE_EMIT") == "1";
     private readonly bool _profileHotPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") == "1";
     private readonly bool _profileOpcodes = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_OPCODES") == "1";
+    private readonly bool _profileRuntimeRegions =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
     private readonly ulong[] _cop1xFunctionProfileCounts = new ulong[64];
+    private readonly Dictionary<(ulong Start, ulong End, ulong Target), ulong> _runtimeRegionProfileCounts = [];
+    private bool _runtimeRegionProfileActive;
+    private ulong _runtimeRegionProfileStart;
+    private ulong _runtimeRegionProfileLastPc;
+    private ulong _runtimeRegionProfileNormalSteps;
+    private ulong _runtimeRegionProfileHostExitSteps;
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2181,6 +2190,7 @@ internal sealed class MipsR5000Core
            GetTileWriteStatus();
     public string HotPcStatus => GetHotPcStatus();
     public string OpcodeProfileStatus => GetOpcodeProfileStatus();
+    public string RuntimeRegionProfileStatus => GetRuntimeRegionProfileStatus();
 
     public void Reset()
     {
@@ -2201,6 +2211,12 @@ internal sealed class MipsR5000Core
         Array.Clear(_specialOpcodeProfileCounts);
         Array.Clear(_cop1FormatProfileCounts);
         Array.Clear(_cop1xFunctionProfileCounts);
+        _runtimeRegionProfileCounts.Clear();
+        _runtimeRegionProfileActive = false;
+        _runtimeRegionProfileStart = 0;
+        _runtimeRegionProfileLastPc = 0;
+        _runtimeRegionProfileNormalSteps = 0;
+        _runtimeRegionProfileHostExitSteps = 0;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -2231,7 +2247,22 @@ internal sealed class MipsR5000Core
         for (int i = 0; i < stepCount && !_halted; i++)
         {
             _remainingProbeSteps = stepCount - i;
-            Step();
+            if (_profileRuntimeRegions)
+            {
+                ulong profileBeforePc = Pc;
+                ulong profileBeforeInstructions = _instructionCounter;
+                bool profileRuntimeState = _memory.RuntimeMainState == 0x400fU;
+                Step();
+                ProfileRuntimeRegionStep(
+                    profileBeforePc,
+                    Pc,
+                    _instructionCounter - profileBeforeInstructions,
+                    profileRuntimeState);
+            }
+            else
+            {
+                Step();
+            }
             if (_probeStepDebt > 0)
             {
                 int consumed = Math.Min(_probeStepDebt, stepCount - i - 1);
@@ -2241,6 +2272,45 @@ internal sealed class MipsR5000Core
         }
 
         _remainingProbeSteps = 0;
+    }
+
+    private void ProfileRuntimeRegionStep(
+        ulong beforePc,
+        ulong afterPc,
+        ulong instructionDelta,
+        bool runtimeState400f)
+    {
+        if (!runtimeState400f || instructionDelta != 1UL)
+        {
+            if (_runtimeRegionProfileActive)
+                CompleteRuntimeRegionProfileBlock(beforePc);
+            _runtimeRegionProfileActive = false;
+            if (runtimeState400f && instructionDelta > 1UL)
+                _runtimeRegionProfileHostExitSteps += instructionDelta;
+            return;
+        }
+
+        if (!_runtimeRegionProfileActive || beforePc != _runtimeRegionProfileLastPc + 4UL)
+        {
+            if (_runtimeRegionProfileActive)
+                CompleteRuntimeRegionProfileBlock(beforePc);
+            _runtimeRegionProfileActive = true;
+            _runtimeRegionProfileStart = beforePc;
+        }
+
+        _runtimeRegionProfileLastPc = beforePc;
+        _runtimeRegionProfileNormalSteps++;
+        if (afterPc != beforePc + 4UL)
+        {
+            CompleteRuntimeRegionProfileBlock(afterPc);
+            _runtimeRegionProfileActive = false;
+        }
+    }
+
+    private void CompleteRuntimeRegionProfileBlock(ulong target)
+    {
+        var key = (_runtimeRegionProfileStart, _runtimeRegionProfileLastPc, target);
+        _runtimeRegionProfileCounts[key] = _runtimeRegionProfileCounts.GetValueOrDefault(key) + 1UL;
     }
 
     public bool RunRuntimeTimerTickPreservingContext()
@@ -28692,6 +28762,39 @@ internal sealed class MipsR5000Core
                 .OrderByDescending(item => item.Count)
                 .Select(item => $"{item.Funct:x2}:{item.Count}"));
         return $"cop1={cop1} cop1x={cop1x} opcodes={opcodes} special={special}";
+    }
+
+    private string GetRuntimeRegionProfileStatus()
+    {
+        if (!_profileRuntimeRegions)
+            return "regions=disabled";
+
+        ulong profiledBlockInstructions = _runtimeRegionProfileCounts.Aggregate(
+            0UL,
+            (total, item) => total + item.Value * (((item.Key.End - item.Key.Start) >> 2) + 1UL));
+        string top = string.Join(
+            ",",
+            _runtimeRegionProfileCounts
+                .Select(item => new
+                {
+                    item.Key.Start,
+                    item.Key.End,
+                    item.Key.Target,
+                    Hits = item.Value,
+                    Ops = ((item.Key.End - item.Key.Start) >> 2) + 1UL
+                })
+                .OrderByDescending(item => item.Hits * item.Ops)
+                .ThenBy(item => item.Start)
+                .Take(24)
+                .Select(item =>
+                    $"0x{item.Start:x8}-0x{item.End:x8}>0x{item.Target:x8}:" +
+                    $"{item.Hits}x{item.Ops}"));
+        return
+            $"regions=blocks:{_runtimeRegionProfileCounts.Count}" +
+            $"/normal:{_runtimeRegionProfileNormalSteps}" +
+            $"/covered:{profiledBlockInstructions}" +
+            $"/hostexit:{_runtimeRegionProfileHostExitSteps}" +
+            $" top={top}";
     }
 
     private bool TryFastPathKnownGlideSetupPacketHelper(ulong pc)

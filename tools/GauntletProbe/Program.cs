@@ -153,6 +153,8 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_HOT_PCS") ==
     Console.WriteLine(GetProperty(cpu, "HotPcStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_OPCODES") == "1")
     Console.WriteLine(GetProperty(cpu, "OpcodeProfileStatus"));
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS") == "1")
+    Console.WriteLine(GetProperty(cpu, "RuntimeRegionProfileStatus"));
 
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DUMP_GPRS") == "1")
     DumpCpuState(cpu);
