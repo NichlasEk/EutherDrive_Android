@@ -6275,3 +6275,11 @@ Detta är första positiva generella dispatch-elimineringen: inte en vänteloop
 och inte ett semantiskt spelhack. Nästa region bör använda samma modell på
 37/31/23/21-op-kedjan kring `0x8010616c..0x80106a6c`, där flera observerade
 kanter hör till samma transform/render-anropskedja och kan dela host exit.
+
+Det 37 instruktioner långa prefixet `0x8010616c..0x801061fc -> 0x80106204`
+provades också som separat helt direkt region. Det var bitexakt, träffade
+13 626 gånger och ersatte 504 162 instruktioner, men två parvisa 30M-prov var
+konsekvent cirka 2-3 procent långsammare än transform-only. Hela regionen och
+dess flagga är borttagna. Den får inte återinföras ensam; prefixet behöver
+länkas med efterföljande block så att betydligt mer än 37 instruktioner
+amorterar signaturvakt, host exit och den stora C#-metodens JIT-kostnad.
