@@ -24,6 +24,15 @@ Tre separata fel orsakade huvuddelen av korruptionen:
    resultatet i `fbzColorPath`, fog, alpha-test och blend. Det riktar sig mot
    de ryckvisa blå/röda helskärmsytorna och den stora rosa triangeln.
 
+En fjärde, fristående Voodoo 2-avvikelse hittades därefter i bufferrotationen.
+Gauntlet skriver först `swapbufferCMD` genom den vanliga registeraperturen och
+skickar sedan samma operation genom command-FIFO:n. När command-FIFO är aktiv
+ska Voodoo 2 ignorera direkta skrivningar till FIFO-bara register; kärnan körde
+tidigare båda och roterade därför front/back två gånger. PCI-enheten känner nu
+av effektiv command-FIFO-state och släpper endast igenom `NOFIFO`-registren på
+den direkta vägen. Den gamla presented-buffer-bevaringen i desktopstartaren
+behövs därmed inte längre.
+
 Checkpointet innehåller även MIPS `movz/movn` för single/double, korrekt
 Y-origin när uppskjutna fast-fill-clear materialiseras samt gameplay-state
 `0x400f` i det befintliga diagnostic-textskyddet.
@@ -91,14 +100,28 @@ visade rätt startposition men också kvarvarande mörk/röd felgeometri i däck
 Inga inputscript körs av desktopstartaren efter reload; all fortsatt rörelse
 kommer från användaren.
 
+Efter swap-rättningen ger ett 80-frameprov från f4808 exakt två riktiga FIFO-
+swaps. De två färgbuffertarna alternerar 0/1 och innehåller båda kompletta,
+igenkännbara närliggande gameplaybilder; den direkta skrivningen syns inte
+längre som exekverad swap. Frame 4888 gav `frameHash=0xff0b80d9`.
+
+Ett längre kontrollprov fortsatte 2 400 emulerade frames. Det visade att den
+senare svartbilden också går att reproducera i proben och alltså inte är ett
+Avalonia/OpenGL-fel. Bilden är fortfarande synlig vid frame 6900, men allt fler
+Type 3-trianglar avvisas utanför cliprektangeln och en senare värld-/render-
+övergång lämnar synlig front tom. Detta är separat från den nu rättade dubbla
+swappen.
+
 ## Kvarvarande grafikfel
 
 Svarta/ofyllda ytor förekommer fortfarande i senare redraw-pass. Scenen är
 spelbar nog för input- och rörelseprov, men inte grafikfärdig. Nästa
-grafikarbete ska spåra just denna ytas Type 3-paket och avgöra om den försvinner
-i depth/alpha-test, texture lookup eller packet completion. Alpha ska inte
-kringgås och gamla frame-generationer ska inte kompositeras för att maskera
-felet.
+grafikarbete ska spåra de Type 3-paket som övergår från täckta till helt
+clip-avvisade trianglar mellan de synliga frame 6900-data och den senare tomma
+fronten. Snapshot/reload mitt i detta intervall behåller en äldre frame och
+ändrar FIFO-fortsättningen, så transient command-FIFO-state måste tas med i
+spåret. Alpha ska inte kringgås och gamla frame-generationer ska inte
+kompositeras för att maskera felet.
 
 MAME-importfunktionerna i `GauntletProbe` är endast ett utvecklingsfacit för
 RAM, FBI/TMU-register, framebuffer och FIFO-position. Den sparade native

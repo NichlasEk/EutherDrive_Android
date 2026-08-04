@@ -40,11 +40,11 @@ export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_LIST_INVALID_SENTINEL_END=1
 # Player input remains live and no prerecorded input is applied after reload.
 # Starting the synthetic fallback task would duplicate the imported RTOS task.
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=0
-# The guest emits a direct swap followed immediately by a FIFO swap during its
-# reset family. Keep the coherent buffer captured by the first swap when no
-# draw work occurred before the second; do not combine two guest buffers.
+# With command FIFO enabled, Voodoo 2 ignores direct writes to FIFO-able
+# registers. The queued swap is therefore the only real rotation; no stale
+# presented-buffer preservation is needed.
 unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FORCE_RENDER_BUFFER_INDEX
-export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_PRESENTED_BUFFER_WITHOUT_DRAW=1
+unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PRESERVE_PRESENTED_BUFFER_WITHOUT_DRAW
 unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BACK_BUFFER_OVER_COHERENT_FRAME
 unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_BASE_BUFFER_INDEX
 unset EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_COMPOSITE_LIVE_BUFFER_INDEX

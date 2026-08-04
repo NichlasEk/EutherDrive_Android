@@ -35715,6 +35715,7 @@ internal sealed class VegasVoodooPciDevice
     private uint _initEnable;
     private uint _dacReadResult;
     private int _traceCount;
+    private bool _commandFifoTrafficObserved;
 
     public void AttachVoodoo(IVoodooBackend voodoo) => _voodoo = voodoo;
 
@@ -35732,6 +35733,7 @@ internal sealed class VegasVoodooPciDevice
         _hvRetraceCounter = 0;
         _initEnable = 0;
         _dacReadResult = 0;
+        _commandFifoTrafficObserved = false;
         BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x00, 4), VendorDeviceId);
         BinaryPrimitives.WriteUInt16LittleEndian(_config.AsSpan(0x04, 2), 0x0002);
         BinaryPrimitives.WriteUInt32LittleEndian(_config.AsSpan(0x08, 4), ClassCode);
@@ -35828,6 +35830,7 @@ internal sealed class VegasVoodooPciDevice
                  offset >= 0x00001000u &&
                  (IsCommandFifoEnabled || !_experimentStrictCommandFifoEnable)))
             {
+                _commandFifoTrafficObserved = true;
                 if (_experimentCommandFifoDirectEndian && (offset & 0x00040000u) != 0)
                     value = BinaryPrimitives.ReverseEndianness(value);
                 uint fifoOffset = wrappedGenerationWindow ? offset - 0x00100000u : offset;
@@ -35837,9 +35840,20 @@ internal sealed class VegasVoodooPciDevice
             else
             {
                 uint registerOffset = MapRegisterOffset(offset);
-                WriteRegister(registerOffset, value);
-                _voodoo?.WriteRegister(registerOffset, value);
-                Trace($"reg write off={offset:x6} value={value:x8}");
+                uint register = (registerOffset >> 2) & 0xffu;
+                if (CommandFifoEnabled && !IsCommandFifoBypassRegister(register))
+                {
+                    // Voodoo 2 ignores ordinary FIFO-able register writes
+                    // while its command FIFO is enabled. The guest must send
+                    // those writes through the command FIFO aperture instead.
+                    Trace($"reg write ignored cmdfifo off={offset:x6} reg={register:x2} value={value:x8}");
+                }
+                else
+                {
+                    WriteRegister(registerOffset, value);
+                    _voodoo?.WriteRegister(registerOffset, value);
+                    Trace($"reg write off={offset:x6} value={value:x8}");
+                }
             }
         }
         else if (offset < 0x00800000u)
@@ -35893,6 +35907,16 @@ internal sealed class VegasVoodooPciDevice
     }
 
     private bool IsCommandFifoEnabled => ((_registers[RegFbiInit7] >> 8) & 1u) != 0;
+    private bool CommandFifoEnabled =>
+        IsCommandFifoEnabled ||
+        (_voodoo?.CommandFifoEnabled ?? false) ||
+        (!_experimentStrictCommandFifoEnable && _commandFifoTrafficObserved);
+
+    private static bool IsCommandFifoBypassRegister(uint register)
+        // Voodoo 2 marks intrCtrl, command-FIFO control, and FBI/video init
+        // registers as NOFIFO. All ordinary raster, setup, and TMU registers
+        // are ignored on the direct register aperture while cmdFIFO is on.
+        => register == 0x01u || register is >= 0x78u and <= 0x93u;
 
     private static bool IsGlideCommandFifoWindow(uint offset)
         => offset is >= 0x00200000u and < 0x00300000u;
@@ -38245,6 +38269,7 @@ internal readonly record struct GauntletPlayerInput(
 
 public interface IVoodooBackend
 {
+    bool CommandFifoEnabled { get; }
     void WriteRegister(uint address, uint value);
     uint ReadRegister(uint address);
     void WriteFifo(uint wordOffset, uint value);
@@ -38278,6 +38303,7 @@ internal sealed class VoodooFacade : IVoodooBackend
     public bool TraceEnabled => _backend is VoodooTraceBackend;
     public bool HasVideoActivity => _backend is VoodooBringupBackend { HasVideoActivity: true };
     public bool HasDrawPackets => _backend is VoodooBringupBackend { DrawPacketCount: > 0 };
+    public bool CommandFifoEnabled => _backend.CommandFifoEnabled;
     public int RenderFrameCount => _backend is VoodooBringupBackend bringup ? bringup.RenderFrameCount : 0;
     public string DebugStatus => _backend.DebugStatus;
     public string RecentEventStatus => _backend.RecentEventStatus;
@@ -39774,6 +39800,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     public Func<int, ulong>? CpuGprProvider { get; set; }
     public int DrawPacketCount => _fifoDrawPacketCount;
     public int RenderFrameCount => _renderFrame;
+    public bool CommandFifoEnabled => ((_registers[RegFbiInit7] >> 8) & 1u) != 0;
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
         => $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +
@@ -42773,8 +42800,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                          _presentedColorBufferValid &&
                          !forceRawRenderBuffer &&
                          (_experimentPreservePresentedBufferWithoutDraw ||
-                          !_fixDisplayBufferSelection ||
-                          renderBufferIndex == _frontBufferIndex)
+                          !_fixDisplayBufferSelection)
             ? _presentedColorBuffer
             : _colorBuffers[renderBufferIndex];
         int liveOverlayIndex =
