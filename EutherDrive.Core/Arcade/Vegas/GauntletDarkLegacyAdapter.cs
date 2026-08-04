@@ -78,11 +78,12 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GENERATIONS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_STANDARD_FIFO_DECODE_COMPLETE_PACKETS", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_STANDARD_FIFO_ORDERED_ASYNC_DRAIN", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER", "0"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE3_PRODUCER_HEADER_PCS", "0x800bc8ec,0x800bc91c,0x800c5b80"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER", "0"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE4_BODY_YIELD_TO_GLYPH_TYPE3_HEADER", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TEXTURE_STATE_BUILDER_TAIL", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TEXTURE_STATE_BUILDER_TAIL", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_SPACE0_CMD_FIFO_RAM", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_REQUEST_METADATA", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_BGLOADMODEL_QIO_CREATE_ALIAS", "1"),
@@ -16112,7 +16113,7 @@ internal sealed class MipsR5000Core
         uint mainState = _memory.Read32(0xffffffff80227ab0UL);
         if (!_enableRuntimeGameplayDiagnosticTextRecordFix ||
             pc is not (firstTriangleCall or secondTriangleCall) ||
-            mainState is not (0x400cU or 0x400dU or 0x400eU))
+            mainState is not (0x400cU or 0x400dU or 0x400eU or 0x400fU))
         {
             return false;
         }
@@ -16200,7 +16201,7 @@ internal sealed class MipsR5000Core
             return originalDiagnosticMenu || shiftedDiagnosticMenu;
         }
 
-        return mainState is 0x400cU or 0x400eU &&
+        return mainState is 0x400cU or 0x400eU or 0x400fU &&
                text >= diagnosticTextStart &&
                text < diagnosticTextEnd &&
                MatchesAscii(diagnosticTextStart, "DIAGNOSTIC MENU");
@@ -18617,7 +18618,7 @@ internal sealed class MipsR5000Core
         uint mainState = _memory.Read32(0xffffffff80227ab0UL);
         if (!_enableRuntimeGameplayDiagnosticTextRecordFix ||
             pc != body ||
-            mainState is not (0x400cU or 0x400dU or 0x400eU))
+            mainState is not (0x400cU or 0x400dU or 0x400eU or 0x400fU))
         {
             return false;
         }
@@ -31511,6 +31512,14 @@ internal sealed class MipsR5000Core
                 if (GetCop1Condition((ft >> 2) & 0x07) == ((ft & 1) != 0))
                     _fpr[fd] = (uint)_fpr[fs];
                 break;
+            case 0x12: // movz.s
+                if (_gpr[ft] == 0)
+                    _fpr[fd] = (uint)_fpr[fs];
+                break;
+            case 0x13: // movn.s
+                if (_gpr[ft] != 0)
+                    _fpr[fd] = (uint)_fpr[fs];
+                break;
             case 0x15: // recip.s
                 _fpr[fd] = BitConverter.SingleToUInt32Bits(1.0f / value);
                 break;
@@ -31584,6 +31593,14 @@ internal sealed class MipsR5000Core
                 break;
             case 0x11: // movf.d/movt.d
                 if (GetCop1Condition((ft >> 2) & 0x07) == ((ft & 1) != 0))
+                    _fpr[fd] = _fpr[fs];
+                break;
+            case 0x12: // movz.d
+                if (_gpr[ft] == 0)
+                    _fpr[fd] = _fpr[fs];
+                break;
+            case 0x13: // movn.d
+                if (_gpr[ft] != 0)
                     _fpr[fd] = _fpr[fs];
                 break;
             case 0x20: // cvt.s.d
@@ -38428,6 +38445,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private const int RegTriangleCommand = 0x80 >> 2;
     private const int RegFtriangleCommand = 0x100 >> 2;
     private const int RegFbzColorPath = 0x104 >> 2;
+    private const int RegAlphaMode = 0x10c >> 2;
     private const int RegFbzMode = 0x110 >> 2;
     private const int RegLfbMode = 0x114 >> 2;
     private const int RegClipLeftRight = 0x118 >> 2;
@@ -38575,6 +38593,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int[] _lastFastFillX1 = new int[3];
     private readonly int[] _lastFastFillY0 = new int[3];
     private readonly int[] _lastFastFillY1 = new int[3];
+    private readonly int[] _lastFastFillYOrigin = [-1, -1, -1];
     private readonly ushort[] _lastFastFillColor = new ushort[3];
     private readonly int[] _pixelLastWriterSampleIds = new int[3 * PixelLastWriterSampleCount];
     private readonly Dictionary<PixelLastWriterKey, int> _pixelLastWriterIds = [];
@@ -38592,6 +38611,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int[] _pendingClearX1 = new int[3];
     private readonly int[] _pendingClearY0 = new int[3];
     private readonly int[] _pendingClearY1 = new int[3];
+    private readonly int[] _pendingClearYOrigin = [-1, -1, -1];
     private readonly ushort[] _pendingClearColor = new ushort[3];
     private int _registerWriteCount;
     private int _fifoWriteCount;
@@ -39109,6 +39129,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE"));
     private readonly bool _fixStandardCommandFifoDecodeCompletePackets =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_STANDARD_FIFO_DECODE_COMPLETE_PACKETS"));
+    private readonly bool _fixStandardCommandFifoOrderedAsyncDrain =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_STANDARD_FIFO_ORDERED_ASYNC_DRAIN")) ||
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_RESYNC_INCOMPLETE_READ_HEADER"));
     private readonly bool _experimentMameCommandFifoBulkResyncInvalidRead =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_FIFO_BULK_RESYNC_INVALID_READ"));
     private readonly bool _fixMameCommandFifoModel =
@@ -42710,6 +42733,9 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     public void RenderFrame(EutherFrameTarget target)
     {
+        if (_fixStandardCommandFifoOrderedAsyncDrain)
+            DecodeCommandFifoPacketsIfNotPending("render");
+
         if (!HasVideoActivity || target.Buffer is null || target.Width <= 0 || target.Height <= 0 || target.Stride < target.Width * 4)
             return;
 
@@ -43061,11 +43087,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         }
 
         int width = x1 - x0;
-        if (!IsCachedFastFill(bufferIndex, x0, x1, y0, y1, color))
+        int yOrigin = GetRasterYOrigin();
+        if (!IsCachedFastFill(bufferIndex, x0, x1, y0, y1, yOrigin, color))
         {
             TrackPixelLastWriterRect(bufferIndex, x0, x1, y0, y1, GetPixelLastWriterId("fill", "fastfill", color));
-            SetPendingClear(bufferIndex, x0, x1, y0, y1, color);
-            CacheFastFill(bufferIndex, x0, x1, y0, y1, color);
+            SetPendingClear(bufferIndex, x0, x1, y0, y1, yOrigin, color);
+            CacheFastFill(bufferIndex, x0, x1, y0, y1, yOrigin, color);
         }
 
         _fastFillCount++;
@@ -43749,7 +43776,11 @@ internal class VoodooBringupBackend : IVoodooBackend
         {
             int storageIndex = CommandFifoStorageIndex(_cmdFifoReadIndex);
             if (!_cmdFifoValid[storageIndex])
-                return false;
+            {
+                return _fixStandardCommandFifoOrderedAsyncDrain &&
+                       _experimentStandardCommandFifoGenerations &&
+                       TryResyncStandardCommandFifoToNextPacket();
+            }
             if (!_experimentStandardCommandFifoGenerations)
                 return true;
 
@@ -48253,18 +48284,23 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static float Edge(float ax, float ay, float bx, float by, float px, float py)
         => (px - ax) * (by - ay) - (py - ay) * (bx - ax);
 
-    private int GetRasterBufferY(int y)
+    private int GetRasterYOrigin()
     {
         if (!_fixGauntletRasterYOrigin &&
             (_registers[RegFbzMode] & (1u << 17)) == 0)
         {
-            return y;
+            return -1;
         }
 
-        int yOrigin = _fixGauntletRasterYOrigin
+        return _fixGauntletRasterYOrigin
             ? _fixGauntletRasterYOriginHeight
             : (int)((_registers[RegFbiInit3] >> 22) & 0x3ffu);
-        return Math.Clamp(yOrigin - y, 0, LfbRows - 1);
+    }
+
+    private int GetRasterBufferY(int y)
+    {
+        int yOrigin = GetRasterYOrigin();
+        return yOrigin < 0 ? y : Math.Clamp(yOrigin - y, 0, LfbRows - 1);
     }
 
     private bool FillGradientColorTriangle(
@@ -48817,6 +48853,16 @@ sampledTexel:
                 if (_experimentSetupMameFog)
                     texel = ApplyMameSetupFog(texel, fogIterW, setupIterZ, x, y);
 
+                int pixelAlpha = ComputeFbzColorPathAlpha(textureAlpha);
+                uint alphaMode = _registers[RegAlphaMode];
+                if ((alphaMode & 1u) != 0 && !PassVoodooAlphaTest(alphaMode, pixelAlpha))
+                {
+                    if (traceTexturedPixels)
+                        TraceTexturedPixel("alpha-test-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
+                    coveredAny = true;
+                    continue;
+                }
+
                 if (alpha8Mask)
                 {
                     int alpha = Rgb565ToGrayscale8(texel);
@@ -48828,6 +48874,12 @@ sampledTexel:
                         continue;
                     }
                     texel = BlendRgb565(buffer[pixel], fallbackColor, alpha);
+                }
+
+                if ((alphaMode & 0x10u) != 0)
+                {
+                    int destinationAlpha = mameAlphaPlanes ? _auxBuffer[pixel] & 0xff : 0xff;
+                    texel = BlendVoodooAlphaRgb565(buffer[pixel], texel, pixelAlpha, destinationAlpha, alphaMode);
                 }
 
                 if (mameRgbMask)
@@ -48848,7 +48900,7 @@ sampledTexel:
                         TraceTexturedPixel("rgb-mask-disabled", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
                 }
                 if (mameAuxMask)
-                    _auxBuffer[pixel] = mameAlphaPlanes ? (ushort)(texel >> 8) : (ushort)depthValue;
+                    _auxBuffer[pixel] = mameAlphaPlanes ? (ushort)pixelAlpha : (ushort)depthValue;
                 coveredAny = true;
             }
         }
@@ -53673,7 +53725,7 @@ sampledTexel:
         return true;
     }
 
-    private void SetPendingClear(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)
+    private void SetPendingClear(int bufferIndex, int x0, int x1, int y0, int y1, int yOrigin, ushort color)
     {
         if ((uint)bufferIndex >= (uint)_pendingClearValid.Length)
             return;
@@ -53682,7 +53734,8 @@ sampledTexel:
             (_pendingClearX0[bufferIndex] != x0 ||
              _pendingClearX1[bufferIndex] != x1 ||
              _pendingClearY0[bufferIndex] != y0 ||
-             _pendingClearY1[bufferIndex] != y1))
+             _pendingClearY1[bufferIndex] != y1 ||
+             _pendingClearYOrigin[bufferIndex] != yOrigin))
         {
             MaterializePendingClear(bufferIndex);
         }
@@ -53692,6 +53745,7 @@ sampledTexel:
         _pendingClearX1[bufferIndex] = x1;
         _pendingClearY0[bufferIndex] = y0;
         _pendingClearY1[bufferIndex] = y1;
+        _pendingClearYOrigin[bufferIndex] = yOrigin;
         _pendingClearColor[bufferIndex] = color;
     }
 
@@ -53704,28 +53758,31 @@ sampledTexel:
         int x1 = _pendingClearX1[bufferIndex];
         int y0 = _pendingClearY0[bufferIndex];
         int y1 = _pendingClearY1[bufferIndex];
+        int yOrigin = _pendingClearYOrigin[bufferIndex];
         ushort color = _pendingClearColor[bufferIndex];
         ushort[] buffer = _colorBuffers[bufferIndex];
         int width = x1 - x0;
         for (int y = y0; y < y1; y++)
         {
-            int offset = y * LfbRowPixels + x0;
+            int bufferY = yOrigin < 0 ? y : Math.Clamp(yOrigin - y, 0, LfbRows - 1);
+            int offset = bufferY * LfbRowPixels + x0;
             buffer.AsSpan(offset, width).Fill(color);
         }
 
         _pendingClearValid[bufferIndex] = false;
     }
 
-    private bool IsCachedFastFill(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)
+    private bool IsCachedFastFill(int bufferIndex, int x0, int x1, int y0, int y1, int yOrigin, ushort color)
         => (uint)bufferIndex < (uint)_lastFastFillValid.Length &&
            _lastFastFillValid[bufferIndex] &&
            _lastFastFillX0[bufferIndex] == x0 &&
            _lastFastFillX1[bufferIndex] == x1 &&
            _lastFastFillY0[bufferIndex] == y0 &&
            _lastFastFillY1[bufferIndex] == y1 &&
+           _lastFastFillYOrigin[bufferIndex] == yOrigin &&
            _lastFastFillColor[bufferIndex] == color;
 
-    private void CacheFastFill(int bufferIndex, int x0, int x1, int y0, int y1, ushort color)
+    private void CacheFastFill(int bufferIndex, int x0, int x1, int y0, int y1, int yOrigin, ushort color)
     {
         if ((uint)bufferIndex >= (uint)_lastFastFillValid.Length)
             return;
@@ -53735,6 +53792,7 @@ sampledTexel:
         _lastFastFillX1[bufferIndex] = x1;
         _lastFastFillY0[bufferIndex] = y0;
         _lastFastFillY1[bufferIndex] = y1;
+        _lastFastFillYOrigin[bufferIndex] = yOrigin;
         _lastFastFillColor[bufferIndex] = color;
     }
 
@@ -54163,6 +54221,114 @@ sampledTexel:
             (sr * clampedAlpha + dr * inverseAlpha + 127) / 255,
             (sg * clampedAlpha + dg * inverseAlpha + 127) / 255,
             (sb * clampedAlpha + db * inverseAlpha + 127) / 255);
+    }
+
+    private int ComputeFbzColorPathAlpha(byte textureAlpha)
+    {
+        uint fbzcp = _registers[RegFbzColorPath];
+        int color0Alpha = (int)(_registers[RegColor0] >> 24);
+        int color1Alpha = (int)(_registers[RegColor1] >> 24);
+        const int iteratedAlpha = 255;
+        int otherAlpha = ((fbzcp >> 2) & 3u) switch
+        {
+            0 => iteratedAlpha,
+            1 => textureAlpha,
+            2 => color1Alpha,
+            _ => 0
+        };
+        int localAlpha = ((fbzcp >> 5) & 3u) switch
+        {
+            0 => iteratedAlpha,
+            1 => color0Alpha,
+            // Iterated Z/W alpha sources are not carried separately by the
+            // compact setup vertex yet. Their saturated value is the safest
+            // hardware-compatible fallback for the current Gauntlet path.
+            _ => 255
+        };
+
+        int alpha = (fbzcp & (1u << 17)) != 0 ? 0 : otherAlpha;
+        if ((fbzcp & (1u << 18)) != 0)
+            alpha -= localAlpha;
+        int factor = ((fbzcp >> 19) & 7u) switch
+        {
+            1 or 3 => localAlpha,
+            2 => otherAlpha,
+            4 => textureAlpha,
+            _ => 0
+        };
+        if ((fbzcp & (1u << 22)) == 0)
+            factor = 255 - factor;
+        alpha = alpha * (factor + 1) / 256;
+        if (((fbzcp >> 23) & 3u) != 0)
+            alpha += localAlpha;
+        alpha = Math.Clamp(alpha, 0, 255);
+        return (fbzcp & (1u << 25)) != 0 ? 255 - alpha : alpha;
+    }
+
+    private static bool PassVoodooAlphaTest(uint alphaMode, int alpha)
+    {
+        int reference = (int)(alphaMode >> 24);
+        return ((alphaMode >> 1) & 7u) switch
+        {
+            0 => false,
+            1 => alpha < reference,
+            2 => alpha == reference,
+            3 => alpha <= reference,
+            4 => alpha > reference,
+            5 => alpha != reference,
+            6 => alpha >= reference,
+            _ => true
+        };
+    }
+
+    private static ushort BlendVoodooAlphaRgb565(
+        ushort destination,
+        ushort source,
+        int sourceAlpha,
+        int destinationAlpha,
+        uint alphaMode)
+    {
+        Rgb565ToBytes(source, out int sr, out int sg, out int sb);
+        Rgb565ToBytes(destination, out int dr, out int dg, out int db);
+        int srcFactor = (int)((alphaMode >> 8) & 0xfu);
+        int dstFactor = (int)((alphaMode >> 12) & 0xfu);
+        int sa = Math.Clamp(sourceAlpha, 0, 255);
+        int da = Math.Clamp(destinationAlpha, 0, 255);
+
+        return BytesToRgb565(
+            BlendChannel(sr, dr, SourceScale(srcFactor, sa, da, sr, dr), DestinationScale(dstFactor, sa, da, sr)),
+            BlendChannel(sg, dg, SourceScale(srcFactor, sa, da, sg, dg), DestinationScale(dstFactor, sa, da, sg)),
+            BlendChannel(sb, db, SourceScale(srcFactor, sa, da, sb, db), DestinationScale(dstFactor, sa, da, sb)));
+
+        static int BlendChannel(int sourceChannel, int destinationChannel, int sourceScale, int destinationScale)
+            => Math.Clamp((sourceChannel * sourceScale + destinationChannel * destinationScale) >> 8, 0, 255);
+
+        static int SourceScale(int factor, int sa, int da, int sourceChannel, int destinationChannel)
+            => factor switch
+            {
+                1 => sa + 1,
+                2 => destinationChannel + 1,
+                3 => da + 1,
+                4 => 256,
+                5 => 256 - sa,
+                6 => 256 - destinationChannel,
+                7 => 256 - da,
+                15 => Math.Min(sa, 256 - da) + 1,
+                _ => 0
+            };
+
+        static int DestinationScale(int factor, int sa, int da, int sourceChannel)
+            => factor switch
+            {
+                1 => sa + 1,
+                2 => sourceChannel + 1,
+                3 => da + 1,
+                4 => 256,
+                5 => 256 - sa,
+                6 => 256 - sourceChannel,
+                7 => 256 - da,
+                _ => 0
+            };
     }
 
     private ushort GetIntegerDrawColor()

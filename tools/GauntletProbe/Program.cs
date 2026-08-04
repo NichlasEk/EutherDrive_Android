@@ -63,12 +63,16 @@ if (!string.IsNullOrWhiteSpace(warmupSnapshotPath) &&
 }
 
 ApplyRequestedGuestTextureMemoryCopy(adapter);
+LoadRequestedMameMainRam(adapter);
 ApplyRequestedGuestMemoryWordPatch(adapter);
 ApplyRequestedGuestMemoryFilePatch(adapter);
 ApplyRequestedDiskTextureMemoryCopy(adapter);
 ApplyRequestedTextureMemoryCopy(adapter);
 LoadRequestedVoodooTextureBanks(adapter);
+LoadRequestedMameVoodooFbiRegisters(adapter);
+LoadRequestedMameVoodooTmuRegisters(adapter);
 LoadRequestedMameVoodooFramebuffer(adapter);
+ResetRequestedMameVoodooCommandFifo(adapter);
 ApplyRequestedMameCpuState(adapter);
 LoadRequestedTextureWriterSidecar(adapter);
 PrintRequestedGuestMemoryWords(adapter, "start");
@@ -273,6 +277,22 @@ static void ApplyRequestedGuestMemoryWordPatch(GauntletDarkLegacyAdapter adapter
         write32.Invoke(memory, new object[] { address, (uint)value });
         Console.WriteLine($"guestMemoryWordPatch address=0x{address:x16} value=0x{value:x8}");
     }
+}
+
+static void LoadRequestedMameMainRam(GauntletDarkLegacyAdapter adapter)
+{
+    string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_MAME_MAIN_RAM");
+    if (string.IsNullOrWhiteSpace(path))
+        return;
+
+    byte[] bytes = File.ReadAllBytes(path);
+    object memory = GetProperty(GetField(adapter, "_machine"), "MemoryMap");
+    byte[] mainRam = GetFieldValue<byte[]>(memory, "_mainRam");
+    if (bytes.Length != mainRam.Length)
+        throw new InvalidDataException($"MAME main RAM image must be exactly 0x{mainRam.Length:x} bytes");
+
+    Buffer.BlockCopy(bytes, 0, mainRam, 0, bytes.Length);
+    Console.WriteLine($"mameMainRamLoad path={path} bytes=0x{bytes.Length:x}");
 }
 
 static void PrintRequestedGuestMemoryWords(GauntletDarkLegacyAdapter adapter, string label)
@@ -525,6 +545,66 @@ static void LoadRequestedVoodooTextureBanks(GauntletDarkLegacyAdapter adapter)
     }
 }
 
+static void LoadRequestedMameVoodooTmuRegisters(GauntletDarkLegacyAdapter adapter)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_MAME_VOODOO_TMU_REGISTERS");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    string[] paths = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (paths.Length != 2)
+    {
+        throw new InvalidDataException(
+            "EUTHERDRIVE_GAUNTDL_LOAD_MAME_VOODOO_TMU_REGISTERS requires TMU0,TMU1 paths");
+    }
+
+    object backend = GetField(GetProperty(GetField(adapter, "_machine"), "Voodoo"), "_backend");
+    uint[][] registers = GetFieldValue<uint[][]>(backend, "_tmuRegisters");
+    bool[][] valid = GetFieldValue<bool[][]>(backend, "_tmuRegisterValid");
+    const int registerCount = 0x100;
+    const int registerBytes = registerCount * sizeof(uint);
+
+    for (int tmu = 0; tmu < paths.Length; tmu++)
+    {
+        byte[] bytes = File.ReadAllBytes(paths[tmu]);
+        if (bytes.Length != registerBytes)
+            throw new InvalidDataException($"MAME TMU{tmu} register image must be exactly 0x{registerBytes:x} bytes");
+
+        for (int register = 0; register < registerCount; register++)
+        {
+            registers[tmu][register] = BinaryPrimitives.ReadUInt32LittleEndian(
+                bytes.AsSpan(register * sizeof(uint), sizeof(uint)));
+            valid[tmu][register] = true;
+        }
+
+        Console.WriteLine(
+            $"mameVoodooTmuRegisterLoad tmu={tmu} path={paths[tmu]} bytes=0x{registerBytes:x}");
+    }
+}
+
+static void LoadRequestedMameVoodooFbiRegisters(GauntletDarkLegacyAdapter adapter)
+{
+    string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_MAME_VOODOO_FBI_REGISTERS");
+    if (string.IsNullOrWhiteSpace(path))
+        return;
+
+    byte[] bytes = File.ReadAllBytes(path);
+    const int registerCount = 0x100;
+    const int registerBytes = registerCount * sizeof(uint);
+    if (bytes.Length != registerBytes)
+        throw new InvalidDataException($"MAME FBI register image must be exactly 0x{registerBytes:x} bytes");
+
+    object backend = GetField(GetProperty(GetField(adapter, "_machine"), "Voodoo"), "_backend");
+    uint[] registers = GetFieldValue<uint[]>(backend, "_registers");
+    for (int register = 0; register < registerCount; register++)
+    {
+        registers[register] = BinaryPrimitives.ReadUInt32LittleEndian(
+            bytes.AsSpan(register * sizeof(uint), sizeof(uint)));
+    }
+
+    Console.WriteLine($"mameVoodooFbiRegisterLoad path={path} bytes=0x{registerBytes:x}");
+}
+
 static void LoadRequestedMameVoodooFramebuffer(GauntletDarkLegacyAdapter adapter)
 {
     string? path = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_LOAD_MAME_VOODOO_FRAMEBUFFER");
@@ -554,6 +634,11 @@ static void LoadRequestedMameVoodooFramebuffer(GauntletDarkLegacyAdapter adapter
     CopySurface(memory, color0Offset, colorBuffers[0]);
     CopySurface(memory, color1Offset, colorBuffers[1]);
     CopySurface(memory, auxOffset, auxBuffer);
+    uint[] commandFifoRam = GetFieldValue<uint[]>(backend, "_cmdFifoRam");
+    Buffer.BlockCopy(memory, 0, commandFifoRam, 0, Math.Min(memory.Length, commandFifoRam.Length * sizeof(uint)));
+    ushort[] presented = GetFieldValue<ushort[]>(backend, "_presentedColorBuffer");
+    colorBuffers[0].CopyTo(presented, 0);
+    SetField(backend, "_presentedColorBufferValid", true);
     Console.WriteLine(
         $"mameVoodooFramebufferLoad path={path} rgb=0x{color0Offset:x}/0x{color1Offset:x} " +
         $"aux=0x{auxOffset:x} size={width}x{height} stride={destinationStride}");
@@ -571,6 +656,71 @@ static void LoadRequestedMameVoodooFramebuffer(GauntletDarkLegacyAdapter adapter
             }
         }
     }
+}
+
+static void ResetRequestedMameVoodooCommandFifo(GauntletDarkLegacyAdapter adapter)
+{
+    string? raw = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_RESET_MAME_VOODOO_COMMAND_FIFO");
+    if (string.IsNullOrWhiteSpace(raw))
+        return;
+
+    string[] values = raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    if (values.Length != 5 || values.Any(value => !TryParseHexUlong(value, out _)))
+    {
+        throw new InvalidDataException(
+            "EUTHERDRIVE_GAUNTDL_RESET_MAME_VOODOO_COMMAND_FIFO requires readIndex,base,end,addressMin,addressMax");
+    }
+
+    int[] parsed = new int[values.Length];
+    for (int index = 0; index < values.Length; index++)
+    {
+        TryParseHexUlong(values[index], out ulong value);
+        parsed[index] = checked((int)value);
+    }
+    object backend = GetField(GetProperty(GetField(adapter, "_machine"), "Voodoo"), "_backend");
+    bool usesMameCommandFifoModel = GetFieldValue<bool>(backend, "_fixMameCommandFifoModel");
+    const int nativeCommandFifoWords = 1 << 16;
+    int commandFifoReadIndex = usesMameCommandFifoModel
+        ? parsed[0]
+        : (parsed[0] - (parsed[1] >> 2)) & (nativeCommandFifoWords - 1);
+    int commandFifoBase = usesMameCommandFifoModel ? parsed[1] : 0;
+    int commandFifoEnd = usesMameCommandFifoModel ? parsed[2] : nativeCommandFifoWords * sizeof(uint);
+    int commandFifoAddressMin = usesMameCommandFifoModel ? parsed[3] : -4;
+    int commandFifoAddressMax = usesMameCommandFifoModel ? parsed[4] : -4;
+    int previousBulkWriteDepth = GetFieldValue<int>(backend, "_cmdFifoBulkWriteDepth");
+    Array.Clear(GetFieldValue<bool[]>(backend, "_cmdFifoValid"));
+    SetField(backend, "_cmdFifoReadIndex", commandFifoReadIndex);
+    SetField(backend, "_cmdFifoDepth", 0);
+    SetField(backend, "_cmdFifoHoles", 0);
+    SetField(backend, "_cmdFifoValidCount", 0);
+    SetField(backend, "_cmdFifoReadPointerWritten", true);
+    SetField(backend, "_cmdFifoJumped", false);
+    SetField(backend, "_decodingCommandFifo", false);
+    SetField(backend, "_commandFifoOperationPending", false);
+    SetField(backend, "_cmdFifoRamBase", commandFifoBase);
+    SetField(backend, "_cmdFifoRamEnd", commandFifoEnd);
+    SetField(backend, "_cmdFifoAddressMin", commandFifoAddressMin);
+    SetField(backend, "_cmdFifoAddressMax", commandFifoAddressMax);
+    SetField(backend, "_cmdFifoWriteGenerationBase", 0);
+    SetField(backend, "_cmdFifoWriteQueueIndex", 0);
+    SetField(backend, "_cmdFifoLastWriteStorageIndex", -1);
+    SetField(backend, "_cmdFifoBulkWriteDepth", 0);
+    SetField(backend, "_cmdFifoBulkFirstWritePending", false);
+    SetField(backend, "_cmdFifoBulkSawWrite", false);
+    SetField(backend, "_cmdFifoBulkWriteWordCount", 0);
+    SetField(backend, "_cmdFifoBulkDecodeRemainingWords", 0);
+    SetField(backend, "_cmdFifoBulkWriteSourceActive", false);
+    SetField(backend, "_pendingSwapCount", 0);
+    SetField(backend, "_frontBufferIndex", 0);
+    SetField(backend, "_backBufferIndex", 1);
+    GetFieldValue<IList>(backend, "_fifoBuffer").Clear();
+    backend.GetType().GetMethod("ClearCommandFifoStorageLastWriters", BindingFlags.Instance | BindingFlags.NonPublic)!
+        .Invoke(backend, null);
+    Console.WriteLine(
+        $"mameVoodooCommandFifoReset read=0x{parsed[0] * 4:x}->0x{commandFifoReadIndex * 4:x} " +
+        $"base=0x{parsed[1]:x}->0x{commandFifoBase:x} end=0x{parsed[2]:x}->0x{commandFifoEnd:x} " +
+        $"amin=0x{parsed[3]:x}->0x{commandFifoAddressMin:x} amax=0x{parsed[4]:x}->0x{commandFifoAddressMax:x} " +
+        $"model={(usesMameCommandFifoModel ? "mame" : "standard")} previousBulkDepth={previousBulkWriteDepth}");
 }
 
 static void ApplyRequestedMameCpuState(GauntletDarkLegacyAdapter adapter)
@@ -1202,6 +1352,40 @@ static void DumpVoodoo(object facade)
         $"voodoo regs={regs} fifoWords={fifoWords} fifoPackets={fifoPackets} drawPackets={drawPackets} " +
         $"directTriangles={directTriangles} setupTriangles={setupTriangles} lfbWrites={lfbWrites} texWrites={texWrites} " +
         $"fastFills={fastFills} swaps={swaps}");
+    Console.WriteLine(
+        $"voodoo cmdBulk=depth:{GetField(backend, "_cmdFifoBulkWriteDepth")}:" +
+        $"sawWrite:{(GetFieldValue<bool>(backend, "_cmdFifoBulkSawWrite") ? 1 : 0)}:" +
+        $"words:{GetField(backend, "_cmdFifoBulkWriteWordCount")}:" +
+        $"decoding:{(GetFieldValue<bool>(backend, "_decodingCommandFifo") ? 1 : 0)}");
+    int commandFifoRead = GetFieldValue<int>(backend, "_cmdFifoReadIndex");
+    int commandFifoReadStorage = commandFifoRead & 0xffff;
+    bool[] commandFifoValid = GetFieldValue<bool[]>(backend, "_cmdFifoValid");
+    int[] commandFifoLogical = GetFieldValue<int[]>(backend, "_cmdFifoStorageLogicalIndex");
+    bool[] commandFifoHeaders = GetFieldValue<bool[]>(backend, "_cmdFifoStoragePacketHeader");
+    bool[] commandFifoOwnerValid = GetFieldValue<bool[]>(backend, "_cmdFifoStoragePacketOwnerValid");
+    int[] commandFifoOwners = GetFieldValue<int[]>(backend, "_cmdFifoStoragePacketOwnerHeaderLogicalIndex");
+    Console.WriteLine(
+        $"voodoo cmdRead=logical:0x{commandFifoRead:x}:storage:0x{commandFifoReadStorage:x}:" +
+        $"valid:{(commandFifoValid[commandFifoReadStorage] ? 1 : 0)}:" +
+        $"storedLogical:0x{commandFifoLogical[commandFifoReadStorage]:x}:" +
+        $"header:{(commandFifoHeaders[commandFifoReadStorage] ? 1 : 0)}:" +
+        $"ownerValid:{(commandFifoOwnerValid[commandFifoReadStorage] ? 1 : 0)}:" +
+        $"owner:0x{commandFifoOwners[commandFifoReadStorage]:x}");
+    int[] commandFifoPacketEnds = GetFieldValue<int[]>(backend, "_cmdFifoStoragePacketEndLogicalIndex");
+    MethodInfo isPacketComplete = backend.GetType().GetMethod(
+        "IsStandardCommandFifoPacketComplete",
+        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    foreach (int candidate in ((IEnumerable)GetField(backend, "_cmdFifoCompletePacketHeaders")).Cast<int>().Take(3))
+    {
+        int storage = candidate & 0xffff;
+        bool complete = (bool)isPacketComplete.Invoke(backend, new object[] { candidate })!;
+        Console.WriteLine(
+            $"voodoo cmdCandidate=logical:0x{candidate:x}:storage:0x{storage:x}:" +
+            $"valid:{(commandFifoValid[storage] ? 1 : 0)}:storedLogical:0x{commandFifoLogical[storage]:x}:" +
+            $"header:{(commandFifoHeaders[storage] ? 1 : 0)}:end:0x{commandFifoPacketEnds[storage]:x}:" +
+            $"ownerValid:{(commandFifoOwnerValid[storage] ? 1 : 0)}:owner:0x{commandFifoOwners[storage]:x}:" +
+            $"complete:{(complete ? 1 : 0)}");
+    }
     Console.WriteLine("voodoo packetTypes=" + string.Join(",", packetTypes.Select((count, type) => $"{type}:{count}")));
     Console.WriteLine(
         $"voodoo textured=tri:{texturedTriangles}:covered:{texturedCovered}:rejected:{texturedRejected}:" +
