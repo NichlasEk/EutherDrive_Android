@@ -1194,6 +1194,9 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeCounterWaitRegion =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COUNTER_WAIT_REGION"));
+    private readonly bool _experimentRuntimeTransformRegion =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TRANSFORM_REGION"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
@@ -1206,6 +1209,8 @@ internal sealed class MipsR5000Core
     private ulong _runtimeRegionProfileHostExitSteps;
     private ulong _runtimeCounterWaitRegionHits;
     private ulong _runtimeCounterWaitRegionInstructions;
+    private bool _runtimeTransformRegionCodeValidated;
+    private ulong _runtimeTransformRegionHits;
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2199,6 +2204,9 @@ internal sealed class MipsR5000Core
     public string RuntimeCounterWaitRegionStatus =>
         $"counterWaitRegion=hits:{_runtimeCounterWaitRegionHits}" +
         $"/instructions:{_runtimeCounterWaitRegionInstructions}";
+    public string RuntimeTransformRegionStatus =>
+        $"transformRegion=hits:{_runtimeTransformRegionHits}" +
+        $"/instructions:{_runtimeTransformRegionHits * 76UL}";
 
     public void Reset()
     {
@@ -2227,6 +2235,8 @@ internal sealed class MipsR5000Core
         _runtimeRegionProfileHostExitSteps = 0;
         _runtimeCounterWaitRegionHits = 0;
         _runtimeCounterWaitRegionInstructions = 0;
+        _runtimeTransformRegionCodeValidated = false;
+        _runtimeTransformRegionHits = 0;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -4612,11 +4622,160 @@ internal sealed class MipsR5000Core
     {
         return (pc & 0x1fffffffUL) switch
         {
+            0x000ca45cUL => TryRunKnownRuntimeTransformRegion(pc),
             0x000c80b4UL or 0x000c80b8UL or 0x000c80bcUL or 0x000c80c0UL or
             0x000c83ccUL or 0x000c83d0UL or 0x000c83d4UL or 0x000c83d8UL or
             0x000c83dcUL or 0x000c83e0UL or 0x000c83e4UL => TryFastPathKnownRuntimeUiCommandCompleteWait(pc),
             _ => TryFastPathKnownGauntletGlideHotPath(pc)
         };
+    }
+
+    private static ReadOnlySpan<uint> RuntimeTransformRegionInstructions =>
+    [
+        0xc488000cU, 0xc4a40004U, 0xc4890000U, 0xc4a30000U,
+        0xc48a0004U, 0xc48d0008U, 0x46082082U, 0xc4870010U,
+        0xc48c0014U, 0xc4850018U, 0x46072002U, 0xc486001cU,
+        0xc4a10008U, 0xc48b0020U, 0x460c2102U, 0x4c4918a0U,
+        0x4c4508a0U, 0x4c0a1820U, 0x4c060820U, 0x4c8d18e0U,
+        0x4c6b0860U, 0xe4c20000U, 0xe4c00004U, 0xe4c10008U,
+        0xc4a40010U, 0x46082002U, 0x46072042U, 0xc4a2000cU,
+        0xc4a30014U, 0x460c2102U, 0x4c091020U, 0x4c051820U,
+        0x4c2a1060U, 0x4c261860U, 0x4c8d10a0U, 0x4c4b18e0U,
+        0xe4c0000cU, 0xe4c10010U, 0xe4c30014U, 0xc4a4001cU,
+        0x46082002U, 0x46072042U, 0xc4a20018U, 0xc4a30020U,
+        0x460c2102U, 0x4c091020U, 0x4c051820U, 0x4c2a1060U,
+        0x4c261860U, 0x4c8d10a0U, 0x4c4b18e0U, 0xe4c00018U,
+        0xe4c1001cU, 0xe4c30020U, 0xc4a20028U, 0x46081202U,
+        0xc4a30024U, 0xc4a0002cU, 0xc4810024U, 0x460711c2U,
+        0x4d091a60U, 0x4d250160U, 0x46012940U, 0x460c1082U,
+        0x4cea1aa0U, 0xe4c50024U, 0xc4810028U, 0x4d4601a0U,
+        0x46013180U, 0x4c4d18e0U, 0xe4c60028U, 0xc481002cU,
+        0x4c6b0020U, 0x46010000U, 0x03e00008U, 0xe4c0002cU
+    ];
+
+    private bool TryRunKnownRuntimeTransformRegion(ulong pc)
+    {
+        const ulong entry = 0xffffffff800ca45cUL;
+        const int instructionCount = 76;
+        if (!_experimentRuntimeTransformRegion ||
+            pc != entry ||
+            _remainingProbeSteps < instructionCount ||
+            _probeStepDebt != 0 ||
+            _hasPendingBranch ||
+            _hasImmediatePcOverride ||
+            _traceEnabled ||
+            _traceWatchPcs.Length != 0 ||
+            _profileHotPcs ||
+            _profileOpcodes ||
+            _profileRuntimeRegions ||
+            _memory.NeedsRuntimeCpuPcAt(pc))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<uint> instructions = RuntimeTransformRegionInstructions;
+        if (!_runtimeTransformRegionCodeValidated)
+        {
+            for (int index = 0; index < instructions.Length; index++)
+            {
+                if (_memory.ReadRuntimeInstruction32(entry + (ulong)(index * 4)) != instructions[index])
+                    return false;
+            }
+            _runtimeTransformRegionCodeValidated = true;
+        }
+        else if (_memory.ReadRuntimeInstruction32(entry) != instructions[0] ||
+                 _memory.ReadRuntimeInstruction32(entry + 75UL * 4UL) != instructions[75])
+        {
+            _runtimeTransformRegionCodeValidated = false;
+            return false;
+        }
+
+        _fpr[8] = _memory.ReadRuntimeData32(_gpr[4] + 12UL);
+        _fpr[4] = _memory.ReadRuntimeData32(_gpr[5] + 4UL);
+        _fpr[9] = _memory.ReadRuntimeData32(_gpr[4]);
+        _fpr[3] = _memory.ReadRuntimeData32(_gpr[5]);
+        _fpr[10] = _memory.ReadRuntimeData32(_gpr[4] + 4UL);
+        _fpr[13] = _memory.ReadRuntimeData32(_gpr[4] + 8UL);
+        WriteCop1XSingle(2, ReadSingle(4) * ReadSingle(8));
+        _fpr[7] = _memory.ReadRuntimeData32(_gpr[4] + 16UL);
+        _fpr[12] = _memory.ReadRuntimeData32(_gpr[4] + 20UL);
+        _fpr[5] = _memory.ReadRuntimeData32(_gpr[4] + 24UL);
+        WriteCop1XSingle(0, ReadSingle(4) * ReadSingle(7));
+        _fpr[6] = _memory.ReadRuntimeData32(_gpr[4] + 28UL);
+        _fpr[1] = _memory.ReadRuntimeData32(_gpr[5] + 8UL);
+        _fpr[11] = _memory.ReadRuntimeData32(_gpr[4] + 32UL);
+        WriteCop1XSingle(4, ReadSingle(4) * ReadSingle(12));
+        WriteCop1XSingle(2, ReadSingle(3) * ReadSingle(9) + ReadSingle(2));
+        WriteCop1XSingle(2, ReadSingle(1) * ReadSingle(5) + ReadSingle(2));
+        WriteCop1XSingle(0, ReadSingle(3) * ReadSingle(10) + ReadSingle(0));
+        WriteCop1XSingle(0, ReadSingle(1) * ReadSingle(6) + ReadSingle(0));
+        WriteCop1XSingle(3, ReadSingle(3) * ReadSingle(13) + ReadSingle(4));
+        WriteCop1XSingle(1, ReadSingle(1) * ReadSingle(11) + ReadSingle(3));
+        _memory.WriteRuntimeData32(_gpr[6], (uint)_fpr[2]);
+        _memory.WriteRuntimeData32(_gpr[6] + 4UL, (uint)_fpr[0]);
+        _memory.WriteRuntimeData32(_gpr[6] + 8UL, (uint)_fpr[1]);
+
+        _fpr[4] = _memory.ReadRuntimeData32(_gpr[5] + 16UL);
+        WriteCop1XSingle(0, ReadSingle(4) * ReadSingle(8));
+        WriteCop1XSingle(1, ReadSingle(4) * ReadSingle(7));
+        _fpr[2] = _memory.ReadRuntimeData32(_gpr[5] + 12UL);
+        _fpr[3] = _memory.ReadRuntimeData32(_gpr[5] + 20UL);
+        WriteCop1XSingle(4, ReadSingle(4) * ReadSingle(12));
+        WriteCop1XSingle(0, ReadSingle(2) * ReadSingle(9) + ReadSingle(0));
+        WriteCop1XSingle(0, ReadSingle(3) * ReadSingle(5) + ReadSingle(0));
+        WriteCop1XSingle(1, ReadSingle(2) * ReadSingle(10) + ReadSingle(1));
+        WriteCop1XSingle(1, ReadSingle(3) * ReadSingle(6) + ReadSingle(1));
+        WriteCop1XSingle(2, ReadSingle(2) * ReadSingle(13) + ReadSingle(4));
+        WriteCop1XSingle(3, ReadSingle(3) * ReadSingle(11) + ReadSingle(2));
+        _memory.WriteRuntimeData32(_gpr[6] + 12UL, (uint)_fpr[0]);
+        _memory.WriteRuntimeData32(_gpr[6] + 16UL, (uint)_fpr[1]);
+        _memory.WriteRuntimeData32(_gpr[6] + 20UL, (uint)_fpr[3]);
+
+        _fpr[4] = _memory.ReadRuntimeData32(_gpr[5] + 28UL);
+        WriteCop1XSingle(0, ReadSingle(4) * ReadSingle(8));
+        WriteCop1XSingle(1, ReadSingle(4) * ReadSingle(7));
+        _fpr[2] = _memory.ReadRuntimeData32(_gpr[5] + 24UL);
+        _fpr[3] = _memory.ReadRuntimeData32(_gpr[5] + 32UL);
+        WriteCop1XSingle(4, ReadSingle(4) * ReadSingle(12));
+        WriteCop1XSingle(0, ReadSingle(2) * ReadSingle(9) + ReadSingle(0));
+        WriteCop1XSingle(0, ReadSingle(3) * ReadSingle(5) + ReadSingle(0));
+        WriteCop1XSingle(1, ReadSingle(2) * ReadSingle(10) + ReadSingle(1));
+        WriteCop1XSingle(1, ReadSingle(3) * ReadSingle(6) + ReadSingle(1));
+        WriteCop1XSingle(2, ReadSingle(2) * ReadSingle(13) + ReadSingle(4));
+        WriteCop1XSingle(3, ReadSingle(3) * ReadSingle(11) + ReadSingle(2));
+        _memory.WriteRuntimeData32(_gpr[6] + 24UL, (uint)_fpr[0]);
+        _memory.WriteRuntimeData32(_gpr[6] + 28UL, (uint)_fpr[1]);
+        _memory.WriteRuntimeData32(_gpr[6] + 32UL, (uint)_fpr[3]);
+
+        _fpr[2] = _memory.ReadRuntimeData32(_gpr[5] + 40UL);
+        WriteCop1XSingle(8, ReadSingle(2) * ReadSingle(8));
+        _fpr[3] = _memory.ReadRuntimeData32(_gpr[5] + 36UL);
+        _fpr[0] = _memory.ReadRuntimeData32(_gpr[5] + 44UL);
+        _fpr[1] = _memory.ReadRuntimeData32(_gpr[4] + 36UL);
+        WriteCop1XSingle(7, ReadSingle(2) * ReadSingle(7));
+        WriteCop1XSingle(9, ReadSingle(3) * ReadSingle(9) + ReadSingle(8));
+        WriteCop1XSingle(5, ReadSingle(0) * ReadSingle(5) + ReadSingle(9));
+        WriteCop1XSingle(5, ReadSingle(5) + ReadSingle(1));
+        WriteCop1XSingle(2, ReadSingle(2) * ReadSingle(12));
+        WriteCop1XSingle(10, ReadSingle(3) * ReadSingle(10) + ReadSingle(7));
+        _memory.WriteRuntimeData32(_gpr[6] + 36UL, (uint)_fpr[5]);
+        _fpr[1] = _memory.ReadRuntimeData32(_gpr[4] + 40UL);
+        WriteCop1XSingle(6, ReadSingle(0) * ReadSingle(6) + ReadSingle(10));
+        WriteCop1XSingle(6, ReadSingle(6) + ReadSingle(1));
+        WriteCop1XSingle(3, ReadSingle(3) * ReadSingle(13) + ReadSingle(2));
+        _memory.WriteRuntimeData32(_gpr[6] + 40UL, (uint)_fpr[6]);
+        _fpr[1] = _memory.ReadRuntimeData32(_gpr[4] + 44UL);
+        WriteCop1XSingle(0, ReadSingle(0) * ReadSingle(11) + ReadSingle(3));
+        WriteCop1XSingle(0, ReadSingle(0) + ReadSingle(1));
+
+        _memory.WriteRuntimeData32(_gpr[6] + 0x2cUL, (uint)_fpr[0]);
+        LastFetchedInstruction = instructions[75];
+        FinishKnownRuntimeBudgetedFastPath(
+            instructionCount,
+            instructionCount - 1,
+            CanonicalizeCodeAddress(_gpr[31]));
+        _runtimeTransformRegionHits++;
+        return true;
     }
 
     private void ApplyKnownRuntimeTempleNaturalItemsAllocatorRepair(ulong pc)

@@ -6253,3 +6253,25 @@ budgeterade host exits fungerar. Den gör inte komplett gästvideo spelbar på
 egen hand. Nästa vinst måste komma från direkt kompilerade 21-76-op-regioner,
 framför allt kedjorna kring `0x800ca45c`, `0x8010616c`, `0x801069f4` och
 `0x800a54a8`, där dispatch faktiskt kan elimineras utan busy-wait-specialfall.
+
+Den första riktiga 76-op-regionen vid `0x800ca45c..0x800ca588` är nu också
+direktkompilerad bakom `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TRANSFORM_REGION`
+och aktiverad i desktop-warm-launchern. Det är en matris/vertex-transform med
+LWC1, SWC1, MUL.S, ADD.S och MADD.S. Regionen validerar samtliga 76 kodord
+första gången, vaktar profilerings/trace-läge och branch-/stegbudget, kör de 74
+kroppsinstruktionerna som helt unrollade direkta FPR/RAM-operationer och gör en
+enda host exit efter `jr ra` med delay-slot-storen utförd.
+
+En första kompakt loop som fortfarande dispatchade FPU-optypen internt var
+bitexakt men långsammare och ersattes. Den helt unrollade vägen träffade 30 855
+gånger och ersatte 2 344 980 gästinstruktioner i 30M-provet. Tre körningar låg
+i snitt cirka tre procent snabbare än två direkt omgivande counter-only-prov,
+med exakt `frameHash=0x93cca255` och samma hela debugrad. Fulla raster/input-
+oraklet träffade regionen 20 102 gånger (1 527 752 instruktioner), sjönk till
+`6.281 s` mot den aktuella `6.519 s`-baslinjen och behöll exakt
+`frameHash=0x2b6b81d0`, FIFO/Voodoo-state och samtliga sju gameplayord.
+
+Detta är första positiva generella dispatch-elimineringen: inte en vänteloop
+och inte ett semantiskt spelhack. Nästa region bör använda samma modell på
+37/31/23/21-op-kedjan kring `0x8010616c..0x80106a6c`, där flera observerade
+kanter hör till samma transform/render-anropskedja och kan dela host exit.
