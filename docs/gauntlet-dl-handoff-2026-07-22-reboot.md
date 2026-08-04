@@ -6181,3 +6181,15 @@ CPU-provet till `2.339 s`. Repoets MCS/Ryu64-träd innehåller ingen
 återanvändbar MIPS3/R5000-DRC. Nästa kompilatorspår måste därför använda större
 kontrollflödesregioner med en gemensam kodcache och sällsynta host exits; små
 straight-line-delegates kan inte amortera JIT- och anropskostnaden.
+
+Den större regionmodellen provades därefter explicit. En 400f-region följde
+grenar och delay slots internt i upp till 4096 instruktioner och gjorde host
+exit endast vid kända Gauntlet-fastpaths, trace/profilering eller statebyte.
+PC, CP0 count, remaining-steps, slut-PC och hela FIFO/Voodoo-debugraden var
+bitidentiska med tolken. Trots färre `Step`-anrop blev den vanliga regionloopen
+`1.744-1.928 s` mot `1.504-1.570 s`; `AggressiveOptimization` enbart på
+regionloopen gav `1.833-1.861 s`. Experimentet är helt borttaget. Slutsatsen
+är att större kontrollflödesregioner inte räcker om de fortfarande anropar den
+generella `Execute`-switchen per instruktion. En framtida region måste generera
+ett sammanhängande native kontrollflöde med direkt register/RAM-access och
+sällsynta exits; en ny C#-ytterloop är inte ett gångbart mellansteg.
