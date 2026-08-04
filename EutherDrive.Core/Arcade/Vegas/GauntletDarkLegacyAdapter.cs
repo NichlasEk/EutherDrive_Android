@@ -1191,6 +1191,9 @@ internal sealed class MipsR5000Core
     private readonly bool _profileRuntimeRegions =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS"));
+    private readonly int _profileRuntimeRegionLimit = Math.Min(
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS_LIMIT", 24),
+        512);
     private readonly bool _experimentRuntimeCounterWaitRegion =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COUNTER_WAIT_REGION"));
@@ -29000,7 +29003,7 @@ internal sealed class MipsR5000Core
                 })
                 .OrderByDescending(item => item.Hits * item.Ops)
                 .ThenBy(item => item.Start)
-                .Take(24)
+                .Take(_profileRuntimeRegionLimit)
                 .Select(item =>
                     $"0x{item.Start:x8}-0x{item.End:x8}>0x{item.Target:x8}:" +
                     $"{item.Hits}x{item.Ops}"));

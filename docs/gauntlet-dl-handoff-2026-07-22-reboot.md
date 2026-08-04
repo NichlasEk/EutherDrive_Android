@@ -6283,3 +6283,17 @@ konsekvent cirka 2-3 procent långsammare än transform-only. Hela regionen och
 dess flagga är borttagna. Den får inte återinföras ensam; prefixet behöver
 länkas med efterföljande block så att betydligt mer än 37 instruktioner
 amorterar signaturvakt, host exit och den stora C#-metodens JIT-kostnad.
+
+Regionprofilens rapportgräns kan nu höjas från standardens 24 poster med
+`EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS_LIMIT` (hårdtak 512). Ett nytt
+30M-prov visade att `0x8010616c`-vägen fortsätter genom 4/12/2/2/9/3/13/2/8/15
+och 23 instruktioner före state-emit-hjälpen; med hjälpens egna block är den
+normala kedjan omkring 190 instruktioner. Det är denna sammanhängande CFG som
+behöver kompileras, inte 37-op-prefixet ensamt.
+
+Två genvägar har uttryckligen avvisats. `AggressiveOptimization` enbart på den
+vinnande 76-op-transformen försämrade tre 30M-prov till `4.340-4.446 s` och är
+borttaget. Att routa steady-state direkt från `0x80103e48` till den äldre
+bringup-fastpathen ersatte cirka 1,31M instruktioner men var inte semantiskt
+exakt: slut-PC, FIFO-paket och Voodoo-state divergerade. Den routningen och
+flaggan är helt borttagna. Stillbildshash ensam räcker inte som regionorakel.
