@@ -31,6 +31,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_BRINGUP_FAST", "1"),
         ("EUTHERDRIVE_GAUNTDL_CPU_STEPS_PER_FRAME", "60000"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STEADY_STATE_FAST_DISPATCH", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_SAFE_INSTRUCTION_BATCHES", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAMEPLAY_DIAGNOSTIC_TEXT_RECORDS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_RENDER_RECORD_SKIP", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_STACK_RECORD_COPY", "1"),
@@ -1231,11 +1232,15 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeTableClearRegion =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TABLE_CLEAR_REGION"));
+    private readonly bool _experimentRuntimeSafeInstructionBatches =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_SAFE_INSTRUCTION_BATCHES"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
     private readonly ulong[] _cop1xFunctionProfileCounts = new ulong[64];
     private readonly Dictionary<(ulong Start, ulong End, ulong Target), ulong> _runtimeRegionProfileCounts = [];
+    private readonly Dictionary<ulong, RuntimeSafeInstruction[]> _runtimeSafeInstructionBlocks = [];
     private bool _runtimeRegionProfileActive;
     private ulong _runtimeRegionProfileStart;
     private ulong _runtimeRegionProfileLastPc;
@@ -2273,6 +2278,7 @@ internal sealed class MipsR5000Core
         Array.Clear(_cop1FormatProfileCounts);
         Array.Clear(_cop1xFunctionProfileCounts);
         _runtimeRegionProfileCounts.Clear();
+        _runtimeSafeInstructionBlocks.Clear();
         _runtimeRegionProfileActive = false;
         _runtimeRegionProfileStart = 0;
         _runtimeRegionProfileLastPc = 0;
@@ -3894,7 +3900,11 @@ internal sealed class MipsR5000Core
                 AccelerateKnownAudioInitCountDelay(pc);
             if ((!_insideRuntimePhaseFiveExit && !_insideRuntimeGameTask) ||
                 !_enableRuntimePhaseFiveQioWaitService)
+            {
+                if (TryRunRuntimeSafeInstructionBatch(pc, runtimeMainState))
+                    return;
                 goto ExecuteInstruction;
+            }
         }
         ApplyRuntimeAssetStreamArenaFix(pc);
         if (TryApplyRuntimeAssetObjectArenaFix(pc))
@@ -4504,6 +4514,269 @@ internal sealed class MipsR5000Core
         if (!steadyStateFastDispatch)
             TraceSuspiciousLowPcTransition(pc, op, resolvedPc, branchFromPreviousInstruction, branchTarget);
         Pc = resolvedPc;
+    }
+
+    private bool TryRunRuntimeSafeInstructionBatch(ulong pc, uint runtimeMainState)
+    {
+        if (!_experimentRuntimeSafeInstructionBatches ||
+            _remainingProbeSteps < 2 ||
+            _probeStepDebt != 0 ||
+            _hasPendingBranch ||
+            _hasImmediatePcOverride ||
+            _traceEnabled ||
+            _traceWatchPcs.Length != 0 ||
+            _profileHotPcs ||
+            _profileOpcodes ||
+            _profileRuntimeRegions ||
+            _experimentRuntimeFullrectRightClipPositiveT ||
+            _memory.NeedsRuntimeCpuPcAt(pc))
+        {
+            return false;
+        }
+
+        RuntimeSafeInstruction[] block = GetRuntimeSafeInstructionBlock(pc);
+        if (block.Length == 0)
+            return false;
+
+        // Runtime text is normally immutable. Rebuild a cached block if its
+        // entry word changed so a patched/self-modifying entry is never stale.
+        if (_memory.ReadRuntimeInstruction32(pc) != block[0].Op)
+        {
+            _runtimeSafeInstructionBlocks.Remove(pc);
+            block = GetRuntimeSafeInstructionBlock(pc);
+            if (block.Length == 0)
+                return false;
+        }
+
+        int limit = Math.Min(block.Length, _remainingProbeSteps);
+        int executed = 0;
+        ulong currentPc = pc;
+        while (executed < limit)
+        {
+            RuntimeSafeInstruction instruction = block[executed];
+            uint op = instruction.Op;
+
+            LastFetchedInstruction = op;
+            _hasPendingBranch = false;
+            _hasImmediatePcOverride = false;
+            ExecuteRuntimeSafeInstruction(currentPc, in instruction);
+            _gpr[0] = 0;
+            AdvanceCp0Count(_cp0CountStep);
+            _instructionCounter++;
+            executed++;
+            currentPc += 4UL;
+            Pc = currentPc;
+
+            if (_halted ||
+                _hasPendingBranch ||
+                _hasImmediatePcOverride ||
+                _memory.RuntimeMainState != runtimeMainState)
+            {
+                break;
+            }
+        }
+
+        if (executed < 2)
+        {
+            // One instruction does not amortize Step() dispatch, but it is
+            // still an exact completed step and must not be executed twice.
+            if (executed == 1)
+                return true;
+            return false;
+        }
+
+        _probeStepDebt += executed - 1;
+        return true;
+    }
+
+    private RuntimeSafeInstruction[] GetRuntimeSafeInstructionBlock(ulong pc)
+    {
+        const int maxInstructions = 64;
+        if (_runtimeSafeInstructionBlocks.TryGetValue(pc, out RuntimeSafeInstruction[]? cached))
+            return cached;
+
+        List<RuntimeSafeInstruction> instructions = new(maxInstructions);
+        ulong currentPc = pc;
+        while (instructions.Count < maxInstructions &&
+               IsRuntimeCodeAddress(currentPc) &&
+               (instructions.Count == 0 ||
+                (!IsKnownRuntimeSteadyStateServicePc(currentPc) &&
+                 !_memory.NeedsRuntimeCpuPcAt(currentPc))))
+        {
+            uint op = _memory.ReadRuntimeInstruction32(currentPc);
+            if (!IsSafeSequentialRuntimeInstruction(op))
+                break;
+            instructions.Add(new RuntimeSafeInstruction(op));
+            currentPc += 4UL;
+        }
+
+        RuntimeSafeInstruction[] block = instructions.ToArray();
+        _runtimeSafeInstructionBlocks[pc] = block;
+        return block;
+    }
+
+    private readonly record struct RuntimeSafeInstruction
+    {
+        public RuntimeSafeInstruction(uint op)
+        {
+            Op = op;
+            Opcode = (byte)(op >> 26);
+            Rs = (byte)((op >> 21) & 0x1fU);
+            Rt = (byte)((op >> 16) & 0x1fU);
+            Immediate = unchecked((short)op);
+            UnsignedImmediate = (ushort)op;
+        }
+
+        public uint Op { get; }
+        public byte Opcode { get; }
+        public byte Rs { get; }
+        public byte Rt { get; }
+        public short Immediate { get; }
+        public ushort UnsignedImmediate { get; }
+    }
+
+    private void ExecuteRuntimeSafeInstruction(ulong pc, in RuntimeSafeInstruction instruction)
+    {
+        int rs = instruction.Rs;
+        int rt = instruction.Rt;
+        short simm = instruction.Immediate;
+        switch (instruction.Opcode)
+        {
+            case 0x08:
+            case 0x09:
+                _gpr[rt] = SignExtend32((uint)_gpr[rs] + (uint)simm);
+                return;
+            case 0x0a:
+                _gpr[rt] = unchecked((long)_gpr[rs]) < simm ? 1UL : 0UL;
+                return;
+            case 0x0b:
+                _gpr[rt] = _gpr[rs] < unchecked((ulong)(long)simm) ? 1UL : 0UL;
+                return;
+            case 0x0c:
+                _gpr[rt] = _gpr[rs] & instruction.UnsignedImmediate;
+                return;
+            case 0x0d:
+                _gpr[rt] = _gpr[rs] | instruction.UnsignedImmediate;
+                return;
+            case 0x0e:
+                _gpr[rt] = _gpr[rs] ^ instruction.UnsignedImmediate;
+                return;
+            case 0x0f:
+                _gpr[rt] = SignExtend32((uint)instruction.UnsignedImmediate << 16);
+                return;
+            case 0x20:
+                _gpr[rt] = unchecked((ulong)(sbyte)_memory.ReadRuntimeData8(_gpr[rs] + (ulong)(long)simm));
+                return;
+            case 0x21:
+                _gpr[rt] = unchecked((ulong)(short)_memory.ReadRuntimeData16(_gpr[rs] + (ulong)(long)simm));
+                return;
+            case 0x23:
+                _gpr[rt] = unchecked((ulong)(int)_memory.ReadRuntimeData32(_gpr[rs] + (ulong)(long)simm));
+                return;
+            case 0x24:
+                _gpr[rt] = _memory.ReadRuntimeData8(_gpr[rs] + (ulong)(long)simm);
+                return;
+            case 0x25:
+                _gpr[rt] = _memory.ReadRuntimeData16(_gpr[rs] + (ulong)(long)simm);
+                return;
+            case 0x27:
+                _gpr[rt] = _memory.ReadRuntimeData32(_gpr[rs] + (ulong)(long)simm);
+                return;
+            case 0x28:
+                _memory.WriteRuntimeData8(_gpr[rs] + (ulong)(long)simm, (byte)_gpr[rt]);
+                return;
+            case 0x29:
+                _memory.WriteRuntimeData16(_gpr[rs] + (ulong)(long)simm, (ushort)_gpr[rt]);
+                return;
+            case 0x2b:
+                {
+                    ulong address = _gpr[rs] + (ulong)(long)simm;
+                    uint value = ApplyKnownRuntimeAudioActiveCountUnderflowFix(pc, address, (uint)_gpr[rt]);
+                    bool tracksGlideFifoSource = TrySetKnownGlideFifoGuestWriteSource(pc, address);
+                    try
+                    {
+                        _memory.WriteRuntimeData32(address, value);
+                    }
+                    finally
+                    {
+                        if (tracksGlideFifoSource)
+                            _memory.ClearVoodooCommandFifoBulkWriteSource();
+                    }
+                    return;
+                }
+            case 0x31:
+                _fpr[rt] = _memory.ReadRuntimeData32(_gpr[rs] + (ulong)(long)simm);
+                return;
+            case 0x35:
+                _fpr[rt] = _memory.ReadRuntimeData64(_gpr[rs] + (ulong)(long)simm);
+                return;
+            case 0x37:
+                _gpr[rt] = _memory.ReadRuntimeData64(_gpr[rs] + (ulong)(long)simm);
+                return;
+            case 0x39:
+                _memory.WriteRuntimeData32(_gpr[rs] + (ulong)(long)simm, (uint)_fpr[rt]);
+                return;
+            case 0x3d:
+                _memory.WriteRuntimeData64(_gpr[rs] + (ulong)(long)simm, _fpr[rt]);
+                return;
+            case 0x3f:
+                _memory.WriteRuntimeData64(_gpr[rs] + (ulong)(long)simm, _gpr[rt]);
+                return;
+            default:
+                Execute(pc, instruction.Op, steadyStateFastDispatch: true);
+                return;
+        }
+    }
+
+    private static bool IsSafeSequentialRuntimeInstruction(uint op)
+    {
+        if (op == 0)
+            return true;
+
+        uint opcode = op >> 26;
+        if (opcode == 0)
+        {
+            uint function = op & 0x3fU;
+            return function is not (0x08U or 0x09U);
+        }
+
+        if (opcode == 0x11U)
+            return ((op >> 21) & 0x1fU) != 0x08U;
+
+        return opcode is >= 0x08U and <= 0x0fU or
+               0x13U or 0x18U or 0x19U or
+               >= 0x20U and <= 0x2fU or
+               0x31U or 0x35U or 0x37U or 0x39U or 0x3dU or 0x3fU;
+    }
+
+    private static bool IsKnownRuntimeSteadyStateServicePc(ulong pc)
+    {
+        ulong physical = pc & 0x1fffffffUL;
+        return physical is
+            0x000158b8UL or
+            0x00045844UL or
+            0x000511c8UL or
+            0x0005121cUL or 0x00051298UL or 0x0005129cUL or 0x000512c0UL or 0x000512e0UL or
+            0x000526acUL or 0x00052bc0UL or 0x00053340UL or
+            0x000641bcUL or 0x000641ccUL or 0x000653d8UL or
+            0x0007a950UL or
+            0x000ac3d4UL or 0x000ac460UL or
+            0x000b0d0cUL or 0x000b0d20UL or 0x000b1e7cUL or
+            >= 0x000b1edcUL and <= 0x000b1ef8UL or
+            0x000c80b4UL or 0x000c80b8UL or 0x000c80bcUL or 0x000c80c0UL or
+            0x000c83ccUL or 0x000c83d0UL or 0x000c83d4UL or 0x000c83d8UL or
+            0x000c83dcUL or 0x000c83e0UL or 0x000c83e4UL or
+            0x000ca45cUL or
+            >= 0x000fe5d4UL and <= 0x000fe5e8UL or
+            >= 0x000fe5fcUL and <= 0x000fe654UL or
+            0x00102520UL or 0x0010253cUL or 0x00102554UL or
+            0x00102b40UL or
+            0x00103f44UL or 0x00103f64UL or 0x00103f70UL or 0x00104068UL or
+            0x0010616cUL or 0x00106a74UL or
+            >= 0x001097c0UL and <= 0x001098c0UL or
+            0x0011df40UL or >= 0x0011df78UL and <= 0x0011df84UL or
+            0x0011f7acUL or
+            0x00019360UL;
     }
 
     private bool TryFixKnownRuntimeLoadingGameplayTransition(ulong pc)
@@ -48773,6 +49046,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             _traceTexturedPixelX >= 0 &&
             _traceTexturedPixelY >= 0 &&
             _traceTexturedPixelLimit > 0;
+        bool trackSampleDiagnostics = ShouldTrackTextureSampleDiagnostics();
         bool useMameAuxDepth = _experimentSetupMameAuxDepth;
         bool mameRgbMask =
             IsColorDrawBufferSelected(fbzMode) &&
@@ -48915,7 +49189,8 @@ internal class VoodooBringupBackend : IVoodooBackend
                 ushort texel;
                 byte textureAlpha = 255;
                 int targetLod = triangleTargetLod;
-                _lastTextureSampleValid = false;
+                if (trackSampleDiagnostics)
+                    _lastTextureSampleValid = false;
                 if (_experimentTextureMameSetupGradients)
                 {
                     int dx = x - setupAx;
