@@ -32560,9 +32560,12 @@ internal sealed class VegasMemoryMap
     public uint ReadRuntimeInstruction32(ulong address)
     {
         uint physical = (uint)(address & 0x1fffffffUL);
-        return physical + 3 < _mainRam.Length
-            ? BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4))
-            : Read32(address);
+        if (physical + 3 < _mainRam.Length)
+        {
+            uint value = Unsafe.ReadUnaligned<uint>(ref _mainRam[(int)physical]);
+            return BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value);
+        }
+        return Read32(address);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -32577,7 +32580,10 @@ internal sealed class VegasMemoryMap
     public ushort ReadRuntimeData16(ulong address)
     {
         if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 1 < _mainRam.Length)
-            return BinaryPrimitives.ReadUInt16LittleEndian(_mainRam.AsSpan((int)physical, 2));
+        {
+            ushort value = Unsafe.ReadUnaligned<ushort>(ref _mainRam[(int)physical]);
+            return BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value);
+        }
         return Read16(address);
     }
 
@@ -32585,7 +32591,10 @@ internal sealed class VegasMemoryMap
     public uint ReadRuntimeData32(ulong address)
     {
         if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 3 < _mainRam.Length)
-            return BinaryPrimitives.ReadUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4));
+        {
+            uint value = Unsafe.ReadUnaligned<uint>(ref _mainRam[(int)physical]);
+            return BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value);
+        }
         return Read32(address);
     }
 
@@ -32593,7 +32602,10 @@ internal sealed class VegasMemoryMap
     public ulong ReadRuntimeData64(ulong address)
     {
         if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
-            return BinaryPrimitives.ReadUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8));
+        {
+            ulong value = Unsafe.ReadUnaligned<ulong>(ref _mainRam[(int)physical]);
+            return BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value);
+        }
         return Read64(address);
     }
 
@@ -32613,7 +32625,7 @@ internal sealed class VegasMemoryMap
     {
         if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 1 < _mainRam.Length)
         {
-            BinaryPrimitives.WriteUInt16LittleEndian(_mainRam.AsSpan((int)physical, 2), value);
+            Unsafe.WriteUnaligned(ref _mainRam[(int)physical], BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value));
             return;
         }
         Write16(address, value);
@@ -32633,7 +32645,7 @@ internal sealed class VegasMemoryMap
                 value == 1U;
             if (!needsDiagnosticRenderSuppression)
             {
-                BinaryPrimitives.WriteUInt32LittleEndian(_mainRam.AsSpan((int)physical, 4), value);
+                Unsafe.WriteUnaligned(ref _mainRam[(int)physical], BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value));
                 return;
             }
         }
@@ -32661,7 +32673,7 @@ internal sealed class VegasMemoryMap
     {
         if (!_traceEnabled && TryTranslatePhysical(address, out uint physical) && physical + 7 < _mainRam.Length)
         {
-            BinaryPrimitives.WriteUInt64LittleEndian(_mainRam.AsSpan((int)physical, 8), value);
+            Unsafe.WriteUnaligned(ref _mainRam[(int)physical], BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value));
             return;
         }
         Write64(address, value);
