@@ -9,6 +9,8 @@ using System.Linq;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using EutherDrive.Core.Savestates;
 using ProjectPSX.IO;
 using SharpCompress.Archives;
@@ -230,7 +232,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
     public ReadOnlySpan<byte> GetFrameBuffer(out int width, out int height, out int stride)
     {
         if (_machine.Voodoo.HasVideoActivity)
-            _machine.RenderFrame(new EutherFrameTarget(_frameBuffer, FrameWidth, FrameHeight, FrameStride));
+            _machine.RenderFrameIfChanged(new EutherFrameTarget(_frameBuffer, FrameWidth, FrameHeight, FrameStride));
 
         width = FrameWidth;
         height = FrameHeight;
@@ -390,6 +392,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
 
 internal sealed class GauntletDarkLegacyMachine
 {
+    private long _lastPresentedSwapCount = -1;
     private int _runtimeTimerTickAccumulator;
     private int _runtimeClockFrameRemainder;
     private int _runtimeInitialsPlayerUpdatePhase;
@@ -495,6 +498,7 @@ internal sealed class GauntletDarkLegacyMachine
 
     public void Reset()
     {
+        _lastPresentedSwapCount = -1;
         MemoryMap.Reset();
         Cpu.Reset();
         Disk.Reset();
@@ -807,7 +811,7 @@ internal sealed class GauntletDarkLegacyMachine
         if (MemoryMap.ConsumeWatchdogResetRequest())
             Reset();
         long renderStart = Stopwatch.GetTimestamp();
-        RenderFrame(target);
+        RenderFrameIfChanged(target);
         if (_profileFramePhases)
         {
             long frameEnd = Stopwatch.GetTimestamp();
@@ -881,6 +885,22 @@ internal sealed class GauntletDarkLegacyMachine
         Voodoo.RenderFrame(target);
         if (ShouldRenderCpuBootSurface(target))
             RenderCpuBootSurface(target);
+    }
+
+    public void RenderFrameIfChanged(EutherFrameTarget target)
+    {
+        if (target.Buffer.Length == 0)
+        {
+            RenderFrame(target);
+            return;
+        }
+
+        long swapCount = Voodoo.SwapBufferCount;
+        if (_lastPresentedSwapCount == swapCount)
+            return;
+
+        RenderFrame(target);
+        _lastPresentedSwapCount = swapCount;
     }
 
     public string GetDebugStatus()
@@ -38665,6 +38685,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private long _texturedRasterPixelCount;
     private long _texturedFallbackPixelCount;
     private long _texturedPixelCount;
+    private long _texturedBoundingPixelCount;
+    private long _parallelRasterTriangleCount;
     private readonly long[] _experimentTextureMamePixelLodCounts = new long[9];
     private long _texturedZeroPixelCount;
     private int _texturedRejectNonFiniteCount;
@@ -38859,6 +38881,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_ZERO_BUCKETS"));
     private readonly bool _debugTextureSamples =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_SAMPLES"));
+    private readonly bool _parallelTextureRaster =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PARALLEL_VOODOO_TEXTURE_RASTER"));
     private readonly ulong[] _traceTextureWriteBuckets =
         ParseOptionalHexUlongList(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_TEXTURE_WRITE_BUCKETS"));
     private readonly bool _debugTextureUploadLods =
@@ -39827,7 +39851,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            GetTextureOverwriteDebugStatus() +
            GetBufferCountDebugStatus() +
            GetTmuDebugStatus() +
-           $"rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}/{_texturedFallbackPixelCount}/{_texturedTriangleCount}/{_texturedTriangleCoveredCount}/{_texturedTriangleRejectedCount}/{_texturedRejectDegenerateCount}/{_texturedRejectClipCount}/{_texturedRejectEmptyRasterCount}/{_texturedZeroPixelCount} " +
+           $"rast={_solidRasterPixelCount}/{_texturedRasterPixelCount}/{_texturedFallbackPixelCount}/{_texturedTriangleCount}/{_texturedTriangleCoveredCount}/{_texturedTriangleRejectedCount}/{_texturedRejectDegenerateCount}/{_texturedRejectClipCount}/{_texturedRejectEmptyRasterCount}/{_texturedZeroPixelCount} bbox={_texturedBoundingPixelCount}/par={_parallelRasterTriangleCount} " +
            GetTexturePixelLodDebugStatus() +
            $"t={_fifoPacketTypeCounts[0]}/{_fifoPacketTypeCounts[1]}/{_fifoPacketTypeCounts[2]}/{_fifoPacketTypeCounts[3]}/{_fifoPacketTypeCounts[4]}/{_fifoPacketTypeCounts[5]} " +
            $"t5={_fifoType5SpaceCounts[0]}:{_fifoType5SpaceWordCounts[0]}/{_fifoType5SpaceCounts[1]}:{_fifoType5SpaceWordCounts[1]}/" +
@@ -48371,6 +48395,28 @@ internal class VoodooBringupBackend : IVoodooBackend
     private static float Edge(float ax, float ay, float bx, float by, float px, float py)
         => (px - ax) * (by - ay) - (py - ay) * (bx - ax);
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void IncludeScanlineEdgeIntersection(
+        float py,
+        float ax,
+        float ay,
+        float bx,
+        float by,
+        ref int count,
+        ref float left,
+        ref float right)
+    {
+        float lowY = MathF.Min(ay, by);
+        float highY = MathF.Max(ay, by);
+        if (py < lowY || py > highY || ay == by)
+            return;
+
+        float x = ax + (py - ay) * (bx - ax) / (by - ay);
+        left = MathF.Min(left, x);
+        right = MathF.Max(right, x);
+        count++;
+    }
+
     private int GetRasterYOrigin()
     {
         if (!_fixGauntletRasterYOrigin &&
@@ -48757,12 +48803,48 @@ internal class VoodooBringupBackend : IVoodooBackend
         float edge1Dx = a.X - c.X;
         float edge2Dy = b.Y - a.Y;
         float edge2Dx = b.X - a.X;
-        for (int y = minY; y < maxY; y++)
+        bool useParallelRaster =
+            _parallelTextureRaster &&
+            Environment.ProcessorCount > 1 &&
+            (long)(maxX - minX) * (maxY - minY) >= 8_192 &&
+            !traceSampleSummary &&
+            !traceTexturedPixels &&
+            !_profilePixelLastWriters &&
+            !_debugTextureZeroSampleBuckets &&
+            !_debugTextureSamples &&
+            !_traceTextureSamples &&
+            !_traceTextureSampleWriters &&
+            !_traceTwoTmuSamples &&
+            !_traceTmu1SamplePages;
+        _texturedBoundingPixelCount += (long)(maxX - minX) * (maxY - minY);
+        if (useParallelRaster)
+            _parallelRasterTriangleCount++;
+        int parallelCoveredFlag = 0;
+        void RasterRow(int y)
         {
+            int rowCoveredPixels = 0;
+            int rowZeroPixels = 0;
+            int rowFallbackPixels = 0;
+            int rowRasterPixels = 0;
+            long[]? rowLodCounts = useParallelRaster && _experimentTextureMamePixelLod ? new long[9] : null;
+            bool rowCoveredAny = false;
             float py = y + 0.5f;
+            int rowMinX = minX;
+            int rowMaxX = maxX;
+            int intersectionCount = 0;
+            float intersectionLeft = float.PositiveInfinity;
+            float intersectionRight = float.NegativeInfinity;
+            IncludeScanlineEdgeIntersection(py, a.X, a.Y, b.X, b.Y, ref intersectionCount, ref intersectionLeft, ref intersectionRight);
+            IncludeScanlineEdgeIntersection(py, b.X, b.Y, c.X, c.Y, ref intersectionCount, ref intersectionLeft, ref intersectionRight);
+            IncludeScanlineEdgeIntersection(py, c.X, c.Y, a.X, a.Y, ref intersectionCount, ref intersectionLeft, ref intersectionRight);
+            if (intersectionCount >= 2)
+            {
+                rowMinX = Math.Max(rowMinX, (int)MathF.Floor(intersectionLeft) - 1);
+                rowMaxX = Math.Min(rowMaxX, (int)MathF.Ceiling(intersectionRight) + 1);
+            }
             int screenY = GetRasterBufferY(y);
             int row = screenY * LfbRowPixels;
-            for (int x = minX; x < maxX; x++)
+            for (int x = rowMinX; x < rowMaxX; x++)
             {
                 float px = x + 0.5f;
                 float e0 = (px - b.X) * edge0Dy - (py - b.Y) * edge0Dx;
@@ -48830,7 +48912,10 @@ internal class VoodooBringupBackend : IVoodooBackend
                                 y,
                                 textureMode,
                                 textureLod);
-                            _experimentTextureMamePixelLodCounts[targetLod]++;
+                            if (rowLodCounts is not null)
+                                rowLodCounts[targetLod]++;
+                            else
+                                _experimentTextureMamePixelLodCounts[targetLod]++;
                         }
                         if (_experimentMameTwoTmuCombine)
                         {
@@ -48906,7 +48991,10 @@ internal class VoodooBringupBackend : IVoodooBackend
                         y,
                         textureMode,
                         textureLod);
-                    _experimentTextureMamePixelLodCounts[targetLod]++;
+                    if (rowLodCounts is not null)
+                        rowLodCounts[targetLod]++;
+                    else
+                        _experimentTextureMamePixelLodCounts[targetLod]++;
                 }
                 texel = SampleTextureRgb565(s, t, targetLod);
 sampledTexel:
@@ -48947,16 +49035,29 @@ sampledTexel:
                     if (address > sampleLastAddress)
                         sampleLastAddress = address;
                 }
-                _texturedPixelCount++;
-                coveredPixels++;
+                if (useParallelRaster)
+                    rowCoveredPixels++;
+                else
+                {
+                    _texturedPixelCount++;
+                    coveredPixels++;
+                }
                 if (texel == 0)
                 {
-                    _texturedZeroPixelCount++;
-                    zeroPixels++;
+                    if (useParallelRaster)
+                        rowZeroPixels++;
+                    else
+                    {
+                        _texturedZeroPixelCount++;
+                        zeroPixels++;
+                    }
                     if (_visualizeZeroTextureFallback)
                     {
                         texel = fallbackColor != 0 ? fallbackColor : (ushort)0xffff;
-                        _texturedFallbackPixelCount++;
+                        if (useParallelRaster)
+                            rowFallbackPixels++;
+                        else
+                            _texturedFallbackPixelCount++;
                     }
                     if (_treatZeroTextureTexelAsTransparent)
                     {
@@ -48964,7 +49065,10 @@ sampledTexel:
                         {
                             if (traceTexturedPixels)
                                 TraceTexturedPixel("zero-transparent", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
-                            coveredAny = true;
+                            if (useParallelRaster)
+                                rowCoveredAny = true;
+                            else
+                                coveredAny = true;
                             continue;
                         }
                     }
@@ -48976,7 +49080,10 @@ sampledTexel:
                 {
                     if (traceTexturedPixels)
                         TraceTexturedPixel("alpha-bit-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
-                    coveredAny = true;
+                    if (useParallelRaster)
+                        rowCoveredAny = true;
+                    else
+                        coveredAny = true;
                     continue;
                 }
 
@@ -48991,7 +49098,10 @@ sampledTexel:
                 {
                     if (traceTexturedPixels)
                         TraceTexturedPixel("alpha-test-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
-                    coveredAny = true;
+                    if (useParallelRaster)
+                        rowCoveredAny = true;
+                    else
+                        coveredAny = true;
                     continue;
                 }
 
@@ -49002,7 +49112,10 @@ sampledTexel:
                     {
                         if (traceTexturedPixels)
                             TraceTexturedPixel("alpha8-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
-                        coveredAny = true;
+                        if (useParallelRaster)
+                            rowCoveredAny = true;
+                        else
+                            coveredAny = true;
                         continue;
                     }
                     texel = BlendRgb565(buffer[pixel], iteratedColor, alpha);
@@ -49021,10 +49134,15 @@ sampledTexel:
                     buffer[pixel] = texel;
                     if (_profilePixelLastWriters)
                         TrackPixelLastWriter(bufferIndex, x, screenY, writerId);
-                    _texturedRasterPixelCount++;
-                    if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
-                        _rasterBufferPixelCounts[bufferIndex]++;
-                    _lfbWriteCount++;
+                    if (useParallelRaster)
+                        rowRasterPixels++;
+                    else
+                    {
+                        _texturedRasterPixelCount++;
+                        if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
+                            _rasterBufferPixelCounts[bufferIndex]++;
+                        _lfbWriteCount++;
+                    }
                 }
                 else
                 {
@@ -49033,8 +49151,42 @@ sampledTexel:
                 }
                 if (mameAuxMask)
                     _auxBuffer[pixel] = mameAlphaPlanes ? (ushort)pixelAlpha : (ushort)depthValue;
-                coveredAny = true;
+                if (useParallelRaster)
+                    rowCoveredAny = true;
+                else
+                    coveredAny = true;
             }
+
+            if (!useParallelRaster)
+                return;
+
+            Interlocked.Add(ref _texturedPixelCount, rowCoveredPixels);
+            Interlocked.Add(ref coveredPixels, rowCoveredPixels);
+            Interlocked.Add(ref _texturedZeroPixelCount, rowZeroPixels);
+            Interlocked.Add(ref zeroPixels, rowZeroPixels);
+            Interlocked.Add(ref _texturedFallbackPixelCount, rowFallbackPixels);
+            Interlocked.Add(ref _texturedRasterPixelCount, rowRasterPixels);
+            Interlocked.Add(ref _lfbWriteCount, rowRasterPixels);
+            if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
+                Interlocked.Add(ref _rasterBufferPixelCounts[bufferIndex], rowRasterPixels);
+            if (rowLodCounts is not null)
+            {
+                for (int lod = 0; lod < rowLodCounts.Length; lod++)
+                    Interlocked.Add(ref _experimentTextureMamePixelLodCounts[lod], rowLodCounts[lod]);
+            }
+            if (rowCoveredAny)
+                Interlocked.Exchange(ref parallelCoveredFlag, 1);
+        }
+
+        if (useParallelRaster)
+        {
+            Parallel.For(minY, maxY, RasterRow);
+            coveredAny = parallelCoveredFlag != 0;
+        }
+        else
+        {
+            for (int y = minY; y < maxY; y++)
+                RasterRow(y);
         }
 
         if (!coveredAny)
@@ -50201,9 +50353,20 @@ sampledTexel:
         int y0 = Coordinate24_8ToTexelIndex(t24_8, layout.Height, targetLod, clampT);
         if (_fixTextureTOriginFlip)
             y0 = layout.Height - 1 - y0;
-        TextureRgba c00 = ReadTextureRgbaAt(tmu, x0, y0, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes);
-        uint byteAddress00 = _lastTextureSampleByteAddress;
-        uint raw00 = _lastTextureSampleRaw;
+        TextureRgba c00 = ReadTextureRgbaAt(
+            tmu,
+            x0,
+            y0,
+            layout.Width,
+            format,
+            mode,
+            layout.BaseAddress,
+            triangleState.Swap16BitBytes,
+            out uint byteAddress00,
+            out ushort raw00);
+        uint lastByteAddress = byteAddress00;
+        ushort lastRaw = raw00;
+        TextureRgba lastSample = c00;
         bool traceSample = _traceTextureSamples || _traceTextureSampleWriters;
         uint word00 = traceSample ? ReadTexture32(byteAddress00 & ~3u) : 0;
         TextureRgba result = c00;
@@ -50213,13 +50376,19 @@ sampledTexel:
             int y1 = Coordinate24_8ToTexelIndex(t24_8 + (1 << (targetLod + 8)), layout.Height, targetLod, clampT);
             if (_fixTextureTOriginFlip)
                 y1 = layout.Height - 1 - y1;
-            TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes);
-            TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes);
-            TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes);
+            TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, out _, out _);
+            TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, out _, out _);
+            TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, out lastByteAddress, out lastRaw);
+            lastSample = c11;
             int fx = (int)(Coordinate24_8Fraction(s24_8, targetLod) * 256.0f);
             int fy = (int)(Coordinate24_8Fraction(t24_8, targetLod) * 256.0f);
             result = BilinearTextureRgba(c00, c10, c01, c11, fx, fy);
         }
+
+        _lastTextureSampleByteAddress = lastByteAddress;
+        _lastTextureSampleRaw = lastRaw;
+        _lastTextureSampleResult = lastSample.Rgb565;
+        _lastTextureSampleValid = true;
 
         ushort rgb565 = result.Rgb565;
         if (_debugTextureZeroSampleBuckets)
@@ -50254,14 +50423,15 @@ sampledTexel:
         int format,
         uint mode,
         uint baseAddress,
-        bool swap16BitBytes)
+        bool swap16BitBytes,
+        out uint byteAddress,
+        out ushort raw)
     {
         bool sixteenBit = IsTextureFormat16Bit(format);
         uint texelIndex = (uint)(y * width + x);
         int memoryTmu = _experimentTmu1SampleTmu0Memory && tmu == 1 ? 0 : tmu;
-        uint byteAddress = MapTextureBankByteAddress(memoryTmu, baseAddress + texelIndex * (sixteenBit ? 2u : 1u));
+        byteAddress = MapTextureBankByteAddress(memoryTmu, baseAddress + texelIndex * (sixteenBit ? 2u : 1u));
         uint word = ReadTexture32(byteAddress & ~3u);
-        ushort raw;
         if (sixteenBit)
         {
             uint laneAddress = GetTexture16BitLaneByteAddress(byteAddress);
@@ -50278,10 +50448,6 @@ sampledTexel:
         }
 
         TextureRgba result = DecodeTextureRgba(tmu, format, raw, mode);
-        _lastTextureSampleByteAddress = byteAddress;
-        _lastTextureSampleRaw = raw;
-        _lastTextureSampleResult = result.Rgb565;
-        _lastTextureSampleValid = true;
         return result;
     }
 
@@ -50423,6 +50589,26 @@ sampledTexel:
         bool hasTmu1TriangleState,
         in MameTextureTriangleState tmu1TriangleState)
     {
+        bool preserveSamplingDiagnostics =
+            _traceTexturedTriangleSampleSummary ||
+            _debugTextureZeroSampleBuckets ||
+            _debugTextureSamples ||
+            _traceTextureSamples ||
+            _traceTextureSampleWriters ||
+            _traceTwoTmuSamples ||
+            _traceTmu1SamplePages;
+        if (hasTmu0TriangleState &&
+            IsTextureCombineLocalOnly(tmu0TriangleState.Mode) &&
+            !preserveSamplingDiagnostics)
+        {
+            uint mode0 = tmu0TriangleState.Mode;
+            uint lod0 = tmu0TriangleState.Lod;
+            int localOnlyTargetLod0 = lodBase0_8p8 == int.MinValue
+                ? GetTextureTargetLod(lod0, tmu0TriangleState.Base)
+                : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, mode0, lod0);
+            return SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, localOnlyTargetLod0, in tmu0TriangleState);
+        }
+
         TextureRgba combined = default;
         bool captureTrace = _traceTwoTmuSamples &&
             _renderFrame >= _traceTwoTmuSamplesMinFrame &&
@@ -50517,6 +50703,13 @@ sampledTexel:
                 bufferIndex);
         }
         return combined;
+    }
+
+    private static bool IsTextureCombineLocalOnly(uint mode)
+    {
+        const uint RequiredSet = (1u << 12) | (1u << 18) | (1u << 21) | (1u << 27);
+        const uint RequiredClear = (1u << 13) | (1u << 19) | (1u << 20) | (1u << 22) | (1u << 29);
+        return (mode & RequiredSet) == RequiredSet && (mode & RequiredClear) == 0;
     }
 
     private void TraceTwoTmuSample(

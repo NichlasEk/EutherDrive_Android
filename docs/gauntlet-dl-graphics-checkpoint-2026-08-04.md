@@ -203,3 +203,35 @@ inte i startaren. Nästa prestandasteg behöver vara större verifierade
 basic-block/JIT-regioner med hela CPU/FIFO/framebuffer-oraklet, eftersom den
 nuvarande tolken behöver omkring 2,25 miljoner MIPS-instruktioner per verklig
 Voodoo-bild i den här scenen.
+
+## 2026-08-05: första bitexakta Voodoo-prestandapasset
+
+Den rena K2-rastervägen profilerades över den första riktiga Voodoo-swappen.
+FIFO-avkodning och rasterisering stod för ungefär två tredjedelar av CPU-tiden.
+Följande ändringar är därför aktiva i desktopstartaren:
+
+- stora texturerade trianglar delas per scanline mellan värdens kärnor;
+- varje scanline begränsas konservativt till triangelns verkliga x-intervall;
+- bilinjär sampling publicerar diagnostikstatus en gång per TMU/pixel i stället
+  för efter varje tap;
+- framebufferkonvertering görs bara när Voodoo faktiskt har bytt frontbuffer;
+- `scripts/run-gauntdl-probe-warm.sh` kör samma profil som desktopstartaren för
+  repeterbara A/B-prov.
+
+Två 300-anropsprov från f6750 till f7050 gav 6,16 respektive 5,83 sekunder,
+jämfört med cirka 8,05 sekunder före passet. Båda behöll exakt:
+
+```text
+frameHash  0x78a8ec1a
+PC         0xFFFFFFFF800C9C8C
+swap       3844
+FIFO       25455490 / 2464990
+raster     2871022 pixlar
+```
+
+Det motsvarar cirka 24–28 procent högre total kapacitet och ungefär 1,3–1,4
+verkliga gästbilder/s i den här scenen. Det är en tydlig förbättring men ännu
+inte spelbart. En generell rak basic-block-prototyp provades också: den körde
+935 803 instruktioner i block men missade en gästservicepunkt, tappade nästa
+swap och divergerade i PC/FIFO. Den prototypen är helt borttagen. Nästa CPU-pass
+måste därför göra service-/interruptgränser explicita innan block exekveras.
