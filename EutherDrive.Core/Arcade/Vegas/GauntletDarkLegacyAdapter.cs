@@ -69,6 +69,7 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_PIXEL_LOD", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FIXED_FETCH", "1"),
+        ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_SUBPIXEL_ADJUST", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_UPLOAD_TMU_BANKS", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SEPARATE_TMU_TEXTURE_MEMORY", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TWO_TMU_COMBINE", "1"),
@@ -79,9 +80,10 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_STANDARD_FIFO_GLOBAL_PACKET_STATE", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_STANDARD_FIFO_DECODE_COMPLETE_PACKETS", "1"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_STANDARD_FIFO_ORDERED_ASYNC_DRAIN", "1"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER", "0"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE3_PRODUCER_BODY_HEADER", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE3_PRODUCER_HEADER_PCS", "0x800bc8ec,0x800bc91c,0x800c5b80"),
-        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER", "0"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TYPE4_PRODUCER_BODY_HEADER", "1"),
+        ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE4_PRODUCER_HEADER_PCS", "0x80103190,0x800bd18c,0x800bd1bc"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_TYPE4_BODY_YIELD_TO_GLYPH_TYPE3_HEADER", "1"),
         ("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_FIFO_ADVANCE_TEXTURE_STATE_BUILDER_TAIL", "0"),
         ("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_TYPE5_SPACE0_CMD_FIFO_RAM", "1"),
@@ -39353,6 +39355,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_PERSPECTIVE_INTERPOLATE"));
     private readonly bool _experimentTextureMameSetupGradients =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_MAME_SETUP_GRADIENTS"));
+    private readonly bool _fixSetupSubpixelAdjust =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_FIX_VOODOO_SETUP_SUBPIXEL_ADJUST"));
     private readonly bool _experimentTextureMameFetchAddressing =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_MAME_TEXTURE_FETCH_ADDRESSING"));
     private readonly bool _experimentTextureMameFixedFetch =
@@ -39479,8 +39483,6 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_PREFER_TMU0_ST"));
     private readonly bool _experimentType3SeparateTmuSt =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_TMU_ST"));
-    private readonly bool _experimentType3SeparateWbTextureQ =
-        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_SEPARATE_WB_TEXTURE_Q"));
     private readonly bool _experimentType3UseSkippedWordAsS =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPE3_USE_SKIPPED_WORD_AS_S"));
     private readonly bool _experimentType3UseSkippedWordAsT =
@@ -46199,12 +46201,24 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         int producerStorageIndex = CommandFifoReadStorageIndex(_currentCommandFifoPacketStart);
         PixelLastWriterKey key = new(
+            _renderFrame,
             CpuPcProvider?.Invoke() ?? 0,
             kind,
             source,
             color,
             _registers[RegFbzMode],
             _registers[RegFbzColorPath],
+            _registers[RegAlphaMode],
+            _registers[RegFogMode],
+            _registers[RegColor0],
+            _registers[RegColor1],
+            _registers[RegZaColor],
+            ReadTextureRegisterForTmu(0, RegTextureMode),
+            ReadTextureRegisterForTmu(0, RegTextureLod),
+            ReadTextureRegisterForTmu(0, RegTextureBaseAddr),
+            ReadTextureRegisterForTmu(1, RegTextureMode),
+            ReadTextureRegisterForTmu(1, RegTextureLod),
+            ReadTextureRegisterForTmu(1, RegTextureBaseAddr),
             _currentCommandFifoCommand,
             _currentCommandFifoWordsNeeded,
             _currentCommandFifoPacketStart,
@@ -46380,7 +46394,7 @@ internal class VoodooBringupBackend : IVoodooBackend
             return "-";
 
         PixelLastWriterKey key = _pixelLastWriterKeys[id - 1];
-        return $"{count}@0x{key.Pc:x16}:{key.Kind}:{key.Source}:c{key.Color:X4}:cmd{key.Command:X8}:{key.CommandWords}:rd{key.CommandFifoReadIndex:X}:pkt{key.CommandFifoPacketStart:X}:prodpc{key.ProducerPc:x16}:prodlg{key.ProducerLogicalIndex:X}:prodaddr{key.ProducerAddress:X}:prodsrc{FormatCommandFifoStorageWriteSource(key.ProducerSource)}:fbz{key.FbzMode:X8}:cp{key.FbzColorPath:X8}:tr{key.Trigger}";
+        return $"{count}@0x{key.Pc:x16}:{key.Kind}:{key.Source}:c{key.Color:X4}:cmd{key.Command:X8}:{key.CommandWords}:rd{key.CommandFifoReadIndex:X}:pkt{key.CommandFifoPacketStart:X}:prodpc{key.ProducerPc:x16}:prodlg{key.ProducerLogicalIndex:X}:prodaddr{key.ProducerAddress:X}:prodsrc{FormatCommandFifoStorageWriteSource(key.ProducerSource)}:fbz{key.FbzMode:X8}:cp{key.FbzColorPath:X8}:alpha{key.AlphaMode:X8}:fog{key.FogMode:X8}:c0{key.Color0:X8}:c1{key.Color1:X8}:za{key.ZaColor:X8}:t0{key.Tmu0TextureMode:X8}/{key.Tmu0TextureLod:X8}/{key.Tmu0TextureBase:X8}:t1{key.Tmu1TextureMode:X8}/{key.Tmu1TextureLod:X8}/{key.Tmu1TextureBase:X8}:tr{key.Trigger}";
     }
 
     private static bool TouchesInterestingEventRegister(uint target, uint count)
@@ -46424,12 +46438,24 @@ internal class VoodooBringupBackend : IVoodooBackend
     }
 
     private readonly record struct PixelLastWriterKey(
+        int RenderFrame,
         ulong Pc,
         string Kind,
         string Source,
         ushort Color,
         uint FbzMode,
         uint FbzColorPath,
+        uint AlphaMode,
+        uint FogMode,
+        uint Color0,
+        uint Color1,
+        uint ZaColor,
+        uint Tmu0TextureMode,
+        uint Tmu0TextureLod,
+        uint Tmu0TextureBase,
+        uint Tmu1TextureMode,
+        uint Tmu1TextureLod,
+        uint Tmu1TextureBase,
         uint Command,
         int CommandWords,
         int CommandFifoPacketStart,
@@ -46775,10 +46801,10 @@ internal class VoodooBringupBackend : IVoodooBackend
         float alpha = 255.0f;
         float s0 = 0;
         float t0 = 0;
-        float q0 = _experimentType3SeparateWbTextureQ ? 0 : 1;
+        float q0 = 0;
         float s1 = 0;
         float t1 = 0;
-        float q1 = _experimentType3SeparateWbTextureQ ? 0 : 1;
+        float q1 = 0;
         float fogW = 0;
         bool hasTmu0Texture = false;
         bool hasTexture = ((command >> 15) & 1u) != 0 || ((command >> 17) & 1u) != 0;
@@ -46841,19 +46867,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             {
                 if (!TryReadFloat(wordsNeeded, ref source, out fogW))
                     return;
-                if (!_experimentType3SeparateWbTextureQ)
-                {
-                    q0 = fogW;
-                    q1 = fogW;
-                }
+                q0 = fogW;
+                q1 = fogW;
             }
             if (((command >> 14) & 1u) != 0)
             {
                 if (!TryReadFloat(wordsNeeded, ref source, out float w0))
                     return;
                 q0 = w0;
-                if (!_experimentType3SeparateWbTextureQ)
-                    q1 = w0;
+                q1 = w0;
             }
             if (((command >> 15) & 1u) != 0)
             {
@@ -48631,15 +48653,17 @@ internal class VoodooBringupBackend : IVoodooBackend
         MameTextureTriangleState tmu1TriangleState = default;
         if (_experimentMameTwoTmuCombine)
         {
-            hasTmu0TriangleState = _tmuRegisterValid[0][RegTextureMode] && _tmuRegisterValid[0][RegTextureLod];
-            hasTmu1TriangleState = _tmuRegisterValid[1][RegTextureMode] && _tmuRegisterValid[1][RegTextureLod];
+            hasTmu0TriangleState = IsTextureRasterEnabledForTmu(0);
+            hasTmu1TriangleState = IsTextureRasterEnabledForTmu(1);
             if (hasTmu0TriangleState)
                 tmu0TriangleState = BuildMameTextureTriangleState(0);
             if (hasTmu1TriangleState)
                 tmu1TriangleState = BuildMameTextureTriangleState(1);
         }
-        int setupAx = unchecked((short)(int)(a.X * 16.0f)) >> 4;
-        int setupAy = unchecked((short)(int)(a.Y * 16.0f)) >> 4;
+        int setupAxFixed = unchecked((short)(int)(a.X * 16.0f));
+        int setupAyFixed = unchecked((short)(int)(a.Y * 16.0f));
+        int setupAx = setupAxFixed >> 4;
+        int setupAy = setupAyFixed >> 4;
         uint fbzMode = _registers[RegFbzMode];
         uint textureMode = ReadTextureSampleRegister(RegTextureMode);
         uint textureLod = ReadTextureSampleRegister(RegTextureLod);
@@ -48673,6 +48697,26 @@ internal class VoodooBringupBackend : IVoodooBackend
         long setupDwDy = type3CarriesWb
             ? fogDwDy
             : MameFloatToInt64(_registers[RegFdWdY], 48);
+        if (_fixSetupSubpixelAdjust && (_registers[RegFbzColorPath] & (1u << 26)) != 0)
+        {
+            int subpixelDx = 8 - (setupAxFixed & 15);
+            int subpixelDy = 8 - (setupAyFixed & 15);
+            setupStartR = ApplySetupSubpixelAdjust(setupStartR, setupDrDx, setupDrDy, subpixelDx, subpixelDy);
+            setupStartG = ApplySetupSubpixelAdjust(setupStartG, setupDgDx, setupDgDy, subpixelDx, subpixelDy);
+            setupStartB = ApplySetupSubpixelAdjust(setupStartB, setupDbDx, setupDbDy, subpixelDx, subpixelDy);
+            setupStartA = ApplySetupSubpixelAdjust(setupStartA, setupDaDx, setupDaDy, subpixelDx, subpixelDy);
+            setupStartZ = ApplySetupSubpixelAdjust(setupStartZ, setupDzDx, setupDzDy, subpixelDx, subpixelDy);
+            startS = ApplySetupSubpixelAdjust(startS, dSdX, dSdY, subpixelDx, subpixelDy);
+            startT = ApplySetupSubpixelAdjust(startT, dTdX, dTdY, subpixelDx, subpixelDy);
+            textureStartW = ApplySetupSubpixelAdjust(textureStartW, textureDwDx, textureDwDy, subpixelDx, subpixelDy);
+            startS1 = ApplySetupSubpixelAdjust(startS1, dS1dX, dS1dY, subpixelDx, subpixelDy);
+            startT1 = ApplySetupSubpixelAdjust(startT1, dT1dX, dT1dY, subpixelDx, subpixelDy);
+            textureStartW1 = ApplySetupSubpixelAdjust(textureStartW1, textureD1wDx, textureD1wDy, subpixelDx, subpixelDy);
+            fogStartW = ApplySetupSubpixelAdjust(fogStartW, fogDwDx, fogDwDy, subpixelDx, subpixelDy);
+            setupStartW = type3CarriesWb
+                ? fogStartW
+                : ApplySetupSubpixelAdjust(setupStartW, setupDwDx, setupDwDy, subpixelDx, subpixelDy);
+        }
         float edge0Dy = c.Y - b.Y;
         float edge0Dx = c.X - b.X;
         float edge1Dy = a.Y - c.Y;
@@ -49401,6 +49445,22 @@ sampledTexel:
             return int.MinValue;
         return (int)value;
     }
+
+    private static int ApplySetupSubpixelAdjust(
+        int start,
+        int deltaX,
+        int deltaY,
+        int subpixelX,
+        int subpixelY)
+        => unchecked(start + (int)(((long)subpixelY * deltaY + (long)subpixelX * deltaX) >> 4));
+
+    private static long ApplySetupSubpixelAdjust(
+        long start,
+        long deltaX,
+        long deltaY,
+        int subpixelX,
+        int subpixelY)
+        => unchecked(start + ((subpixelY * deltaY + subpixelX * deltaX) >> 4));
 
     private bool FillGradientTexturedTriangle(
         float ax,
