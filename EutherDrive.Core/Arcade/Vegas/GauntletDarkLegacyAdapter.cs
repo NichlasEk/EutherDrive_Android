@@ -38619,6 +38619,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         new bool[2 * 256],
         new bool[2 * 256]
     ];
+    private readonly TextureRgba[][][] _tmuNccRgbaLuts =
+    [
+        [new TextureRgba[256], new TextureRgba[256]],
+        [new TextureRgba[256], new TextureRgba[256]]
+    ];
+    private readonly bool[,] _tmuNccRgbaLutValid = new bool[2, 2];
     private readonly uint[] _cmdFifoRam = new uint[CmdFifoFramebufferWords];
     private readonly bool[] _cmdFifoValid = new bool[CmdFifoFramebufferWords];
     private readonly int[] _cmdFifoStorageLogicalIndex = new int[CmdFifoFramebufferWords];
@@ -38881,6 +38887,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_ZERO_BUCKETS"));
     private readonly bool _debugTextureSamples =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_DEBUG_VOODOO_TEXTURE_SAMPLES"));
+    private readonly bool _profileTextureSampleDiagnosticWrites =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_TEXTURE_SAMPLE_DIAGNOSTIC_WRITES"));
     private readonly bool _parallelTextureRaster =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PARALLEL_VOODOO_TEXTURE_RASTER"));
     private readonly ulong[] _traceTextureWriteBuckets =
@@ -45109,6 +45117,8 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         _tmuRegisters[tmu][register] = value;
         _tmuRegisterValid[tmu][register] = true;
+        if (register is >= RegNccTable and < RegNccTableEnd)
+            _tmuNccRgbaLutValid[tmu, (register - RegNccTable) / 12] = false;
     }
 
     private bool TryWriteTmuPaletteEntry(int tmu, int register, uint value)
@@ -50286,6 +50296,8 @@ sampledTexel:
         int Format,
         bool Filtered,
         bool Swap16BitBytes,
+        TextureRgba[]? NccRgbaLut,
+        bool TrackSampleDiagnostics,
         TextureFetchLayout[] Layouts);
 
     private MameTextureTriangleState BuildMameTextureTriangleState(int tmu)
@@ -50305,7 +50317,47 @@ sampledTexel:
             IsTextureFilteringEnabled(mode),
             _experimentTexture16BitByteSwapRegisterBase.HasValue &&
                 textureBase == (uint)_experimentTexture16BitByteSwapRegisterBase.Value,
+            GetCachedTmuNccRgbaLut(tmu, mode),
+            ShouldTrackTextureSampleDiagnostics(),
             layouts);
+    }
+
+    private bool ShouldTrackTextureSampleDiagnostics()
+        => _profileTextureSampleDiagnosticWrites ||
+           _traceTexturedTriangleSampleSummary ||
+           _debugTextureZeroSampleBuckets ||
+           _debugTextureSamples ||
+           _traceTextureSamples ||
+           _traceTextureSampleWriters ||
+           _traceTwoTmuSamples ||
+           _traceTmu1SamplePages;
+
+    private TextureRgba[]? GetCachedTmuNccRgbaLut(int tmu, uint mode)
+    {
+        int format = (int)((mode >> 8) & 0x0fu);
+        if ((uint)tmu > 1u || format != 1)
+            return null;
+
+        int table = (int)((mode >> 5) & 1u);
+        int start = RegNccTable + table * 12;
+        for (int register = start; register < start + 12; register++)
+        {
+            if (!_tmuRegisterValid[tmu][register])
+                return null;
+        }
+
+        TextureRgba[] lut = _tmuNccRgbaLuts[tmu][table];
+        if (_tmuNccRgbaLutValid[tmu, table])
+            return lut;
+
+        for (int value = 0; value < lut.Length; value++)
+        {
+            ushort rgb = ConvertNccToRgb565(tmu, (byte)value, mode);
+            Rgb565ToBytes(rgb, out int r, out int g, out int b);
+            lut[value] = new TextureRgba((byte)r, (byte)g, (byte)b, 255);
+        }
+        _tmuNccRgbaLutValid[tmu, table] = true;
+        return lut;
     }
 
     private TextureRgba SampleTextureMameFixedForTmu(
@@ -50362,6 +50414,7 @@ sampledTexel:
             mode,
             layout.BaseAddress,
             triangleState.Swap16BitBytes,
+            triangleState.NccRgbaLut,
             out uint byteAddress00,
             out ushort raw00);
         uint lastByteAddress = byteAddress00;
@@ -50376,41 +50429,43 @@ sampledTexel:
             int y1 = Coordinate24_8ToTexelIndex(t24_8 + (1 << (targetLod + 8)), layout.Height, targetLod, clampT);
             if (_fixTextureTOriginFlip)
                 y1 = layout.Height - 1 - y1;
-            TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, out _, out _);
-            TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, out _, out _);
-            TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, out lastByteAddress, out lastRaw);
+            TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, triangleState.NccRgbaLut, out _, out _);
+            TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, triangleState.NccRgbaLut, out _, out _);
+            TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, triangleState.NccRgbaLut, out lastByteAddress, out lastRaw);
             lastSample = c11;
             int fx = (int)(Coordinate24_8Fraction(s24_8, targetLod) * 256.0f);
             int fy = (int)(Coordinate24_8Fraction(t24_8, targetLod) * 256.0f);
             result = BilinearTextureRgba(c00, c10, c01, c11, fx, fy);
         }
 
-        _lastTextureSampleByteAddress = lastByteAddress;
-        _lastTextureSampleRaw = lastRaw;
-        _lastTextureSampleResult = lastSample.Rgb565;
-        _lastTextureSampleValid = true;
-
         ushort rgb565 = result.Rgb565;
-        if (_debugTextureZeroSampleBuckets)
-            TrackZeroTextureSample(byteAddress00, rgb565);
-        TrackTextureSampleDebug(byteAddress00, raw00, rgb565);
-        if (traceSample)
+        if (triangleState.TrackSampleDiagnostics)
         {
-            TraceTextureSample(
-                s24_8 / 256.0f,
-                t24_8 / 256.0f,
-                layout.Width,
-                layout.Height,
-                x0,
-                y0,
-                mode,
-                textureLod,
-                textureBase,
-                layout.BaseAddress,
-                byteAddress00,
-                word00,
-                raw00,
-                rgb565);
+            _lastTextureSampleByteAddress = lastByteAddress;
+            _lastTextureSampleRaw = lastRaw;
+            _lastTextureSampleResult = lastSample.Rgb565;
+            _lastTextureSampleValid = true;
+            if (_debugTextureZeroSampleBuckets)
+                TrackZeroTextureSample(byteAddress00, rgb565);
+            TrackTextureSampleDebug(byteAddress00, raw00, rgb565);
+            if (traceSample)
+            {
+                TraceTextureSample(
+                    s24_8 / 256.0f,
+                    t24_8 / 256.0f,
+                    layout.Width,
+                    layout.Height,
+                    x0,
+                    y0,
+                    mode,
+                    textureLod,
+                    textureBase,
+                    layout.BaseAddress,
+                    byteAddress00,
+                    word00,
+                    raw00,
+                    rgb565);
+            }
         }
         return result;
     }
@@ -50424,6 +50479,7 @@ sampledTexel:
         uint mode,
         uint baseAddress,
         bool swap16BitBytes,
+        TextureRgba[]? nccRgbaLut,
         out uint byteAddress,
         out ushort raw)
     {
@@ -50447,7 +50503,9 @@ sampledTexel:
             raw = (byte)(word >> (int)(lane * 8u));
         }
 
-        TextureRgba result = DecodeTextureRgba(tmu, format, raw, mode);
+        TextureRgba result = nccRgbaLut is not null && format == 1
+            ? nccRgbaLut[(byte)raw]
+            : DecodeTextureRgba(tmu, format, raw, mode);
         return result;
     }
 
