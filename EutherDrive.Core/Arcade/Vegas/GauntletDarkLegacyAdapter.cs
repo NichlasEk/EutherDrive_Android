@@ -122,6 +122,8 @@ public sealed class GauntletDarkLegacyAdapter : IEmulatorCore, IDisposable
 
     public RomIdentity? RomIdentity => _romIdentity;
     public long? FrameCounter => _loaded ? _frameCounter : null;
+    public long VideoFrameCounter => _machine.Voodoo.SwapBufferCount;
+    public bool HasAudioSignal => _machine.Audio.HasSignal;
     public string DebugStatus => _machine.GetDebugStatus();
     public double GetTargetFps() => 60.0;
 
@@ -37079,6 +37081,7 @@ internal sealed class DcsAudioDevice
     private ulong _fifoWrites;
     private ulong _transferredWords;
     private int _bootProgramWords;
+    private bool _hasSignal;
 
     public DcsAudioDevice()
     {
@@ -37101,6 +37104,7 @@ internal sealed class DcsAudioDevice
         }
     }
     public ushort Data2 => _outputControl;
+    public bool HasSignal => _hasSignal;
     public string DebugStatus => $"dcs boot={_bootProgramWords}w host={_hostWrites} fifo={_fifoWrites}/{_fifoCount} xfer={_transferredWords} " +
                                  $"state={_transferDcsState}/{_transferState} type={_transferType:x4} left={_transferWritesLeft} " +
                                  $"lc={_latchControl:x4} out={_outputData:x4} oq={_outputQueue.Count} {_adsp.DebugStatus}";
@@ -37144,6 +37148,7 @@ internal sealed class DcsAudioDevice
         _hostWrites = 0;
         _fifoWrites = 0;
         _transferredWords = 0;
+        _hasSignal = false;
         DecodeBootProgram();
         _adsp.Reset();
         Array.Clear(_audioFrame);
@@ -37279,6 +37284,7 @@ internal sealed class DcsAudioDevice
             _adsp.Run(60_000);
 
         int offset = 0;
+        bool hasSignal = false;
         for (int i = 0; i < FrameSamples; i++)
         {
             short sample = 0;
@@ -37291,9 +37297,12 @@ internal sealed class DcsAudioDevice
                 _toneSamplesLeft--;
             }
 
+            hasSignal |= sample != 0;
+
             _audioFrame[offset++] = sample;
             _audioFrame[offset++] = sample;
         }
+        _hasSignal = hasSignal;
     }
 
     public ReadOnlySpan<short> GetFrameBuffer() => _audioFrame;
@@ -38307,6 +38316,7 @@ internal sealed class VoodooFacade : IVoodooBackend
     public bool HasDrawPackets => _backend is VoodooBringupBackend { DrawPacketCount: > 0 };
     public bool CommandFifoEnabled => _backend.CommandFifoEnabled;
     public int RenderFrameCount => _backend is VoodooBringupBackend bringup ? bringup.RenderFrameCount : 0;
+    public int SwapBufferCount => _backend is VoodooBringupBackend bringup ? bringup.SwapBufferCount : 0;
     public string DebugStatus => _backend.DebugStatus;
     public string RecentEventStatus => _backend.RecentEventStatus;
     private Func<ulong>? _cpuPcProvider;
@@ -39802,6 +39812,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     public Func<int, ulong>? CpuGprProvider { get; set; }
     public int DrawPacketCount => _fifoDrawPacketCount;
     public int RenderFrameCount => _renderFrame;
+    public int SwapBufferCount => _swapBufferCount;
     public bool CommandFifoEnabled => ((_registers[RegFbiInit7] >> 8) & 1u) != 0;
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus

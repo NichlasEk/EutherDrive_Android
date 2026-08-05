@@ -166,3 +166,40 @@ Ett senare UI-prov motsvarande ungefär frame 9000 exponerade ytterligare en
 phase-1-rest i TMU0 `0x10bc40..0x11ac28`. Den andra checkpointen ovan innehåller
 även denna diskägda körning. Ett 2 250-frame reloadprov nådde frame 9000 med
 sammanhängande vatten, båt och bakgrund utan den tidigare randiga remsan.
+
+## 2026-08-05: verklig videohastighet och DCS-status
+
+Ett användarprov bekräftade att den korrigerade levelK2-bilden är grafiskt
+sammanhängande, men också att rörelsen går som sirap. UI-värdet kring 40-46 fps
+räknade kärnans `RunFrame`-anrop och inte nya bilder från gästens Voodoo.
+
+Ett deterministiskt reloadprov från f6750 visar skillnaden tydligt. På 300
+kärnanrop, med 60 000 MIPS-steg per anrop, ökade Voodoo-swapräknaren bara från
+3836 till 3844:
+
+```text
+host/core calls        300
+probe call capacity    40.25 fps
+new Voodoo frames      8
+effective guest video  cirka 1.1 fps
+frameHash              0x78a8ec1a
+```
+
+Desktoptelemetrin räknar nu Gauntlets riktiga `swapbufferCMD`-resultat som
+emulerade videobilder. Det tidigare värdet finns fortfarande indirekt som UI-
+presentationsfrekvens, men visas inte längre som om spelet faktiskt producerade
+40 nya bilder per sekund.
+
+Ljudtexten var också för optimistisk. DCS-enheten returnerar för närvarande en
+44,1 kHz stereobuffer, men den innehåller bara nollor. Warm-staten visar ADSP
+vid idle-PC `0x0079`, `imask=0`, med IRQ2 väntande och utan överförda DCS-ord.
+Deck monitor visar därför `audio silent (DCS pending)` tills kärnan verkligen
+producerar en icke-noll PCM-signal.
+
+En handskriven snabbväg för den heta 4x3-floatkopian vid `0x800c9c90` provades
+och förkastades. Den gav ungefär tio procent högre anropskapacitet men
+divergerade efter längre körning i CPU-PC, FIFO-state och framehash. Den ingår
+inte i startaren. Nästa prestandasteg behöver vara större verifierade
+basic-block/JIT-regioner med hela CPU/FIFO/framebuffer-oraklet, eftersom den
+nuvarande tolken behöver omkring 2,25 miljoner MIPS-instruktioner per verklig
+Voodoo-bild i den här scenen.

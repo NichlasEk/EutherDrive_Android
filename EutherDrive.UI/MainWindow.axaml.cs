@@ -4651,6 +4651,8 @@ public partial class MainWindow : Window
             ? "audio disabled"
             : effectiveVolumePercent == 0
                 ? "audio gated"
+                : _core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter gauntlet && !gauntlet.HasAudioSignal
+                    ? "audio silent (DCS pending)"
                 : "audio live";
         string ambientText = ambient.IsBusy
             ? "ambient loading"
@@ -8494,6 +8496,13 @@ public partial class MainWindow : Window
         return null;
     }
 
+    private static long? TryGetProducedVideoFrameCounter(IEmulatorCore core)
+    {
+        if (core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter gauntlet)
+            return gauntlet.VideoFrameCounter;
+        return TryGetCoreFrameCounter(core);
+    }
+
     private async void OnCapturePerfSnapshot(object? sender, RoutedEventArgs e)
     {
         string snapshot = BuildPerfSnapshot();
@@ -10874,7 +10883,7 @@ public partial class MainWindow : Window
 
             long frameWorkStart = Stopwatch.GetTimestamp();
             bool countFrameCounterDelta = !ShouldCountRunFrameAsSingleProducedFrame(core);
-            long? frameCounterBefore = countFrameCounterDelta ? TryGetCoreFrameCounter(core) : null;
+            long? frameCounterBefore = countFrameCounterDelta ? TryGetProducedVideoFrameCounter(core) : null;
             int producedFrames = frameCounterBefore.HasValue ? 0 : 1;
             try
             {
@@ -10885,7 +10894,7 @@ public partial class MainWindow : Window
                     core.RunFrame();
                     if (TraceUiProfile)
                         _uiProfileRunFrameTicks += Stopwatch.GetTimestamp() - runStart;
-                    if (countFrameCounterDelta && frameCounterBefore.HasValue && TryGetCoreFrameCounter(core) is long frameCounterAfter)
+                    if (countFrameCounterDelta && frameCounterBefore.HasValue && TryGetProducedVideoFrameCounter(core) is long frameCounterAfter)
                     {
                         long delta = frameCounterAfter - frameCounterBefore.Value;
                         producedFrames = delta > 0 && delta <= int.MaxValue ? (int)delta : 0;
