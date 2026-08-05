@@ -4623,6 +4623,9 @@ internal sealed class MipsR5000Core
             Opcode = (byte)(op >> 26);
             Rs = (byte)((op >> 21) & 0x1fU);
             Rt = (byte)((op >> 16) & 0x1fU);
+            Rd = (byte)((op >> 11) & 0x1fU);
+            Shift = (byte)((op >> 6) & 0x1fU);
+            Function = (byte)(op & 0x3fU);
             Immediate = unchecked((short)op);
             UnsignedImmediate = (ushort)op;
         }
@@ -4631,6 +4634,9 @@ internal sealed class MipsR5000Core
         public byte Opcode { get; }
         public byte Rs { get; }
         public byte Rt { get; }
+        public byte Rd { get; }
+        public byte Shift { get; }
+        public byte Function { get; }
         public short Immediate { get; }
         public ushort UnsignedImmediate { get; }
     }
@@ -4642,6 +4648,9 @@ internal sealed class MipsR5000Core
         short simm = instruction.Immediate;
         switch (instruction.Opcode)
         {
+            case 0x00:
+                ExecuteRuntimeSafeSpecial(pc, in instruction);
+                return;
             case 0x08:
             case 0x09:
                 _gpr[rt] = SignExtend32((uint)_gpr[rs] + (uint)simm);
@@ -4724,6 +4733,163 @@ internal sealed class MipsR5000Core
                 return;
             default:
                 Execute(pc, instruction.Op, steadyStateFastDispatch: true);
+                return;
+        }
+    }
+
+    private void ExecuteRuntimeSafeSpecial(ulong pc, in RuntimeSafeInstruction instruction)
+    {
+        int rs = instruction.Rs;
+        int rt = instruction.Rt;
+        int rd = instruction.Rd;
+        int shift = instruction.Shift;
+        switch (instruction.Function)
+        {
+            case 0x00:
+                _gpr[rd] = SignExtend32((uint)_gpr[rt] << shift);
+                return;
+            case 0x01:
+                if (GetCop1Condition((rt >> 2) & 0x07) == ((rt & 1) != 0))
+                    _gpr[rd] = _gpr[rs];
+                return;
+            case 0x02:
+                _gpr[rd] = SignExtend32((uint)_gpr[rt] >> shift);
+                return;
+            case 0x03:
+                _gpr[rd] = SignExtend32((uint)((int)(uint)_gpr[rt] >> shift));
+                return;
+            case 0x04:
+                _gpr[rd] = SignExtend32((uint)_gpr[rt] << (int)(_gpr[rs] & 0x1f));
+                return;
+            case 0x06:
+                _gpr[rd] = SignExtend32((uint)_gpr[rt] >> (int)(_gpr[rs] & 0x1f));
+                return;
+            case 0x07:
+                _gpr[rd] = SignExtend32((uint)((int)(uint)_gpr[rt] >> (int)(_gpr[rs] & 0x1f)));
+                return;
+            case 0x0a:
+                if (_gpr[rt] == 0)
+                    _gpr[rd] = _gpr[rs];
+                return;
+            case 0x0b:
+                if (_gpr[rt] != 0)
+                    _gpr[rd] = _gpr[rs];
+                return;
+            case 0x0f:
+                return;
+            case 0x10:
+                _gpr[rd] = _hi;
+                return;
+            case 0x11:
+                _hi = _gpr[rs];
+                return;
+            case 0x12:
+                _gpr[rd] = _lo;
+                return;
+            case 0x13:
+                _lo = _gpr[rs];
+                return;
+            case 0x14:
+                _gpr[rd] = _gpr[rt] << (int)(_gpr[rs] & 0x3f);
+                return;
+            case 0x16:
+                _gpr[rd] = _gpr[rt] >> (int)(_gpr[rs] & 0x3f);
+                return;
+            case 0x17:
+                _gpr[rd] = (ulong)((long)_gpr[rt] >> (int)(_gpr[rs] & 0x3f));
+                return;
+            case 0x18:
+                {
+                    long product = (long)(int)(uint)_gpr[rs] * (int)(uint)_gpr[rt];
+                    _lo = (uint)product;
+                    _hi = (uint)(product >> 32);
+                    return;
+                }
+            case 0x19:
+                {
+                    ulong product = (ulong)(uint)_gpr[rs] * (uint)_gpr[rt];
+                    _lo = (uint)product;
+                    _hi = (uint)(product >> 32);
+                    return;
+                }
+            case 0x1a:
+                Divide32(rs, rt, signed: true);
+                return;
+            case 0x1b:
+                Divide32(rs, rt, signed: false);
+                return;
+            case 0x1c:
+                {
+                    Int128 product = (Int128)unchecked((long)_gpr[rs]) * unchecked((long)_gpr[rt]);
+                    _lo = (ulong)product;
+                    _hi = (ulong)(product >> 64);
+                    return;
+                }
+            case 0x1d:
+                {
+                    UInt128 product = (UInt128)_gpr[rs] * _gpr[rt];
+                    _lo = (ulong)product;
+                    _hi = (ulong)(product >> 64);
+                    return;
+                }
+            case 0x1e:
+                Divide64(rs, rt, signed: true);
+                return;
+            case 0x1f:
+                Divide64(rs, rt, signed: false);
+                return;
+            case 0x20:
+            case 0x21:
+                _gpr[rd] = SignExtend32((uint)(_gpr[rs] + _gpr[rt]));
+                return;
+            case 0x22:
+            case 0x23:
+                _gpr[rd] = SignExtend32((uint)(_gpr[rs] - _gpr[rt]));
+                return;
+            case 0x24:
+                _gpr[rd] = _gpr[rs] & _gpr[rt];
+                return;
+            case 0x25:
+                _gpr[rd] = _gpr[rs] | _gpr[rt];
+                return;
+            case 0x26:
+                _gpr[rd] = _gpr[rs] ^ _gpr[rt];
+                return;
+            case 0x27:
+                _gpr[rd] = ~(_gpr[rs] | _gpr[rt]);
+                return;
+            case 0x2a:
+                _gpr[rd] = unchecked((long)_gpr[rs]) < unchecked((long)_gpr[rt]) ? 1UL : 0UL;
+                return;
+            case 0x2b:
+                _gpr[rd] = _gpr[rs] < _gpr[rt] ? 1UL : 0UL;
+                return;
+            case 0x2d:
+                _gpr[rd] = _gpr[rs] + _gpr[rt];
+                return;
+            case 0x2f:
+                _gpr[rd] = _gpr[rs] - _gpr[rt];
+                return;
+            case 0x38:
+                _gpr[rd] = _gpr[rt] << shift;
+                return;
+            case 0x3a:
+                _gpr[rd] = _gpr[rt] >> shift;
+                return;
+            case 0x3b:
+                _gpr[rd] = (ulong)((long)_gpr[rt] >> shift);
+                return;
+            case 0x3c:
+                _gpr[rd] = _gpr[rt] << (shift + 32);
+                return;
+            case 0x3e:
+                _gpr[rd] = _gpr[rt] >> (shift + 32);
+                return;
+            case 0x3f:
+                _gpr[rd] = (ulong)((long)_gpr[rt] >> (shift + 32));
+                return;
+            default:
+                ExecuteSpecial(pc, instruction.Op, rs, rt, rd);
                 return;
         }
     }
