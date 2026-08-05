@@ -32777,6 +32777,7 @@ internal sealed class VegasMemoryMap
     private readonly List<VegasMemoryRange> _ranges = new();
     private readonly byte[] _mainRam = new byte[MainRamSize];
     private readonly byte[] _nileRegisters = new byte[NileRegisterSize];
+    private byte _nileActiveTimerMask;
     private readonly byte[] _fpgaConfigRegisters = new byte[4];
     private readonly byte[] _cpuIoRegisters = new byte[4];
     private readonly ushort[] _ioasicRegisters = new ushort[16];
@@ -33670,6 +33671,7 @@ internal sealed class VegasMemoryMap
     public void Reset()
     {
         Array.Clear(_nileRegisters);
+        _nileActiveTimerMask = 0;
         Array.Clear(_fpgaConfigRegisters);
         Array.Clear(_cpuIoRegisters);
         if (!_timekeeperInitialized)
@@ -33810,14 +33812,17 @@ internal sealed class VegasMemoryMap
 
     public void AdvanceNileClock(ulong ticks)
     {
+        byte activeTimerMask = _nileActiveTimerMask;
+        if (activeTimerMask == 0)
+            return;
+
         ulong timerTicks = Math.Max(1UL, ticks >> 10);
         for (int timer = 0; timer < 4; timer++)
         {
-            uint baseOffset = NileTimer0ControlOffset + (uint)(timer * NileTimerStride);
-            uint control = ReadNileRegister32(baseOffset + NileTimerControlBitsOffset);
-            if ((control & 1u) == 0)
+            if ((activeTimerMask & (1 << timer)) == 0)
                 continue;
 
+            uint baseOffset = NileTimer0ControlOffset + (uint)(timer * NileTimerStride);
             uint reload = ReadNileRegister32(baseOffset);
             uint counter = ReadNileRegister32(baseOffset + NileTimerCounterOffset);
             ulong period = (ulong)reload + 1UL;
@@ -34144,6 +34149,7 @@ internal sealed class VegasMemoryMap
             return false;
 
         _nileRegisters[offset] = value;
+        RefreshNileActiveTimerMaskForWrite(offset, 1);
         return true;
     }
 
@@ -34159,6 +34165,7 @@ internal sealed class VegasMemoryMap
         }
 
         BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4), value);
+        RefreshNileActiveTimerMaskForWrite(offset, 4);
         if (offset == NileInterruptClearOffset)
         {
             _nileIrqState &= (ushort)~(value & ~0x0f00u);
@@ -34403,10 +34410,35 @@ internal sealed class VegasMemoryMap
         => (ulong)(long)(int)value;
 
     private uint ReadNileRegister32(uint offset)
-        => BinaryPrimitives.ReadUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4));
+    {
+        uint value = Unsafe.ReadUnaligned<uint>(ref _nileRegisters[(int)offset]);
+        return BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value);
+    }
 
     private void WriteNileRegister32(uint offset, uint value)
-        => BinaryPrimitives.WriteUInt32LittleEndian(_nileRegisters.AsSpan((int)offset, 4), value);
+    {
+        uint native = BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value);
+        Unsafe.WriteUnaligned(ref _nileRegisters[(int)offset], native);
+        RefreshNileActiveTimerMaskForWrite(offset, 4);
+    }
+
+    private void RefreshNileActiveTimerMaskForWrite(uint offset, uint length)
+    {
+        uint writeEnd = offset + length;
+        for (int timer = 0; timer < 4; timer++)
+        {
+            uint controlOffset = NileTimer0ControlOffset +
+                (uint)(timer * NileTimerStride) + NileTimerControlBitsOffset;
+            if (offset >= controlOffset + 4U || writeEnd <= controlOffset)
+                continue;
+
+            uint control = ReadNileRegister32(controlOffset);
+            if ((control & 1U) != 0)
+                _nileActiveTimerMask |= (byte)(1 << timer);
+            else
+                _nileActiveTimerMask &= (byte)~(1 << timer);
+        }
+    }
 
     private void UpdateNileInterrupts()
     {
@@ -34530,6 +34562,7 @@ internal sealed class VegasMemoryMap
             return false;
 
         BinaryPrimitives.WriteUInt64LittleEndian(_nileRegisters.AsSpan((int)offset, 8), value);
+        RefreshNileActiveTimerMaskForWrite(offset, 8);
         if (offset == NileInterruptClearOffset)
         {
             _nileIrqState &= (ushort)~(value & ~0x0f00UL);
