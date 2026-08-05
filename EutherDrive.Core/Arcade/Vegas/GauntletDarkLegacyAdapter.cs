@@ -49321,7 +49321,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             int rowZeroPixels = 0;
             int rowFallbackPixels = 0;
             int rowRasterPixels = 0;
-            long[]? rowLodCounts = useParallelRaster && _experimentTextureMamePixelLod ? new long[9] : null;
+            Span<long> rowLodCounts = useParallelRaster && _experimentTextureMamePixelLod
+                ? stackalloc long[9]
+                : Span<long>.Empty;
             bool rowCoveredAny = false;
             float py = y + 0.5f;
             int rowMinX = minX;
@@ -49408,7 +49410,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                                 y,
                                 textureMode,
                                 textureLod);
-                            if (rowLodCounts is not null)
+                            if (!rowLodCounts.IsEmpty)
                                 rowLodCounts[targetLod]++;
                             else
                                 _experimentTextureMamePixelLodCounts[targetLod]++;
@@ -49487,7 +49489,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                         y,
                         textureMode,
                         textureLod);
-                    if (rowLodCounts is not null)
+                    if (!rowLodCounts.IsEmpty)
                         rowLodCounts[targetLod]++;
                     else
                         _experimentTextureMamePixelLodCounts[targetLod]++;
@@ -49665,7 +49667,7 @@ sampledTexel:
             Interlocked.Add(ref _lfbWriteCount, rowRasterPixels);
             if ((uint)bufferIndex < (uint)_rasterBufferPixelCounts.Length)
                 Interlocked.Add(ref _rasterBufferPixelCounts[bufferIndex], rowRasterPixels);
-            if (rowLodCounts is not null)
+            if (!rowLodCounts.IsEmpty)
             {
                 for (int lod = 0; lod < rowLodCounts.Length; lod++)
                     Interlocked.Add(ref _experimentTextureMamePixelLodCounts[lod], rowLodCounts[lod]);
