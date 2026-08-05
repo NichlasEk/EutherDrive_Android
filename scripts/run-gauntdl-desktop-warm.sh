@@ -5,8 +5,8 @@ SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 
 ROM_PATH="${1:-/home/nichlas/roms/MAME/Midway/Vegas/gauntd}"
-SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/euther-journey-native-f4808.warm.gz}"
-SNAPSHOT_FRAMES="${3:-4808}"
+SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/gaunt-k2-clean2-f6750.warm.gz}"
+SNAPSHOT_FRAMES="${3:-6750}"
 CPU_STEPS="${4:-60000}"
 UI_DLL="$REPO_ROOT/EutherDrive.UI/bin/Release/net8.0/EutherDrive.UI.dll"
 PROBE_DLL="$REPO_ROOT/tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll"
@@ -33,10 +33,10 @@ export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_SUPPRESS_IMPLAUSIBLE_BULK_DIRECT_TR
 export EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TEXTURE_LOD_MIN_REGISTER_BASE=0x1a0df
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GLIDE_WINOPEN_RGB_MASK=1
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_WORLD_LIST_INVALID_SENTINEL_END=1
-# This checkpoint contains the native live game loop in main state 0x400f at
-# the SKY level entrance, immediately after the journey transition.  The old
-# f5383 default had already replayed hundreds of frames plus a long Up hold,
-# so it dropped the player into a later point instead of the gameplay start.
+# This checkpoint contains the native live game loop in main state 0x400f and
+# the disk-owned levelK2 texture residency reconstructed from gauntd24.raw.
+# It starts on the ship with the player active and avoids the stale phase-1
+# TMU banks carried by the earlier journey checkpoint.
 # Player input remains live and no prerecorded input is applied after reload.
 # Starting the synthetic fallback task would duplicate the imported RTOS task.
 export EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_GAME_TASK=0

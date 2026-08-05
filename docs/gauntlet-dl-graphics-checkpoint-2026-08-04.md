@@ -126,3 +126,43 @@ kompositeras för att maskera felet.
 MAME-importfunktionerna i `GauntletProbe` är endast ett utvecklingsfacit för
 RAM, FBI/TMU-register, framebuffer och FIFO-position. Den sparade native
 snapshoten och desktopstartaren är den normala körvägen.
+
+## 2026-08-05: levelK2-residensen återställd från originaldisken
+
+Det återstående stora grafikfelet var inte trasig rastergeometri. Gameplay-
+checkpointen hade ärvt phase-1-innehåll i TMU-bankerna, medan levelK2:s riktiga
+texturström inte längre fanns kvar i huvud-RAM efter den naturliga laddningen.
+Exakta samples från felpolygonerna matchade i stället andra riktiga delar av
+`gauntd24.raw`.
+
+En disk-till-TMU-korrelation hittade levelK2:s sammanhängande TMU1-residens
+`0x0b0bb8..0x14a908`, uppdelad i åtta tvåbytesjusterade uppladdningschunkar.
+Den hittade även båtdäcket i separata TMU0-chunkar och bakgrunden som en enda
+stor TMU0-körning `0x2056b8..0x2e04a8`. Att återställa dessa ägda ranges från
+originaldisken tog bort de stora färgblocken, svarta kilarna, rutmönstret på
+båten och den randiga horisonten.
+
+Frame 6750 ger efter korrigeringen:
+
+```text
+frameHash=0xd1fdaf35
+probe rate=46.69 fps
+MAME används endast som jämförelsefacit
+```
+
+Den korrigerade staten är självbärande och reload-stabil utan overlays:
+
+```text
+.build-tmp/gaunt-k2-clean2-f6750.warm.gz
+SHA-256 312ef133ae70d40e2c437772ea79f96884d0eee687daabd4776ce9c166494df2
+```
+
+Desktopstartaren använder nu denna state som standard. Bilden skiljer mindre
+än en procent av pixlarna från samma CPU/FIFO/framebuffer-state med hela
+referensbanken. Nästa grafikpass ska begränsas till den lilla restskillnaden;
+prestandaarbete väntar tills ett UI-prov bekräftar samma rena bild över tid.
+
+Ett senare UI-prov motsvarande ungefär frame 9000 exponerade ytterligare en
+phase-1-rest i TMU0 `0x10bc40..0x11ac28`. Den andra checkpointen ovan innehåller
+även denna diskägda körning. Ett 2 250-frame reloadprov nådde frame 9000 med
+sammanhängande vatten, båt och bakgrund utan den tidigare randiga remsan.

@@ -46255,6 +46255,13 @@ internal class VoodooBringupBackend : IVoodooBackend
             _requestedPixelLastWriterId = writerId;
         }
 
+        if (_requestedPixelLastWriterBuffer >= 0 &&
+            _requestedPixelLastWriterX >= 0 &&
+            _requestedPixelLastWriterY >= 0)
+        {
+            return;
+        }
+
         int sampleX = x - PixelLastWriterSampleCellWidth / 2;
         int sampleY = y - PixelLastWriterSampleCellHeight / 2;
         if (sampleX < 0 || sampleY < 0 ||
@@ -46311,6 +46318,13 @@ internal class VoodooBringupBackend : IVoodooBackend
             _requestedPixelLastWriterId = writerId;
         }
 
+        if (_requestedPixelLastWriterBuffer >= 0 &&
+            _requestedPixelLastWriterX >= 0 &&
+            _requestedPixelLastWriterY >= 0)
+        {
+            return;
+        }
+
         for (int row = 0; row < PixelLastWriterSampleRows; row++)
         {
             int y = row * PixelLastWriterSampleCellHeight + PixelLastWriterSampleCellHeight / 2;
@@ -46331,6 +46345,15 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         if (!_profilePixelLastWriters)
             return "";
+
+        if (_requestedPixelLastWriterBuffer >= 0 &&
+            _requestedPixelLastWriterX >= 0 &&
+            _requestedPixelLastWriterY >= 0)
+        {
+            return $"plw=sample:b{_requestedPixelLastWriterBuffer}@{_requestedPixelLastWriterX},{_requestedPixelLastWriterY}:" +
+                $"current={FormatPixelLastWriter(_requestedPixelLastWriterId, 1)}:" +
+                $"presented={FormatPixelLastWriter(_presentedRequestedPixelLastWriterId, 1)} ";
+        }
 
         StringBuilder builder = new("plw=");
         for (int bufferIndex = 0; bufferIndex < 3; bufferIndex++)
