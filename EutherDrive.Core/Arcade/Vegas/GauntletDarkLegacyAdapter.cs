@@ -38977,6 +38977,14 @@ internal class VoodooBringupBackend : IVoodooBackend
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_FRAME_PHASES"));
     private long _commandFifoDecodeTicks;
     private int _commandFifoDecodeCalls;
+    private readonly long[] _commandFifoPacketTicks = new long[8];
+    private readonly int[] _commandFifoProfilePacketCounts = new int[8];
+    private long _type3PushTicks;
+    private int _type3PushCalls;
+    private long _texturedRasterTicks;
+    private int _texturedRasterCalls;
+    private long _texturedRasterMaxTicks;
+    private string _texturedRasterMaxTriangle = "none";
     private static readonly ulong[] DefaultCommandFifoSourceChainStorageOffsets =
     [
         0x20,
@@ -39109,6 +39117,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         [new TextureRgba[256], new TextureRgba[256]]
     ];
     private readonly bool[,] _tmuNccRgbaLutValid = new bool[2, 2];
+    private readonly TextureFetchLayout[][] _tmuTextureLayoutCache =
+    [
+        new TextureFetchLayout[9],
+        new TextureFetchLayout[9]
+    ];
+    private readonly TextureLayoutCacheKey[] _tmuTextureLayoutCacheKeys = new TextureLayoutCacheKey[2];
+    private readonly bool[] _tmuTextureLayoutCacheValid = new bool[2];
     private readonly uint[] _cmdFifoRam = new uint[CmdFifoFramebufferWords];
     private readonly bool[] _cmdFifoValid = new bool[CmdFifoFramebufferWords];
     private readonly int[] _cmdFifoStorageLogicalIndex = new int[CmdFifoFramebufferWords];
@@ -44047,9 +44062,28 @@ internal class VoodooBringupBackend : IVoodooBackend
 
         double decodeMs = _commandFifoDecodeTicks * 1000.0 / Stopwatch.Frequency;
         int decodeCalls = _commandFifoDecodeCalls;
+        string packetProfile = string.Join(",", Enumerable.Range(0, 8)
+            .Where(type => _commandFifoProfilePacketCounts[type] != 0)
+            .Select(type => $"t{type}:{_commandFifoPacketTicks[type] * 1000.0 / Stopwatch.Frequency:F2}ms/{_commandFifoProfilePacketCounts[type]}"));
         _commandFifoDecodeTicks = 0;
         _commandFifoDecodeCalls = 0;
-        return $"fifoDecodeMs={decodeMs:F2} fifoDecodeCalls={decodeCalls}";
+        Array.Clear(_commandFifoPacketTicks);
+        Array.Clear(_commandFifoProfilePacketCounts);
+        double type3PushMs = _type3PushTicks * 1000.0 / Stopwatch.Frequency;
+        int type3PushCalls = _type3PushCalls;
+        double texturedRasterMs = _texturedRasterTicks * 1000.0 / Stopwatch.Frequency;
+        int texturedRasterCalls = _texturedRasterCalls;
+        double texturedRasterMaxMs = _texturedRasterMaxTicks * 1000.0 / Stopwatch.Frequency;
+        string texturedRasterMaxTriangle = _texturedRasterMaxTriangle;
+        _type3PushTicks = 0;
+        _type3PushCalls = 0;
+        _texturedRasterTicks = 0;
+        _texturedRasterCalls = 0;
+        _texturedRasterMaxTicks = 0;
+        _texturedRasterMaxTriangle = "none";
+        return $"fifoDecodeMs={decodeMs:F2} fifoDecodeCalls={decodeCalls} fifoPackets={packetProfile} " +
+               $"type3PushMs={type3PushMs:F2}/{type3PushCalls} texturedRasterMs={texturedRasterMs:F2}/{texturedRasterCalls} " +
+               $"texturedRasterMax={texturedRasterMaxMs:F2}ms:{texturedRasterMaxTriangle}";
     }
 
     private void DecodeCommandFifoPacketsIfNotPending(string trigger = "direct")
@@ -44967,13 +45001,35 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void DecodeFifoPacket(uint command, int wordsNeeded)
     {
-        _fifoPacketTypeCounts[command & 7u]++;
+        int type = (int)(command & 7u);
+        _fifoPacketTypeCounts[type]++;
         TraceOddFifoPacket(command, wordsNeeded);
         RecordInterestingFifoEvent(command, wordsNeeded);
         if (IsKnownGauntletRuntimeNoopFifoPacket(command, wordsNeeded))
             return;
 
-        switch (command & 7u)
+        if (!_profileRuntimeCosts)
+        {
+            DecodeFifoPacketByType(type, command, wordsNeeded);
+            return;
+        }
+
+        long profileStart = Stopwatch.GetTimestamp();
+        try
+        {
+            DecodeFifoPacketByType(type, command, wordsNeeded);
+        }
+        finally
+        {
+            _commandFifoPacketTicks[type] += Stopwatch.GetTimestamp() - profileStart;
+            _commandFifoProfilePacketCounts[type]++;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void DecodeFifoPacketByType(int type, uint command, int wordsNeeded)
+    {
+        switch (type)
         {
             case 0:
                 DecodeFifoType0(command);
@@ -47485,6 +47541,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 hasNonFiniteTextureCoordinate |= !float.IsFinite(s1) || !float.IsFinite(t1);
             }
 
+            long pushProfileStart = _profileRuntimeCosts ? Stopwatch.GetTimestamp() : 0;
             PushSetupVertex(
                 new SetupVertex(
                     SetupVertexCoordinate(x),
@@ -47502,6 +47559,11 @@ internal class VoodooBringupBackend : IVoodooBackend
                 code,
                 vertex,
                 ((command >> 22) & 1u) != 0);
+            if (_profileRuntimeCosts)
+            {
+                _type3PushTicks += Stopwatch.GetTimestamp() - pushProfileStart;
+                _type3PushCalls++;
+            }
         }
 
         if (_fixMameCommandFifoModel && ShouldStreamCommandFifoPacketWords(command))
@@ -48537,9 +48599,32 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
             return;
         }
+        bool texturedTriangleFilled = false;
         if (textured)
+        {
             _texturedTriangleCount++;
-        if (textured && FillTexturedTriangle(_setupVertices[0], _setupVertices[1], _setupVertices[2], color))
+            long rasterProfileStart = _profileRuntimeCosts ? Stopwatch.GetTimestamp() : 0;
+            texturedTriangleFilled = FillTexturedTriangle(_setupVertices[0], _setupVertices[1], _setupVertices[2], color);
+            if (_profileRuntimeCosts)
+            {
+                long rasterTicks = Stopwatch.GetTimestamp() - rasterProfileStart;
+                _texturedRasterTicks += rasterTicks;
+                _texturedRasterCalls++;
+                if (rasterTicks > _texturedRasterMaxTicks)
+                {
+                    _texturedRasterMaxTicks = rasterTicks;
+                    float minX = MathF.Min(_setupVertices[0].X, MathF.Min(_setupVertices[1].X, _setupVertices[2].X));
+                    float maxX = MathF.Max(_setupVertices[0].X, MathF.Max(_setupVertices[1].X, _setupVertices[2].X));
+                    float minY = MathF.Min(_setupVertices[0].Y, MathF.Min(_setupVertices[1].Y, _setupVertices[2].Y));
+                    float maxY = MathF.Max(_setupVertices[0].Y, MathF.Max(_setupVertices[1].Y, _setupVertices[2].Y));
+                    _texturedRasterMaxTriangle =
+                        $"{minX:F1},{minY:F1}-{maxX:F1},{maxY:F1}" +
+                        $":tm0={ReadTextureRegisterForTmu(0, RegTextureMode):x8}" +
+                        $":cp={_registers[RegFbzColorPath]:x8}:fog={_registers[RegFogMode]:x8}";
+                }
+            }
+        }
+        if (texturedTriangleFilled)
         {
             _texturedTriangleCoveredCount++;
             if (_visualizeTexturedTriangleEdges)
@@ -49341,6 +49426,20 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
             int screenY = GetRasterBufferY(y);
             int row = screenY * LfbRowPixels;
+            int setupRowDy = y - setupAy;
+            int rowStartR = unchecked(setupStartR + setupRowDy * setupDrDy);
+            int rowStartG = unchecked(setupStartG + setupRowDy * setupDgDy);
+            int rowStartB = unchecked(setupStartB + setupRowDy * setupDbDy);
+            int rowStartA = unchecked(setupStartA + setupRowDy * setupDaDy);
+            int rowStartZ = unchecked(setupStartZ + (int)((long)setupRowDy * setupDzDy));
+            long rowFogStartW = unchecked(fogStartW + setupRowDy * fogDwDy);
+            long rowSetupStartW = unchecked(setupStartW + setupRowDy * setupDwDy);
+            long rowStartS = unchecked(startS + setupRowDy * dSdY);
+            long rowStartT = unchecked(startT + setupRowDy * dTdY);
+            long rowTextureStartW = unchecked(textureStartW + setupRowDy * textureDwDy);
+            long rowStartS1 = unchecked(startS1 + setupRowDy * dS1dY);
+            long rowStartT1 = unchecked(startT1 + setupRowDy * dT1dY);
+            long rowTextureStartW1 = unchecked(textureStartW1 + setupRowDy * textureD1wDy);
             for (int x = rowMinX; x < rowMaxX; x++)
             {
                 float px = x + 0.5f;
@@ -49354,18 +49453,17 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (traceTexturedPixels)
                     TraceTexturedPixel("coverage", x, y, bufferIndex, buffer[pixel], _auxBuffer[pixel], 0, fbzMode);
                 int setupDx = x - setupAx;
-                int setupDy = y - setupAy;
-                int iteratedR = ClampSetupColor(setupStartR, setupDrDx, setupDrDy, setupDx, setupDy);
-                int iteratedG = ClampSetupColor(setupStartG, setupDgDx, setupDgDy, setupDx, setupDy);
-                int iteratedB = ClampSetupColor(setupStartB, setupDbDx, setupDbDy, setupDx, setupDy);
-                int iteratedAlpha = ClampSetupColor(setupStartA, setupDaDx, setupDaDy, setupDx, setupDy);
+                int iteratedR = ClampSetupColorRow(rowStartR, setupDrDx, setupDx);
+                int iteratedG = ClampSetupColorRow(rowStartG, setupDgDx, setupDx);
+                int iteratedB = ClampSetupColorRow(rowStartB, setupDbDx, setupDx);
+                int iteratedAlpha = ClampSetupColorRow(rowStartA, setupDaDx, setupDx);
                 ushort iteratedColor = BytesToRgb565(iteratedR, iteratedG, iteratedB);
-                int setupIterZ = unchecked(setupStartZ + (int)((long)setupDy * setupDzDy) + (int)((long)setupDx * setupDzDx));
-                long fogIterW = unchecked(fogStartW + setupDy * fogDwDy + setupDx * fogDwDx);
+                int setupIterZ = unchecked(rowStartZ + (int)((long)setupDx * setupDzDx));
+                long fogIterW = unchecked(rowFogStartW + setupDx * fogDwDx);
                 int depthValue = 0;
                 if (useMameAuxDepth)
                 {
-                    long iterW = unchecked(setupStartW + setupDy * setupDwDy + setupDx * setupDwDx);
+                    long iterW = unchecked(rowSetupStartW + setupDx * setupDwDx);
                     depthValue = ComputeMameSetupDepthValue(fbzMode, _registers[RegFbzColorPath], setupIterZ, iterW, zaColor);
                     int depthSource = (fbzMode & 0x100000u) == 0 ? depthValue : zaColor;
                     if (mameDepthTest && !MameDepthTest(fbzMode, _auxBuffer[pixel], depthSource))
@@ -49395,12 +49493,11 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (_experimentTextureMameSetupGradients)
                 {
                     int dx = x - setupAx;
-                    int dy = y - setupAy;
-                    long iterS = unchecked(startS + dy * dSdY + dx * dSdX);
-                    long iterT = unchecked(startT + dy * dTdY + dx * dTdX);
+                    long iterS = unchecked(rowStartS + dx * dSdX);
+                    long iterT = unchecked(rowStartT + dx * dTdX);
                     if (_experimentTextureMameFixedFetch)
                     {
-                        long iterW = unchecked(textureStartW + dy * textureDwDy + dx * textureDwDx);
+                        long iterW = unchecked(rowTextureStartW + dx * textureDwDx);
                         if (_experimentTextureMamePixelLod)
                         {
                             targetLod = ComputeMameTexturePixelLod(
@@ -49417,14 +49514,15 @@ internal class VoodooBringupBackend : IVoodooBackend
                         }
                         if (_experimentMameTwoTmuCombine)
                         {
-                            long iterS1 = unchecked(startS1 + dy * dS1dY + dx * dS1dX);
-                            long iterT1 = unchecked(startT1 + dy * dT1dY + dx * dT1dX);
-                            long iterW1 = unchecked(textureStartW1 + dy * textureD1wDy + dx * textureD1wDx);
+                            long iterS1 = unchecked(rowStartS1 + dx * dS1dX);
+                            long iterT1 = unchecked(rowStartT1 + dx * dT1dX);
+                            long iterW1 = unchecked(rowTextureStartW1 + dx * textureD1wDx);
                             TextureRgba combined = SampleAndCombineTwoTmusMameFixed(
                                 iterS,
                                 iterT,
                                 iterW,
                                 triangleLodBase8p8,
+                                targetLod,
                                 iterS1,
                                 iterT1,
                                 iterW1,
@@ -49480,8 +49578,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (_experimentTextureMamePixelLod)
                 {
                     int dx = x - setupAx;
-                    int dy = y - setupAy;
-                    long iterW = unchecked(textureStartW + dy * textureDwDy + dx * textureDwDx);
+                    long iterW = unchecked(rowTextureStartW + dx * textureDwDx);
                     targetLod = ComputeMameTexturePixelLod(
                         triangleLodBase8p8,
                         iterW,
@@ -50788,14 +50885,20 @@ sampledTexel:
         bool TrackSampleDiagnostics,
         TextureFetchLayout[] Layouts);
 
+    private readonly record struct TextureLayoutCacheKey(
+        uint Mode,
+        uint Lod,
+        uint Base0,
+        uint Base1,
+        uint Base2,
+        uint Base38);
+
     private MameTextureTriangleState BuildMameTextureTriangleState(int tmu)
     {
         uint mode = ReadTextureRegisterForTmu(tmu, RegTextureMode);
         uint lod = ReadTextureRegisterForTmu(tmu, RegTextureLod);
         uint textureBase = ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr);
-        TextureFetchLayout[] layouts = new TextureFetchLayout[9];
-        for (int level = 0; level < layouts.Length; level++)
-            layouts[level] = GetMameTextureFetchLayout(level, mode, tmu);
+        TextureFetchLayout[] layouts = GetCachedMameTextureFetchLayouts(tmu, mode, lod, textureBase);
 
         return new MameTextureTriangleState(
             mode,
@@ -50808,6 +50911,23 @@ sampledTexel:
             GetCachedTmuNccRgbaLut(tmu, mode),
             ShouldTrackTextureSampleDiagnostics(),
             layouts);
+    }
+
+    private TextureFetchLayout[] GetCachedMameTextureFetchLayouts(int tmu, uint mode, uint lod, uint base0)
+    {
+        uint base1 = ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr1);
+        uint base2 = ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr2);
+        uint base38 = ReadTextureRegisterForTmu(tmu, RegTextureBaseAddr38);
+        TextureLayoutCacheKey key = new(mode, lod, base0, base1, base2, base38);
+        if (_tmuTextureLayoutCacheValid[tmu] && _tmuTextureLayoutCacheKeys[tmu] == key)
+            return _tmuTextureLayoutCache[tmu];
+
+        TextureFetchLayout[] layouts = _tmuTextureLayoutCache[tmu];
+        for (int level = 0; level < layouts.Length; level++)
+            layouts[level] = GetMameTextureFetchLayout(level, mode, tmu);
+        _tmuTextureLayoutCacheKeys[tmu] = key;
+        _tmuTextureLayoutCacheValid[tmu] = true;
+        return layouts;
     }
 
     private bool ShouldTrackTextureSampleDiagnostics()
@@ -51123,6 +51243,7 @@ sampledTexel:
         long iterT0,
         long iterW0,
         int lodBase0_8p8,
+        int targetLod0Override,
         long iterS1,
         long iterT1,
         long iterW1,
@@ -51149,7 +51270,9 @@ sampledTexel:
         {
             uint mode0 = tmu0TriangleState.Mode;
             uint lod0 = tmu0TriangleState.Lod;
-            int localOnlyTargetLod0 = lodBase0_8p8 == int.MinValue
+            int localOnlyTargetLod0 = targetLod0Override >= 0
+                ? targetLod0Override
+                : lodBase0_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod0, tmu0TriangleState.Base)
                 : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, mode0, lod0);
             return SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, localOnlyTargetLod0, in tmu0TriangleState);
@@ -51212,7 +51335,9 @@ sampledTexel:
         {
             uint mode0 = tmu0TriangleState.Mode;
             uint lod0 = tmu0TriangleState.Lod;
-            targetLod0 = lodBase0_8p8 == int.MinValue
+            targetLod0 = targetLod0Override >= 0
+                ? targetLod0Override
+                : lodBase0_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod0, tmu0TriangleState.Base)
                 : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, mode0, lod0);
             local0 = SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, targetLod0, in tmu0TriangleState);
@@ -55166,8 +55291,9 @@ sampledTexel:
         return (fbzcp & (1u << 25)) != 0 ? 255 - alpha : alpha;
     }
 
-    private static int ClampSetupColor(int start, int dx, int dy, int pixelDx, int pixelDy)
-        => Math.Clamp(unchecked(start + pixelDx * dx + pixelDy * dy) >> 12, 0, 255);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int ClampSetupColorRow(int rowStart, int dx, int pixelDx)
+        => Math.Clamp(unchecked(rowStart + pixelDx * dx) >> 12, 0, 255);
 
     private static bool PassVoodooAlphaTest(uint alphaMode, int alpha)
     {
