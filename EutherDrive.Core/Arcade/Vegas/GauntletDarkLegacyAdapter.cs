@@ -49515,13 +49515,20 @@ internal class VoodooBringupBackend : IVoodooBackend
                         long iterW = unchecked(rowTextureStartW + dx * textureDwDx);
                         if (_experimentTextureMamePixelLod)
                         {
-                            targetLod = ComputeMameTexturePixelLod(
-                                triangleLodBase8p8,
-                                iterW,
-                                x,
-                                y,
-                                textureMode,
-                                textureLod);
+                            targetLod = _experimentMameTwoTmuCombine && hasTmu0TriangleState
+                                ? ComputeMameTexturePixelLod(
+                                    triangleLodBase8p8,
+                                    iterW,
+                                    x,
+                                    y,
+                                    in tmu0TriangleState)
+                                : ComputeMameTexturePixelLod(
+                                    triangleLodBase8p8,
+                                    iterW,
+                                    x,
+                                    y,
+                                    textureMode,
+                                    textureLod);
                             if (!rowLodCounts.IsEmpty)
                                 rowLodCounts[targetLod]++;
                             else
@@ -49999,17 +50006,57 @@ sampledTexel:
         int y,
         uint textureMode,
         uint textureLod)
+        => ComputeMameTexturePixelLod(
+            lodBase8p8,
+            iterW,
+            x,
+            y,
+            (textureMode & 1u) != 0,
+            (textureMode & 0x10u) != 0,
+            DecodeTextureLodBias8p8(textureLod),
+            (int)(textureLod & 0x3fu) << 6,
+            (int)((textureLod >> 6) & 0x3fu) << 6,
+            DecodeTextureLodMask(textureLod));
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int ComputeMameTexturePixelLod(
+        int lodBase8p8,
+        long iterW,
+        int x,
+        int y,
+        in MameTextureTriangleState triangleState)
+        => ComputeMameTexturePixelLod(
+            lodBase8p8,
+            iterW,
+            x,
+            y,
+            triangleState.Perspective,
+            triangleState.LodDither,
+            triangleState.LodBias8p8,
+            triangleState.LodMin8p8,
+            triangleState.LodMax8p8,
+            triangleState.LodMask);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int ComputeMameTexturePixelLod(
+        int lodBase8p8,
+        long iterW,
+        int x,
+        int y,
+        bool perspective,
+        bool lodDither,
+        int bias8p8,
+        int min8p8,
+        int max8p8,
+        uint lodMask)
     {
         int candidate8p8 = lodBase8p8;
-        if ((textureMode & 1u) != 0)
+        if (perspective)
             candidate8p8 -= MameFastLog2(iterW, 32);
 
-        int bias = (int)((textureLod >> 12) & 0x3fu);
-        if (bias >= 32)
-            bias -= 64;
-        candidate8p8 += bias << 6;
+        candidate8p8 += bias8p8;
 
-        if ((textureMode & 0x10u) != 0)
+        if (lodDither)
         {
             ReadOnlySpan<byte> dither4x4 =
             [
@@ -50021,16 +50068,24 @@ sampledTexel:
             candidate8p8 += dither4x4[((y & 3) << 2) | (x & 3)] << 4;
         }
 
-        int min8p8 = (int)(textureLod & 0x3fu) << 6;
-        int max8p8 = (int)((textureLod >> 6) & 0x3fu) << 6;
         int clamped8p8 = MameClampTextureLod(candidate8p8, min8p8, max8p8);
         int targetLod = Math.Clamp(clamped8p8 >> 8, 0, 8);
-        uint lodMask = ((textureLod >> 19) & 1u) != 0
-            ? (((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u)
-            : 0x1ffu;
         targetLod += (int)((~lodMask >> targetLod) & 1u);
         return Math.Clamp(targetLod, 0, 8);
     }
+
+    private static int DecodeTextureLodBias8p8(uint textureLod)
+    {
+        int bias = (int)((textureLod >> 12) & 0x3fu);
+        if (bias >= 32)
+            bias -= 64;
+        return bias << 6;
+    }
+
+    private static uint DecodeTextureLodMask(uint textureLod)
+        => ((textureLod >> 19) & 1u) != 0
+            ? (((textureLod >> 18) & 1u) != 0 ? 0x0aau : 0x155u)
+            : 0x1ffu;
 
     // MAME calls std::clamp here. libstdc++ implements that as
     // min(max(value, low), high), which matters for Gauntlet's inverted
@@ -50901,6 +50956,13 @@ sampledTexel:
         bool TrackSampleDiagnostics,
         bool CombineLocalOnly,
         bool CombineModulateOtherRgbLocalAlpha,
+        bool Perspective,
+        bool ClampNegativeW,
+        bool LodDither,
+        int LodBias8p8,
+        int LodMin8p8,
+        int LodMax8p8,
+        uint LodMask,
         TextureFetchLayout[] Layouts);
 
     private readonly record struct TextureLayoutCacheKey(
@@ -50930,6 +50992,13 @@ sampledTexel:
             ShouldTrackTextureSampleDiagnostics(),
             IsTextureCombineLocalOnly(mode),
             IsTextureCombineModulateOtherRgbLocalAlpha(mode),
+            (mode & 1u) != 0,
+            (mode & 0x20u) != 0,
+            (mode & 0x10u) != 0,
+            DecodeTextureLodBias8p8(lod),
+            (int)(lod & 0x3fu) << 6,
+            (int)((lod >> 6) & 0x3fu) << 6,
+            DecodeTextureLodMask(lod),
             layouts);
     }
 
@@ -51008,7 +51077,7 @@ sampledTexel:
 
         int s24_8;
         int t24_8;
-        if ((mode & 1u) != 0 && iterW != 0)
+        if (triangleState.Perspective && iterW != 0)
         {
             double reciprocalW = reciprocalWOverride != 0.0
                 ? reciprocalWOverride
@@ -51021,7 +51090,7 @@ sampledTexel:
             s24_8 = MameSetupCastToInt32(iterS * (1.0 / (1 << 24)));
             t24_8 = MameSetupCastToInt32(iterT * (1.0 / (1 << 24)));
         }
-        if ((mode & 0x20u) != 0 && iterW < 0)
+        if (triangleState.ClampNegativeW && iterW < 0)
             s24_8 = t24_8 = 0;
 
         bool filtered = triangleState.Filtered;
@@ -51425,7 +51494,7 @@ sampledTexel:
                 ? targetLod0Override
                 : lodBase0_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod0, tmu0TriangleState.Base)
-                : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, mode0, lod0);
+                : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, in tmu0TriangleState);
             return SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, localOnlyTargetLod0, in tmu0TriangleState);
         }
 
@@ -51436,8 +51505,8 @@ sampledTexel:
         double sharedReciprocalW =
             hasTmu0TriangleState &&
             hasTmu1TriangleState &&
-            (tmu0TriangleState.Mode & 1u) != 0 &&
-            (tmu1TriangleState.Mode & 1u) != 0 &&
+            tmu0TriangleState.Perspective &&
+            tmu1TriangleState.Perspective &&
             iterW0 != 0 &&
             iterW0 == iterW1
                 ? 256.0 / iterW0
@@ -51453,7 +51522,7 @@ sampledTexel:
             uint lod1 = tmu1TriangleState.Lod;
             targetLod1 = lodBase1_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod1, tmu1TriangleState.Base)
-                : ComputeMameTexturePixelLod(lodBase1_8p8, iterW1, x, y, mode1, lod1);
+                : ComputeMameTexturePixelLod(lodBase1_8p8, iterW1, x, y, in tmu1TriangleState);
             local1 = SampleTextureMameFixedForTmu(
                 1,
                 iterS1,
@@ -51508,7 +51577,7 @@ sampledTexel:
                 ? targetLod0Override
                 : lodBase0_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod0, tmu0TriangleState.Base)
-                : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, mode0, lod0);
+                : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, in tmu0TriangleState);
             local0 = SampleTextureMameFixedForTmu(
                 0,
                 iterS0,
