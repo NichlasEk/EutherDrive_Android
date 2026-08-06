@@ -50899,6 +50899,8 @@ sampledTexel:
         bool Swap16BitBytes,
         TextureRgba[]? NccRgbaLut,
         bool TrackSampleDiagnostics,
+        bool CombineLocalOnly,
+        bool CombineModulateOtherRgbLocalAlpha,
         TextureFetchLayout[] Layouts);
 
     private readonly record struct TextureLayoutCacheKey(
@@ -50926,6 +50928,8 @@ sampledTexel:
                 textureBase == (uint)_experimentTexture16BitByteSwapRegisterBase.Value,
             GetCachedTmuNccRgbaLut(tmu, mode),
             ShouldTrackTextureSampleDiagnostics(),
+            IsTextureCombineLocalOnly(mode),
+            IsTextureCombineModulateOtherRgbLocalAlpha(mode),
             layouts);
     }
 
@@ -51409,7 +51413,7 @@ sampledTexel:
             _traceTwoTmuSamples ||
             _traceTmu1SamplePages;
         if (hasTmu0TriangleState &&
-            IsTextureCombineLocalOnly(tmu0TriangleState.Mode) &&
+            tmu0TriangleState.CombineLocalOnly &&
             !preserveSamplingDiagnostics)
         {
             uint mode0 = tmu0TriangleState.Mode;
@@ -51468,7 +51472,9 @@ sampledTexel:
                 raw1 = (ushort)_lastTextureSampleRaw;
                 writer1 = GetTextureSampleWriterKey(address1);
             }
-            combined = CombineTextureMame(mode1, local1, combined, targetLod1 << 8);
+            combined = tmu1TriangleState.CombineLocalOnly
+                ? local1
+                : CombineTextureMame(mode1, local1, combined, targetLod1 << 8);
         }
         int targetLod0 = -1;
         uint address0 = 0;
@@ -51491,7 +51497,11 @@ sampledTexel:
                 raw0 = (ushort)_lastTextureSampleRaw;
                 writer0 = GetTextureSampleWriterKey(address0);
             }
-            combined = CombineTextureMame(mode0, local0, combined, targetLod0 << 8);
+            combined = tmu0TriangleState.CombineModulateOtherRgbLocalAlpha
+                ? ModulateOtherRgbWithLocalAlpha(local0, combined)
+                : tmu0TriangleState.CombineLocalOnly
+                    ? local0
+                    : CombineTextureMame(mode0, local0, combined, targetLod0 << 8);
         }
         if (captureTrace)
         {
@@ -51526,6 +51536,31 @@ sampledTexel:
         const uint RequiredClear = (1u << 13) | (1u << 19) | (1u << 20) | (1u << 22) | (1u << 29);
         return (mode & RequiredSet) == RequiredSet && (mode & RequiredClear) == 0;
     }
+
+    private static bool IsTextureCombineModulateOtherRgbLocalAlpha(uint mode)
+    {
+        bool rgbModulate =
+            (mode & (1u << 12)) == 0 &&
+            (mode & (1u << 13)) == 0 &&
+            ((mode >> 14) & 7u) == 1u &&
+            (mode & (1u << 17)) != 0 &&
+            ((mode >> 18) & 3u) == 0 &&
+            (mode & (1u << 20)) == 0;
+        bool alphaLocal =
+            (mode & (1u << 21)) != 0 &&
+            (mode & (1u << 22)) == 0 &&
+            (mode & (1u << 27)) != 0 &&
+            (mode & (1u << 29)) == 0;
+        return rgbModulate && alphaLocal;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static TextureRgba ModulateOtherRgbWithLocalAlpha(TextureRgba local, TextureRgba other)
+        => new(
+            (byte)(other.R * (local.R + 1) >> 8),
+            (byte)(other.G * (local.G + 1) >> 8),
+            (byte)(other.B * (local.B + 1) >> 8),
+            local.A);
 
     private void TraceTwoTmuSample(
         int x,
