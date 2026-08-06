@@ -39117,6 +39117,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         [new TextureRgba[256], new TextureRgba[256]]
     ];
     private readonly bool[,] _tmuNccRgbaLutValid = new bool[2, 2];
+    private static readonly TextureRgba[] Rgb565TextureRgbaLut = BuildRgb565TextureRgbaLut();
     private readonly TextureFetchLayout[][] _tmuTextureLayoutCache =
     [
         new TextureFetchLayout[9],
@@ -51236,6 +51237,8 @@ sampledTexel:
         uint mode,
         TextureRgba[]? nccRgbaLut)
     {
+        if (format == 10)
+            return Rgb565TextureRgbaLut[raw];
         if (nccRgbaLut is null || format is not (1 or 9))
             return DecodeTextureRgba(tmu, format, raw, mode);
 
@@ -51243,6 +51246,17 @@ sampledTexel:
         return format == 9
             ? new TextureRgba(ncc.R, ncc.G, ncc.B, (byte)(raw >> 8))
             : ncc;
+    }
+
+    private static TextureRgba[] BuildRgb565TextureRgbaLut()
+    {
+        TextureRgba[] lut = new TextureRgba[ushort.MaxValue + 1];
+        for (int raw = 0; raw < lut.Length; raw++)
+        {
+            Rgb565ToBytes((ushort)raw, out int r, out int g, out int b);
+            lut[raw] = new TextureRgba((byte)r, (byte)g, (byte)b, 255);
+        }
+        return lut;
     }
 
     private TextureRgba DecodeTextureRgba(int tmu, int format, ushort raw, uint mode)
