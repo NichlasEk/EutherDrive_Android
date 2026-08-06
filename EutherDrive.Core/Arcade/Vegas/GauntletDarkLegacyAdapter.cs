@@ -50958,7 +50958,7 @@ sampledTexel:
     private TextureRgba[]? GetCachedTmuNccRgbaLut(int tmu, uint mode)
     {
         int format = (int)((mode >> 8) & 0x0fu);
-        if ((uint)tmu > 1u || format != 1)
+        if ((uint)tmu > 1u || format is not (1 or 9))
             return null;
 
         int table = (int)((mode >> 5) & 1u);
@@ -51028,40 +51028,81 @@ sampledTexel:
         int y0 = Coordinate24_8ToTexelIndex(t24_8, layout.Height, targetLod, clampT);
         if (_fixTextureTOriginFlip)
             y0 = layout.Height - 1 - y0;
-        TextureRgba c00 = ReadTextureRgbaAt(
-            tmu,
-            x0,
-            y0,
-            layout.Width,
-            format,
-            mode,
-            layout.BaseAddress,
-            triangleState.Swap16BitBytes,
-            triangleState.NccRgbaLut,
-            out uint byteAddress00,
-            out ushort raw00);
-        uint lastByteAddress = byteAddress00;
-        ushort lastRaw = raw00;
-        TextureRgba lastSample = c00;
-        bool traceSample = _traceTextureSamples || _traceTextureSampleWriters;
-        uint word00 = traceSample ? ReadTexture32(byteAddress00 & ~3u) : 0;
-        TextureRgba result = c00;
+        TextureRgba c00;
+        uint byteAddress00;
+        ushort raw00;
+        uint lastByteAddress;
+        ushort lastRaw;
+        TextureRgba lastSample;
+        TextureRgba result;
         if (filtered)
         {
             int x1 = Coordinate24_8ToTexelIndex(s24_8 + (1 << (targetLod + 8)), layout.Width, targetLod, clampS);
             int y1 = Coordinate24_8ToTexelIndex(t24_8 + (1 << (targetLod + 8)), layout.Height, targetLod, clampT);
             if (_fixTextureTOriginFlip)
                 y1 = layout.Height - 1 - y1;
-            TextureRgba c10 = ReadTextureRgbaAt(tmu, x1, y0, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, triangleState.NccRgbaLut, out _, out _);
-            TextureRgba c01 = ReadTextureRgbaAt(tmu, x0, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, triangleState.NccRgbaLut, out _, out _);
-            TextureRgba c11 = ReadTextureRgbaAt(tmu, x1, y1, layout.Width, format, mode, layout.BaseAddress, triangleState.Swap16BitBytes, triangleState.NccRgbaLut, out lastByteAddress, out lastRaw);
+            ReadTextureRgbaPairAt(
+                tmu,
+                x0,
+                x1,
+                y0,
+                layout.Width,
+                format,
+                mode,
+                layout.BaseAddress,
+                triangleState.Swap16BitBytes,
+                triangleState.NccRgbaLut,
+                out c00,
+                out byteAddress00,
+                out raw00,
+                out TextureRgba c10,
+                out _,
+                out _);
+            ReadTextureRgbaPairAt(
+                tmu,
+                x0,
+                x1,
+                y1,
+                layout.Width,
+                format,
+                mode,
+                layout.BaseAddress,
+                triangleState.Swap16BitBytes,
+                triangleState.NccRgbaLut,
+                out TextureRgba c01,
+                out _,
+                out _,
+                out TextureRgba c11,
+                out lastByteAddress,
+                out lastRaw);
             lastSample = c11;
             int fx = (int)(Coordinate24_8Fraction(s24_8, targetLod) * 256.0f);
             int fy = (int)(Coordinate24_8Fraction(t24_8, targetLod) * 256.0f);
             result = BilinearTextureRgba(c00, c10, c01, c11, fx, fy);
         }
+        else
+        {
+            c00 = ReadTextureRgbaAt(
+                tmu,
+                x0,
+                y0,
+                layout.Width,
+                format,
+                mode,
+                layout.BaseAddress,
+                triangleState.Swap16BitBytes,
+                triangleState.NccRgbaLut,
+                out byteAddress00,
+                out raw00);
+            lastByteAddress = byteAddress00;
+            lastRaw = raw00;
+            lastSample = c00;
+            result = c00;
+        }
 
         ushort rgb565 = result.Rgb565;
+        bool traceSample = _traceTextureSamples || _traceTextureSampleWriters;
+        uint word00 = traceSample ? ReadTexture32(byteAddress00 & ~3u) : 0;
         if (triangleState.TrackSampleDiagnostics)
         {
             _lastTextureSampleByteAddress = lastByteAddress;
@@ -51091,6 +51132,64 @@ sampledTexel:
             }
         }
         return result;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void ReadTextureRgbaPairAt(
+        int tmu,
+        int x0,
+        int x1,
+        int y,
+        int width,
+        int format,
+        uint mode,
+        uint baseAddress,
+        bool swap16BitBytes,
+        TextureRgba[]? nccRgbaLut,
+        out TextureRgba result0,
+        out uint byteAddress0,
+        out ushort raw0,
+        out TextureRgba result1,
+        out uint byteAddress1,
+        out ushort raw1)
+    {
+        bool sixteenBit = IsTextureFormat16Bit(format);
+        int memoryTmu = _experimentTmu1SampleTmu0Memory && tmu == 1 ? 0 : tmu;
+        uint texelSize = sixteenBit ? 2u : 1u;
+        uint rowIndex = (uint)(y * width);
+        byteAddress0 = MapTextureBankByteAddress(memoryTmu, baseAddress + (rowIndex + (uint)x0) * texelSize);
+        byteAddress1 = MapTextureBankByteAddress(memoryTmu, baseAddress + (rowIndex + (uint)x1) * texelSize);
+        uint alignedAddress0 = byteAddress0 & ~3u;
+        uint alignedAddress1 = byteAddress1 & ~3u;
+        uint word0 = ReadTexture32(alignedAddress0);
+        uint word1 = alignedAddress1 == alignedAddress0 ? word0 : ReadTexture32(alignedAddress1);
+        if (sixteenBit)
+        {
+            uint laneAddress0 = GetTexture16BitLaneByteAddress(byteAddress0);
+            uint laneAddress1 = GetTexture16BitLaneByteAddress(byteAddress1);
+            raw0 = (ushort)((word0 >> (int)((laneAddress0 & 2u) * 8u)) & 0xffffu);
+            raw1 = (ushort)((word1 >> (int)((laneAddress1 & 2u) * 8u)) & 0xffffu);
+            if (swap16BitBytes)
+            {
+                raw0 = BinaryPrimitives.ReverseEndianness(raw0);
+                raw1 = BinaryPrimitives.ReverseEndianness(raw1);
+            }
+        }
+        else
+        {
+            uint lane0 = byteAddress0 & 3u;
+            uint lane1 = byteAddress1 & 3u;
+            if (_experimentReverse8BitTextureSampleLanes)
+            {
+                lane0 = 3u - lane0;
+                lane1 = 3u - lane1;
+            }
+            raw0 = (byte)(word0 >> (int)(lane0 * 8u));
+            raw1 = (byte)(word1 >> (int)(lane1 * 8u));
+        }
+
+        result0 = DecodeTextureRgbaWithOptionalNccLut(tmu, format, raw0, mode, nccRgbaLut);
+        result1 = DecodeTextureRgbaWithOptionalNccLut(tmu, format, raw1, mode, nccRgbaLut);
     }
 
     private TextureRgba ReadTextureRgbaAt(
@@ -51126,10 +51225,24 @@ sampledTexel:
             raw = (byte)(word >> (int)(lane * 8u));
         }
 
-        TextureRgba result = nccRgbaLut is not null && format == 1
-            ? nccRgbaLut[(byte)raw]
-            : DecodeTextureRgba(tmu, format, raw, mode);
-        return result;
+        return DecodeTextureRgbaWithOptionalNccLut(tmu, format, raw, mode, nccRgbaLut);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private TextureRgba DecodeTextureRgbaWithOptionalNccLut(
+        int tmu,
+        int format,
+        ushort raw,
+        uint mode,
+        TextureRgba[]? nccRgbaLut)
+    {
+        if (nccRgbaLut is null || format is not (1 or 9))
+            return DecodeTextureRgba(tmu, format, raw, mode);
+
+        TextureRgba ncc = nccRgbaLut[(byte)raw];
+        return format == 9
+            ? new TextureRgba(ncc.R, ncc.G, ncc.B, (byte)(raw >> 8))
+            : ncc;
     }
 
     private TextureRgba DecodeTextureRgba(int tmu, int format, ushort raw, uint mode)
