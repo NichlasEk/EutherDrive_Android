@@ -4570,6 +4570,7 @@ internal sealed class MipsR5000Core
             if (_halted ||
                 _hasPendingBranch ||
                 _hasImmediatePcOverride ||
+                instruction.MayWriteRuntimeMemory &&
                 _memory.RuntimeMainState != runtimeMainState)
             {
                 break;
@@ -4628,6 +4629,7 @@ internal sealed class MipsR5000Core
             Function = (byte)(op & 0x3fU);
             Immediate = unchecked((short)op);
             UnsignedImmediate = (ushort)op;
+            MayWriteRuntimeMemory = Opcode is >= 0x28 and <= 0x2f or 0x39 or 0x3d or 0x3f;
         }
 
         public uint Op { get; }
@@ -4639,6 +4641,7 @@ internal sealed class MipsR5000Core
         public byte Function { get; }
         public short Immediate { get; }
         public ushort UnsignedImmediate { get; }
+        public bool MayWriteRuntimeMemory { get; }
     }
 
     private void ExecuteRuntimeSafeInstruction(ulong pc, in RuntimeSafeInstruction instruction)
