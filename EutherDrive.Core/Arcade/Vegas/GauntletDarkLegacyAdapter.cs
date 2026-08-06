@@ -50994,7 +50994,8 @@ sampledTexel:
         long iterT,
         long iterW,
         int targetLodOverride,
-        in MameTextureTriangleState triangleState)
+        in MameTextureTriangleState triangleState,
+        double reciprocalWOverride = 0.0)
     {
         uint mode = triangleState.Mode;
         uint textureLod = triangleState.Lod;
@@ -51009,7 +51010,9 @@ sampledTexel:
         int t24_8;
         if ((mode & 1u) != 0 && iterW != 0)
         {
-            double reciprocalW = 256.0 / iterW;
+            double reciprocalW = reciprocalWOverride != 0.0
+                ? reciprocalWOverride
+                : 256.0 / iterW;
             s24_8 = MameSetupCastToInt32(iterS * reciprocalW);
             t24_8 = MameSetupCastToInt32(iterT * reciprocalW);
         }
@@ -51430,6 +51433,15 @@ sampledTexel:
         bool captureTrace = _traceTwoTmuSamples &&
             _renderFrame >= _traceTwoTmuSamplesMinFrame &&
             _twoTmuSampleTraceCount < _traceTwoTmuSamplesLimit;
+        double sharedReciprocalW =
+            hasTmu0TriangleState &&
+            hasTmu1TriangleState &&
+            (tmu0TriangleState.Mode & 1u) != 0 &&
+            (tmu1TriangleState.Mode & 1u) != 0 &&
+            iterW0 != 0 &&
+            iterW0 == iterW1
+                ? 256.0 / iterW0
+                : 0.0;
         int targetLod1 = -1;
         uint address1 = 0;
         ushort raw1 = 0;
@@ -51442,7 +51454,14 @@ sampledTexel:
             targetLod1 = lodBase1_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod1, tmu1TriangleState.Base)
                 : ComputeMameTexturePixelLod(lodBase1_8p8, iterW1, x, y, mode1, lod1);
-            local1 = SampleTextureMameFixedForTmu(1, iterS1, iterT1, iterW1, targetLod1, in tmu1TriangleState);
+            local1 = SampleTextureMameFixedForTmu(
+                1,
+                iterS1,
+                iterT1,
+                iterW1,
+                targetLod1,
+                in tmu1TriangleState,
+                sharedReciprocalW);
             if (_traceTmu1SamplePages)
             {
                 uint sampleAddress = _lastTextureSampleByteAddress;
@@ -51490,7 +51509,14 @@ sampledTexel:
                 : lodBase0_8p8 == int.MinValue
                 ? GetTextureTargetLod(lod0, tmu0TriangleState.Base)
                 : ComputeMameTexturePixelLod(lodBase0_8p8, iterW0, x, y, mode0, lod0);
-            local0 = SampleTextureMameFixedForTmu(0, iterS0, iterT0, iterW0, targetLod0, in tmu0TriangleState);
+            local0 = SampleTextureMameFixedForTmu(
+                0,
+                iterS0,
+                iterT0,
+                iterW0,
+                targetLod0,
+                in tmu0TriangleState,
+                sharedReciprocalW);
             if (captureTrace)
             {
                 address0 = _lastTextureSampleByteAddress;
