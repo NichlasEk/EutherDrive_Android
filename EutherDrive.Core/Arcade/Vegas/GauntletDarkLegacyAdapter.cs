@@ -49349,6 +49349,9 @@ internal class VoodooBringupBackend : IVoodooBackend
         bool mameAuxMask = useMameAuxDepth && (fbzMode & 0x400u) != 0;
         bool mameDepthTest = useMameAuxDepth && (fbzMode & 0x10u) != 0;
         bool mameAlphaPlanes = useMameAuxDepth && (fbzMode & 0x40000u) != 0;
+        bool needsPixelAlpha =
+            (alphaMode & 0x11u) != 0 ||
+            (mameAuxMask && mameAlphaPlanes);
         bool alpha8Mask = _experimentTextureAlpha8Mask &&
             ((textureMode >> 8) & 0x0fu) == 2u;
         ushort zaColor = (ushort)_registers[RegZaColor];
@@ -49698,7 +49701,9 @@ sampledTexel:
                 if (_experimentSetupMameFog)
                     texel = ApplyMameSetupFog(texel, fogIterW, setupIterZ, iteratedAlpha, x, y, fogMode, fogColor, fbzColorPath);
 
-                int pixelAlpha = ComputeFbzColorPathAlpha(textureAlpha, iteratedAlpha, setupIterZ, fogIterW, in fbzColorPathState);
+                int pixelAlpha = needsPixelAlpha
+                    ? ComputeFbzColorPathAlpha(textureAlpha, iteratedAlpha, setupIterZ, fogIterW, in fbzColorPathState)
+                    : 255;
                 if ((alphaMode & 1u) != 0 && !PassVoodooAlphaTest(alphaMode, pixelAlpha))
                 {
                     if (traceTexturedPixels)
