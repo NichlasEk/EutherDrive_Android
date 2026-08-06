@@ -51316,17 +51316,19 @@ sampledTexel:
 
     private static TextureRgba BilinearTextureRgba(TextureRgba c00, TextureRgba c10, TextureRgba c01, TextureRgba c11, int fx, int fy)
     {
-        static byte Blend(byte a, byte b, byte c, byte d, int x, int y)
-        {
-            int top = a * (256 - x) + b * x;
-            int bottom = c * (256 - x) + d * x;
-            return (byte)Math.Clamp((top * (256 - y) + bottom * y + 0x8000) >> 16, 0, 255);
-        }
+        int inverseX = 256 - fx;
+        int inverseY = 256 - fy;
+        int weight00 = inverseX * inverseY;
+        int weight10 = fx * inverseY;
+        int weight01 = inverseX * fy;
+        int weight11 = fx * fy;
+        static byte Blend(byte a, byte b, byte c, byte d, int w00, int w10, int w01, int w11)
+            => (byte)Math.Clamp((a * w00 + b * w10 + c * w01 + d * w11 + 0x8000) >> 16, 0, 255);
         return new TextureRgba(
-            Blend(c00.R, c10.R, c01.R, c11.R, fx, fy),
-            Blend(c00.G, c10.G, c01.G, c11.G, fx, fy),
-            Blend(c00.B, c10.B, c01.B, c11.B, fx, fy),
-            Blend(c00.A, c10.A, c01.A, c11.A, fx, fy));
+            Blend(c00.R, c10.R, c01.R, c11.R, weight00, weight10, weight01, weight11),
+            Blend(c00.G, c10.G, c01.G, c11.G, weight00, weight10, weight01, weight11),
+            Blend(c00.B, c10.B, c01.B, c11.B, weight00, weight10, weight01, weight11),
+            Blend(c00.A, c10.A, c01.A, c11.A, weight00, weight10, weight01, weight11));
     }
 
     private static TextureRgba CombineTextureMame(uint mode, TextureRgba local, TextureRgba other, int lod8p8)
