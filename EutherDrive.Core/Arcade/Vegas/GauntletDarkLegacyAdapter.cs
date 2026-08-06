@@ -48620,6 +48620,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                     _texturedRasterMaxTriangle =
                         $"{minX:F1},{minY:F1}-{maxX:F1},{maxY:F1}" +
                         $":tm0={ReadTextureRegisterForTmu(0, RegTextureMode):x8}" +
+                        $":tm1={ReadTextureRegisterForTmu(1, RegTextureMode):x8}" +
                         $":cp={_registers[RegFbzColorPath]:x8}:fog={_registers[RegFogMode]:x8}";
                 }
             }
@@ -49324,6 +49325,16 @@ internal class VoodooBringupBackend : IVoodooBackend
         int setupAx = setupAxFixed >> 4;
         int setupAy = setupAyFixed >> 4;
         uint fbzMode = _registers[RegFbzMode];
+        uint fbzColorPath = _registers[RegFbzColorPath];
+        uint alphaMode = _registers[RegAlphaMode];
+        uint fogMode = _registers[RegFogMode];
+        ushort fogColor = ArgbToRgb565(_registers[RegFogColor]);
+        FbzColorPathState fbzColorPathState = new(
+            fbzColorPath,
+            ArgbToRgb565(_registers[RegColor0]),
+            ArgbToRgb565(_registers[RegColor1]),
+            (int)(_registers[RegColor0] >> 24),
+            (int)(_registers[RegColor1] >> 24));
         uint textureMode = ReadTextureSampleRegister(RegTextureMode);
         uint textureLod = ReadTextureSampleRegister(RegTextureLod);
         bool traceTexturedPixels =
@@ -49464,7 +49475,7 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (useMameAuxDepth)
                 {
                     long iterW = unchecked(rowSetupStartW + setupDx * setupDwDx);
-                    depthValue = ComputeMameSetupDepthValue(fbzMode, _registers[RegFbzColorPath], setupIterZ, iterW, zaColor);
+                    depthValue = ComputeMameSetupDepthValue(fbzMode, fbzColorPath, setupIterZ, iterW, zaColor);
                     int depthSource = (fbzMode & 0x100000u) == 0 ? depthValue : zaColor;
                     if (mameDepthTest && !MameDepthTest(fbzMode, _auxBuffer[pixel], depthSource))
                     {
@@ -49671,7 +49682,7 @@ sampledTexel:
 
                 if (_experimentMameTwoTmuCombine &&
                     (fbzMode & 0x2000u) != 0 &&
-                    (ComputeFbzColorPathOtherAlpha(textureAlpha, iteratedAlpha) & 1) == 0)
+                    (ComputeFbzColorPathOtherAlpha(textureAlpha, iteratedAlpha, in fbzColorPathState) & 1) == 0)
                 {
                     if (traceTexturedPixels)
                         TraceTexturedPixel("alpha-bit-reject", x, y, bufferIndex, texel, _auxBuffer[pixel], depthValue, fbzMode);
@@ -49683,12 +49694,11 @@ sampledTexel:
                 }
 
                 if (_experimentFbzColorPathRgbCombine)
-                    texel = ApplyFbzColorPathRgb(texel, iteratedColor, textureAlpha, iteratedAlpha);
+                    texel = ApplyFbzColorPathRgb(texel, iteratedColor, textureAlpha, iteratedAlpha, in fbzColorPathState);
                 if (_experimentSetupMameFog)
-                    texel = ApplyMameSetupFog(texel, fogIterW, setupIterZ, iteratedAlpha, x, y);
+                    texel = ApplyMameSetupFog(texel, fogIterW, setupIterZ, iteratedAlpha, x, y, fogMode, fogColor, fbzColorPath);
 
-                int pixelAlpha = ComputeFbzColorPathAlpha(textureAlpha, iteratedAlpha, setupIterZ, fogIterW);
-                uint alphaMode = _registers[RegAlphaMode];
+                int pixelAlpha = ComputeFbzColorPathAlpha(textureAlpha, iteratedAlpha, setupIterZ, fogIterW, in fbzColorPathState);
                 if ((alphaMode & 1u) != 0 && !PassVoodooAlphaTest(alphaMode, pixelAlpha))
                 {
                     if (traceTexturedPixels)
@@ -54983,13 +54993,52 @@ sampledTexel:
             ? ApplyFbzColorPathRgbMame(texel, iteratedColor, textureAlpha, iteratedAlpha)
             : ApplyFbzColorPathRgbLegacy(texel, iteratedColor);
 
+    private readonly record struct FbzColorPathState(
+        uint Mode,
+        ushort Color0,
+        ushort Color1,
+        int Color0Alpha,
+        int Color1Alpha);
+
+    private ushort ApplyFbzColorPathRgb(
+        ushort texel,
+        ushort iteratedColor,
+        byte textureAlpha,
+        int iteratedAlpha,
+        in FbzColorPathState state)
+        => _experimentMameTwoTmuCombine
+            ? ApplyFbzColorPathRgbMame(texel, iteratedColor, textureAlpha, iteratedAlpha, in state)
+            : ApplyFbzColorPathRgbLegacy(texel, iteratedColor);
+
     private ushort ApplyMameSetupFog(ushort color, long iterW, int iterZ, int iteratedAlpha, int x, int y)
     {
         uint fogMode = _registers[RegFogMode];
+        return ApplyMameSetupFog(
+            color,
+            iterW,
+            iterZ,
+            iteratedAlpha,
+            x,
+            y,
+            fogMode,
+            ArgbToRgb565(_registers[RegFogColor]),
+            _registers[RegFbzColorPath]);
+    }
+
+    private ushort ApplyMameSetupFog(
+        ushort color,
+        long iterW,
+        int iterZ,
+        int iteratedAlpha,
+        int x,
+        int y,
+        uint fogMode,
+        ushort fogColor,
+        uint fbzColorPath)
+    {
         if ((fogMode & 1u) == 0)
             return color;
 
-        ushort fogColor = ArgbToRgb565(_registers[RegFogColor]);
         if ((fogMode & 0x20u) != 0)
             return (fogMode & 0x04u) == 0
                 ? AddFogColors(color, fogColor)
@@ -55015,10 +55064,10 @@ sampledTexel:
                 break;
             }
             case 2:
-                fogBlend = MameClampedZ(iterZ, _registers[RegFbzColorPath]) >> 8;
+                fogBlend = MameClampedZ(iterZ, fbzColorPath) >> 8;
                 break;
             case 3:
-                fogBlend = ClampMameSetupW(iterW, _registers[RegFbzColorPath]);
+                fogBlend = ClampMameSetupW(iterW, fbzColorPath);
                 break;
             default:
                 fogBlend = iteratedAlpha;
@@ -55139,11 +55188,27 @@ sampledTexel:
         byte textureAlpha,
         int iteratedAlpha)
     {
-        uint fbzcp = _registers[RegFbzColorPath];
-        ushort color0 = ArgbToRgb565(_registers[RegColor0]);
-        ushort color1 = ArgbToRgb565(_registers[RegColor1]);
-        int color0Alpha = (int)(_registers[RegColor0] >> 24);
-        int color1Alpha = (int)(_registers[RegColor1] >> 24);
+        FbzColorPathState state = new(
+            _registers[RegFbzColorPath],
+            ArgbToRgb565(_registers[RegColor0]),
+            ArgbToRgb565(_registers[RegColor1]),
+            (int)(_registers[RegColor0] >> 24),
+            (int)(_registers[RegColor1] >> 24));
+        return ApplyFbzColorPathRgbMame(texel, iteratedColor, textureAlpha, iteratedAlpha, in state);
+    }
+
+    private static ushort ApplyFbzColorPathRgbMame(
+        ushort texel,
+        ushort iteratedColor,
+        byte textureAlpha,
+        int iteratedAlpha,
+        in FbzColorPathState state)
+    {
+        uint fbzcp = state.Mode;
+        ushort color0 = state.Color0;
+        ushort color1 = state.Color1;
+        int color0Alpha = state.Color0Alpha;
+        int color1Alpha = state.Color1Alpha;
         int otherAlpha = ((fbzcp >> 2) & 0x03u) switch
         {
             0 => iteratedAlpha,
@@ -55245,12 +55310,26 @@ sampledTexel:
 
     private int ComputeFbzColorPathOtherAlpha(byte textureAlpha, int iteratedAlpha)
     {
-        uint fbzcp = _registers[RegFbzColorPath];
+        FbzColorPathState state = new(
+            _registers[RegFbzColorPath],
+            0,
+            0,
+            (int)(_registers[RegColor0] >> 24),
+            (int)(_registers[RegColor1] >> 24));
+        return ComputeFbzColorPathOtherAlpha(textureAlpha, iteratedAlpha, in state);
+    }
+
+    private static int ComputeFbzColorPathOtherAlpha(
+        byte textureAlpha,
+        int iteratedAlpha,
+        in FbzColorPathState state)
+    {
+        uint fbzcp = state.Mode;
         return ((fbzcp >> 2) & 3u) switch
         {
             0 => iteratedAlpha,
             1 => textureAlpha,
-            2 => (int)(_registers[RegColor1] >> 24),
+            2 => state.Color1Alpha,
             _ => 0
         };
     }
@@ -55261,9 +55340,25 @@ sampledTexel:
         int iteratedZ,
         long iteratedW)
     {
-        uint fbzcp = _registers[RegFbzColorPath];
-        int color0Alpha = (int)(_registers[RegColor0] >> 24);
-        int otherAlpha = ComputeFbzColorPathOtherAlpha(textureAlpha, iteratedAlpha);
+        FbzColorPathState state = new(
+            _registers[RegFbzColorPath],
+            0,
+            0,
+            (int)(_registers[RegColor0] >> 24),
+            (int)(_registers[RegColor1] >> 24));
+        return ComputeFbzColorPathAlpha(textureAlpha, iteratedAlpha, iteratedZ, iteratedW, in state);
+    }
+
+    private static int ComputeFbzColorPathAlpha(
+        byte textureAlpha,
+        int iteratedAlpha,
+        int iteratedZ,
+        long iteratedW,
+        in FbzColorPathState state)
+    {
+        uint fbzcp = state.Mode;
+        int color0Alpha = state.Color0Alpha;
+        int otherAlpha = ComputeFbzColorPathOtherAlpha(textureAlpha, iteratedAlpha, in state);
         int localAlpha = ((fbzcp >> 5) & 3u) switch
         {
             0 => iteratedAlpha,
