@@ -349,3 +349,27 @@ Båda JIT-körningarna behöll `frameHash=0x8a71c24a`, slut-PC
 `0xffffffff800c6c34`, FIFO `26453151/2585612`, 459 391 draw-paket och 3 864
 swaps. Nästa lager kan nu fokusera på stabila branchöverskridande traces i
 stället för fler små raka delegates.
+
+## 2026-08-10: profilerad gräns för nästa trace-lager
+
+En tillfällig blockerprofil mätte vilka instruktioner som först stoppar JIT-
+prefixen. Den hetaste missade kedjan vid `0x800a54a8` hade 10 596 ingångar,
+men en minnesskrivning efter tre instruktioner avslutade prefixet före en
+efterföljande `MTC1`. Flera 25-op-flyttalsblock nådde 18 instruktioner före
+samma typ av övergång. Andra heta kedjor stoppades direkt av stack-/objekt-
+stores eller COP1-jämförelser.
+
+Tre avgränsade försök förkastades efter bitexakta prov:
+
+- terminal `beq/bne/blez/bgtz` plus delay slot fick noll JIT-träffar, även när
+  COP1-registerflyttar gjorde blocken längre;
+- generellt hook-säkert `sw` ökade täckningen med endast 58 instruktioner över
+  1 200 anrop;
+- `MFC1/DMFC1/MTC1/DMTC1` ökade täckningen till cirka 1,5 miljoner
+  instruktioner vid minlängd 24, men samma-gräns-A/B förbättrades bara omkring
+  0,3–0,5 procent och bedömdes vara inom wall-clock-bruset.
+
+Inget av försöken ingår i standardprofilen. Nästa trace-backend måste kunna
+korsa verifierade main-RAM-stores med ett billigt runtime-guard och hantera den
+faktiska terminala branchklassen. Fler isolerade opcodeutökningar ger mycket
+täckning men amorterar inte delegate- och blockgränskostnaden.
