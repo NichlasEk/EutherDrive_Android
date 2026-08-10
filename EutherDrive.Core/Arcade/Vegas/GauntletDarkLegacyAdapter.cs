@@ -6,7 +6,9 @@ using System.Globalization;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Numerics;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
@@ -1241,12 +1243,19 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeMergeBranchPairs =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_MERGE_BRANCH_PAIRS"));
+    private readonly bool _experimentRuntimeCompiledBlocks =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPILED_BLOCKS"));
+    private readonly int _runtimeCompiledBlockThreshold =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_THRESHOLD", 512);
+    private readonly int _runtimeCompiledBlockMinimumInstructions =
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_MIN_INSTRUCTIONS", 16);
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
     private readonly ulong[] _cop1xFunctionProfileCounts = new ulong[64];
     private readonly Dictionary<(ulong Start, ulong End, ulong Target), ulong> _runtimeRegionProfileCounts = [];
-    private readonly Dictionary<ulong, RuntimeSafeInstruction[]> _runtimeSafeInstructionBlocks = [];
+    private readonly Dictionary<ulong, RuntimeSafeBlock> _runtimeSafeInstructionBlocks = [];
     private bool _runtimeRegionProfileActive;
     private ulong _runtimeRegionProfileStart;
     private ulong _runtimeRegionProfileLastPc;
@@ -1263,6 +1272,9 @@ internal sealed class MipsR5000Core
     private ulong _runtimeTableClearRegionInstructions;
     private ulong _runtimeSafeBranchPairHits;
     private ulong _runtimeMergedBranchPairHits;
+    private ulong _runtimeCompiledBlockRuns;
+    private ulong _runtimeCompiledBlockInstructions;
+    private ulong _runtimeCompiledBlockCount;
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2269,6 +2281,10 @@ internal sealed class MipsR5000Core
         $"safeBranchPairs=hits:{_runtimeSafeBranchPairHits}" +
         $"/instructions:{_runtimeSafeBranchPairHits * 2UL}" +
         $"/merged:{_runtimeMergedBranchPairHits}";
+    public string RuntimeCompiledBlockStatus =>
+        $"compiledBlocks=count:{_runtimeCompiledBlockCount}" +
+        $"/runs:{_runtimeCompiledBlockRuns}" +
+        $"/instructions:{_runtimeCompiledBlockInstructions}";
 
     public void Reset()
     {
@@ -2307,6 +2323,9 @@ internal sealed class MipsR5000Core
         _runtimeTableClearRegionInstructions = 0;
         _runtimeSafeBranchPairHits = 0;
         _runtimeMergedBranchPairHits = 0;
+        _runtimeCompiledBlockRuns = 0;
+        _runtimeCompiledBlockInstructions = 0;
+        _runtimeCompiledBlockCount = 0;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -4550,7 +4569,8 @@ internal sealed class MipsR5000Core
             return false;
         }
 
-        RuntimeSafeInstruction[] block = GetRuntimeSafeInstructionBlock(pc);
+        RuntimeSafeBlock safeBlock = GetRuntimeSafeInstructionBlock(pc);
+        RuntimeSafeInstruction[] block = safeBlock.Instructions;
         if (block.Length == 0)
             return false;
 
@@ -4559,10 +4579,15 @@ internal sealed class MipsR5000Core
         if (_memory.ReadRuntimeInstruction32(pc) != block[0].Op)
         {
             _runtimeSafeInstructionBlocks.Remove(pc);
-            block = GetRuntimeSafeInstructionBlock(pc);
+            safeBlock = GetRuntimeSafeInstructionBlock(pc);
+            block = safeBlock.Instructions;
             if (block.Length == 0)
                 return false;
         }
+
+        if (block.Length >= _runtimeCompiledBlockMinimumInstructions &&
+            TryRunRuntimeCompiledBlock(pc, runtimeMainState, safeBlock))
+            return true;
 
         int limit = Math.Min(block.Length, _remainingProbeSteps);
         int executed = 0;
@@ -4619,6 +4644,337 @@ internal sealed class MipsR5000Core
         _probeStepDebt += executed - 1;
         return true;
     }
+
+    private bool TryRunRuntimeCompiledBlock(
+        ulong pc,
+        uint runtimeMainState,
+        RuntimeSafeBlock state)
+    {
+        if (!_experimentRuntimeCompiledBlocks ||
+            _remainingProbeSteps < 4 ||
+            _probeStepDebt != 0 ||
+            _hasPendingBranch ||
+            _hasImmediatePcOverride ||
+            _traceEnabled ||
+            _traceWatchPcs.Length != 0 ||
+            _profileHotPcs ||
+            _profileOpcodes ||
+            _profileRuntimeRegions ||
+            _experimentRuntimeFullrectRightClipPositiveT ||
+            _memory.NeedsRuntimeCpuPcAt(pc))
+        {
+            return false;
+        }
+
+        if (state.CompiledUnsupported)
+            return false;
+        if (state.CompiledBlock is null)
+        {
+            state.CompiledHits++;
+            if (state.CompiledHits < _runtimeCompiledBlockThreshold)
+                return false;
+            state.CompiledBlock = CompileRuntimeBlock(pc, state.Instructions);
+            if (state.CompiledBlock is null)
+            {
+                state.CompiledUnsupported = true;
+                return false;
+            }
+            _runtimeCompiledBlockCount++;
+        }
+
+        RuntimeCompiledBlock block = state.CompiledBlock;
+        if (_remainingProbeSteps < block.InstructionCount)
+            return false;
+        if (_memory.ReadRuntimeInstruction32(pc) != block.EntryOp)
+        {
+            _runtimeSafeInstructionBlocks.Remove(pc);
+            return false;
+        }
+
+        block.Runner(this);
+        _gpr[0] = 0;
+        LastFetchedInstruction = block.LastOp;
+        AdvanceCp0Count(_cp0CountStep * (ulong)block.InstructionCount);
+        _instructionCounter += (ulong)block.InstructionCount;
+        Pc = block.EndPc;
+
+        int executed = block.InstructionCount;
+        if (_experimentRuntimeMergeBranchPairs &&
+            executed + 2 <= _remainingProbeSteps &&
+            _memory.RuntimeMainState == runtimeMainState &&
+            TryExecuteRuntimeSafeBranchPair(Pc))
+        {
+            executed += 2;
+            _runtimeMergedBranchPairHits++;
+        }
+
+        _probeStepDebt += executed - 1;
+        _runtimeCompiledBlockRuns++;
+        _runtimeCompiledBlockInstructions += (ulong)block.InstructionCount;
+        return true;
+    }
+
+    private RuntimeCompiledBlock? CompileRuntimeBlock(
+        ulong pc,
+        RuntimeSafeInstruction[] safeInstructions)
+    {
+        List<RuntimeSafeInstruction> instructions = new(safeInstructions.Length);
+        foreach (RuntimeSafeInstruction instruction in safeInstructions)
+        {
+            if (!IsRuntimeCompilableInstruction(in instruction))
+                break;
+            instructions.Add(instruction);
+            if (instruction.MayWriteRuntimeMemory)
+                break;
+        }
+        if (instructions.Count < _runtimeCompiledBlockMinimumInstructions)
+            return null;
+
+        ParameterExpression core = Expression.Parameter(typeof(MipsR5000Core), "core");
+        FieldInfo gprField = typeof(MipsR5000Core).GetField(
+            nameof(_gpr), BindingFlags.Instance | BindingFlags.NonPublic)!;
+        FieldInfo fprField = typeof(MipsR5000Core).GetField(
+            nameof(_fpr), BindingFlags.Instance | BindingFlags.NonPublic)!;
+        FieldInfo memoryField = typeof(MipsR5000Core).GetField(
+            nameof(_memory), BindingFlags.Instance | BindingFlags.NonPublic)!;
+        MemberExpression gpr = Expression.Field(core, gprField);
+        MemberExpression fpr = Expression.Field(core, fprField);
+        MemberExpression memory = Expression.Field(core, memoryField);
+        MethodInfo signExtend32 = typeof(MipsR5000Core).GetMethod(
+            nameof(SignExtend32), BindingFlags.Static | BindingFlags.NonPublic,
+            binder: null, [typeof(uint)], modifiers: null)!;
+        HashSet<int> referencedRegisters = [];
+        HashSet<int> modifiedRegisters = [];
+        foreach (RuntimeSafeInstruction instruction in instructions)
+        {
+            if (instruction.Rs != 0)
+                referencedRegisters.Add(instruction.Rs);
+            if (instruction.Rt != 0)
+                referencedRegisters.Add(instruction.Rt);
+            if (instruction.Rd != 0)
+                referencedRegisters.Add(instruction.Rd);
+            int modified = GetRuntimeCompiledModifiedGpr(in instruction);
+            if (modified != 0)
+            {
+                referencedRegisters.Add(modified);
+                modifiedRegisters.Add(modified);
+            }
+        }
+        ParameterExpression?[] registers = new ParameterExpression?[32];
+        List<ParameterExpression> variables = new(referencedRegisters.Count);
+        List<Expression> body = new(referencedRegisters.Count + instructions.Count + modifiedRegisters.Count);
+        foreach (int register in referencedRegisters.Order())
+        {
+            ParameterExpression local = Expression.Variable(typeof(ulong), $"r{register}");
+            registers[register] = local;
+            variables.Add(local);
+            body.Add(Expression.Assign(
+                local,
+                Expression.ArrayAccess(gpr, Expression.Constant(register))));
+        }
+        foreach (RuntimeSafeInstruction instruction in instructions)
+        {
+            Expression? operation = BuildRuntimeCompiledInstructionExpression(
+                in instruction, registers, fpr, memory, signExtend32);
+            if (operation is null)
+                return null;
+            body.Add(operation);
+        }
+        foreach (int register in modifiedRegisters.Order())
+        {
+            body.Add(Expression.Assign(
+                Expression.ArrayAccess(gpr, Expression.Constant(register)),
+                registers[register]!));
+        }
+
+        Action<MipsR5000Core> runner = Expression
+            .Lambda<Action<MipsR5000Core>>(Expression.Block(variables, body), core)
+            .Compile(preferInterpretation: false);
+        return new RuntimeCompiledBlock(
+            runner,
+            instructions.Count,
+            pc + (ulong)(instructions.Count * 4),
+            instructions[0].Op,
+            instructions[^1].Op);
+    }
+
+    private static bool IsRuntimeCompilableInstruction(in RuntimeSafeInstruction instruction)
+    {
+        if (instruction.Opcode is >= 0x08 and <= 0x0f or 0x18 or 0x19 or
+            0x20 or 0x21 or 0x23 or 0x24 or 0x25 or 0x27 or
+            0x28 or 0x29 or
+            0x31 or 0x35 or 0x37 or 0x39 or 0x3d or 0x3f)
+            return true;
+        if (instruction.Opcode != 0)
+            return false;
+        return instruction.Function is
+            0x00 or 0x02 or 0x03 or 0x04 or 0x06 or 0x07 or
+            0x0a or 0x0b or 0x0f or
+            0x14 or 0x16 or 0x17 or
+            0x20 or 0x21 or 0x22 or 0x23 or
+            0x24 or 0x25 or 0x26 or 0x27 or
+            0x2a or 0x2b or 0x2d or 0x2f or
+            0x38 or 0x3a or 0x3b or 0x3c or 0x3e or 0x3f;
+    }
+
+    private static int GetRuntimeCompiledModifiedGpr(in RuntimeSafeInstruction instruction)
+    {
+        if (instruction.Opcode == 0)
+            return instruction.Function == 0x0f ? 0 : instruction.Rd;
+        return instruction.Opcode is
+            >= 0x08 and <= 0x0f or 0x18 or 0x19 or
+            0x20 or 0x21 or 0x23 or 0x24 or 0x25 or 0x27 or 0x37
+            ? instruction.Rt
+            : 0;
+    }
+
+    private static Expression? BuildRuntimeCompiledInstructionExpression(
+        in RuntimeSafeInstruction instruction,
+        ParameterExpression?[] registers,
+        MemberExpression fpr,
+        MemberExpression memory,
+        MethodInfo signExtend32)
+    {
+        Expression Register(int index) => index == 0
+            ? Expression.Constant(0UL)
+            : registers[index] ?? throw new InvalidOperationException($"Missing compiled register r{index}");
+        Expression U32(Expression value) => Expression.Convert(value, typeof(uint));
+        Expression S64(Expression value) => Expression.Convert(value, typeof(long));
+        Expression Sign32(Expression value) => Expression.Call(signExtend32, U32(value));
+        Expression Set(int index, Expression value) => index == 0
+            ? Expression.Empty()
+            : Expression.Assign(Register(index), Expression.Convert(value, typeof(ulong)));
+        Expression FpRegister(int index) => Expression.ArrayAccess(fpr, Expression.Constant(index));
+        Expression SetGprOrEvaluate(int index, Expression value) => index == 0
+            ? Expression.Block(value, Expression.Empty())
+            : Expression.Assign(registers[index]!, Expression.Convert(value, typeof(ulong)));
+        Expression SetFp(int index, Expression value) => Expression.Assign(
+            Expression.ArrayAccess(fpr, Expression.Constant(index)),
+            Expression.Convert(value, typeof(ulong)));
+        Expression BoolValue(Expression condition) => Expression.Condition(
+            condition, Expression.Constant(1UL), Expression.Constant(0UL));
+
+        int rs = instruction.Rs;
+        int rt = instruction.Rt;
+        int rd = instruction.Rd;
+        int shift = instruction.Shift;
+        uint simm32 = unchecked((uint)instruction.Immediate);
+        ulong simm64 = unchecked((ulong)(long)instruction.Immediate);
+        if (instruction.Opcode == 0)
+        {
+            Expression rsValue = Register(rs);
+            Expression rtValue = Register(rt);
+            return instruction.Function switch
+            {
+                0x00 => Set(rd, Sign32(Expression.LeftShift(U32(rtValue), Expression.Constant(shift)))),
+                0x02 => Set(rd, Sign32(Expression.RightShift(U32(rtValue), Expression.Constant(shift)))),
+                0x03 => Set(rd, Sign32(Expression.RightShift(Expression.Convert(U32(rtValue), typeof(int)), Expression.Constant(shift)))),
+                0x04 => Set(rd, Sign32(Expression.LeftShift(U32(rtValue), Expression.Convert(Expression.And(rsValue, Expression.Constant(0x1fUL)), typeof(int))))),
+                0x06 => Set(rd, Sign32(Expression.RightShift(U32(rtValue), Expression.Convert(Expression.And(rsValue, Expression.Constant(0x1fUL)), typeof(int))))),
+                0x07 => Set(rd, Sign32(Expression.RightShift(Expression.Convert(U32(rtValue), typeof(int)), Expression.Convert(Expression.And(rsValue, Expression.Constant(0x1fUL)), typeof(int))))),
+                0x0a => rd == 0 ? Expression.Empty() : Expression.IfThen(Expression.Equal(rtValue, Expression.Constant(0UL)), Expression.Assign(Register(rd), rsValue)),
+                0x0b => rd == 0 ? Expression.Empty() : Expression.IfThen(Expression.NotEqual(rtValue, Expression.Constant(0UL)), Expression.Assign(Register(rd), rsValue)),
+                0x0f => Expression.Empty(),
+                0x14 => Set(rd, Expression.LeftShift(rtValue, Expression.Convert(Expression.And(rsValue, Expression.Constant(0x3fUL)), typeof(int)))),
+                0x16 => Set(rd, Expression.RightShift(rtValue, Expression.Convert(Expression.And(rsValue, Expression.Constant(0x3fUL)), typeof(int)))),
+                0x17 => Set(rd, Expression.Convert(Expression.RightShift(S64(rtValue), Expression.Convert(Expression.And(rsValue, Expression.Constant(0x3fUL)), typeof(int))), typeof(ulong))),
+                0x20 or 0x21 => Set(rd, Sign32(Expression.Add(U32(rsValue), U32(rtValue)))),
+                0x22 or 0x23 => Set(rd, Sign32(Expression.Subtract(U32(rsValue), U32(rtValue)))),
+                0x24 => Set(rd, Expression.And(rsValue, rtValue)),
+                0x25 => Set(rd, Expression.Or(rsValue, rtValue)),
+                0x26 => Set(rd, Expression.ExclusiveOr(rsValue, rtValue)),
+                0x27 => Set(rd, Expression.Not(Expression.Or(rsValue, rtValue))),
+                0x2a => Set(rd, BoolValue(Expression.LessThan(S64(rsValue), S64(rtValue)))),
+                0x2b => Set(rd, BoolValue(Expression.LessThan(rsValue, rtValue))),
+                0x2d => Set(rd, Expression.Add(rsValue, rtValue)),
+                0x2f => Set(rd, Expression.Subtract(rsValue, rtValue)),
+                0x38 => Set(rd, Expression.LeftShift(rtValue, Expression.Constant(shift))),
+                0x3a => Set(rd, Expression.RightShift(rtValue, Expression.Constant(shift))),
+                0x3b => Set(rd, Expression.Convert(Expression.RightShift(S64(rtValue), Expression.Constant(shift)), typeof(ulong))),
+                0x3c => Set(rd, Expression.LeftShift(rtValue, Expression.Constant(shift + 32))),
+                0x3e => Set(rd, Expression.RightShift(rtValue, Expression.Constant(shift + 32))),
+                0x3f => Set(rd, Expression.Convert(Expression.RightShift(S64(rtValue), Expression.Constant(shift + 32)), typeof(ulong))),
+                _ => null
+            };
+        }
+
+        Expression source = Register(rs);
+        Expression address = Expression.Add(source, Expression.Constant(simm64));
+        MethodInfo MemoryMethod(string name, params Type[] parameters) =>
+            typeof(VegasMemoryMap).GetMethod(
+                name,
+                BindingFlags.Instance | BindingFlags.Public,
+                binder: null,
+                parameters,
+                modifiers: null) ??
+            throw new MissingMethodException(typeof(VegasMemoryMap).FullName, name);
+        return instruction.Opcode switch
+        {
+            0x08 or 0x09 => Set(rt, Sign32(Expression.Add(U32(source), Expression.Constant(simm32)))),
+            0x0a => Set(rt, BoolValue(Expression.LessThan(S64(source), Expression.Constant((long)instruction.Immediate)))),
+            0x0b => Set(rt, BoolValue(Expression.LessThan(source, Expression.Constant(simm64)))),
+            0x0c => Set(rt, Expression.And(source, Expression.Constant((ulong)instruction.UnsignedImmediate))),
+            0x0d => Set(rt, Expression.Or(source, Expression.Constant((ulong)instruction.UnsignedImmediate))),
+            0x0e => Set(rt, Expression.ExclusiveOr(source, Expression.Constant((ulong)instruction.UnsignedImmediate))),
+            0x0f => Set(rt, Sign32(Expression.Constant((uint)instruction.UnsignedImmediate << 16))),
+            0x18 or 0x19 => Set(rt, Expression.Add(source, Expression.Constant(simm64))),
+            0x20 => SetGprOrEvaluate(rt, Expression.Convert(
+                Expression.Convert(Expression.Call(memory,
+                    MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData8), typeof(ulong)), address), typeof(sbyte)),
+                typeof(long))),
+            0x21 => SetGprOrEvaluate(rt, Expression.Convert(
+                Expression.Convert(Expression.Call(memory,
+                    MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData16), typeof(ulong)), address), typeof(short)),
+                typeof(long))),
+            0x23 => SetGprOrEvaluate(rt, Expression.Convert(
+                Expression.Convert(Expression.Call(memory,
+                    MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData32), typeof(ulong)), address), typeof(int)),
+                typeof(long))),
+            0x24 => SetGprOrEvaluate(rt, Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData8), typeof(ulong)), address)),
+            0x25 => SetGprOrEvaluate(rt, Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData16), typeof(ulong)), address)),
+            0x27 => SetGprOrEvaluate(rt, Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData32), typeof(ulong)), address)),
+            0x28 => Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.WriteRuntimeData8), typeof(ulong), typeof(byte)),
+                address, Expression.Convert(Register(rt), typeof(byte))),
+            0x29 => Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.WriteRuntimeData16), typeof(ulong), typeof(ushort)),
+                address, Expression.Convert(Register(rt), typeof(ushort))),
+            0x31 => SetFp(rt, Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData32), typeof(ulong)), address)),
+            0x35 => SetFp(rt, Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData64), typeof(ulong)), address)),
+            0x37 => SetGprOrEvaluate(rt, Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData64), typeof(ulong)), address)),
+            0x39 => Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.WriteRuntimeData32), typeof(ulong), typeof(uint)),
+                address, Expression.Convert(FpRegister(rt), typeof(uint))),
+            0x3d => Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.WriteRuntimeData64), typeof(ulong), typeof(ulong)),
+                address, FpRegister(rt)),
+            0x3f => Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.WriteRuntimeData64), typeof(ulong), typeof(ulong)),
+                address, Register(rt)),
+            _ => null
+        };
+    }
+
+    private sealed class RuntimeSafeBlock(RuntimeSafeInstruction[] instructions)
+    {
+        public RuntimeSafeInstruction[] Instructions { get; } = instructions;
+        public int CompiledHits { get; set; }
+        public bool CompiledUnsupported { get; set; }
+        public RuntimeCompiledBlock? CompiledBlock { get; set; }
+    }
+
+    private sealed record RuntimeCompiledBlock(
+        Action<MipsR5000Core> Runner,
+        int InstructionCount,
+        ulong EndPc,
+        uint EntryOp,
+        uint LastOp);
 
     private bool TryRunRuntimeSafeBranchPair(ulong pc)
     {
@@ -4681,10 +5037,10 @@ internal sealed class MipsR5000Core
         return true;
     }
 
-    private RuntimeSafeInstruction[] GetRuntimeSafeInstructionBlock(ulong pc)
+    private RuntimeSafeBlock GetRuntimeSafeInstructionBlock(ulong pc)
     {
         const int maxInstructions = 64;
-        if (_runtimeSafeInstructionBlocks.TryGetValue(pc, out RuntimeSafeInstruction[]? cached))
+        if (_runtimeSafeInstructionBlocks.TryGetValue(pc, out RuntimeSafeBlock? cached))
             return cached;
 
         List<RuntimeSafeInstruction> instructions = new(maxInstructions);
@@ -4702,7 +5058,7 @@ internal sealed class MipsR5000Core
             currentPc += 4UL;
         }
 
-        RuntimeSafeInstruction[] block = instructions.ToArray();
+        RuntimeSafeBlock block = new(instructions.ToArray());
         _runtimeSafeInstructionBlocks[pc] = block;
         return block;
     }

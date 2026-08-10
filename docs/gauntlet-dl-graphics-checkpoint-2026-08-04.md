@@ -290,3 +290,39 @@ cirka 25 procent fler riktiga Voodoo-bilder än 60 000-läget, samtidigt som
 proben behåller marginal över 60 anrop/s. Det fjärde skriptargumentet kan
 fortfarande användas för att välja en annan budget. Det exakta 60 000-stegs-
 oraklet i probe-startaren är oförändrat.
+
+## 2026-08-10: servicegränssäkert block/JIT-lager
+
+Den raka runtime-batchcachen har nu ett valfritt kompilerat lager byggt med
+.NET expression trees. Det kompilerar endast heta sekventiella MIPS-block som
+redan har godkänts av den servicegränssäkra batchningen. Brancher, delay slots,
+runtime-service-PC:n, trace/profilering och okända instruktioner ligger kvar i
+den verifierade kärnvägen. Generella 32-bitars stores kompileras inte eftersom
+de fortfarande kan bära Gauntlets FIFO- och enhetshooks.
+
+För att undvika kostnaden från många små delegates krävs som standard minst 16
+kompilerbara instruktioner och 512 träffar innan ett block kompileras. Desktop-
+och warm-probe-profilerna aktiverar lagret. Trösklarna kan överstyras med:
+
+```text
+EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_THRESHOLD
+EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_MIN_INSTRUCTIONS
+```
+
+Ett 1 200-anropsprov från f6750 till f7950 kompilerade sju block och körde
+555 355 gästinstruktioner genom dem. Två närliggande A/B-par gav cirka 3,7
+respektive 7,3 procent lägre `runMs`; wall-clock varierar dock med värdlast, så
+detta ska behandlas som en försiktig första vinst snarare än slutlig dynarec-
+prestanda. Det längre oraklet behöll exakt:
+
+```text
+frameHash   0x8a71c24a
+PC          0xffffffff800c6c34
+FIFO        26453151 / 2585612
+drawPackets 459391
+swaps       3864
+```
+
+Proben skriver `compiledBlocks=count/runs/instructions` när lagret är aktivt.
+Nästa JIT-steg bör vara servicegränssäkra traces över interna brancher; kortare
+raka block gav en tydlig nettoförlust och ska inte återaktiveras.
