@@ -326,3 +326,26 @@ swaps       3864
 Proben skriver `compiledBlocks=count/runs/instructions` när lagret är aktivt.
 Nästa JIT-steg bör vara servicegränssäkra traces över interna brancher; kortare
 raka block gav en tydlig nettoförlust och ska inte återaktiveras.
+
+## 2026-08-10: COP1/COP1X i blockkompilatorn
+
+JIT-backenden kompilerar nu de raka blockens vanligaste bitexakta single-
+precision-operationer: `ADD.S`, `SUB.S`, `MUL.S`, `DIV.S`, `ABS.S`, `MOV.S`,
+`NEG.S` samt COP1X `MADD.S`, `MSUB.S`, `NMADD.S` och `NMSUB.S`. Varje operation
+byggs direkt i expression-trädet med samma `float`- och bitkonvertering som
+tolken; brancher och okända COP1-funktioner avslutar fortfarande blocket.
+
+En 16-instruktionsgräns skapade 19 delegates och blev långsammare. Minsta
+blocklängd höjdes därför till 20. Det gav tio heta block och körde 438 891
+instruktioner genom JIT-lagret över 1 200 anrop. Två interfolierade A/B-par gav:
+
+```text
+tolk/batch   9355,4 ms   9391,5 ms
+COP1-JIT     8672,1 ms   8531,2 ms
+vinst           7,3 %       9,2 %
+```
+
+Båda JIT-körningarna behöll `frameHash=0x8a71c24a`, slut-PC
+`0xffffffff800c6c34`, FIFO `26453151/2585612`, 459 391 draw-paket och 3 864
+swaps. Nästa lager kan nu fokusera på stabila branchöverskridande traces i
+stället för fler små raka delegates.

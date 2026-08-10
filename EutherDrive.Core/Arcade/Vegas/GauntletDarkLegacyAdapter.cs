@@ -1249,7 +1249,7 @@ internal sealed class MipsR5000Core
     private readonly int _runtimeCompiledBlockThreshold =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_THRESHOLD", 512);
     private readonly int _runtimeCompiledBlockMinimumInstructions =
-        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_MIN_INSTRUCTIONS", 16);
+        ParsePositiveInt("EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_MIN_INSTRUCTIONS", 20);
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
@@ -4805,6 +4805,14 @@ internal sealed class MipsR5000Core
             0x28 or 0x29 or
             0x31 or 0x35 or 0x37 or 0x39 or 0x3d or 0x3f)
             return true;
+        if (instruction.Opcode == 0x11)
+        {
+            int format = instruction.Rs;
+            return format == 0x10 && instruction.Function is
+                0x00 or 0x01 or 0x02 or 0x03 or 0x05 or 0x06 or 0x07 or 0x20;
+        }
+        if (instruction.Opcode == 0x13)
+            return instruction.Function is 0x0f or 0x20 or 0x28 or 0x30 or 0x38;
         if (instruction.Opcode != 0)
             return false;
         return instruction.Function is
@@ -4851,6 +4859,16 @@ internal sealed class MipsR5000Core
         Expression SetFp(int index, Expression value) => Expression.Assign(
             Expression.ArrayAccess(fpr, Expression.Constant(index)),
             Expression.Convert(value, typeof(ulong)));
+        MethodInfo uint32BitsToSingle = typeof(BitConverter).GetMethod(
+            nameof(BitConverter.UInt32BitsToSingle), [typeof(uint)])!;
+        MethodInfo singleToUInt32Bits = typeof(BitConverter).GetMethod(
+            nameof(BitConverter.SingleToUInt32Bits), [typeof(float)])!;
+        Expression Fp32(int index) => Expression.Call(
+            uint32BitsToSingle,
+            Expression.Convert(FpRegister(index), typeof(uint)));
+        Expression SetFp32(int index, Expression value) => SetFp(
+            index,
+            Expression.Call(singleToUInt32Bits, value));
         Expression BoolValue(Expression condition) => Expression.Condition(
             condition, Expression.Constant(1UL), Expression.Constant(0UL));
 
@@ -4896,6 +4914,49 @@ internal sealed class MipsR5000Core
                 0x3f => Set(rd, Expression.Convert(Expression.RightShift(S64(rtValue), Expression.Constant(shift + 32)), typeof(ulong))),
                 _ => null
             };
+        }
+
+        if (instruction.Opcode == 0x11)
+        {
+            int ft = instruction.Rt;
+            int fs = instruction.Rd;
+            int fd = instruction.Shift;
+            Expression left = Fp32(fs);
+            Expression right = Fp32(ft);
+            return instruction.Function switch
+            {
+                0x00 => SetFp32(fd, Expression.Add(left, right)),
+                0x01 => SetFp32(fd, Expression.Subtract(left, right)),
+                0x02 => SetFp32(fd, Expression.Multiply(left, right)),
+                0x03 => SetFp32(fd, Expression.Divide(left, right)),
+                0x05 => SetFp(fd, Expression.And(FpRegister(fs), Expression.Constant(0x7fffffffUL))),
+                0x06 or 0x20 => SetFp(fd, Expression.Convert(FpRegister(fs), typeof(uint))),
+                0x07 => SetFp(fd, Expression.ExclusiveOr(
+                    Expression.Convert(FpRegister(fs), typeof(uint)),
+                    Expression.Constant(0x80000000U))),
+                _ => null
+            };
+        }
+
+        if (instruction.Opcode == 0x13)
+        {
+            if (instruction.Function == 0x0f)
+                return Expression.Empty();
+            int fr = instruction.Rs;
+            int ft = instruction.Rt;
+            int fs = instruction.Rd;
+            int fd = instruction.Shift;
+            Expression product = Expression.Multiply(Fp32(fs), Fp32(ft));
+            Expression accumulator = Fp32(fr);
+            Expression value = instruction.Function switch
+            {
+                0x20 => Expression.Add(product, accumulator),
+                0x28 => Expression.Subtract(product, accumulator),
+                0x30 => Expression.Negate(Expression.Add(product, accumulator)),
+                0x38 => Expression.Negate(Expression.Subtract(product, accumulator)),
+                _ => throw new InvalidOperationException("Unsupported compiled COP1X operation")
+            };
+            return SetFp32(fd, value);
         }
 
         Expression source = Register(rs);
