@@ -1235,6 +1235,9 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeSafeInstructionBatches =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_SAFE_INSTRUCTION_BATCHES"));
+    private readonly bool _experimentRuntimeSafeBranchPairs =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_SAFE_BRANCH_PAIRS"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
@@ -1255,6 +1258,7 @@ internal sealed class MipsR5000Core
     private bool _runtimeTableClearRegionCodeValidated;
     private ulong _runtimeTableClearRegionHits;
     private ulong _runtimeTableClearRegionInstructions;
+    private ulong _runtimeSafeBranchPairHits;
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2257,6 +2261,9 @@ internal sealed class MipsR5000Core
     public string RuntimeTableClearRegionStatus =>
         $"tableClearRegion=hits:{_runtimeTableClearRegionHits}" +
         $"/instructions:{_runtimeTableClearRegionInstructions}";
+    public string RuntimeSafeBranchPairStatus =>
+        $"safeBranchPairs=hits:{_runtimeSafeBranchPairHits}" +
+        $"/instructions:{_runtimeSafeBranchPairHits * 2UL}";
 
     public void Reset()
     {
@@ -2293,6 +2300,7 @@ internal sealed class MipsR5000Core
         _runtimeTableClearRegionCodeValidated = false;
         _runtimeTableClearRegionHits = 0;
         _runtimeTableClearRegionInstructions = 0;
+        _runtimeSafeBranchPairHits = 0;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -3903,6 +3911,8 @@ internal sealed class MipsR5000Core
             {
                 if (TryRunRuntimeSafeInstructionBatch(pc, runtimeMainState))
                     return;
+                if (TryRunRuntimeSafeBranchPair(pc))
+                    return;
                 goto ExecuteInstruction;
             }
         }
@@ -4587,6 +4597,57 @@ internal sealed class MipsR5000Core
         }
 
         _probeStepDebt += executed - 1;
+        return true;
+    }
+
+    private bool TryRunRuntimeSafeBranchPair(ulong pc)
+    {
+        if (!_experimentRuntimeSafeBranchPairs ||
+            _remainingProbeSteps < 2 ||
+            _probeStepDebt != 0 ||
+            _hasPendingBranch ||
+            _hasImmediatePcOverride ||
+            _traceEnabled ||
+            _traceWatchPcs.Length != 0 ||
+            _profileHotPcs ||
+            _profileOpcodes ||
+            _profileRuntimeRegions ||
+            _experimentRuntimeFullrectRightClipPositiveT ||
+            _memory.NeedsRuntimeCpuPcAt(pc) ||
+            _memory.NeedsRuntimeCpuPcAt(pc + 4UL) ||
+            IsKnownRuntimeSteadyStateServicePc(pc + 4UL))
+        {
+            return false;
+        }
+
+        uint branchOp = _memory.ReadRuntimeInstruction32(pc);
+        uint branchOpcode = branchOp >> 26;
+        if (branchOpcode is < 0x04U or > 0x07U)
+            return false;
+
+        uint delayOp = _memory.ReadRuntimeInstruction32(pc + 4UL);
+        if (!IsSafeSequentialRuntimeInstruction(delayOp))
+            return false;
+
+        LastFetchedInstruction = branchOp;
+        Execute(pc, branchOp, steadyStateFastDispatch: true);
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep);
+        _instructionCounter++;
+
+        ulong nextPc = _hasPendingBranch ? _pendingBranchTarget : pc + 8UL;
+        _hasPendingBranch = false;
+        _hasImmediatePcOverride = false;
+
+        RuntimeSafeInstruction delayInstruction = new(delayOp);
+        LastFetchedInstruction = delayOp;
+        ExecuteRuntimeSafeInstruction(pc + 4UL, in delayInstruction);
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep);
+        _instructionCounter++;
+        Pc = nextPc;
+        _probeStepDebt++;
+        _runtimeSafeBranchPairHits++;
         return true;
     }
 

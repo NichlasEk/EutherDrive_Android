@@ -235,3 +235,29 @@ inte spelbart. En generell rak basic-block-prototyp provades också: den körde
 935 803 instruktioner i block men missade en gästservicepunkt, tappade nästa
 swap och divergerade i PC/FIFO. Den prototypen är helt borttagen. Nästa CPU-pass
 måste därför göra service-/interruptgränser explicita innan block exekveras.
+
+## 2026-08-10: säkra branch/delay-slot-par
+
+Den befintliga raka instruktionsbatchningen stannade före varje MIPS-branch.
+Branchen och dess obligatoriska delay slot gick därför genom två fulla
+`Step()`-varv. Kärnan kan nu köra vanliga villkorsbrancher (`beq`, `bne`,
+`blez`, `bgtz`) tillsammans med en verifierat sekventiell delay slot. Den
+kontrollerar båda PC-adressernas servicebehov och återgår till ordinarie väg
+vid trace/profilering eller ovanliga instruktioner. Branchmålet servas alltid
+först i nästa steg; inga hela basic blocks kan passera en servicepunkt.
+
+Tre interfolierade 300-anropsprov per läge gav median `runMs` 3 932 ms utan
+paren och 3 700 ms med dem, cirka 5,9 procent snabbare. Det långa oraklet
+behöll exakt:
+
+```text
+frameHash   0x78a8ec1a
+PC          0xffffffff800c9c8c
+FIFO        25455490 / 2464990
+drawPackets 434522
+swaps       3844
+```
+
+Detta är fortfarande långt från spelbar gästvideo; nästa CPU-pass bör utöka
+samma servicegränssäkra modell till fler branchklasser eller ett riktigt
+block/JIT-lager, inte återinföra den tidigare obegränsade prototypen.
