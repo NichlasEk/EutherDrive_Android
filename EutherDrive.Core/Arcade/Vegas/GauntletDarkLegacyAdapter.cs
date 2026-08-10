@@ -1238,6 +1238,9 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeSafeBranchPairs =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_SAFE_BRANCH_PAIRS"));
+    private readonly bool _experimentRuntimeMergeBranchPairs =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_MERGE_BRANCH_PAIRS"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
@@ -1259,6 +1262,7 @@ internal sealed class MipsR5000Core
     private ulong _runtimeTableClearRegionHits;
     private ulong _runtimeTableClearRegionInstructions;
     private ulong _runtimeSafeBranchPairHits;
+    private ulong _runtimeMergedBranchPairHits;
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2263,7 +2267,8 @@ internal sealed class MipsR5000Core
         $"/instructions:{_runtimeTableClearRegionInstructions}";
     public string RuntimeSafeBranchPairStatus =>
         $"safeBranchPairs=hits:{_runtimeSafeBranchPairHits}" +
-        $"/instructions:{_runtimeSafeBranchPairHits * 2UL}";
+        $"/instructions:{_runtimeSafeBranchPairHits * 2UL}" +
+        $"/merged:{_runtimeMergedBranchPairHits}";
 
     public void Reset()
     {
@@ -2301,6 +2306,7 @@ internal sealed class MipsR5000Core
         _runtimeTableClearRegionHits = 0;
         _runtimeTableClearRegionInstructions = 0;
         _runtimeSafeBranchPairHits = 0;
+        _runtimeMergedBranchPairHits = 0;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -4587,6 +4593,20 @@ internal sealed class MipsR5000Core
             }
         }
 
+        if (_experimentRuntimeMergeBranchPairs &&
+            executed == block.Length &&
+            executed + 2 <= _remainingProbeSteps &&
+            !_halted &&
+            !_hasPendingBranch &&
+            !_hasImmediatePcOverride &&
+            (!block[^1].MayWriteRuntimeMemory ||
+             _memory.RuntimeMainState == runtimeMainState) &&
+            TryExecuteRuntimeSafeBranchPair(currentPc))
+        {
+            executed += 2;
+            _runtimeMergedBranchPairHits++;
+        }
+
         if (executed < 2)
         {
             // One instruction does not amortize Step() dispatch, but it is
@@ -4602,9 +4622,20 @@ internal sealed class MipsR5000Core
 
     private bool TryRunRuntimeSafeBranchPair(ulong pc)
     {
-        if (!_experimentRuntimeSafeBranchPairs ||
-            _remainingProbeSteps < 2 ||
+        if (_remainingProbeSteps < 2 ||
             _probeStepDebt != 0 ||
+            !TryExecuteRuntimeSafeBranchPair(pc))
+        {
+            return false;
+        }
+
+        _probeStepDebt++;
+        return true;
+    }
+
+    private bool TryExecuteRuntimeSafeBranchPair(ulong pc)
+    {
+        if (!_experimentRuntimeSafeBranchPairs ||
             _hasPendingBranch ||
             _hasImmediatePcOverride ||
             _traceEnabled ||
@@ -4646,7 +4677,6 @@ internal sealed class MipsR5000Core
         AdvanceCp0Count(_cp0CountStep);
         _instructionCounter++;
         Pc = nextPc;
-        _probeStepDebt++;
         _runtimeSafeBranchPairHits++;
         return true;
     }

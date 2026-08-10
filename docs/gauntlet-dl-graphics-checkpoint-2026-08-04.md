@@ -261,3 +261,11 @@ swaps       3844
 Detta är fortfarande långt från spelbar gästvideo; nästa CPU-pass bör utöka
 samma servicegränssäkra modell till fler branchklasser eller ett riktigt
 block/JIT-lager, inte återinföra den tidigare obegränsade prototypen.
+
+Den raka instruktionsbatchen kan nu även absorbera sitt avslutande säkra
+branch/delay-slot-par. Branchmålet körs fortfarande först i nästa `Step()`, men
+den separata värd-dispatchen mellan blockkropp och branch försvinner. Oraklet
+räknade 720 021 sådana sammanslagningar över 300 anrop. Tre interfolierade
+körningar per läge gav median `runMs` 4 002 ms utan sammanslagningen och
+3 873 ms med den, cirka 3,2 procent ytterligare förbättring. Slut-PC, hash,
+FIFO-, draw- och swapräknare var fortsatt identiska.
