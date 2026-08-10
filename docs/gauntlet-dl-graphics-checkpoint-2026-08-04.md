@@ -269,3 +269,24 @@ räknade 720 021 sådana sammanslagningar över 300 anrop. Tre interfolierade
 körningar per läge gav median `runMs` 4 002 ms utan sammanslagningen och
 3 873 ms med den, cirka 3,2 procent ytterligare förbättring. Slut-PC, hash,
 FIFO-, draw- och swapräknare var fortsatt identiska.
+
+## 2026-08-10: desktop använder det nya CPU-headroomet
+
+Efter branchoptimeringarna klarar proben mer än 60 kärnanrop/s. Desktopprofilen
+behövde därför inte längre stanna vid 60 000 MIPS-steg per 60-Hz-anrop. Ett
+300-anropsprov jämförde flera budgetar från samma f6750-state:
+
+```text
+steg/anrop  kapacitet       nya swaps  slut-hash
+60000       76,7 anrop/s     8          0x78a8ec1a
+72000       73,7–74,8        8          0x78a8ec1a
+84000       64,9–67,1       10          0xe9d4e439
+90000       62,8            11          0x40bd6aae
+```
+
+Två 84 000-körningar gav exakt samma PC, hash, FIFO-, draw-, framebuffer- och
+swapräknare. Desktopstartaren använder därför 84 000 som försiktig standard:
+cirka 25 procent fler riktiga Voodoo-bilder än 60 000-läget, samtidigt som
+proben behåller marginal över 60 anrop/s. Det fjärde skriptargumentet kan
+fortfarande användas för att välja en annan budget. Det exakta 60 000-stegs-
+oraklet i probe-startaren är oförändrat.
