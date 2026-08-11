@@ -456,3 +456,25 @@ Tracen kördes 24 371 gånger och flyttade ytterligare 974 840 instruktioner
 till JIT. Båda körningarna behöll exakt `frameHash=0xe87b12da`, slut-PC
 `0xffffffff80079e18`, FIFO `27113239/2660774`, 474 871 draw-paket och 3 877
 swaps. Warm-probe och desktop aktiverar den separata render-submit-flaggan.
+
+## 2026-08-11: direkt backend för branch plus delay slot
+
+Den generella safe-branch-vägen exekverar nu `beq`, `bne`, `blez` och `bgtz`
+direkt tillsammans med sin verifierat säkra delay slot. Det undviker den stora
+opcode-dispatchern, pending-branch-state och efterföljande targetupplösning för
+varje par, men använder samma kanoniska branchmål och samma instruktionstiming.
+
+Över 300 anrop tog den direkta vägen 1 298 192 branchpar. Två interfolierade
+A/B-par gav 7,2 respektive 3,1 procent lägre `runMs`. Det längre provet gav:
+
+```text
+generisk branch-dispatch   12099,7 ms
+direkt branchpar           11584,7 ms
+vinst                          4,3 %
+```
+
+Långprovet exekverade 5 014 413 direkta branchpar och behöll exakt
+`frameHash=0xe87b12da`, slut-PC `0xffffffff80079e18`, FIFO
+`27113239/2660774`, 474 871 draw-paket och 3 877 swaps. Ett parallellt försök
+att länka små successor-block förkastades efter en cirka 0,6-procentig
+regression i det långa A/B-provet.

@@ -1240,6 +1240,9 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeSafeBranchPairs =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_SAFE_BRANCH_PAIRS"));
+    private readonly bool _experimentRuntimeDirectBranchPairs =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_DIRECT_BRANCH_PAIRS"));
     private readonly bool _experimentRuntimeMergeBranchPairs =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_MERGE_BRANCH_PAIRS"));
@@ -1280,6 +1283,7 @@ internal sealed class MipsR5000Core
     private ulong _runtimeTableClearRegionHits;
     private ulong _runtimeTableClearRegionInstructions;
     private ulong _runtimeSafeBranchPairHits;
+    private ulong _runtimeDirectBranchPairHits;
     private ulong _runtimeMergedBranchPairHits;
     private ulong _runtimeCompiledBlockRuns;
     private ulong _runtimeCompiledBlockInstructions;
@@ -2291,7 +2295,8 @@ internal sealed class MipsR5000Core
     public string RuntimeSafeBranchPairStatus =>
         $"safeBranchPairs=hits:{_runtimeSafeBranchPairHits}" +
         $"/instructions:{_runtimeSafeBranchPairHits * 2UL}" +
-        $"/merged:{_runtimeMergedBranchPairHits}";
+        $"/merged:{_runtimeMergedBranchPairHits}" +
+        $"/direct:{_runtimeDirectBranchPairHits}";
     public string RuntimeCompiledBlockStatus =>
         $"compiledBlocks=count:{_runtimeCompiledBlockCount}" +
         $"/runs:{_runtimeCompiledBlockRuns}" +
@@ -2335,6 +2340,7 @@ internal sealed class MipsR5000Core
         _runtimeTableClearRegionHits = 0;
         _runtimeTableClearRegionInstructions = 0;
         _runtimeSafeBranchPairHits = 0;
+        _runtimeDirectBranchPairHits = 0;
         _runtimeMergedBranchPairHits = 0;
         _runtimeCompiledBlockRuns = 0;
         _runtimeCompiledBlockInstructions = 0;
@@ -5272,15 +5278,39 @@ internal sealed class MipsR5000Core
         if (!IsSafeSequentialRuntimeInstruction(delayOp))
             return false;
 
-        LastFetchedInstruction = branchOp;
-        Execute(pc, branchOp, steadyStateFastDispatch: true);
-        _gpr[0] = 0;
-        AdvanceCp0Count(_cp0CountStep);
-        _instructionCounter++;
-
-        ulong nextPc = _hasPendingBranch ? _pendingBranchTarget : pc + 8UL;
-        _hasPendingBranch = false;
-        _hasImmediatePcOverride = false;
+        ulong nextPc;
+        if (_experimentRuntimeDirectBranchPairs)
+        {
+            int rs = (int)((branchOp >> 21) & 0x1fU);
+            int rt = (int)((branchOp >> 16) & 0x1fU);
+            short simm = unchecked((short)branchOp);
+            bool take = branchOpcode switch
+            {
+                0x04U => _gpr[rs] == _gpr[rt],
+                0x05U => _gpr[rs] != _gpr[rt],
+                0x06U => unchecked((long)_gpr[rs]) <= 0,
+                0x07U => unchecked((long)_gpr[rs]) > 0,
+                _ => false
+            };
+            nextPc = take
+                ? CanonicalizeCodeAddress(pc + 4UL + ((ulong)(long)simm << 2))
+                : pc + 8UL;
+            LastFetchedInstruction = branchOp;
+            AdvanceCp0Count(_cp0CountStep);
+            _instructionCounter++;
+            _runtimeDirectBranchPairHits++;
+        }
+        else
+        {
+            LastFetchedInstruction = branchOp;
+            Execute(pc, branchOp, steadyStateFastDispatch: true);
+            _gpr[0] = 0;
+            AdvanceCp0Count(_cp0CountStep);
+            _instructionCounter++;
+            nextPc = _hasPendingBranch ? _pendingBranchTarget : pc + 8UL;
+            _hasPendingBranch = false;
+            _hasImmediatePcOverride = false;
+        }
 
         RuntimeSafeInstruction delayInstruction = new(delayOp);
         LastFetchedInstruction = delayOp;
