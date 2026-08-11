@@ -478,3 +478,25 @@ Långprovet exekverade 5 014 413 direkta branchpar och behöll exakt
 `27113239/2660774`, 474 871 draw-paket och 3 877 swaps. Ett parallellt försök
 att länka små successor-block förkastades efter en cirka 0,6-procentig
 regression i det långa A/B-provet.
+
+## 2026-08-11: direkta jump/return-par förkastade
+
+Ett generellt terminatorförsök körde `jal`, `jr` och `jalr` direkt tillsammans
+med en verifierat säker delay slot. Vanlig `j` kunde inte tas med: kortoraklet
+behöll slut-PC och antal FIFO-ord men divergerade i paketavkodning och
+framebuffer, vilket visar att pending-branch-state fortfarande observeras av
+minst en steady-state-helper före dess delay slot.
+
+Den säkra delmängden var bitexakt och körde 2 895 270 par över 1 200 anrop,
+men två interfolierade långprov gav ingen vinst:
+
+```text
+generisk väg, medel   13963,5 ms
+direkta kontrollpar  13986,4 ms
+skillnad                 -0,2 %
+```
+
+En tidigare separat dispatchplacering var cirka 6,2 procent långsammare.
+Hela försöket och dess flaggor är borttagna. Resultatet stärker att nästa steg
+måste kompilera och äga hela blockterminatorn; ännu ett fristående parlager
+amorterar inte dispatch- och guardkostnaden.

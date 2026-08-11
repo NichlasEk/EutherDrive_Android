@@ -86,3 +86,10 @@ gav 4,3 procent lägre runtime med exakt orakel.
 Närmast profileras återstående branchterminatorer och store-side-exits. Målet
 är att låta kompilerade block äga sin terminator och endast lämna JIT när en
 service, MMIO-effekt, kodinvalidering eller ovanlig branch kräver det.
+
+Ett direkt parlager för `jal/jr/jalr` prövades därefter. Det var bitexakt över
+2 895 270 par men cirka 0,2 procent långsammare i interfolierade långprov;
+vanlig `j` visade dessutom att pending-branch-state observeras före vissa
+delay slots. Lagret är därför helt borttaget. Nästa implementation ska inte
+lägga ännu en kontrollväg bredvid dispatchern, utan låta kompilerade block
+inkludera terminator och delay slot med side exit före observerbara helpers.
