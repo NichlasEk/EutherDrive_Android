@@ -93,3 +93,10 @@ vanlig `j` visade dessutom att pending-branch-state observeras före vissa
 delay slots. Lagret är därför helt borttaget. Nästa implementation ska inte
 lägga ännu en kontrollväg bredvid dispatchern, utan låta kompilerade block
 inkludera terminator och delay slot med side exit före observerbara helpers.
+
+Rasterfasens första bokföringsexperiment ersatte atomiska radräknare med en
+poolad statistikbuffert. Det var bitexakt men 1,7 procent långsammare i det
+långa enskilda A/B-paret (13 240,5 mot 13 467,9 ms) och är borttaget. Det
+bekräftar att fokus ska ligga på specialiserade kernels för vanliga
+texture/depth/fog/blend-state, där antalet villkor och helpers per pixel kan
+minskas materiellt.

@@ -500,3 +500,13 @@ En tidigare separat dispatchplacering var cirka 6,2 procent långsammare.
 Hela försöket och dess flaggor är borttagna. Resultatet stärker att nästa steg
 måste kompilera och äga hela blockterminatorn; ännu ett fristående parlager
 amorterar inte dispatch- och guardkostnaden.
+
+## 2026-08-11: poolad parallell rasterstatistik förkastad
+
+`Parallel.For`-radernysningen prövades med en poolad, radspecifik
+statistikbuffert i stället för upp till 18 atomiska räknaruppdateringar per
+rad. Pixelarbetet och framebufferordningen var oförändrade och både kort och
+långt oracle matchade exakt. Kortserien blev ändå cirka 0,7 procent långsammare
+och långprovet gick från 13 240,5 till 13 467,9 ms. Prototypen är helt
+borttagen; nästa rasterförsök ska minska det faktiska arbetet per pixel genom
+state-specialisering, inte endast ändra statistikackumuleringen.
