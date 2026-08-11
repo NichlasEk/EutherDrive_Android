@@ -617,3 +617,42 @@ vinst                              1,66 %
 Fem av sex par vann. Specialvägen tog 694 trianglar och 2 702 827 behandlade
 pixlar per långprov. Samtliga tolv körningar behöll exakt
 `frameHash=0xe87b12da`; warm-probe och desktop aktiverar nu kerneln.
+
+## 2026-08-11: små typade rasterutvidgningar förkastade
+
+Två mindre familjer prövades från den kombinerade typade basen och togs bort.
+Den fogfria additiva familjen hade 4,19 miljoner bounding-pixlar men bara
+181 016 faktiskt behandlade pixlar. Tre långa A/B-par gav i praktiken neutral
+medeltid, negativ median och bara ett vunnet par. Att lägga dess 1 572
+trianglar i en egen JIT-instans gav alltså ingen hållbar vinst.
+
+Texture mode `0x8c22498f` delar common-kernelns övriga state och prövades även
+utan en ny kerneltyp. Den ökade common-täckningen med 287 trianglar och 140 849
+behandlade pixlar, men tre långpar gav cirka 0,7 procent regression i medel
+och bara ett vunnet par. Båda försöken var bitexakta och är helt borttagna.
+Nästa rasterkandidat bör därför ha minst omkring en miljon faktiskt behandlade
+pixlar, inte bara en stor bounding-box-profil.
+
+## 2026-08-11: state-profiler räknar verkliga rasterskrivningar
+
+`EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_TEXTURE_RASTER_STATES=1` rangordnar nu
+fullständiga state-signaturer efter faktiskt rasterbehandlade pixlar (`rp`) och
+redovisar bounding-pixlar separat (`bp`). Räkningen tas som en delta per
+triangel runt den befintliga globala rasterräknaren, så ingen profilergren har
+lagts i pixelinnerloopen och standardvägen påverkas inte.
+
+Det långa f6750-provet gav följande användbara rangordning:
+
+```text
+common 8c22490f/8c22410f       6 109 721 rp
+iterated 80000009              2 702 827 rp
+texture/color0 80000009        1 724 167 rp
+cp=0c482435, tre texture modes  1 429 132 rp
+additiv 8c22490f/8c22410f        181 016 rp
+common 8c22498f                  140 849 rp
+```
+
+Det verifierar de två accepterade kärnornas egna räknare och visar att nästa
+nya familj måste grupperas över de tre `cp=0x0c482435`-varianterna för att nå
+meningsfull täckning. Den större texture/color0-familjen har redan prövats som
+typinstans utan stabil vinst och ska inte återbesökas oförändrad.

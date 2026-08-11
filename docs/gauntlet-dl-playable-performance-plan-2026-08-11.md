@@ -137,3 +137,21 @@ vinst och fem vunna par av sex, med exakt orakel i samtliga körningar. Nästa
 rastersteg ska profileras på nytt från denna kombinerade bas; endast en state-
 familj med stor faktisk pixelkostnad och en tydligt förenklad typinstans bör
 läggas till.
+
+Två efterföljande små rasterutvidgningar bekräftade den gränsen. En separat
+fogfri additiv typinstans nådde bara 181 016 behandlade pixlar och gav neutral
+medeltid med negativ median. Att återanvända common-typen för texture mode
+`0x8c22498f` nådde 140 849 extra pixlar men gav cirka 0,7 procent regression.
+Båda är borttagna. Bounding-pixlar räcker därför inte längre som urvalsmått;
+nästa profilering ska räkna behandlade pixlar per fullständig state-signatur,
+och en ny kernel bör inte byggas innan den mätningen visar minst cirka en
+miljon relevanta pixlar i långprovet.
+
+Profilern räknar nu faktiskt rasterbehandlade pixlar per fullständig signatur
+utan någon ny innerloop-gren. Den bekräftar 6 109 721 pixlar för common-
+familjen och 2 702 827 för iterated-familjen. Efter den redan neutrala
+texture/color0-familjen på 1 724 167 är nästa nya grupperingskandidat tre
+`cp=0x0c482435`-states som tillsammans står för 1 429 132 pixlar. Nästa
+kernelprov ska dela deras color/fog/alpha-väg över texture modes i en enda
+typinstans; om den inte ger stabil långvinst flyttas fokus tillbaka till bred
+CPU-JIT-täckning i stället för mindre rasterstates.

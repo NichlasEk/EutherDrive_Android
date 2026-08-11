@@ -47540,13 +47540,15 @@ internal class VoodooBringupBackend : IVoodooBackend
             return "none";
 
         return string.Join(",", _textureRasterStateStats
-            .OrderByDescending(pair => pair.Value.BoundingPixels)
+            .OrderByDescending(pair => pair.Value.RasterPixels)
+            .ThenByDescending(pair => pair.Value.BoundingPixels)
             .ThenByDescending(pair => pair.Value.Triangles)
             .Take(12)
             .Select(pair =>
                 $"fbz{pair.Key.FbzMode:x8}/cp{pair.Key.FbzColorPath:x8}" +
                 $"/a{pair.Key.AlphaMode:x8}/f{pair.Key.FogMode:x8}" +
-                $"/tm{pair.Key.TextureMode:x8}:t{pair.Value.Triangles}/px{pair.Value.BoundingPixels}"));
+                $"/tm{pair.Key.TextureMode:x8}:t{pair.Value.Triangles}" +
+                $"/bp{pair.Value.BoundingPixels}/rp{pair.Value.RasterPixels}"));
     }
 
     private readonly record struct TextureRasterStateKey(
@@ -47560,6 +47562,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     {
         public long Triangles;
         public long BoundingPixels;
+        public long RasterPixels;
     }
 
     private readonly struct DynamicRasterKernel { }
@@ -50125,6 +50128,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             (int)(_registers[RegColor1] >> 24));
         uint textureMode = ReadTextureSampleRegister(RegTextureMode);
         uint textureLod = ReadTextureSampleRegister(RegTextureLod);
+        TextureRasterStateStats? textureRasterStateStats = null;
+        long textureRasterPixelStart = 0;
         if (_profileTextureRasterStates)
         {
             TextureRasterStateKey key = new(fbzMode, fbzColorPath, alphaMode, fogMode, textureMode);
@@ -50135,6 +50140,8 @@ internal class VoodooBringupBackend : IVoodooBackend
             }
             stats.Triangles++;
             stats.BoundingPixels += (long)(maxX - minX) * (maxY - minY);
+            textureRasterStateStats = stats;
+            textureRasterPixelStart = _texturedRasterPixelCount;
         }
         bool traceTexturedPixels =
             _traceTexturedPixelX >= 0 &&
@@ -50712,6 +50719,9 @@ sampledTexel:
                     RasterRow<DynamicRasterKernel>(y);
             }
         }
+
+        if (textureRasterStateStats is not null)
+            textureRasterStateStats.RasterPixels += _texturedRasterPixelCount - textureRasterPixelStart;
 
         if (!coveredAny)
             _texturedRejectEmptyRasterCount++;
