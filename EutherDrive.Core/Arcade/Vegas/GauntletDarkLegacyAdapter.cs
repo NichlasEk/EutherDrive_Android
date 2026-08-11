@@ -1250,6 +1250,9 @@ internal sealed class MipsR5000Core
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_THRESHOLD", 512);
     private readonly int _runtimeCompiledBlockMinimumInstructions =
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_MIN_INSTRUCTIONS", 20);
+    private readonly bool _experimentRuntimeGuardedTraces =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GUARDED_TRACES"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
@@ -1275,6 +1278,8 @@ internal sealed class MipsR5000Core
     private ulong _runtimeCompiledBlockRuns;
     private ulong _runtimeCompiledBlockInstructions;
     private ulong _runtimeCompiledBlockCount;
+    private ulong _runtimeGuardedTraceRuns;
+    private ulong _runtimeGuardedTraceInstructions;
     private readonly bool _enableRuntimePhaseFiveQioWaitService =
         GauntletDarkLegacyAdapter.IsBringupFixEnabled(
             "EUTHERDRIVE_GAUNTDL_FIX_RUNTIME_PHASE_FIVE_QIO_WAIT_SERVICE");
@@ -2284,7 +2289,9 @@ internal sealed class MipsR5000Core
     public string RuntimeCompiledBlockStatus =>
         $"compiledBlocks=count:{_runtimeCompiledBlockCount}" +
         $"/runs:{_runtimeCompiledBlockRuns}" +
-        $"/instructions:{_runtimeCompiledBlockInstructions}";
+        $"/instructions:{_runtimeCompiledBlockInstructions}" +
+        $"/guardedRuns:{_runtimeGuardedTraceRuns}" +
+        $"/guardedInstructions:{_runtimeGuardedTraceInstructions}";
 
     public void Reset()
     {
@@ -2326,6 +2333,8 @@ internal sealed class MipsR5000Core
         _runtimeCompiledBlockRuns = 0;
         _runtimeCompiledBlockInstructions = 0;
         _runtimeCompiledBlockCount = 0;
+        _runtimeGuardedTraceRuns = 0;
+        _runtimeGuardedTraceInstructions = 0;
         _halted = false;
         _hasPendingBranch = false;
         _pendingBranchTarget = 0;
@@ -4685,6 +4694,8 @@ internal sealed class MipsR5000Core
         RuntimeCompiledBlock block = state.CompiledBlock;
         if (_remainingProbeSteps < block.InstructionCount)
             return false;
+        if (block.RequiresGuardedTrace && !CanRunRuntimeGuardedTrace(pc))
+            return false;
         if (_memory.ReadRuntimeInstruction32(pc) != block.EntryOp)
         {
             _runtimeSafeInstructionBlocks.Remove(pc);
@@ -4711,6 +4722,11 @@ internal sealed class MipsR5000Core
         _probeStepDebt += executed - 1;
         _runtimeCompiledBlockRuns++;
         _runtimeCompiledBlockInstructions += (ulong)block.InstructionCount;
+        if (block.RequiresGuardedTrace)
+        {
+            _runtimeGuardedTraceRuns++;
+            _runtimeGuardedTraceInstructions += (ulong)block.InstructionCount;
+        }
         return true;
     }
 
@@ -4718,16 +4734,29 @@ internal sealed class MipsR5000Core
         ulong pc,
         RuntimeSafeInstruction[] safeInstructions)
     {
+        bool guardedTrace = IsRuntimeGuardedTraceCandidate(pc, safeInstructions);
         List<RuntimeSafeInstruction> instructions = new(safeInstructions.Length);
         foreach (RuntimeSafeInstruction instruction in safeInstructions)
         {
-            if (!IsRuntimeCompilableInstruction(in instruction))
+            if (!IsRuntimeCompilableInstruction(in instruction) &&
+                !(guardedTrace && IsRuntimeGuardedTraceInstruction(in instruction)))
                 break;
             instructions.Add(instruction);
-            if (instruction.MayWriteRuntimeMemory)
+            if (instruction.MayWriteRuntimeMemory && !guardedTrace)
                 break;
         }
         if (instructions.Count < _runtimeCompiledBlockMinimumInstructions)
+            return null;
+
+        const uint guardedJumpOp = 0x0c02a0d8U;
+        const uint guardedDelayOp = 0x0240202dU;
+        bool includesGuardedJump = guardedTrace &&
+            instructions.Count == RuntimeGuardedTraceInstructions.Length &&
+            _memory.ReadRuntimeInstruction32(pc + 0x50UL) == guardedJumpOp &&
+            _memory.ReadRuntimeInstruction32(pc + 0x54UL) == guardedDelayOp &&
+            !_memory.NeedsRuntimeCpuPcAt(pc + 0x50UL) &&
+            !_memory.NeedsRuntimeCpuPcAt(pc + 0x54UL);
+        if (guardedTrace && !includesGuardedJump)
             return null;
 
         ParameterExpression core = Expression.Parameter(typeof(MipsR5000Core), "core");
@@ -4745,7 +4774,10 @@ internal sealed class MipsR5000Core
             binder: null, [typeof(uint)], modifiers: null)!;
         HashSet<int> referencedRegisters = [];
         HashSet<int> modifiedRegisters = [];
-        foreach (RuntimeSafeInstruction instruction in instructions)
+        IEnumerable<RuntimeSafeInstruction> dataInstructions = includesGuardedJump
+            ? instructions.Append(new RuntimeSafeInstruction(guardedDelayOp))
+            : instructions;
+        foreach (RuntimeSafeInstruction instruction in dataInstructions)
         {
             if (instruction.Rs != 0)
                 referencedRegisters.Add(instruction.Rs);
@@ -4759,6 +4791,11 @@ internal sealed class MipsR5000Core
                 referencedRegisters.Add(modified);
                 modifiedRegisters.Add(modified);
             }
+        }
+        if (includesGuardedJump)
+        {
+            referencedRegisters.Add(31);
+            modifiedRegisters.Add(31);
         }
         ParameterExpression?[] registers = new ParameterExpression?[32];
         List<ParameterExpression> variables = new(referencedRegisters.Count);
@@ -4780,6 +4817,18 @@ internal sealed class MipsR5000Core
                 return null;
             body.Add(operation);
         }
+        if (includesGuardedJump)
+        {
+            body.Add(Expression.Assign(
+                registers[31]!,
+                Expression.Constant(pc + 0x58UL)));
+            RuntimeSafeInstruction delayInstruction = new(guardedDelayOp);
+            Expression? delayOperation = BuildRuntimeCompiledInstructionExpression(
+                in delayInstruction, registers, fpr, memory, signExtend32);
+            if (delayOperation is null)
+                return null;
+            body.Add(delayOperation);
+        }
         foreach (int register in modifiedRegisters.Order())
         {
             body.Add(Expression.Assign(
@@ -4792,10 +4841,57 @@ internal sealed class MipsR5000Core
             .Compile(preferInterpretation: false);
         return new RuntimeCompiledBlock(
             runner,
-            instructions.Count,
-            pc + (ulong)(instructions.Count * 4),
+            instructions.Count + (includesGuardedJump ? 2 : 0),
+            includesGuardedJump ? 0xffffffff800a8360UL : pc + (ulong)(instructions.Count * 4),
             instructions[0].Op,
-            instructions[^1].Op);
+            includesGuardedJump ? guardedDelayOp : instructions[^1].Op,
+            guardedTrace);
+    }
+
+    private static ReadOnlySpan<uint> RuntimeGuardedTraceInstructions =>
+    [
+        0x27bdffc8U, 0x3c038025U, 0xf7b40028U, 0x4486a000U,
+        0x8c625ec0U, 0xafb10014U, 0x0080882dU, 0xafb3001cU,
+        0x00a0982dU, 0xafb40020U, 0x8fb40048U, 0xafb00010U,
+        0x24705ec0U, 0xafbf0024U, 0xafb20018U, 0xf7b50030U,
+        0x24420001U, 0xac625ec0U, 0x8e320014U, 0x4487a800U
+    ];
+
+    private bool IsRuntimeGuardedTraceCandidate(ulong pc, RuntimeSafeInstruction[] instructions)
+    {
+        if (!_experimentRuntimeGuardedTraces ||
+            pc != 0xffffffff800a54a8UL ||
+            instructions.Length != RuntimeGuardedTraceInstructions.Length)
+            return false;
+        ReadOnlySpan<uint> expected = RuntimeGuardedTraceInstructions;
+        for (int index = 0; index < expected.Length; index++)
+        {
+            if (instructions[index].Op != expected[index])
+                return false;
+        }
+        return true;
+    }
+
+    private bool CanRunRuntimeGuardedTrace(ulong pc)
+    {
+        if (pc != 0xffffffff800a54a8UL)
+            return false;
+        if (_memory.ReadRuntimeInstruction32(pc + 0x4cUL) != 0x4487a800U ||
+            _memory.ReadRuntimeInstruction32(pc + 0x50UL) != 0x0c02a0d8U ||
+            _memory.ReadRuntimeInstruction32(pc + 0x54UL) != 0x0240202dU)
+        {
+            return false;
+        }
+        ulong newSp = SignExtend32(unchecked((uint)_gpr[29] - 56U));
+        return IsMainRamRange(newSp + 0x10UL, 0x3cUL) &&
+               IsMainRamRange(0xffffffff80255ec0UL, 0x18UL);
+    }
+
+    private static bool IsRuntimeGuardedTraceInstruction(in RuntimeSafeInstruction instruction)
+    {
+        if (instruction.Opcode == 0x2b)
+            return true;
+        return instruction.Opcode == 0x11 && instruction.Rs == 0x04;
     }
 
     private static bool IsRuntimeCompilableInstruction(in RuntimeSafeInstruction instruction)
@@ -4921,6 +5017,8 @@ internal sealed class MipsR5000Core
             int ft = instruction.Rt;
             int fs = instruction.Rd;
             int fd = instruction.Shift;
+            if (instruction.Rs == 0x04)
+                return SetFp(fs, Expression.Convert(Register(ft), typeof(uint)));
             Expression left = Fp32(fs);
             Expression right = Fp32(ft);
             return instruction.Function switch
@@ -5003,6 +5101,9 @@ internal sealed class MipsR5000Core
             0x29 => Expression.Call(memory,
                 MemoryMethod(nameof(VegasMemoryMap.WriteRuntimeData16), typeof(ulong), typeof(ushort)),
                 address, Expression.Convert(Register(rt), typeof(ushort))),
+            0x2b => Expression.Call(memory,
+                MemoryMethod(nameof(VegasMemoryMap.WriteRuntimeData32), typeof(ulong), typeof(uint)),
+                address, Expression.Convert(Register(rt), typeof(uint))),
             0x31 => SetFp(rt, Expression.Call(memory,
                 MemoryMethod(nameof(VegasMemoryMap.ReadRuntimeData32), typeof(ulong)), address)),
             0x35 => SetFp(rt, Expression.Call(memory,
@@ -5035,7 +5136,8 @@ internal sealed class MipsR5000Core
         int InstructionCount,
         ulong EndPc,
         uint EntryOp,
-        uint LastOp);
+        uint LastOp,
+        bool RequiresGuardedTrace);
 
     private bool TryRunRuntimeSafeBranchPair(ulong pc)
     {

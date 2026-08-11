@@ -373,3 +373,27 @@ Inget av försöken ingår i standardprofilen. Nästa trace-backend måste kunna
 korsa verifierade main-RAM-stores med ett billigt runtime-guard och hantera den
 faktiska terminala branchklassen. Fler isolerade opcodeutökningar ger mycket
 täckning men amorterar inte delegate- och blockgränskostnaden.
+
+## 2026-08-11: första guarded store/JAL-tracen
+
+Den hetaste tidigare blockerade kedjan vid `0x800a54a8` är nu en riktig
+guarded trace. Expression-delegaten täcker den exakta 20-op-prologen, inklusive
+stackstores, två `MTC1`, global räknaruppdatering och terminal `jal` med delay
+slot. Före körning krävs att hela nya stackramen och globalräknaren ligger i
+main RAM. Signaturens sista kroppsinstruktion, jump och delay slot valideras vid
+varje ingång; vid minsta avvikelse används tolken utan partiellt exekverad
+state. JAL-målet körs först i nästa `Step()`.
+
+Över 1 200 anrop körde tracen 43 242 gånger och ersatte 951 324
+gästinstruktioner. Två interfolierade A/B-par gav:
+
+```text
+utan trace   9540,0 ms   9730,2 ms
+guarded      9500,9 ms   9319,7 ms
+vinst           0,4 %       4,2 %
+```
+
+Medianvinsten är cirka 2,3 procent. Samtliga körningar behöll exakt
+`frameHash=0x8a71c24a`, slut-PC `0xffffffff800c6c34`, FIFO
+`26453151/2585612`, 459 391 draw-paket och 3 864 swaps. Warm-probe och desktop
+aktiverar tracen; övriga block använder oförändrad fallback.
