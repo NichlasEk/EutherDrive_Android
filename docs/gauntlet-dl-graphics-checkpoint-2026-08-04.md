@@ -532,3 +532,27 @@ Tillsammans står de för 7 182 227 bounding-pixlar. Första specialkernel-
 familjen ska därför dela deras gemensamma depth/fog/alpha/color-väg och endast
 specialisera skillnaden i texture mode. Profilflaggan är av som standard och
 påverkar inte normal rasterväg.
+
+## 2026-08-11: profilerad gemensam rasterkernel
+
+De två dominerande state-signaturerna har nu en gemensam bitexakt pixelväg.
+Den specialiserar deras konstanta W-depth-test, color1/texel/color0-kombination,
+W-tabellfog, alpha-test och source-alpha-blend. Texturhämtning, LOD,
+koordinater, framebufferordning och alla ovanliga states använder fortsatt den
+generella vägen. Funktionen styrs av
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PROFILED_COMMON_RASTER_KERNEL`.
+
+Tre korta interfolierade A/B-par gav i medel 4 744,9 ms utan och 4 692,2 ms
+med kerneln, cirka 1,1 procent lägre runtime. Två längre A/B-par gav:
+
+```text
+generisk raster, medel       11947,5 ms
+profilerad kernel, medel     11775,5 ms
+vinst                            1,4 %
+```
+
+Långprovet tog specialvägen för 9 774 trianglar och 6 109 721 behandlade
+pixlar. Samtliga körningar behöll exakt `frameHash=0xe87b12da`, slut-PC
+`0xffffffff80079e18`, FIFO `27113239/2660774`, 474 871 draw-paket och 3 877
+swaps. Warm-probe och desktop aktiverar kerneln; andra Voodoo-states påverkas
+inte.

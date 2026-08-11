@@ -107,3 +107,10 @@ En ny opt-in-profiler visar nu att de två största raster-signaturerna delar
 tillsammans för 7 182 227 bounding-pixlar i 300-anropsprovet. Det blir den
 första specialkernel-familjen, med gemensam depth/fog/alpha/color-kropp och
 två texture-varianter bakom exakt framebuffer-orakel.
+
+Den första kernel-familjen är nu implementerad och godkänd. Över två långa
+interfolierade A/B-par sjönk medeltiden från 11 947,5 till 11 775,5 ms, cirka
+1,4 procent, samtidigt som 6 109 721 pixlar gick genom specialvägen och hela
+oraklet förblev exakt. Nästa rastersteg ska använda samma profiler för den
+tredje och fjärde största state-familjen, men endast om en gemensam kernel kan
+täcka dem utan att duplicera hela rasterloopen.

@@ -1417,6 +1417,8 @@ static void DumpVoodoo(object facade)
         Console.WriteLine("voodoo statusPcs=" + GetProperty(backend, "StatusPcProfile"));
     if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_TEXTURE_RASTER_STATES") == "1")
         Console.WriteLine("voodoo rasterStates=" + GetProperty(backend, "TextureRasterStateProfile"));
+    if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PROFILED_COMMON_RASTER_KERNEL") == "1")
+        Console.WriteLine("voodoo " + GetProperty(backend, "ProfiledCommonRasterKernelStatus"));
 
     var registers = (uint[])GetField(backend, "_registers");
     foreach (int reg in new[] { 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x49, 0x4a, 0x51, 0x52, 0x83, 0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xc0, 0xc1, 0xc3 })
