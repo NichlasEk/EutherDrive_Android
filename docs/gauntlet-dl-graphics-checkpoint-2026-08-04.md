@@ -397,3 +397,12 @@ Medianvinsten är cirka 2,3 procent. Samtliga körningar behöll exakt
 `frameHash=0x8a71c24a`, slut-PC `0xffffffff800c6c34`, FIFO
 `26453151/2585612`, 459 391 draw-paket och 3 864 swaps. Warm-probe och desktop
 aktiverar tracen; övriga block använder oförändrad fallback.
+
+## 2026-08-11: guarded-tracens headroom används i desktop
+
+Efter guarded-tracen mättes CPU-budgeten om från samma f6750-state. 84 000
+steg gav 10 nya swaps och cirka 63,3 hostanrop/s. 90 000 steg gav 11 swaps vid
+cirka 62,7 hostanrop/s. 96 000 nådde samma 11 swaps och varierade mellan 61,4
+och 63,8 anrop/s, medan 102 000 och 108 000 föll under 60. Desktopstandarden är
+därför 90 000 steg: cirka tio procent fler riktiga gästbilder än 84 000 utan
+att använda den smalare och resultatneutrala 96 000-marginalen.

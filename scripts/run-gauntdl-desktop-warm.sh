@@ -7,7 +7,7 @@ REPO_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 ROM_PATH="${1:-/home/nichlas/roms/MAME/Midway/Vegas/gauntd}"
 SNAPSHOT_PATH="${2:-$REPO_ROOT/.build-tmp/gaunt-k2-clean2-f6750.warm.gz}"
 SNAPSHOT_FRAMES="${3:-6750}"
-CPU_STEPS="${4:-84000}"
+CPU_STEPS="${4:-90000}"
 UI_DLL="$REPO_ROOT/EutherDrive.UI/bin/Release/net8.0/EutherDrive.UI.dll"
 PROBE_DLL="$REPO_ROOT/tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll"
 
