@@ -510,3 +510,25 @@ långt oracle matchade exakt. Kortserien blev ändå cirka 0,7 procent långsamm
 och långprovet gick från 13 240,5 till 13 467,9 ms. Prototypen är helt
 borttagen; nästa rasterförsök ska minska det faktiska arbetet per pixel genom
 state-specialisering, inte endast ändra statistikackumuleringen.
+
+## 2026-08-11: texture-raster-state profiler
+
+Proben kan nu, bakom
+`EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_TEXTURE_RASTER_STATES=1`, gruppera
+texturerade trianglar efter rå `fbzMode`, `fbzColorPath`, `alphaMode`,
+`fogMode` och `textureMode`. Telemetrin sorteras efter bounding-pixlar så att
+kernelarbete riktas mot faktisk pixelkostnad i stället för enbart antal
+trianglar.
+
+I 300-anropsprovet dominerade två närliggande signaturer:
+
+```text
+fbz=000b4779 cp=0c60743a alpha=00045119 fog=000000c1
+texture=8c22490f   740 trianglar   3992571 bounding-pixlar
+texture=8c22410f  2550 trianglar   3189656 bounding-pixlar
+```
+
+Tillsammans står de för 7 182 227 bounding-pixlar. Första specialkernel-
+familjen ska därför dela deras gemensamma depth/fog/alpha/color-väg och endast
+specialisera skillnaden i texture mode. Profilflaggan är av som standard och
+påverkar inte normal rasterväg.

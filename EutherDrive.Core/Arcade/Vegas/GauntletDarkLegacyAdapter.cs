@@ -40897,6 +40897,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly bool _profileFastFillSwapPcs = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_FASTFILL_SWAP_PCS") == "1";
     private readonly bool _profileSolidTriangles =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_SOLID_TRIANGLES"));
+    private readonly bool _profileTextureRasterStates =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_TEXTURE_RASTER_STATES"));
     private readonly bool _profilePixelLastWriters =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_PIXEL_LAST_WRITERS"));
     private readonly bool _experimentSuppressLargeSolidTriangles =
@@ -40934,6 +40936,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly int _drawTraceLimit = ParseDrawTraceLimit("EUTHERDRIVE_GAUNTDL_TRACE_VOODOO_DRAW_LIMIT", 96);
     private readonly string[] _recentVoodooEvents = new string[64];
     private readonly Dictionary<ulong, ulong> _statusPcCounts = [];
+    private readonly Dictionary<TextureRasterStateKey, TextureRasterStateStats> _textureRasterStateStats = [];
     private readonly Dictionary<ulong, CommandFifoPacketPcStats> _commandFifoPacketPcStats = [];
     private readonly Dictionary<ulong, CommandFifoDecodeCallPcStats> _commandFifoDecodeCallPcStats = [];
     private readonly Dictionary<ulong, CommandFifoWritePcStats> _commandFifoWritePcStats = [];
@@ -41127,6 +41130,7 @@ internal class VoodooBringupBackend : IVoodooBackend
            $"t1ob={_commandFifoImplausibleType1OutsideBulkWindowGateCount}/{_commandFifoImplausibleType1OutsideBulkWindowDropCount}";
     public string RecentEventStatus => FormatRecentVoodooEvents();
     public string StatusPcProfile => GetStatusPcProfile();
+    public string TextureRasterStateProfile => GetTextureRasterStateProfile();
 
     private string GetTexturePixelLodDebugStatus()
         => _experimentTextureMamePixelLod
@@ -47516,6 +47520,34 @@ internal class VoodooBringupBackend : IVoodooBackend
             .Select(pair => $"0x{pair.Key:x16}:{pair.Value}"));
     }
 
+    private string GetTextureRasterStateProfile()
+    {
+        if (_textureRasterStateStats.Count == 0)
+            return "none";
+
+        return string.Join(",", _textureRasterStateStats
+            .OrderByDescending(pair => pair.Value.BoundingPixels)
+            .ThenByDescending(pair => pair.Value.Triangles)
+            .Take(12)
+            .Select(pair =>
+                $"fbz{pair.Key.FbzMode:x8}/cp{pair.Key.FbzColorPath:x8}" +
+                $"/a{pair.Key.AlphaMode:x8}/f{pair.Key.FogMode:x8}" +
+                $"/tm{pair.Key.TextureMode:x8}:t{pair.Value.Triangles}/px{pair.Value.BoundingPixels}"));
+    }
+
+    private readonly record struct TextureRasterStateKey(
+        uint FbzMode,
+        uint FbzColorPath,
+        uint AlphaMode,
+        uint FogMode,
+        uint TextureMode);
+
+    private sealed class TextureRasterStateStats
+    {
+        public long Triangles;
+        public long BoundingPixels;
+    }
+
     private int GetPixelLastWriterId(string kind, string source, ushort color)
     {
         if (!_profilePixelLastWriters)
@@ -50074,6 +50106,17 @@ internal class VoodooBringupBackend : IVoodooBackend
             (int)(_registers[RegColor1] >> 24));
         uint textureMode = ReadTextureSampleRegister(RegTextureMode);
         uint textureLod = ReadTextureSampleRegister(RegTextureLod);
+        if (_profileTextureRasterStates)
+        {
+            TextureRasterStateKey key = new(fbzMode, fbzColorPath, alphaMode, fogMode, textureMode);
+            if (!_textureRasterStateStats.TryGetValue(key, out TextureRasterStateStats? stats))
+            {
+                stats = new TextureRasterStateStats();
+                _textureRasterStateStats[key] = stats;
+            }
+            stats.Triangles++;
+            stats.BoundingPixels += (long)(maxX - minX) * (maxY - minY);
+        }
         bool traceTexturedPixels =
             _traceTexturedPixelX >= 0 &&
             _traceTexturedPixelY >= 0 &&

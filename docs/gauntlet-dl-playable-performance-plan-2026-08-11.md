@@ -100,3 +100,10 @@ långa enskilda A/B-paret (13 240,5 mot 13 467,9 ms) och är borttaget. Det
 bekräftar att fokus ska ligga på specialiserade kernels för vanliga
 texture/depth/fog/blend-state, där antalet villkor och helpers per pixel kan
 minskas materiellt.
+
+En ny opt-in-profiler visar nu att de två största raster-signaturerna delar
+`fbz=0x000b4779`, color path `0x0c60743a`, alpha `0x00045119` och fog
+`0x000000c1`; endast texture mode skiljer (`0x8c22490f`/`0x8c22410f`). De står
+tillsammans för 7 182 227 bounding-pixlar i 300-anropsprovet. Det blir den
+första specialkernel-familjen, med gemensam depth/fog/alpha/color-kropp och
+två texture-varianter bakom exakt framebuffer-orakel.
