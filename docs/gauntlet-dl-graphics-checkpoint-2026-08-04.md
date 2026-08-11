@@ -406,3 +406,31 @@ cirka 62,7 hostanrop/s. 96 000 nådde samma 11 swaps och varierade mellan 61,4
 och 63,8 anrop/s, medan 102 000 och 108 000 föll under 60. Desktopstandarden är
 därför 90 000 steg: cirka tio procent fler riktiga gästbilder än 84 000 utan
 att använda den smalare och resultatneutrala 96 000-marginalen.
+
+## 2026-08-11: guarded JIT-trace för render-setup
+
+En profil av de block som faktiskt faller igenom befintliga handskrivna
+regioner pekade ut `0xffffffff801069f4` som nästa stora JIT-kandidat. Den nya
+tracen kompilerar hela den exakta 31-instruktionskedjan: 29 raka instruktioner
+med stack- och render-state-stores, terminal `jal 0xffffffff80109360` och dess
+delay slot. Före varje körning verifieras kedjans slutord, jump och delay slot,
+samt att stackram, källdata och de tre render-state-orden ligger i main RAM.
+Alla andra tillstånd faller tillbaka till den befintliga exakta vägen.
+
+I 300-anropsoraklet kördes den nya tracen 12 600 gånger och flyttade ytterligare
+390 600 gästinstruktioner till JIT. Två interfolierade A/B-par gav 9,2 respektive
+0,2 procent lägre `runMs`; värdlasten var tydligt varierande. Det längre
+1 200-anropsprovet gav en stabilare skillnad:
+
+```text
+utan render-setup-trace   13049,8 ms
+med render-setup-trace    11950,8 ms
+vinst                         8,4 %
+```
+
+Det långa provet körde tracen 49 258 gånger och ersatte 1 527 000 extra
+gästinstruktioner. A/B behöll exakt `frameHash=0xe87b12da`, slut-PC
+`0xffffffff80079e18`, FIFO `27113239/2660774`, 474 871 draw-paket och 3 877
+swaps vid desktopbudgeten 90 000 steg. Warm-probe och desktop aktiverar den
+separata render-setup-flaggan tillsammans med det befintliga guarded-trace-
+lagret.

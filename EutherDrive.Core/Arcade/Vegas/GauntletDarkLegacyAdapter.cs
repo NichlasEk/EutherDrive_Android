@@ -1253,6 +1253,9 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeGuardedTraces =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GUARDED_TRACES"));
+    private readonly bool _experimentRuntimeRenderSetupGuardedTrace =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_RENDER_SETUP_GUARDED_TRACE"));
     private readonly ulong[] _opcodeProfileCounts = new ulong[64];
     private readonly ulong[] _specialOpcodeProfileCounts = new ulong[64];
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
@@ -4748,14 +4751,15 @@ internal sealed class MipsR5000Core
         if (instructions.Count < _runtimeCompiledBlockMinimumInstructions)
             return null;
 
-        const uint guardedJumpOp = 0x0c02a0d8U;
-        const uint guardedDelayOp = 0x0240202dU;
+        bool renderSetupTrace = pc == 0xffffffff801069f4UL;
+        uint guardedJumpOp = renderSetupTrace ? 0x0c0424d8U : 0x0c02a0d8U;
+        uint guardedDelayOp = renderSetupTrace ? 0x00000000U : 0x0240202dU;
+        ulong guardedJumpPc = pc + (ulong)(instructions.Count * 4);
         bool includesGuardedJump = guardedTrace &&
-            instructions.Count == RuntimeGuardedTraceInstructions.Length &&
-            _memory.ReadRuntimeInstruction32(pc + 0x50UL) == guardedJumpOp &&
-            _memory.ReadRuntimeInstruction32(pc + 0x54UL) == guardedDelayOp &&
-            !_memory.NeedsRuntimeCpuPcAt(pc + 0x50UL) &&
-            !_memory.NeedsRuntimeCpuPcAt(pc + 0x54UL);
+            _memory.ReadRuntimeInstruction32(guardedJumpPc) == guardedJumpOp &&
+            _memory.ReadRuntimeInstruction32(guardedJumpPc + 4UL) == guardedDelayOp &&
+            !_memory.NeedsRuntimeCpuPcAt(guardedJumpPc) &&
+            !_memory.NeedsRuntimeCpuPcAt(guardedJumpPc + 4UL);
         if (guardedTrace && !includesGuardedJump)
             return null;
 
@@ -4821,7 +4825,7 @@ internal sealed class MipsR5000Core
         {
             body.Add(Expression.Assign(
                 registers[31]!,
-                Expression.Constant(pc + 0x58UL)));
+                Expression.Constant(guardedJumpPc + 8UL)));
             RuntimeSafeInstruction delayInstruction = new(guardedDelayOp);
             Expression? delayOperation = BuildRuntimeCompiledInstructionExpression(
                 in delayInstruction, registers, fpr, memory, signExtend32);
@@ -4842,7 +4846,9 @@ internal sealed class MipsR5000Core
         return new RuntimeCompiledBlock(
             runner,
             instructions.Count + (includesGuardedJump ? 2 : 0),
-            includesGuardedJump ? 0xffffffff800a8360UL : pc + (ulong)(instructions.Count * 4),
+            includesGuardedJump
+                ? renderSetupTrace ? 0xffffffff80109360UL : 0xffffffff800a8360UL
+                : pc + (ulong)(instructions.Count * 4),
             instructions[0].Op,
             includesGuardedJump ? guardedDelayOp : instructions[^1].Op,
             guardedTrace);
@@ -4857,13 +4863,30 @@ internal sealed class MipsR5000Core
         0x24420001U, 0xac625ec0U, 0x8e320014U, 0x4487a800U
     ];
 
+    private static ReadOnlySpan<uint> RuntimeRenderSetupGuardedTraceInstructions =>
+    [
+        0x27bdffc0U, 0xafb70034U, 0x0080b82dU, 0x00a0202dU,
+        0xafb30024U, 0x00e0982dU, 0x3c028026U, 0xafb00018U,
+        0x00178040U, 0x02178021U, 0xafb5002cU, 0x8c552c8cU,
+        0x00108100U, 0xafbf0038U, 0xafb60030U, 0xafb40028U,
+        0xafb20020U, 0xafb1001cU, 0x8e620000U, 0x02b08021U,
+        0xae0202b8U, 0x8e620004U, 0x00c0b02dU, 0xae1602c0U,
+        0xae0202bcU, 0xafb60010U, 0x8e650004U, 0x8e660008U,
+        0x8e67000cU
+    ];
+
     private bool IsRuntimeGuardedTraceCandidate(ulong pc, RuntimeSafeInstruction[] instructions)
     {
-        if (!_experimentRuntimeGuardedTraces ||
-            pc != 0xffffffff800a54a8UL ||
-            instructions.Length != RuntimeGuardedTraceInstructions.Length)
+        if (!_experimentRuntimeGuardedTraces)
             return false;
-        ReadOnlySpan<uint> expected = RuntimeGuardedTraceInstructions;
+        ReadOnlySpan<uint> expected = pc switch
+        {
+            0xffffffff800a54a8UL => RuntimeGuardedTraceInstructions,
+            0xffffffff801069f4UL when _experimentRuntimeRenderSetupGuardedTrace => RuntimeRenderSetupGuardedTraceInstructions,
+            _ => []
+        };
+        if (instructions.Length != expected.Length || expected.IsEmpty)
+            return false;
         for (int index = 0; index < expected.Length; index++)
         {
             if (instructions[index].Op != expected[index])
@@ -4874,6 +4897,25 @@ internal sealed class MipsR5000Core
 
     private bool CanRunRuntimeGuardedTrace(ulong pc)
     {
+        if (pc == 0xffffffff801069f4UL)
+        {
+            if (_memory.ReadRuntimeInstruction32(pc + 0x70UL) != 0x8e67000cU ||
+                _memory.ReadRuntimeInstruction32(pc + 0x74UL) != 0x0c0424d8U ||
+                _memory.ReadRuntimeInstruction32(pc + 0x78UL) != 0x00000000U ||
+                !IsMainRamRange(0xffffffff80262c8cUL, 4UL))
+            {
+                return false;
+            }
+
+            ulong renderSetupSp = SignExtend32(unchecked((uint)_gpr[29] - 64U));
+            ulong state = SignExtend32(_memory.ReadRuntimeData32(0xffffffff80262c8cUL));
+            uint recordOffset = unchecked(((uint)_gpr[4] << 1) + (uint)_gpr[4]);
+            recordOffset = unchecked(recordOffset << 8);
+            ulong record = unchecked(state + SignExtend32(recordOffset));
+            return IsMainRamRange(renderSetupSp + 0x10UL, 0x2cUL) &&
+                   IsMainRamRange(_gpr[7], 0x10UL) &&
+                   IsMainRamRange(record + 0x2b8UL, 0x0cUL);
+        }
         if (pc != 0xffffffff800a54a8UL)
             return false;
         if (_memory.ReadRuntimeInstruction32(pc + 0x4cUL) != 0x4487a800U ||
