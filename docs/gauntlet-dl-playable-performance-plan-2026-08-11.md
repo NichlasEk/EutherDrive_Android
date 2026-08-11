@@ -121,3 +121,10 @@ i långa interfolierade prov. Försöken är borttagna. Rasterfasens nästa
 arkitektursteg ändras därför till separata kernel-loopar/delegater som väljs
 en gång per triangel; den redan godkända första kerneln lämnas orörd tills den
 kan flyttas till den strukturen utan oracle- eller prestandaförlust.
+
+Den separata strukturen är nu införd utan källduplicering genom tre generiska
+JIT-instanser av rasterraden. Kerneltypen väljs en gång per triangel och gör
+state-valet konstant i innerloopen. Sex långa A/B-par gav 12 600,3 mot
+12 415,3 ms i medel, cirka 1,5 procent vinst, med positiv median och exakt
+orakel. Nästa state-kernel kan nu läggas som en ny typinstans i stället för som
+ytterligare villkor i den befintliga dynamiska pixelkroppen.

@@ -572,3 +572,26 @@ borttagna. Resultatet pekar på kodstorlek och registertryck i den monolitiska
 pixelmetoden: fler inline-state-villkor är inte nästa hållbara väg. Nästa
 kernelgeneration bör vara separata loopdelegater valda en gång per triangel,
 så att den heta innerloopen inte bär de generella state-grenarna.
+
+## 2026-08-11: typad rasterkernel-dispatch
+
+Rasterraden har nu tre separata generiska JIT-instanser: dynamisk
+referensväg, generell kernel och den profilerade common-kerneln. När
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPED_RASTER_KERNEL_DISPATCH=1` väljs
+kerneltypen en gång per triangel. State-valet blir då en typkonstant som JIT
+kan eliminera ur pixelinnerloopen, utan kopierad rasterkod eller delegatanrop
+per pixel. Den dynamiska instansen finns kvar för direkt A/B.
+
+Tre korta interfolierade par gav cirka 2,1 procent lägre medeltid. Sex långa
+par gav:
+
+```text
+dynamisk kernel, medel   12600,3 ms
+typad dispatch, medel    12415,3 ms
+vinst                        1,5 %
+```
+
+Fyra av sex långpar vann och medianvinsten var cirka 1,7 procent. Alla tolv
+långkörningar behöll exakt `frameHash=0xe87b12da`, slut-PC
+`0xffffffff80079e18`, FIFO `27113239/2660774`, 474 871 draw-paket och 3 877
+swaps. Warm-probe och desktop aktiverar nu typdispatchen.
