@@ -556,3 +556,19 @@ pixlar. Samtliga körningar behöll exakt `frameHash=0xe87b12da`, slut-PC
 `0xffffffff80079e18`, FIFO `27113239/2660774`, 474 871 draw-paket och 3 877
 swaps. Warm-probe och desktop aktiverar kerneln; andra Voodoo-states påverkas
 inte.
+
+## 2026-08-11: ytterligare inline-state-kernels förkastade
+
+Profilerens tredje och fjärde state-familjer prövades var för sig med
+bitexakta förenklingar i den befintliga pixelmetoden. Tredje familjen
+specialiserade texture/color0-modulering och körde 1 724 167 pixlar i
+långprovet, men fyra interfolierade par blev i medel cirka 2,9 procent
+långsammare. Fjärde familjen specialiserade iterated-color/texel, fog-off och
+destination-color-alpha; den körde 2 702 827 pixlar men gav cirka 3,6 procent
+regression (12 062,6 mot 12 495,4 ms).
+
+Båda försöken behöll exakt hash, PC, FIFO, draw och swaps och är helt
+borttagna. Resultatet pekar på kodstorlek och registertryck i den monolitiska
+pixelmetoden: fler inline-state-villkor är inte nästa hållbara väg. Nästa
+kernelgeneration bör vara separata loopdelegater valda en gång per triangel,
+så att den heta innerloopen inte bär de generella state-grenarna.

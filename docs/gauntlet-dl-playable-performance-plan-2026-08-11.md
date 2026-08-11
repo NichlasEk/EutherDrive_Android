@@ -114,3 +114,10 @@ interfolierade A/B-par sjönk medeltiden från 11 947,5 till 11 775,5 ms, cirka
 oraklet förblev exakt. Nästa rastersteg ska använda samma profiler för den
 tredje och fjärde största state-familjen, men endast om en gemensam kernel kan
 täcka dem utan att duplicera hela rasterloopen.
+
+Det sista villkoret visade sig avgörande: inline-specialisering av profilerens
+tredje och fjärde familj var bitexakt men 2,9 respektive 3,6 procent långsammare
+i långa interfolierade prov. Försöken är borttagna. Rasterfasens nästa
+arkitektursteg ändras därför till separata kernel-loopar/delegater som väljs
+en gång per triangel; den redan godkända första kerneln lämnas orörd tills den
+kan flyttas till den strukturen utan oracle- eller prestandaförlust.
