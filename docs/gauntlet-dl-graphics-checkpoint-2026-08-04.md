@@ -434,3 +434,25 @@ gästinstruktioner. A/B behöll exakt `frameHash=0xe87b12da`, slut-PC
 swaps vid desktopbudgeten 90 000 steg. Warm-probe och desktop aktiverar den
 separata render-setup-flaggan tillsammans med det befintliga guarded-trace-
 lagret.
+
+## 2026-08-11: guarded JIT-returtrace för render-submit
+
+Nästa verkliga fallback-block vid `0xffffffff80106b1c` kompileras nu över 38
+kroppsinstruktioner, terminal `jr ra` och dess stackåterställande delay slot.
+Tracen korsar både main-RAM-stores och fyra ord till Voodoos mappade
+kommandoområde. Runtime-guarden verifierar kodsvansen, returparet, stack- och
+state-områdena samt att kommandopointern är justerad och ligger inom
+`0xa8000000..0xa83ffff0`; annars används den gamla vägen.
+
+Korta A/B-par var motsägelsefulla, men det avgörande 1 200-anropsprovet gav:
+
+```text
+utan render-submit-trace   12854,3 ms
+med render-submit-trace    12071,0 ms
+vinst                          6,1 %
+```
+
+Tracen kördes 24 371 gånger och flyttade ytterligare 974 840 instruktioner
+till JIT. Båda körningarna behöll exakt `frameHash=0xe87b12da`, slut-PC
+`0xffffffff80079e18`, FIFO `27113239/2660774`, 474 871 draw-paket och 3 877
+swaps. Warm-probe och desktop aktiverar den separata render-submit-flaggan.
