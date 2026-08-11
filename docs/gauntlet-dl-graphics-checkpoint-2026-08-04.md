@@ -595,3 +595,25 @@ Fyra av sex långpar vann och medianvinsten var cirka 1,7 procent. Alla tolv
 långkörningar behöll exakt `frameHash=0xe87b12da`, slut-PC
 `0xffffffff80079e18`, FIFO `27113239/2660774`, 474 871 draw-paket och 3 877
 swaps. Warm-probe och desktop aktiverar nu typdispatchen.
+
+## 2026-08-11: typad iterated-color-rasterkernel
+
+Profilerens fjärde state-familj har återinförts som en egen typad JIT-instans,
+inte som den tidigare förkastade inline-grenen. Den specialiserar konstant
+W-depth, iterated-color/texel-modulering, fog-off, alpha-test och
+destination-color-alpha för state `fbz=0x000b4379`, `cp=0x0c603430`,
+`alpha=0x00040219`, `fog=0x000000c0`, `texture=0x80000009`. Den väljs en gång
+per triangel via
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PROFILED_ITERATED_RASTER_KERNEL`.
+
+Sex långa interfolierade A/B-par gav:
+
+```text
+typad generell kernel, medel   11610,5 ms
+typad iterated-kernel, medel   11417,4 ms
+vinst                              1,66 %
+```
+
+Fem av sex par vann. Specialvägen tog 694 trianglar och 2 702 827 behandlade
+pixlar per långprov. Samtliga tolv körningar behöll exakt
+`frameHash=0xe87b12da`; warm-probe och desktop aktiverar nu kerneln.

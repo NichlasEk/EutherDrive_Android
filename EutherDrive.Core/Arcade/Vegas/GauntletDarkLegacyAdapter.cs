@@ -39931,6 +39931,8 @@ internal class VoodooBringupBackend : IVoodooBackend
     private long _parallelRasterTriangleCount;
     private long _profiledCommonRasterTriangleCount;
     private long _profiledCommonRasterPixelCount;
+    private long _profiledIteratedRasterTriangleCount;
+    private long _profiledIteratedRasterPixelCount;
     private readonly long[] _experimentTextureMamePixelLodCounts = new long[9];
     private long _texturedZeroPixelCount;
     private int _texturedRejectNonFiniteCount;
@@ -40131,6 +40133,8 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PARALLEL_VOODOO_TEXTURE_RASTER"));
     private readonly bool _experimentProfiledCommonRasterKernel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PROFILED_COMMON_RASTER_KERNEL"));
+    private readonly bool _experimentProfiledIteratedRasterKernel =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PROFILED_ITERATED_RASTER_KERNEL"));
     private readonly bool _experimentTypedRasterKernelDispatch =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_TYPED_RASTER_KERNEL_DISPATCH"));
     private readonly ulong[] _traceTextureWriteBuckets =
@@ -41139,6 +41143,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     public string TextureRasterStateProfile => GetTextureRasterStateProfile();
     public string ProfiledCommonRasterKernelStatus =>
         $"profiledCommonRaster=tri:{_profiledCommonRasterTriangleCount}/pixels:{_profiledCommonRasterPixelCount}" +
+        $"/iterated:{_profiledIteratedRasterTriangleCount}/{_profiledIteratedRasterPixelCount}" +
         $"/typed:{(_experimentTypedRasterKernelDispatch ? 1 : 0)}";
 
     private string GetTexturePixelLodDebugStatus()
@@ -47560,6 +47565,7 @@ internal class VoodooBringupBackend : IVoodooBackend
     private readonly struct DynamicRasterKernel { }
     private readonly struct GeneralRasterKernel { }
     private readonly struct ProfiledCommonRasterKernel { }
+    private readonly struct ProfiledIteratedRasterKernel { }
 
     private int GetPixelLastWriterId(string kind, string source, ushort color)
     {
@@ -50158,8 +50164,21 @@ internal class VoodooBringupBackend : IVoodooBackend
             alphaMode == 0x00045119U &&
             fogMode == 0x000000c1U &&
             textureMode is 0x8c22490fU or 0x8c22410fU;
+        bool useProfiledIteratedRasterKernel =
+            _experimentProfiledIteratedRasterKernel &&
+            _experimentMameTwoTmuCombine &&
+            _experimentFbzColorPathRgbCombine &&
+            _experimentSetupMameFog &&
+            useMameAuxDepth &&
+            fbzMode == 0x000b4379U &&
+            fbzColorPath == 0x0c603430U &&
+            alphaMode == 0x00040219U &&
+            fogMode == 0x000000c0U &&
+            textureMode == 0x80000009U;
         if (useProfiledCommonRasterKernel)
             _profiledCommonRasterTriangleCount++;
+        if (useProfiledIteratedRasterKernel)
+            _profiledIteratedRasterTriangleCount++;
         ushort zaColor = (ushort)_registers[RegZaColor];
         int setupStartZ = unchecked((int)_registers[RegFstartZ]);
         int setupDzDx = unchecked((int)_registers[RegFdZdX]);
@@ -50223,14 +50242,20 @@ internal class VoodooBringupBackend : IVoodooBackend
         void RasterRow<TKernel>(int y)
             where TKernel : struct
         {
-            bool profiledRasterKernel =
+            bool profiledCommonRasterKernel =
                 typeof(TKernel) == typeof(ProfiledCommonRasterKernel) ||
                 typeof(TKernel) == typeof(DynamicRasterKernel) && useProfiledCommonRasterKernel;
+            bool profiledIteratedRasterKernel =
+                typeof(TKernel) == typeof(ProfiledIteratedRasterKernel) ||
+                typeof(TKernel) == typeof(DynamicRasterKernel) && useProfiledIteratedRasterKernel;
+            bool profiledSharedRasterKernel =
+                profiledCommonRasterKernel || profiledIteratedRasterKernel;
             int rowCoveredPixels = 0;
             int rowZeroPixels = 0;
             int rowFallbackPixels = 0;
             int rowRasterPixels = 0;
             int rowProfiledCommonPixels = 0;
+            int rowProfiledIteratedPixels = 0;
             Span<long> rowLodCounts = useParallelRaster && _experimentTextureMamePixelLod
                 ? stackalloc long[9]
                 : Span<long>.Empty;
@@ -50289,11 +50314,11 @@ internal class VoodooBringupBackend : IVoodooBackend
                 if (useMameAuxDepth)
                 {
                     long iterW = unchecked(rowSetupStartW + setupDx * setupDwDx);
-                    depthValue = profiledRasterKernel
+                    depthValue = profiledSharedRasterKernel
                         ? ComputeProfiledCommonDepth(iterW, zaColor)
                         : ComputeMameSetupDepthValue(fbzMode, fbzColorPath, setupIterZ, iterW, zaColor);
                     int depthSource = (fbzMode & 0x100000u) == 0 ? depthValue : zaColor;
-                    bool passesDepth = profiledRasterKernel
+                    bool passesDepth = profiledSharedRasterKernel
                         ? depthSource <= _auxBuffer[pixel]
                         : MameDepthTest(fbzMode, _auxBuffer[pixel], depthSource);
                     if (mameDepthTest && !passesDepth)
@@ -50520,20 +50545,26 @@ sampledTexel:
                 }
 
                 if (_experimentFbzColorPathRgbCombine)
-                    texel = profiledRasterKernel
+                    texel = profiledCommonRasterKernel
                         ? ApplyProfiledCommonFbzRgb(texel, in fbzColorPathState)
+                        : profiledIteratedRasterKernel
+                        ? ApplyProfiledIteratedFbzRgb(texel, iteratedColor)
                         : ApplyFbzColorPathRgb(texel, iteratedColor, textureAlpha, iteratedAlpha, in fbzColorPathState);
                 if (_experimentSetupMameFog)
-                    texel = profiledRasterKernel
+                    texel = profiledCommonRasterKernel
                         ? ApplyProfiledCommonFog(texel, fogIterW, x, y, fogColor)
+                        : profiledIteratedRasterKernel
+                        ? texel
                         : ApplyMameSetupFog(texel, fogIterW, setupIterZ, iteratedAlpha, x, y, fogMode, fogColor, fbzColorPath);
 
                 int pixelAlpha = needsPixelAlpha
-                    ? profiledRasterKernel
+                    ? profiledCommonRasterKernel
                         ? ComputeProfiledCommonAlpha(textureAlpha, in fbzColorPathState)
+                        : profiledIteratedRasterKernel
+                        ? iteratedAlpha * (textureAlpha + 1) / 256
                         : ComputeFbzColorPathAlpha(textureAlpha, iteratedAlpha, setupIterZ, fogIterW, in fbzColorPathState)
                     : 255;
-                bool passesAlpha = profiledRasterKernel
+                bool passesAlpha = profiledSharedRasterKernel
                     ? pixelAlpha > 0
                     : PassVoodooAlphaTest(alphaMode, pixelAlpha);
                 if ((alphaMode & 1u) != 0 && !passesAlpha)
@@ -50566,8 +50597,10 @@ sampledTexel:
                 if ((alphaMode & 0x10u) != 0)
                 {
                     int destinationAlpha = mameAlphaPlanes ? _auxBuffer[pixel] & 0xff : 0xff;
-                    texel = profiledRasterKernel
+                    texel = profiledCommonRasterKernel
                         ? BlendProfiledCommonAlpha(buffer[pixel], texel, pixelAlpha)
+                        : profiledIteratedRasterKernel
+                        ? BlendProfiledIteratedAlpha(buffer[pixel], texel)
                         : BlendVoodooAlphaRgb565(buffer[pixel], texel, pixelAlpha, destinationAlpha, alphaMode);
                 }
 
@@ -50598,14 +50631,18 @@ sampledTexel:
                 if (useParallelRaster)
                 {
                     rowCoveredAny = true;
-                    if (profiledRasterKernel)
+                    if (profiledCommonRasterKernel)
                         rowProfiledCommonPixels++;
+                    if (profiledIteratedRasterKernel)
+                        rowProfiledIteratedPixels++;
                 }
                 else
                 {
                     coveredAny = true;
-                    if (profiledRasterKernel)
+                    if (profiledCommonRasterKernel)
                         _profiledCommonRasterPixelCount++;
+                    if (profiledIteratedRasterKernel)
+                        _profiledIteratedRasterPixelCount++;
                 }
             }
 
@@ -50614,6 +50651,7 @@ sampledTexel:
 
             Interlocked.Add(ref _texturedPixelCount, rowCoveredPixels);
             Interlocked.Add(ref _profiledCommonRasterPixelCount, rowProfiledCommonPixels);
+            Interlocked.Add(ref _profiledIteratedRasterPixelCount, rowProfiledIteratedPixels);
             Interlocked.Add(ref coveredPixels, rowCoveredPixels);
             Interlocked.Add(ref _texturedZeroPixelCount, rowZeroPixels);
             Interlocked.Add(ref zeroPixels, rowZeroPixels);
@@ -50637,6 +50675,8 @@ sampledTexel:
             {
                 if (useProfiledCommonRasterKernel)
                     Parallel.For(minY, maxY, RasterRow<ProfiledCommonRasterKernel>);
+                else if (useProfiledIteratedRasterKernel)
+                    Parallel.For(minY, maxY, RasterRow<ProfiledIteratedRasterKernel>);
                 else
                     Parallel.For(minY, maxY, RasterRow<GeneralRasterKernel>);
             }
@@ -50654,6 +50694,11 @@ sampledTexel:
                 {
                     for (int y = minY; y < maxY; y++)
                         RasterRow<ProfiledCommonRasterKernel>(y);
+                }
+                else if (useProfiledIteratedRasterKernel)
+                {
+                    for (int y = minY; y < maxY; y++)
+                        RasterRow<ProfiledIteratedRasterKernel>(y);
                 }
                 else
                 {
@@ -56446,6 +56491,17 @@ sampledTexel:
             ob * (tb + 1) / 256 + lb);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ushort ApplyProfiledIteratedFbzRgb(ushort texel, ushort iteratedColor)
+    {
+        Rgb565ToBytes(texel, out int tr, out int tg, out int tb);
+        Rgb565ToBytes(iteratedColor, out int ir, out int ig, out int ib);
+        return BytesToRgb565(
+            ir * (tr + 1) / 256,
+            ig * (tg + 1) / 256,
+            ib * (tb + 1) / 256);
+    }
+
     private static int Rgb565ToGrayscale8(ushort color)
     {
         Rgb565ToBytes(color, out int r, out int g, out int b);
@@ -56627,6 +56683,17 @@ sampledTexel:
             (sr * sourceScale + dr * destinationScale) >> 8,
             (sg * sourceScale + dg * destinationScale) >> 8,
             (sb * sourceScale + db * destinationScale) >> 8);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ushort BlendProfiledIteratedAlpha(ushort destination, ushort source)
+    {
+        Rgb565ToBytes(source, out int sr, out int sg, out int sb);
+        Rgb565ToBytes(destination, out int dr, out int dg, out int db);
+        return BytesToRgb565(
+            sr * (dr + 1) >> 8,
+            sg * (dg + 1) >> 8,
+            sb * (db + 1) >> 8);
     }
 
     private ushort GetIntegerDrawColor()

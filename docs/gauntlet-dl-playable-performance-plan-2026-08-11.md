@@ -128,3 +128,12 @@ state-valet konstant i innerloopen. Sex långa A/B-par gav 12 600,3 mot
 12 415,3 ms i medel, cirka 1,5 procent vinst, med positiv median och exakt
 orakel. Nästa state-kernel kan nu läggas som en ny typinstans i stället för som
 ytterligare villkor i den befintliga dynamiska pixelkroppen.
+
+Den fjärde profilerade state-familjen är nu den första utbyggnaden av den
+strukturen. Som separat typad iterated-color-kernel behandlar den 2 702 827
+pixlar i långprovet utan att belasta andra states med en dynamisk innerloop-
+gren. Sex långa A/B-par gav 11 610,5 mot 11 417,4 ms i medel, 1,66 procent
+vinst och fem vunna par av sex, med exakt orakel i samtliga körningar. Nästa
+rastersteg ska profileras på nytt från denna kombinerade bas; endast en state-
+familj med stor faktisk pixelkostnad och en tydligt förenklad typinstans bör
+läggas till.
