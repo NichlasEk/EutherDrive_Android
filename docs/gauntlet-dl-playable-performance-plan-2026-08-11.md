@@ -31,7 +31,8 @@ frame-hash, slut-PC, FIFO, draw-paket och swaps.
 
 1. Behåll tolken för kall och ovanlig kod.
 2. Använd safe batches som varm mellannivå.
-3. Kompilera heta raka block med nuvarande expression-backend.
+3. Ersätt den nu avstängda expression-backenden med en billigare block-ABI och
+   kodgenerator innan generell kompilering aktiveras igen.
 4. Länka redan kompilerade efterföljare utan återgång till `Step()`.
 5. Gör branch och delay slot till explicita JIT-terminatorer med side exits.
 6. Höj opcode-täckningen utifrån verklig fallback-profil, inte syntetiska test.
@@ -155,3 +156,39 @@ texture/color0-familjen på 1 724 167 är nästa nya grupperingskandidat tre
 kernelprov ska dela deras color/fog/alpha-väg över texture modes i en enda
 typinstans; om den inte ger stabil långvinst flyttas fokus tillbaka till bred
 CPU-JIT-täckning i stället för mindre rasterstates.
+
+Det grupperade `cp=0x0c482435`-provet var bitexakt men gav 12 339,1 mot
+12 433,7 ms över tre långpar, cirka 0,77 procent regression och bara ett
+vunnet par. Kerneln är borttagen. Rasterfasen har därmed uttömt alla nu kända
+oprövade familjer över en miljon behandlade pixlar. Nästa aktiva arbete är åter
+fas 1: profilera kompilerade blockterminatorer, fallback-opcodes och side exits
+från den nuvarande basen och välj den bredaste verkliga exekveringskostnaden.
+
+En ny opt-in safe-block-profiler kör med normal batch/JIT aktiv och rangordnar
+block efter verkliga entryn gånger blocklängd. Långprovet visar 57 453 127
+safe-block-instruktioner men bara 4 615 076 kompilerade instruktioner. Flera
+heta block stoppas av `mtc1`; expression-backenden kunde redan generera den
+operationen, så filtret öppnades bakom en A/B-flagga. Det ökade kortprovets
+kompilerade täckning från 1 094 020 till 1 636 173 instruktioner men försämrade
+medeltiden från cirka 4 695 till 5 114 ms, nästan 9 procent. Försöket är helt
+borttaget. Nästa beslutspunkt är därför om dagens expression-block alls slår
+safe batches på den nuvarande kombinerade basen; därefter ska eventuell ny JIT
+fokusera på en billigare kodgenerator/ABI, inte bara fler accepterade opcodes.
+
+En ordningsbalanserad långkontroll visar nu att både delarna och hela dagens
+expression-lager är regressiva på den kombinerade basen. Guarded traces var
+cirka 9,2 procent långsammare än samma generella JIT utan traces. De tolv
+generella blocken var i sin tur cirka 3,3 procent långsammare än rena safe
+batches. Den direkta `på/av/av/på`-slutkontrollen gav:
+
+```text
+expression-block på, medel   12058,6 ms
+expression-block av, medel   11665,2 ms
+vinst utan lagret                3,26 %
+```
+
+Båda av-körningarna slog båda på-körningarna och samtliga behöll exakt
+`frameHash=0xe87b12da`. Warm-probe och desktop har därför compiled blocks av
+som standard. Implementation och experimentflaggor finns kvar opt-in som
+referens för nästa backend, men nästa JIT får inte använda samma dyra
+expression-ABI med bred registerinläsning/utskrivning per block.

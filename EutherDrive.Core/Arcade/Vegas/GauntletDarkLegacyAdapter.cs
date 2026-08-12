@@ -1219,6 +1219,9 @@ internal sealed class MipsR5000Core
     private readonly bool _profileRuntimeRegions =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS"));
+    private readonly bool _profileRuntimeSafeBlocks =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_SAFE_BLOCKS"));
     private readonly int _profileRuntimeRegionLimit = Math.Min(
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS_LIMIT", 24),
         512);
@@ -1267,6 +1270,7 @@ internal sealed class MipsR5000Core
     private readonly ulong[] _cop1FormatProfileCounts = new ulong[32];
     private readonly ulong[] _cop1xFunctionProfileCounts = new ulong[64];
     private readonly Dictionary<(ulong Start, ulong End, ulong Target), ulong> _runtimeRegionProfileCounts = [];
+    private readonly Dictionary<ulong, RuntimeSafeBlockProfileStats> _runtimeSafeBlockProfileStats = [];
     private readonly Dictionary<ulong, RuntimeSafeBlock> _runtimeSafeInstructionBlocks = [];
     private bool _runtimeRegionProfileActive;
     private ulong _runtimeRegionProfileStart;
@@ -2280,6 +2284,7 @@ internal sealed class MipsR5000Core
     public string HotPcStatus => GetHotPcStatus();
     public string OpcodeProfileStatus => GetOpcodeProfileStatus();
     public string RuntimeRegionProfileStatus => GetRuntimeRegionProfileStatus();
+    public string RuntimeSafeBlockProfileStatus => GetRuntimeSafeBlockProfileStatus();
     public string RuntimeCounterWaitRegionStatus =>
         $"counterWaitRegion=hits:{_runtimeCounterWaitRegionHits}" +
         $"/instructions:{_runtimeCounterWaitRegionInstructions}";
@@ -2324,6 +2329,7 @@ internal sealed class MipsR5000Core
         Array.Clear(_cop1FormatProfileCounts);
         Array.Clear(_cop1xFunctionProfileCounts);
         _runtimeRegionProfileCounts.Clear();
+        _runtimeSafeBlockProfileStats.Clear();
         _runtimeSafeInstructionBlocks.Clear();
         _runtimeRegionProfileActive = false;
         _runtimeRegionProfileStart = 0;
@@ -4606,6 +4612,9 @@ internal sealed class MipsR5000Core
                 return false;
         }
 
+        if (_profileRuntimeSafeBlocks)
+            RecordRuntimeSafeBlockProfile(pc, safeBlock);
+
         if (block.Length >= _runtimeCompiledBlockMinimumInstructions &&
             TryRunRuntimeCompiledBlock(pc, runtimeMainState, safeBlock))
             return true;
@@ -5227,6 +5236,21 @@ internal sealed class MipsR5000Core
         public int CompiledHits { get; set; }
         public bool CompiledUnsupported { get; set; }
         public RuntimeCompiledBlock? CompiledBlock { get; set; }
+    }
+
+    private sealed class RuntimeSafeBlockProfileStats(
+        int instructionCount,
+        uint terminalOp,
+        int compilableInstructions,
+        uint compileStopOp)
+    {
+        public int InstructionCount { get; } = instructionCount;
+        public uint TerminalOp { get; } = terminalOp;
+        public int CompilableInstructions { get; } = compilableInstructions;
+        public uint CompileStopOp { get; } = compileStopOp;
+        public ulong Entries { get; set; }
+        public bool Compiled { get; set; }
+        public bool CompileRejected { get; set; }
     }
 
     private sealed record RuntimeCompiledBlock(
@@ -30459,6 +30483,71 @@ internal sealed class MipsR5000Core
                 .OrderByDescending(item => item.Count)
                 .Select(item => $"{item.Funct:x2}:{item.Count}"));
         return $"cop1={cop1} cop1x={cop1x} opcodes={opcodes} special={special}";
+    }
+
+    private void RecordRuntimeSafeBlockProfile(ulong pc, RuntimeSafeBlock block)
+    {
+        if (!_runtimeSafeBlockProfileStats.TryGetValue(pc, out RuntimeSafeBlockProfileStats? stats))
+        {
+            if (_runtimeSafeBlockProfileStats.Count >= 8192)
+                return;
+            ulong terminalPc = pc + (ulong)(block.Instructions.Length * 4);
+            uint terminalOp = IsRuntimeCodeAddress(terminalPc)
+                ? _memory.ReadRuntimeInstruction32(terminalPc)
+                : uint.MaxValue;
+            bool guardedTrace = IsRuntimeGuardedTraceCandidate(pc, block.Instructions);
+            int compilableInstructions = 0;
+            foreach (RuntimeSafeInstruction instruction in block.Instructions)
+            {
+                if (!IsRuntimeCompilableInstruction(in instruction) &&
+                    !(guardedTrace && IsRuntimeGuardedTraceInstruction(in instruction)))
+                    break;
+                compilableInstructions++;
+                if (instruction.MayWriteRuntimeMemory && !guardedTrace)
+                    break;
+            }
+            uint compileStopOp = compilableInstructions < block.Instructions.Length
+                ? block.Instructions[compilableInstructions].Op
+                : terminalOp;
+            stats = new RuntimeSafeBlockProfileStats(
+                block.Instructions.Length,
+                terminalOp,
+                compilableInstructions,
+                compileStopOp);
+            _runtimeSafeBlockProfileStats.Add(pc, stats);
+        }
+        stats.Entries++;
+        stats.Compiled = block.CompiledBlock is not null;
+        stats.CompileRejected = block.CompiledUnsupported;
+    }
+
+    private string GetRuntimeSafeBlockProfileStatus()
+    {
+        if (!_profileRuntimeSafeBlocks)
+            return "safeBlocks=disabled";
+
+        ulong totalEntries = 0;
+        ulong totalInstructions = 0;
+        foreach (RuntimeSafeBlockProfileStats stats in _runtimeSafeBlockProfileStats.Values)
+        {
+            totalEntries += stats.Entries;
+            totalInstructions += stats.Entries * (ulong)stats.InstructionCount;
+        }
+        string top = string.Join(
+            ",",
+            _runtimeSafeBlockProfileStats
+                .Select(pair => new { Pc = pair.Key, Stats = pair.Value })
+                .OrderByDescending(item => item.Stats.Entries * (ulong)item.Stats.InstructionCount)
+                .ThenBy(item => item.Pc)
+                .Take(24)
+                .Select(item =>
+                    $"0x{item.Pc:x16}:e{item.Stats.Entries}/n{item.Stats.InstructionCount}" +
+                    $"/p{item.Stats.CompilableInstructions}/stop{item.Stats.CompileStopOp:x8}" +
+                    $"/term{item.Stats.TerminalOp:x8}" +
+                    $"/c{(item.Stats.Compiled ? 1 : 0)}" +
+                    $"/r{(item.Stats.CompileRejected ? 1 : 0)}"));
+        return $"safeBlocks=blocks:{_runtimeSafeBlockProfileStats.Count}" +
+               $"/entries:{totalEntries}/instructions:{totalInstructions}/top:{top}";
     }
 
     private string GetRuntimeRegionProfileStatus()

@@ -656,3 +656,48 @@ Det verifierar de två accepterade kärnornas egna räknare och visar att nästa
 nya familj måste grupperas över de tre `cp=0x0c482435`-varianterna för att nå
 meningsfull täckning. Den större texture/color0-familjen har redan prövats som
 typinstans utan stabil vinst och ska inte återbesökas oförändrad.
+
+## 2026-08-12: grupperad color0-kernel förkastad
+
+De tre `cp=0x0c482435`-signaturerna prövades som en gemensam typad kernel över
+texture modes `0x8c2411cf`, `0x8c241bcf` och `0x80000009`. Kerneln
+specialiserade W-depth, texel/color0-modulering, W-tabellfog, texture-alpha-
+test och source-alpha-blend och behandlade 1 429 132 pixlar i långprovet.
+
+Tre interfolierade långpar gav 12 339,1 ms för den generella typade vägen mot
+12 433,7 ms med color0-kerneln, cirka 0,77 procent regression och endast ett
+vunnet par. Samtliga körningar behöll exakt `frameHash=0xe87b12da`. Försöket
+är helt borttaget. Ingen återstående oprövad rasterfamilj når nu den satta
+miljongränsen, så nästa optimeringsfas återgår till bred CPU-JIT-täckning.
+
+## 2026-08-12: safe-block-profil och `mtc1`-JIT förkastad
+
+En opt-in-profiler för safe blocks har lagts till. Den kör med den normala
+batch- och JIT-vägen aktiv och redovisar entryn, blocklängd, kompilerbar prefix,
+första stopp-opcode, terminalopcode och compile-status. Långprovet behöll exakt
+orakel och räknade 57 453 127 safe-block-instruktioner, varav 4 615 076 gick
+genom befintliga expression-block.
+
+Profilen visade att flera heta långa block stoppades av `mtc1`. Expression-
+backenden hade redan semantik för instruktionen, så kompilerbarhetsfiltret
+öppnades experimentellt. Det låste upp tre nya block och ökade kortprovets
+kompilerade täckning från 1 094 020 till 1 636 173 instruktioner, men tre
+interfolierade par försämrades i medel från cirka 4 695 till 5 114 ms, nästan
+9 procent. Alla hashar var exakta och `mtc1`-ändringen är helt borttagen.
+Profilerverktyget behålls opt-in som underlag för nästa JIT-arkitektur.
+
+## 2026-08-12: expression-block av som standard
+
+Safe-block-profilen visade att guarded traces stod för 3 911 356 av totalt
+4 615 076 expression-kompilerade instruktioner i långprovet. En isolerad
+ordningsvänd långserie gav cirka 9,2 procent lägre runtime utan guarded traces.
+De återstående tolv generella blocken jämfördes därefter mot rena safe batches
+och var cirka 3,3 procent långsammare.
+
+En slutlig direkt `på/av/av/på`-serie för hela compiled-block-lagret gav
+12 058,6 ms med lagret och 11 665,2 ms utan, 3,26 procent vinst när det
+stängdes av. Båda av-körningarna vann, oberoende av ordning, och alla fyra gav
+exakt `frameHash=0xe87b12da`. Warm-probe och desktop sätter nu
+`EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPILED_BLOCKS=0` som standard.
+Expression-implementationen behålls opt-in för utveckling, men ska inte
+återaktiveras innan en ny backend visar vinst mot safe batches.
