@@ -753,3 +753,9 @@ långpar gav 11 399,3 ms för `Parallel.For` mot 10 527,0 ms för poolen, 7,65
 procent vinst och samtliga par vunna. `frameHash=0xe87b12da`, FIFO
 `27113239/2660774`, draw `474871` och swaps `3877` förblev exakta. Warm-probe
 och desktop aktiverar därför poolen tillsammans med den tidigare graden 16.
+
+Poolens grad trimmades därefter separat eftersom `Parallel.For`-optimumet inte
+behöver gälla den nya koordineringen. Ett kort 8/12/16/20/24/28-svep valde grad
+8. Två balanserade långpar gav 10 651,4 ms vid grad 8 mot 10 850,8 ms vid grad
+16, ytterligare 1,84 procent vinst och båda paren vunna med exakt orakel.
+Warm-probe och desktop använder därför grad 8 för den beständiga poolen.

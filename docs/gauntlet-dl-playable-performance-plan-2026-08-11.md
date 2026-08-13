@@ -238,3 +238,10 @@ draw- och swap-orakel. Poolen är nu standard i warm-probe och desktop. Nästa
 rastersteg bör flytta samma dynamiska köprincip från hela scanlines till
 återanvända tilejobb först när en profil visar att radgranulariteten lämnar
 mätbar kärnobalans.
+
+Den beständiga poolen trimmades slutligen om från den gamla `Parallel.For`-
+graden 16 till grad 8. Två balanserade långpar gav 10 651,4 mot 10 850,8 ms,
+1,84 procent extra vinst och två vunna par av två med exakt orakel. Lägre grad
+minskar både atomisk kökonkurrens och CPU-överbokning mot gästtolken; grad 8 är
+nu Gauntlet-standard medan miljövariabeln fortfarande tillåter värdspecifik
+mätning.
