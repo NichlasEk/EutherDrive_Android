@@ -222,3 +222,9 @@ exakt orakel. Warm-probe och desktop begränsar nu rastergraden till 16. Nästa
 workerpool ska jämföras mot denna förbättrade bas och måste slå både tiden och
 den befintliga exakta ordningen; dess främsta mål är återanvända jobb/workers,
 inte fler samtidiga trådar.
+
+Ett första försök med högst 16 fasta sammanhängande radsegment blev cirka 7
+procent långsammare i tre kortpar och förlorade samtliga. Det är borttaget.
+Workerpool-designen måste därför kombinera beständiga workers med dynamisk
+rad-/tilehämtning, exempelvis ett atomiskt nästa-jobb-index, så att stora
+trianglars ojämna scanlinekostnad inte lämnar arbetare sysslolösa.

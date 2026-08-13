@@ -737,3 +737,11 @@ FIFO, draw och swaps. Warm-probe och desktop sätter därför
 `EUTHERDRIVE_GAUNTDL_PARALLEL_VOODOO_TEXTURE_RASTER_MAX_DEGREE=16`. Backendens
 standard för andra startvägar är fortsatt obegränsad; på värdar med högst 16
 processorer begränsar capen inte faktisk tillgänglig parallellism.
+
+Fasta sammanhängande radsegment prövades som ett första workerpool-steg, med
+högst 16 segment per triangel i stället för `Parallel.For`-fördelning per rad.
+Tre korta A/B-par gav 4 405,8 ms för dynamiska rader mot 4 713,6 ms för fasta
+segment, cirka 7 procent regression och noll vunna par. Försöket var bitexakt
+men är helt borttaget. En framtida beständig workerpool måste behålla dynamisk
+lastbalansering mellan ojämnt dyra rasterrader; fasta statiska segment duger
+inte.
