@@ -745,3 +745,11 @@ segment, cirka 7 procent regression och noll vunna par. Försöket var bitexakt
 men är helt borttaget. En framtida beständig workerpool måste behålla dynamisk
 lastbalansering mellan ojämnt dyra rasterrader; fasta statiska segment duger
 inte.
+
+Den dynamiska efterföljaren är godkänd. En beständig pool med 15
+bakgrundsarbetare och anropstråden återanvänder samma workers mellan stora
+trianglar; varje arbetare hämtar nästa rasterrad atomiskt. Två balanserade
+långpar gav 11 399,3 ms för `Parallel.For` mot 10 527,0 ms för poolen, 7,65
+procent vinst och samtliga par vunna. `frameHash=0xe87b12da`, FIFO
+`27113239/2660774`, draw `474871` och swaps `3877` förblev exakta. Warm-probe
+och desktop aktiverar därför poolen tillsammans med den tidigare graden 16.

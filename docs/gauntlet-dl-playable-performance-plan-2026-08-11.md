@@ -228,3 +228,13 @@ procent långsammare i tre kortpar och förlorade samtliga. Det är borttaget.
 Workerpool-designen måste därför kombinera beständiga workers med dynamisk
 rad-/tilehämtning, exempelvis ett atomiskt nästa-jobb-index, så att stora
 trianglars ojämna scanlinekostnad inte lämnar arbetare sysslolösa.
+
+Den dynamiska poolen löste båda problemen: 15 beständiga bakgrundsarbetare
+plus anropstråden delar ett atomiskt nästa-rad-index och behåller därmed
+lastbalanseringen utan `Parallel.For`-uppsättning per triangel. Kortprovet vann
+två av två par med cirka 6,6 procent. Två balanserade långpar vann också båda,
+10 527,0 mot 11 399,3 ms i medel, 7,65 procent, med exakt frame-, CPU-, FIFO-,
+draw- och swap-orakel. Poolen är nu standard i warm-probe och desktop. Nästa
+rastersteg bör flytta samma dynamiska köprincip från hela scanlines till
+återanvända tilejobb först när en profil visar att radgranulariteten lämnar
+mätbar kärnobalans.

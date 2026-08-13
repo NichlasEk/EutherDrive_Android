@@ -40226,6 +40226,9 @@ internal class VoodooBringupBackend : IVoodooBackend
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PARALLEL_VOODOO_TEXTURE_RASTER_MAX_DEGREE"),
             -1)
     };
+    private readonly bool _experimentPersistentDynamicRasterWorkers =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PERSISTENT_DYNAMIC_RASTER_WORKERS"));
     private readonly bool _experimentProfiledCommonRasterKernel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PROFILED_COMMON_RASTER_KERNEL"));
     private readonly bool _experimentProfiledIteratedRasterKernel =
@@ -50771,20 +50774,35 @@ sampledTexel:
                 Interlocked.Exchange(ref parallelCoveredFlag, 1);
         }
 
+        void ParallelRasterRows<TKernel>()
+            where TKernel : struct
+        {
+            if (_experimentPersistentDynamicRasterWorkers)
+            {
+                int degree = _parallelTextureRasterOptions.MaxDegreeOfParallelism;
+                if (degree <= 0)
+                    degree = Environment.ProcessorCount;
+                DynamicRasterWorkerPool.For(minY, maxY, degree, RasterRow<TKernel>);
+                return;
+            }
+
+            Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<TKernel>);
+        }
+
         if (useParallelRaster)
         {
             if (_experimentTypedRasterKernelDispatch)
             {
                 if (useProfiledCommonRasterKernel)
-                    Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<ProfiledCommonRasterKernel>);
+                    ParallelRasterRows<ProfiledCommonRasterKernel>();
                 else if (useProfiledIteratedRasterKernel)
-                    Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<ProfiledIteratedRasterKernel>);
+                    ParallelRasterRows<ProfiledIteratedRasterKernel>();
                 else
-                    Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<GeneralRasterKernel>);
+                    ParallelRasterRows<GeneralRasterKernel>();
             }
             else
             {
-                Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<DynamicRasterKernel>);
+                ParallelRasterRows<DynamicRasterKernel>();
             }
             coveredAny = parallelCoveredFlag != 0;
         }
@@ -57153,6 +57171,117 @@ sampledTexel:
                 target.Buffer[offset + 3] = (byte)((bgra >> 24) & 0xff);
                 offset += 4;
             }
+        }
+    }
+}
+
+internal sealed class DynamicRasterWorkerPool
+{
+    private static readonly object PoolsGate = new();
+    private static readonly Dictionary<int, DynamicRasterWorkerPool> Pools = [];
+
+    private readonly object _executeGate = new();
+    private readonly object _workerGate = new();
+    private readonly ManualResetEventSlim _workersCompleted = new(false);
+    private readonly int _workerCount;
+    private Action<int>? _action;
+    private Exception? _exception;
+    private int _generation;
+    private int _next;
+    private int _end;
+    private int _remainingWorkers;
+
+    private DynamicRasterWorkerPool(int degree)
+    {
+        _workerCount = Math.Max(0, degree - 1);
+        for (int i = 0; i < _workerCount; i++)
+        {
+            Thread worker = new(WorkerLoop)
+            {
+                IsBackground = true,
+                Name = $"Gauntlet raster {i + 1}/{_workerCount}"
+            };
+            worker.Start();
+        }
+    }
+
+    public static void For(int fromInclusive, int toExclusive, int degree, Action<int> action)
+    {
+        degree = Math.Clamp(degree, 1, Environment.ProcessorCount);
+        DynamicRasterWorkerPool pool;
+        lock (PoolsGate)
+        {
+            if (!Pools.TryGetValue(degree, out pool!))
+            {
+                pool = new DynamicRasterWorkerPool(degree);
+                Pools.Add(degree, pool);
+            }
+        }
+
+        pool.Execute(fromInclusive, toExclusive, action);
+    }
+
+    private void Execute(int fromInclusive, int toExclusive, Action<int> action)
+    {
+        if (fromInclusive >= toExclusive)
+            return;
+
+        lock (_executeGate)
+        {
+            _action = action;
+            _exception = null;
+            _next = fromInclusive - 1;
+            _end = toExclusive;
+            _remainingWorkers = _workerCount;
+            _workersCompleted.Reset();
+            lock (_workerGate)
+            {
+                _generation++;
+                Monitor.PulseAll(_workerGate);
+            }
+
+            DrainRows();
+            if (_workerCount != 0)
+                _workersCompleted.Wait();
+            _action = null;
+            if (_exception is not null)
+                throw new InvalidOperationException("Persistent raster worker failed.", _exception);
+        }
+    }
+
+    private void WorkerLoop()
+    {
+        int observedGeneration = 0;
+        while (true)
+        {
+            lock (_workerGate)
+            {
+                while (observedGeneration == _generation)
+                    Monitor.Wait(_workerGate);
+                observedGeneration = _generation;
+            }
+
+            DrainRows();
+            if (Interlocked.Decrement(ref _remainingWorkers) == 0)
+                _workersCompleted.Set();
+        }
+    }
+
+    private void DrainRows()
+    {
+        try
+        {
+            while (true)
+            {
+                int row = Interlocked.Increment(ref _next);
+                if (row >= _end)
+                    return;
+                _action!(row);
+            }
+        }
+        catch (Exception exception)
+        {
+            Interlocked.CompareExchange(ref _exception, exception, null);
         }
     }
 }
