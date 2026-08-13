@@ -718,3 +718,22 @@ var cirka 4 procent långsammare och förlorade alla tre långpar. Att sänka
 parallella trianglar från 1 175 till 4 104, men sex balanserade långpar blev
 helt neutrala (11 566,9 mot 11 562,1 ms). Tröskelprototypen är borttagen;
 standardgränsen 8 192 behålls. Alla mätningar behöll exakt långhash.
+
+## 2026-08-13: rastergraden begränsad till 16
+
+Värden exponerar 28 logiska processorer. Ett långsvep över
+`ParallelOptions.MaxDegreeOfParallelism` gav 2/4/8/16/28 arbetare tiderna
+11 991/11 525/11 362/11 118/11 272 ms. Kandidaterna 16 och 28 jämfördes sedan
+i sex ordningsbalanserade långpar:
+
+```text
+max 28 arbetare, medel   11706,3 ms
+max 16 arbetare, medel   11461,9 ms
+vinst                        2,09 %
+```
+
+Fyra av sex par vann och samtliga behöll exakt `frameHash=0xe87b12da`, PC,
+FIFO, draw och swaps. Warm-probe och desktop sätter därför
+`EUTHERDRIVE_GAUNTDL_PARALLEL_VOODOO_TEXTURE_RASTER_MAX_DEGREE=16`. Backendens
+standard för andra startvägar är fortsatt obegränsad; på värdar med högst 16
+processorer begränsar capen inte faktisk tillgänglig parallellism.

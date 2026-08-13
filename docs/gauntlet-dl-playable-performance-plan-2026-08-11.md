@@ -213,3 +213,12 @@ fast tröskel. Det ska angripa själva schemaläggningskostnaden, exempelvis med
 en beständig workerpool eller återanvända tilejobb. Nästa CPU-JIT behöver på
 motsvarande sätt eliminera tolkdispatch, inte bara några predikterbara
 bokföringsgrenar inne i samma safe-loop.
+
+Innan en beständig workerpool införs mättes även graden i nuvarande
+`Parallel.For`. På 28 logiska värdprocessorer var 16 arbetare bäst i ett första
+2/4/8/16/28-svep. Sex ordningsbalanserade långpar mellan 16 och 28 gav
+11 461,9 mot 11 706,3 ms, 2,09 procent vinst och fyra vunna par av sex med
+exakt orakel. Warm-probe och desktop begränsar nu rastergraden till 16. Nästa
+workerpool ska jämföras mot denna förbättrade bas och måste slå både tiden och
+den befintliga exakta ordningen; dess främsta mål är återanvända jobb/workers,
+inte fler samtidiga trådar.

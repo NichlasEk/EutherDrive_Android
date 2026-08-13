@@ -40220,6 +40220,12 @@ internal class VoodooBringupBackend : IVoodooBackend
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_VOODOO_TEXTURE_SAMPLE_DIAGNOSTIC_WRITES"));
     private readonly bool _parallelTextureRaster =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PARALLEL_VOODOO_TEXTURE_RASTER"));
+    private readonly ParallelOptions _parallelTextureRasterOptions = new()
+    {
+        MaxDegreeOfParallelism = ParseOptionalPositiveInt(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PARALLEL_VOODOO_TEXTURE_RASTER_MAX_DEGREE"),
+            -1)
+    };
     private readonly bool _experimentProfiledCommonRasterKernel =
         GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_VOODOO_PROFILED_COMMON_RASTER_KERNEL"));
     private readonly bool _experimentProfiledIteratedRasterKernel =
@@ -50770,15 +50776,15 @@ sampledTexel:
             if (_experimentTypedRasterKernelDispatch)
             {
                 if (useProfiledCommonRasterKernel)
-                    Parallel.For(minY, maxY, RasterRow<ProfiledCommonRasterKernel>);
+                    Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<ProfiledCommonRasterKernel>);
                 else if (useProfiledIteratedRasterKernel)
-                    Parallel.For(minY, maxY, RasterRow<ProfiledIteratedRasterKernel>);
+                    Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<ProfiledIteratedRasterKernel>);
                 else
-                    Parallel.For(minY, maxY, RasterRow<GeneralRasterKernel>);
+                    Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<GeneralRasterKernel>);
             }
             else
             {
-                Parallel.For(minY, maxY, RasterRow<DynamicRasterKernel>);
+                Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<DynamicRasterKernel>);
             }
             coveredAny = parallelCoveredFlag != 0;
         }
