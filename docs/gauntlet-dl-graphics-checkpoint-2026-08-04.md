@@ -701,3 +701,20 @@ exakt `frameHash=0xe87b12da`. Warm-probe och desktop sätter nu
 `EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPILED_BLOCKS=0` som standard.
 Expression-implementationen behålls opt-in för utveckling, men ska inte
 återaktiveras innan en ny backend visar vinst mot safe batches.
+
+## 2026-08-13: billig safe-batch-bokföring och rastertröskel förkastade
+
+Två försök att minska safe-loopens per-instruktionsbokföring var bitexakta i
+sin slutliga form men gav ingen långvinst. Att hoppa över bevisat irrelevanta
+branch/halt-kontroller täckte 31 528 234 instruktioner men var 1,13 procent
+långsammare i tre långpar. Att skjuta `_gpr[0]=0` till batchslutet för block
+som bevisligen inte skriver register noll täckte 57 293 795 instruktioner och
+vann tre kortpar med cirka 5 procent, men sex balanserade långpar blev neutrala
+(11 687,4 mot 11 706,3 ms, tre vinster av sex). Båda är helt borttagna.
+
+Rasteriseringen verifierades separat. Helt seriell raster vann kortprovet men
+var cirka 4 procent långsammare och förlorade alla tre långpar. Att sänka
+`Parallel.For`-gränsen från 8 192 till 2 048 bounding-pixlar ökade antalet
+parallella trianglar från 1 175 till 4 104, men sex balanserade långpar blev
+helt neutrala (11 566,9 mot 11 562,1 ms). Tröskelprototypen är borttagen;
+standardgränsen 8 192 behålls. Alla mätningar behöll exakt långhash.

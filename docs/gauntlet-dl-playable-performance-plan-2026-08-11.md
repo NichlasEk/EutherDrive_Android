@@ -192,3 +192,24 @@ Båda av-körningarna slog båda på-körningarna och samtliga behöll exakt
 som standard. Implementation och experimentflaggor finns kvar opt-in som
 referens för nästa backend, men nästa JIT får inte använda samma dyra
 expression-ABI med bred registerinläsning/utskrivning per block.
+
+Tre billigare basoptimeringar prövades därefter och togs bort:
+
+- Att skjuta upp PC-, CP0- och instruktionsbokföring till batchslutet ändrade
+  först timer/FIFO-oraklet. Med exakt observerbar ordning återställd täckte en
+  variant 31 528 234 instruktioner men blev 1,13 procent långsammare i tre
+  långpar och vann inget par.
+- Att skriva MIPS-register noll en gång per block för bevisat säkra block
+  täckte 57 293 795 instruktioner. Tre kortpar såg cirka 5 procent bättre ut,
+  men sex ordningsbalanserade långpar gav 11 687,4 mot 11 706,3 ms, neutral
+  med tre vinster av sex. Försöket är borttaget.
+- Seriell raster vann kortprov, men förlorade alla tre långpar med cirka 4
+  procent. En sänkt `Parallel.For`-tröskel från 8 192 till 2 048 bounding-
+  pixlar var efter sex balanserade långpar helt neutral, 11 566,9 mot
+  11 562,1 ms. Den konfigurerbara tröskelprototypen är borttagen.
+
+Nästa rasterexperiment bör därför inte ändra mängden parallellt arbete med en
+fast tröskel. Det ska angripa själva schemaläggningskostnaden, exempelvis med
+en beständig workerpool eller återanvända tilejobb. Nästa CPU-JIT behöver på
+motsvarande sätt eliminera tolkdispatch, inte bara några predikterbara
+bokföringsgrenar inne i samma safe-loop.
