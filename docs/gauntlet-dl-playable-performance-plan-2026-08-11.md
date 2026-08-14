@@ -245,3 +245,31 @@ graden 16 till grad 8. Två balanserade långpar gav 10 651,4 mot 10 850,8 ms,
 minskar både atomisk kökonkurrens och CPU-överbokning mot gästtolken; grad 8 är
 nu Gauntlet-standard medan miljövariabeln fortfarande tillåter värdspecifik
 mätning.
+
+Ett billigare register-ABI för den befintliga expression-backenden prövades
+därefter. En direkt GPR-arrayvariant var bitexakt vid normal blocktröskel men
+cirka 2 procent långsammare i korta interfolierade prov. En liveness-variant
+som bara laddade verkliga GPR-källor förbättrade det gamla lagret tydligt, men
+var fortfarande regressiv i de beslutande långproven:
+
+```text
+safe batches, medel                         11 160,8 ms
+liveness-JIT inklusive guarded traces      11 772,5 ms  (+5,48 %)
+
+safe batches, medel                         11 647,4 ms
+liveness-JIT utan guarded traces            11 825,9 ms  (+1,53 %)
+```
+
+Alla exakta långprov slutade på `frameHash=0xe87b12da`, PC
+`0xffffffff80079e18`, FIFO `27113239/2660774`, `drawPackets=474871` och
+`swaps=3877`. Att sänka hottröskeln till 64 och minsta blocklängden till fyra
+gav hög kompilerad täckning och skenbart mycket hög fart, men drev omedelbart
+PC, frame-hash och FIFO-state; korta block i den gamla backenden är alltså inte
+ett korrekt sätt att köpa täckning. Båda ABI-prototyperna är helt borttagna.
+
+Nästa JIT ska därför börja vid kontrollflödet: ett kompilerat block ska äga sin
+branchterminator och delay slot, behålla ett litet registerset över länkade
+efterföljare och göra side exit före observerbara helpers. Den ska mätas först
+på de tre hetaste `jal`/`jr`-avslutade blockfamiljerna från safe-block-profilen;
+ingen ny standard aktiveras förrän samma långa orakel både är exakt och slår
+safe batches.
