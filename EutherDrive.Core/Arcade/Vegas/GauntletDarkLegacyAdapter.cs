@@ -1222,6 +1222,9 @@ internal sealed class MipsR5000Core
     private readonly bool _profileRuntimeSafeBlocks =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_SAFE_BLOCKS"));
+    private readonly bool _profileRuntimeBlockTransitions =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_BLOCK_TRANSITIONS"));
     private readonly int _profileRuntimeRegionLimit = Math.Min(
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS_LIMIT", 24),
         512);
@@ -1271,6 +1274,8 @@ internal sealed class MipsR5000Core
     private readonly ulong[] _cop1xFunctionProfileCounts = new ulong[64];
     private readonly Dictionary<(ulong Start, ulong End, ulong Target), ulong> _runtimeRegionProfileCounts = [];
     private readonly Dictionary<ulong, RuntimeSafeBlockProfileStats> _runtimeSafeBlockProfileStats = [];
+    private readonly Dictionary<(ulong Start, ulong Terminator, uint Op, ulong Target), ulong>
+        _runtimeBlockTransitionProfileCounts = [];
     private readonly Dictionary<ulong, RuntimeSafeBlock> _runtimeSafeInstructionBlocks = [];
     private bool _runtimeRegionProfileActive;
     private ulong _runtimeRegionProfileStart;
@@ -2285,6 +2290,7 @@ internal sealed class MipsR5000Core
     public string OpcodeProfileStatus => GetOpcodeProfileStatus();
     public string RuntimeRegionProfileStatus => GetRuntimeRegionProfileStatus();
     public string RuntimeSafeBlockProfileStatus => GetRuntimeSafeBlockProfileStatus();
+    public string RuntimeBlockTransitionProfileStatus => GetRuntimeBlockTransitionProfileStatus();
     public string RuntimeCounterWaitRegionStatus =>
         $"counterWaitRegion=hits:{_runtimeCounterWaitRegionHits}" +
         $"/instructions:{_runtimeCounterWaitRegionInstructions}";
@@ -2330,6 +2336,7 @@ internal sealed class MipsR5000Core
         Array.Clear(_cop1xFunctionProfileCounts);
         _runtimeRegionProfileCounts.Clear();
         _runtimeSafeBlockProfileStats.Clear();
+        _runtimeBlockTransitionProfileCounts.Clear();
         _runtimeSafeInstructionBlocks.Clear();
         _runtimeRegionProfileActive = false;
         _runtimeRegionProfileStart = 0;
@@ -4658,6 +4665,11 @@ internal sealed class MipsR5000Core
              _memory.RuntimeMainState == runtimeMainState) &&
             TryExecuteRuntimeSafeBranchPair(currentPc))
         {
+            if (_profileRuntimeBlockTransitions)
+            {
+                uint terminatorOp = _memory.ReadRuntimeInstruction32(currentPc);
+                RecordRuntimeBlockTransition(pc, currentPc, terminatorOp, Pc);
+            }
             executed += 2;
             _runtimeMergedBranchPairHits++;
         }
@@ -30548,6 +30560,41 @@ internal sealed class MipsR5000Core
                     $"/r{(item.Stats.CompileRejected ? 1 : 0)}"));
         return $"safeBlocks=blocks:{_runtimeSafeBlockProfileStats.Count}" +
                $"/entries:{totalEntries}/instructions:{totalInstructions}/top:{top}";
+    }
+
+    private void RecordRuntimeBlockTransition(
+        ulong startPc,
+        ulong terminatorPc,
+        uint terminatorOp,
+        ulong targetPc)
+    {
+        var key = (startPc, terminatorPc, terminatorOp, targetPc);
+        if (_runtimeBlockTransitionProfileCounts.TryGetValue(key, out ulong count))
+        {
+            _runtimeBlockTransitionProfileCounts[key] = count + 1UL;
+            return;
+        }
+        if (_runtimeBlockTransitionProfileCounts.Count < 65536)
+            _runtimeBlockTransitionProfileCounts.Add(key, 1UL);
+    }
+
+    private string GetRuntimeBlockTransitionProfileStatus()
+    {
+        if (!_profileRuntimeBlockTransitions)
+            return "blockTransitions=disabled";
+
+        ulong total = _runtimeBlockTransitionProfileCounts.Values.Aggregate(0UL, (sum, count) => sum + count);
+        string top = string.Join(
+            ",",
+            _runtimeBlockTransitionProfileCounts
+                .OrderByDescending(item => item.Value)
+                .ThenBy(item => item.Key.Start)
+                .Take(32)
+                .Select(item =>
+                    $"0x{item.Key.Start:x16}->0x{item.Key.Terminator:x16}" +
+                    $"/{item.Key.Op:x8}->0x{item.Key.Target:x16}:e{item.Value}"));
+        return $"blockTransitions=paths:{_runtimeBlockTransitionProfileCounts.Count}" +
+               $"/entries:{total}/top:{top}";
     }
 
     private string GetRuntimeRegionProfileStatus()

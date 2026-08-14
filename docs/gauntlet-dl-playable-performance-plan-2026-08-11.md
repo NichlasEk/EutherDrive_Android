@@ -273,3 +273,26 @@ efterföljare och göra side exit före observerbara helpers. Den ska mätas fö
 på de tre hetaste `jal`/`jr`-avslutade blockfamiljerna från safe-block-profilen;
 ingen ny standard aktiveras förrän samma långa orakel både är exakt och slår
 safe batches.
+
+En ny opt-in blockövergångsprofil räknar nu fullständiga kanter från safe-
+blockets start via branchterminatorn till verklig mål-PC. Kortprovet fångade
+1 050 767 sammanslagna övergångar över 2 072 kanter. De hetaste är inte de
+tidigare långa `jal`-blocken utan korta loopfamiljer kring `0x800c9c98`,
+`0x800af794` och `0x80103e48`--`0x80103f3c`; den största enskilda branchens
+tagna och otagna vägar kördes 22 929 respektive 22 930 gånger.
+
+En första begränsad kedjemotor körde upp till åtta sådana avkodade block utan
+nytt `Step()`-inträde. Den var bitexakt och absorberade 21 277 422
+instruktioner över 3 186 876 block i långprovet, men kedjorna blev i snitt bara
+drygt två korta block. Extra guards och dictionary-uppslag gjorde därför
+motorn 3,54 procent långsammare:
+
+```text
+safe batches, medel             11 051,8 ms
+safe block chains, medel        11 442,9 ms
+```
+
+Kedjemotorn är borttagen medan övergångsprofilen behålls. Nästa blockmotor ska
+länka direkta cacheobjekt för tagna och otagna efterföljare och vakta en
+versionssatt kodsida en gång per kedjeinträde. Den får inte göra ett globalt
+blockuppslag eller en separat entry-word-läsning för varje kort efterföljare.
