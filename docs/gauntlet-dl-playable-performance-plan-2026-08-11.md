@@ -296,3 +296,17 @@ Kedjemotorn är borttagen medan övergångsprofilen behålls. Nästa blockmotor 
 länka direkta cacheobjekt för tagna och otagna efterföljare och vakta en
 versionssatt kodsida en gång per kedjeinträde. Den får inte göra ett globalt
 blockuppslag eller en separat entry-word-läsning för varje kort efterföljare.
+
+Direktlänkade efterföljare med två cachekanter per block prövades därefter.
+Varje exekverad kodsida fick först en 4 KiB-versionsräknare; skrivningar till
+sidan invaliderade länken före återanvändning. Kortprovet var bitexakt och gav
+956 875 länkträffar mot 79 610 missar, men blev trots det cirka 2,5 procent
+långsammare i det första balanserade paret. Att bara versionsbokföra sidor som
+redan setts som kod tog inte bort regressionen. Varianten stoppades därför före
+långprov och är helt borttagen.
+
+Det återstående problemet är write-barriären: även en billig kontroll i varje
+RAM-skrivning konkurrerar med den redan heta raster/FIFO-vägen. Nästa försök
+ska antingen bevisa runtime-texten immutable för den versionsbundna warm-
+snapshoten eller återanvända befintlig minnesöversättningsmetadata. En ny
+global kontroll får inte läggas i varje data-write bara för JIT-invalidering.
