@@ -1255,6 +1255,9 @@ internal sealed class MipsR5000Core
     private readonly bool _experimentRuntimeMergeBranchPairs =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_MERGE_BRANCH_PAIRS"));
+    private readonly bool _experimentRuntimeCompactConditionalBlock =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPACT_CONDITIONAL_BLOCK"));
     private readonly bool _experimentRuntimeCompiledBlocks =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPILED_BLOCKS"));
@@ -1298,6 +1301,9 @@ internal sealed class MipsR5000Core
     private ulong _runtimeSafeBranchPairHits;
     private ulong _runtimeDirectBranchPairHits;
     private ulong _runtimeMergedBranchPairHits;
+    private bool _runtimeCompactConditionalBlockCodeValidated;
+    private ulong _runtimeCompactConditionalBlockRuns;
+    private ulong _runtimeCompactConditionalBlockInstructions;
     private ulong _runtimeCompiledBlockRuns;
     private ulong _runtimeCompiledBlockInstructions;
     private ulong _runtimeCompiledBlockCount;
@@ -2313,6 +2319,9 @@ internal sealed class MipsR5000Core
         $"/instructions:{_runtimeSafeBranchPairHits * 2UL}" +
         $"/merged:{_runtimeMergedBranchPairHits}" +
         $"/direct:{_runtimeDirectBranchPairHits}";
+    public string RuntimeCompactConditionalBlockStatus =>
+        $"compactConditionalBlock=runs:{_runtimeCompactConditionalBlockRuns}" +
+        $"/instructions:{_runtimeCompactConditionalBlockInstructions}";
     public string RuntimeCompiledBlockStatus =>
         $"compiledBlocks=count:{_runtimeCompiledBlockCount}" +
         $"/runs:{_runtimeCompiledBlockRuns}" +
@@ -2361,6 +2370,9 @@ internal sealed class MipsR5000Core
         _runtimeSafeBranchPairHits = 0;
         _runtimeDirectBranchPairHits = 0;
         _runtimeMergedBranchPairHits = 0;
+        _runtimeCompactConditionalBlockCodeValidated = false;
+        _runtimeCompactConditionalBlockRuns = 0;
+        _runtimeCompactConditionalBlockInstructions = 0;
         _runtimeCompiledBlockRuns = 0;
         _runtimeCompiledBlockInstructions = 0;
         _runtimeCompiledBlockCount = 0;
@@ -4609,6 +4621,13 @@ internal sealed class MipsR5000Core
             return false;
         }
 
+        if (_experimentRuntimeCompactConditionalBlock &&
+            pc == 0xffffffff800c9c98UL &&
+            TryRunRuntimeCompactConditionalBlock(runtimeMainState))
+        {
+            return true;
+        }
+
         RuntimeSafeBlock safeBlock = GetRuntimeSafeInstructionBlock(pc);
         RuntimeSafeInstruction[] block = safeBlock.Instructions;
         if (block.Length == 0)
@@ -4690,6 +4709,56 @@ internal sealed class MipsR5000Core
         }
 
         _probeStepDebt += executed - 1;
+        return true;
+    }
+
+    private bool TryRunRuntimeCompactConditionalBlock(uint runtimeMainState)
+    {
+        const ulong entry = 0xffffffff800c9c98UL;
+        if (_remainingProbeSteps < 7)
+            return false;
+
+        if (!_runtimeCompactConditionalBlockCodeValidated)
+        {
+            ReadOnlySpan<uint> signature =
+            [
+                0xc4600000U, 0x24630004U, 0x24e70001U, 0x28e20003U,
+                0xe4c00000U, 0x1440fffaU, 0x24c60004U
+            ];
+            for (int index = 0; index < signature.Length; index++)
+            {
+                if (_memory.ReadRuntimeInstruction32(entry + (ulong)(index * 4)) != signature[index])
+                    return false;
+            }
+            _runtimeCompactConditionalBlockCodeValidated = true;
+        }
+
+        _fpr[0] = _memory.ReadRuntimeData32(_gpr[3]);
+        _gpr[3] = SignExtend32(unchecked((uint)_gpr[3] + 4U));
+        _gpr[7] = SignExtend32(unchecked((uint)_gpr[7] + 1U));
+        _gpr[2] = unchecked((long)_gpr[7]) < 3L ? 1UL : 0UL;
+        _memory.WriteRuntimeData32(_gpr[6], (uint)_fpr[0]);
+
+        int executed = 5;
+        Pc = entry + 20UL;
+        if (_memory.RuntimeMainState == runtimeMainState)
+        {
+            Pc = _gpr[2] != 0 ? entry : entry + 28UL;
+            _gpr[6] = SignExtend32(unchecked((uint)_gpr[6] + 4U));
+            executed = 7;
+            LastFetchedInstruction = 0x24c60004U;
+        }
+        else
+        {
+            LastFetchedInstruction = 0xe4c00000U;
+        }
+
+        _gpr[0] = 0;
+        AdvanceCp0Count(_cp0CountStep * (ulong)executed);
+        _instructionCounter += (ulong)executed;
+        _probeStepDebt += executed - 1;
+        _runtimeCompactConditionalBlockRuns++;
+        _runtimeCompactConditionalBlockInstructions += (ulong)executed;
         return true;
     }
 

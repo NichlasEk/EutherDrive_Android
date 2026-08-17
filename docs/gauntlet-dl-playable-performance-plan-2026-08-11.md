@@ -330,3 +330,28 @@ Nästa implementation ska använda immutable-beviset för en kompakt genererad
 runner med terminator och delay slot, inte för ytterligare en host-loop över
 avkodade blockobjekt. Den självmodifierande dataslotten på sida `0xb2` behöver
 ingen JIT-invalidering eftersom dess ändrade byte aldrig exekverades.
+
+Den hetaste korta blockfamiljen fick därefter en kompakt opt-in-referensrunner
+vid `0xffffffff800c9c98`. Signaturen är en sjuinstruktions float-copy-loop:
+`lwc1`, tre enkla heltalsoperationer, `swc1`, `bne` och delay-slot. Runnern
+validerar hela signaturen en gång, bevarar store-side-exit om
+`RuntimeMainState` ändras och bokför exakt samma sju CP0-/gästinstruktioner.
+PC-vakten ligger före hjälparanropet så övriga safe-block inte betalar ett
+metodanrop för att avvisa kandidaten.
+
+Kandidaten ersatte 1 305 766 dispatchade instruktioner i långprovet. Två
+uppvärmda balanserade långserier, totalt fyra A/B-par, gav:
+
+```text
+safe batches, medel                 11 193,4 ms
+compact conditional block, medel   10 947,3 ms
+vinst                                    2,20 %
+```
+
+Alla fyra par vanns och samtliga körningar behöll
+`frameHash=0xe87b12da`, PC `0xffffffff80079e18`, FIFO
+`27113239/2660774`, `drawPackets=474871` och `swaps=3877`. Vägen stannar
+opt-in eftersom den är adress-/signaturspecifik, men den är nu det konkreta
+prestanda- och korrekthetsmålet för den generella runnergeneratorn: samma
+terminator/delay-slot-form ska emitteras från ett immutable safe-block utan
+handskriven PC-specifik semantik.

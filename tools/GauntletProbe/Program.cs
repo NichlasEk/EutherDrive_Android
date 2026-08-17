@@ -175,6 +175,8 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_T
     Console.WriteLine(GetProperty(cpu, "RuntimeTableClearRegionStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_SAFE_BRANCH_PAIRS") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeSafeBranchPairStatus"));
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPACT_CONDITIONAL_BLOCK") == "1")
+    Console.WriteLine(GetProperty(cpu, "RuntimeCompactConditionalBlockStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPILED_BLOCKS") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeCompiledBlockStatus"));
 
