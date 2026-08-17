@@ -310,3 +310,23 @@ RAM-skrivning konkurrerar med den redan heta raster/FIFO-vägen. Nästa försök
 ska antingen bevisa runtime-texten immutable för den versionsbundna warm-
 snapshoten eller återanvända befintlig minnesöversättningsmetadata. En ny
 global kontroll får inte läggas i varje data-write bara för JIT-invalidering.
+
+En write-barriärfri kodsideprofil bevisade därefter vad warm-snapshoten
+faktiskt gör. Varje 4 KiB-sida sparas första gången ett safe-block avkodas och
+jämförs en gång vid provets slut. Både 300- och 1 200-anropsprovet exekverade
+148 sidor. Endast sida `0x000b2000` ändrades, med tre byte vid offset
+`0xed8`--`0xeda`; täckningsbitmapen visar att ingen av dessa byte någonsin
+hämtades som instruktion. Alla faktiskt hämtade safe-block-bytes var alltså
+oförändrade i det långa exakta oraklet.
+
+Beviset räckte däremot inte för att göra ännu en C#-kedjeloop snabb. En variant
+utan write-barriär eller versionsguard nådde 3 996 752 direkta länkträffar mot
+2 381 missar i långprovet och behöll exakt state, men föll efter tiered
+recompilation till cirka 20--21 sekunder. `AggressiveOptimization` förbättrade
+den till 15 187,0 ms, fortfarande klart sämre än A-basens cirka 11,8 sekunder.
+Kedjeexekveringen är helt borttagen; kodsideprofilen behålls.
+
+Nästa implementation ska använda immutable-beviset för en kompakt genererad
+runner med terminator och delay slot, inte för ytterligare en host-loop över
+avkodade blockobjekt. Den självmodifierande dataslotten på sida `0xb2` behöver
+ingen JIT-invalidering eftersom dess ändrade byte aldrig exekverades.

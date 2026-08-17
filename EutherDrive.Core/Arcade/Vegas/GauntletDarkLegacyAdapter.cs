@@ -1225,6 +1225,9 @@ internal sealed class MipsR5000Core
     private readonly bool _profileRuntimeBlockTransitions =
         GauntletDarkLegacyAdapter.IsTruthy(
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_BLOCK_TRANSITIONS"));
+    private readonly bool _profileRuntimeCodePages =
+        GauntletDarkLegacyAdapter.IsTruthy(
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_CODE_PAGES"));
     private readonly int _profileRuntimeRegionLimit = Math.Min(
         ParsePositiveInt("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGIONS_LIMIT", 24),
         512);
@@ -1276,6 +1279,7 @@ internal sealed class MipsR5000Core
     private readonly Dictionary<ulong, RuntimeSafeBlockProfileStats> _runtimeSafeBlockProfileStats = [];
     private readonly Dictionary<(ulong Start, ulong Terminator, uint Op, ulong Target), ulong>
         _runtimeBlockTransitionProfileCounts = [];
+    private readonly Dictionary<uint, RuntimeCodePageProfileStats> _runtimeCodePageProfile = [];
     private readonly Dictionary<ulong, RuntimeSafeBlock> _runtimeSafeInstructionBlocks = [];
     private bool _runtimeRegionProfileActive;
     private ulong _runtimeRegionProfileStart;
@@ -2291,6 +2295,7 @@ internal sealed class MipsR5000Core
     public string RuntimeRegionProfileStatus => GetRuntimeRegionProfileStatus();
     public string RuntimeSafeBlockProfileStatus => GetRuntimeSafeBlockProfileStatus();
     public string RuntimeBlockTransitionProfileStatus => GetRuntimeBlockTransitionProfileStatus();
+    public string RuntimeCodePageProfileStatus => GetRuntimeCodePageProfileStatus();
     public string RuntimeCounterWaitRegionStatus =>
         $"counterWaitRegion=hits:{_runtimeCounterWaitRegionHits}" +
         $"/instructions:{_runtimeCounterWaitRegionInstructions}";
@@ -2337,6 +2342,7 @@ internal sealed class MipsR5000Core
         _runtimeRegionProfileCounts.Clear();
         _runtimeSafeBlockProfileStats.Clear();
         _runtimeBlockTransitionProfileCounts.Clear();
+        _runtimeCodePageProfile.Clear();
         _runtimeSafeInstructionBlocks.Clear();
         _runtimeRegionProfileActive = false;
         _runtimeRegionProfileStart = 0;
@@ -5250,6 +5256,11 @@ internal sealed class MipsR5000Core
         public RuntimeCompiledBlock? CompiledBlock { get; set; }
     }
 
+    private sealed record RuntimeCodePageProfileStats(
+        ulong FirstPc,
+        byte[] InitialBytes,
+        bool[] FetchedBytes);
+
     private sealed class RuntimeSafeBlockProfileStats(
         int instructionCount,
         uint terminalOp,
@@ -5373,6 +5384,8 @@ internal sealed class MipsR5000Core
                 (!IsKnownRuntimeSteadyStateServicePc(currentPc) &&
                  !_memory.NeedsRuntimeCpuPcAt(currentPc))))
         {
+            if (_profileRuntimeCodePages)
+                RecordRuntimeCodePageProfile(currentPc);
             uint op = _memory.ReadRuntimeInstruction32(currentPc);
             if (!IsSafeSequentialRuntimeInstruction(op))
                 break;
@@ -30597,6 +30610,62 @@ internal sealed class MipsR5000Core
                $"/entries:{total}/top:{top}";
     }
 
+    private void RecordRuntimeCodePageProfile(ulong pc)
+    {
+        uint physicalPage = (uint)(pc & 0x1fffffffUL) >> 12;
+        if (!_runtimeCodePageProfile.TryGetValue(physicalPage, out RuntimeCodePageProfileStats? stats))
+        {
+            stats = new RuntimeCodePageProfileStats(
+                pc,
+                _memory.CopyRuntimeCodePage(physicalPage),
+                new bool[4096]);
+            _runtimeCodePageProfile.Add(physicalPage, stats);
+        }
+        int pageOffset = (int)(pc & 0xfffUL);
+        for (int index = pageOffset; index < Math.Min(pageOffset + 4, stats.FetchedBytes.Length); index++)
+            stats.FetchedBytes[index] = true;
+    }
+
+    private string GetRuntimeCodePageProfileStatus()
+    {
+        if (!_profileRuntimeCodePages)
+            return "codePages=disabled";
+
+        List<string> details = [];
+        int changedPages = 0;
+        foreach ((uint page, RuntimeCodePageProfileStats stats) in _runtimeCodePageProfile.OrderBy(item => item.Key))
+        {
+            byte[] finalBytes = _memory.CopyRuntimeCodePage(page);
+            List<string> changes = [];
+            int changedBytes = 0;
+            int changedFetchedBytes = 0;
+            for (int offset = 0; offset < Math.Min(stats.InitialBytes.Length, finalBytes.Length); offset++)
+            {
+                if (stats.InitialBytes[offset] == finalBytes[offset])
+                    continue;
+                changedBytes++;
+                if (stats.FetchedBytes[offset])
+                    changedFetchedBytes++;
+                if (changes.Count < 16)
+                    changes.Add(
+                        $"{offset:x3}{(stats.FetchedBytes[offset] ? "*" : "")}" +
+                        $":{stats.InitialBytes[offset]:x2}>{finalBytes[offset]:x2}");
+            }
+            if (changedBytes == 0)
+                continue;
+            changedPages++;
+            if (details.Count < 32)
+            {
+                details.Add(
+                    $"p{page:x5}/pc0x{stats.FirstPc:x16}/bytes{changedBytes}" +
+                    $"/fetched{changedFetchedBytes}" +
+                    $"/{string.Join('.', changes)}");
+            }
+        }
+        return $"codePages=pages:{_runtimeCodePageProfile.Count}" +
+               $"/changed:{changedPages}/details:{string.Join(',', details)}";
+    }
+
     private string GetRuntimeRegionProfileStatus()
     {
         if (!_profileRuntimeRegions)
@@ -33878,6 +33947,15 @@ internal sealed class VegasMemoryMap
             return BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value);
         }
         return Read32(address);
+    }
+
+    public byte[] CopyRuntimeCodePage(uint physicalPage)
+    {
+        int offset = checked((int)(physicalPage << 12));
+        if (offset < 0 || offset >= _mainRam.Length)
+            return [];
+        int length = Math.Min(4096, _mainRam.Length - offset);
+        return _mainRam.AsSpan(offset, length).ToArray();
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

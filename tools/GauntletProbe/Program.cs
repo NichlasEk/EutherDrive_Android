@@ -163,6 +163,8 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_SAFE
     Console.WriteLine(GetProperty(cpu, "RuntimeSafeBlockProfileStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_BLOCK_TRANSITIONS") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeBlockTransitionProfileStatus"));
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_CODE_PAGES") == "1")
+    Console.WriteLine(GetProperty(cpu, "RuntimeCodePageProfileStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COUNTER_WAIT_REGION") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeCounterWaitRegionStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_TRANSFORM_REGION") == "1")
