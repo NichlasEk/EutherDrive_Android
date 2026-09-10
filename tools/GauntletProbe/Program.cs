@@ -77,6 +77,12 @@ ApplyRequestedMameCpuState(adapter);
 LoadRequestedTextureWriterSidecar(adapter);
 PrintRequestedGuestMemoryWords(adapter, "start");
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_GENERATED_CONDITIONAL_BLOCK") == "1")
+{
+    GeneratedConditionalBlockChecks.Run(GetProperty(GetField(adapter, "_machine"), "Cpu"));
+    return;
+}
+
 long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
 var runStopwatch = Stopwatch.StartNew();
 if (!loadedWarmupSnapshot)
@@ -175,7 +181,8 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_T
     Console.WriteLine(GetProperty(cpu, "RuntimeTableClearRegionStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_SAFE_BRANCH_PAIRS") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeSafeBranchPairStatus"));
-if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPACT_CONDITIONAL_BLOCK") == "1")
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPACT_CONDITIONAL_BLOCK") == "1" ||
+    Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_GENERATED_CONDITIONAL_BLOCK") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeCompactConditionalBlockStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_COMPILED_BLOCKS") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeCompiledBlockStatus"));

@@ -1159,7 +1159,7 @@ internal sealed class GauntletRomSet
     }
 }
 
-internal sealed class MipsR5000Core
+internal sealed partial class MipsR5000Core
 {
     private const ulong KnownRuntimeBgLoadModelTexturePayloadMaxIndex = 26;
 
@@ -2321,7 +2321,8 @@ internal sealed class MipsR5000Core
         $"/direct:{_runtimeDirectBranchPairHits}";
     public string RuntimeCompactConditionalBlockStatus =>
         $"compactConditionalBlock=runs:{_runtimeCompactConditionalBlockRuns}" +
-        $"/instructions:{_runtimeCompactConditionalBlockInstructions}";
+        $"/instructions:{_runtimeCompactConditionalBlockInstructions}" +
+        $"/generatedRuns:{_runtimeGeneratedConditionalBlockRuns}";
     public string RuntimeCompiledBlockStatus =>
         $"compiledBlocks=count:{_runtimeCompiledBlockCount}" +
         $"/runs:{_runtimeCompiledBlockRuns}" +
@@ -2371,6 +2372,8 @@ internal sealed class MipsR5000Core
         _runtimeDirectBranchPairHits = 0;
         _runtimeMergedBranchPairHits = 0;
         _runtimeCompactConditionalBlockCodeValidated = false;
+        _runtimeGeneratedConditionalBlock = null;
+        _runtimeGeneratedConditionalBlockRuns = 0;
         _runtimeCompactConditionalBlockRuns = 0;
         _runtimeCompactConditionalBlockInstructions = 0;
         _runtimeCompiledBlockRuns = 0;
@@ -4619,6 +4622,13 @@ internal sealed class MipsR5000Core
             _memory.NeedsRuntimeCpuPcAt(pc))
         {
             return false;
+        }
+
+        if (_experimentRuntimeGeneratedConditionalBlock &&
+            pc == 0xffffffff800c9c98UL &&
+            TryRunRuntimeGeneratedConditionalBlock(pc, runtimeMainState))
+        {
+            return true;
         }
 
         if (_experimentRuntimeCompactConditionalBlock &&
@@ -41979,7 +41989,13 @@ internal class VoodooBringupBackend : IVoodooBackend
         _cmdFifoPacketMapProducerStates.TryGetValue(producer, out PacketMapProducerState state);
         int normalized = CommandFifoStorageIndex(storageIndex);
         if (_cmdFifoStoragePacketOwnerValid[normalized])
-            _cmdFifoCompletePacketHeaders.Remove(_cmdFifoStoragePacketOwnerHeaderLogicalIndex[normalized]);
+        {
+            int oldHeader = _cmdFifoStoragePacketOwnerHeaderLogicalIndex[normalized];
+            // A later body write can refer to an owner already removed by an
+            // earlier overwrite. Avoid a removal search for an absent header.
+            if (_cmdFifoCompletePacketHeaders.Contains(oldHeader))
+                _cmdFifoCompletePacketHeaders.Remove(oldHeader);
+        }
         bool sequentialBody = logicalWriteIndex == state.NextLogicalIndex &&
                               state.BodyWordsRemaining > 0;
         if (sequentialBody)

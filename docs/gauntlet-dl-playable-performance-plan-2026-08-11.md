@@ -355,3 +355,36 @@ opt-in eftersom den är adress-/signaturspecifik, men den är nu det konkreta
 prestanda- och korrekthetsmålet för den generella runnergeneratorn: samma
 terminator/delay-slot-form ska emitteras från ett immutable safe-block utan
 handskriven PC-specifik semantik.
+
+2026-09-10: den första IL-genererade ersättaren matchar nu kort- och lång-
+oraklet och kör med ungefär den handskrivna referensens fart. Den är fortsatt
+opt-in och innebär ingen påvisad hastighetsvinst. Mätningar, begränsningar och
+nästa loopsteg finns i
+[generatorns checkpoint](gauntlet-dl-generated-jit-checkpoint-2026-09-10.md).
+
+Ett efterföljande flervarvsförsök behöll registren lokalt och halverade antalet
+genererade anrop, men gav bara 0,32 procent skillnad i medel, sämre median och
+två vunna långpar av fyra. Hela oraklet var exakt, inklusive riktade budget-
+och timertester. Flervarvsvarianten är borttagen ur körkoden; nästa kandidat
+ska väljas efter större faktisk CPU-kostnad per inträde.
+
+Två större block (29/38 instruktioner) prövades därefter med direkt IL och
+bevarad bokföring per instruktion. Kandidaten körde 2 388 989 instruktioner
+men blev 1,93 procent långsammare över fyra balanserade långpar och är
+borttagen. Även fullständiga sparade maskintillstånd var byte-exakt lika.
+Resultat och nästa mätbehov finns i
+[större block-experimentet](gauntlet-dl-large-block-experiment-2026-09-10.md).
+
+En efterföljande faktisk tidsprofil ändrar prioriteringen: texturraster ensam
+tar 4,04–4,07 sekunder av cirka 11,8 sekunder. Två stackprofiler visar ungefär
+35 procent texturraster, 21 procent övrig Voodoo/FIFO/presentation och 38–39
+procent återstående MIPS-kod på huvudtråden. CPU-fasens tid inkluderar alltså
+mycket synkron grafik. Om rasterkostnaden består kan CPU-JIT ensam inte nå
+30 swaps/s. Metod, begränsningar och konkreta heta vägar finns i
+[tidsprofilen](gauntlet-dl-runtime-time-profile-2026-09-10.md).
+
+Den första behållna optimeringen från denna tidsprofil gäller FIFO-bokföring:
+kontrollera medlemskap före borttagning av ett tidigare pakethuvud. Fyra
+balanserade långpar vanns med 1,19 procent lägre medeltid och byte-exakt
+fullständig snapshot. Ändringen är nu vanlig kod utan experimentflagga.
+Se [FIFO-checkpointen](gauntlet-dl-fifo-checkpoint-2026-09-10.md).

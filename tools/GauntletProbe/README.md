@@ -3,6 +3,9 @@
 Bringup harness for Gauntlet Dark Legacy. It can cache a warm boot checkpoint so
 late boot probes do not need to replay the full startup every run.
 
+The opt-in generated compact-block experiment and its differential checks are
+documented in [the 2026-09-10 checkpoint](../../docs/gauntlet-dl-generated-jit-checkpoint-2026-09-10.md).
+
 Typical use with the local ROM directory:
 
 ```sh
