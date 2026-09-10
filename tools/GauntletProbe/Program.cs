@@ -8,6 +8,12 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_PCI_TRACE") == "1")
+{
+    VoodooPciTraceChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
+    return;
+}
+
 string romPath = args.Length > 0 ? args[0] : "/home/nichlas/roms/MAME/Midway/Vegas/gauntd";
 ConfigureRawDiskSidecar(romPath);
 int frames = args.Length > 1 && int.TryParse(args[1], out int parsedFrames) ? parsedFrames : 600;
@@ -1391,9 +1397,14 @@ static void DumpVoodoo(object facade)
         $"ownerValid:{(commandFifoOwnerValid[commandFifoReadStorage] ? 1 : 0)}:" +
         $"owner:0x{commandFifoOwners[commandFifoReadStorage]:x}");
     int[] commandFifoPacketEnds = GetFieldValue<int[]>(backend, "_cmdFifoStoragePacketEndLogicalIndex");
-    MethodInfo isPacketComplete = backend.GetType().GetMethod(
-        "IsStandardCommandFifoPacketComplete",
-        BindingFlags.Instance | BindingFlags.NonPublic)!;
+    // Trace mode uses a derived backend. Private methods, like private fields,
+    // must be looked up through its base types explicitly.
+    MethodInfo? isPacketComplete = null;
+    for (Type? type = backend.GetType(); type != null && isPacketComplete == null; type = type.BaseType)
+        isPacketComplete = type.GetMethod("IsStandardCommandFifoPacketComplete",
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly);
+    if (isPacketComplete == null)
+        throw new MissingMethodException(backend.GetType().FullName, "IsStandardCommandFifoPacketComplete");
     foreach (int candidate in ((IEnumerable)GetField(backend, "_cmdFifoCompletePacketHeaders")).Cast<int>().Take(3))
     {
         int storage = candidate & 0xffff;

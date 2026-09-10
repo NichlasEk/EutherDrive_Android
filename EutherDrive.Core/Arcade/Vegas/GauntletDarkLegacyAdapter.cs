@@ -37292,7 +37292,8 @@ internal sealed class VegasVoodooPciDevice
         uint value = offset == 0x40
             ? (_pciControl[0] & ~0xff000u) | 0x00044000u
             : BinaryPrimitives.ReadUInt32LittleEndian(_config.AsSpan((int)offset, 4));
-        Trace($"pci cfg read off={offset:x2} value={value:x8}");
+        if (_traceEnabled)
+            Trace($"pci cfg read off={offset:x2} value={value:x8}");
         return value;
     }
 
@@ -37302,7 +37303,8 @@ internal sealed class VegasVoodooPciDevice
         if (offset + 3 >= _config.Length)
             return;
 
-        Trace($"pci cfg write off={offset:x2} value={value:x8}");
+        if (_traceEnabled)
+            Trace($"pci cfg write off={offset:x2} value={value:x8}");
         switch (offset)
         {
             case 0x04:
@@ -37347,7 +37349,8 @@ internal sealed class VegasVoodooPciDevice
             < 0x00800000u => _voodoo?.ReadLfb32(offset - 0x00400000u) ?? 0,
             _ => _voodoo?.ReadTexture32(offset - 0x00800000u) ?? 0
         };
-        Trace($"mem read off={offset:x6} value={value:x8}");
+        if (_traceEnabled)
+            Trace($"mem read off={offset:x6} value={value:x8}");
         return true;
     }
 
@@ -37372,7 +37375,8 @@ internal sealed class VegasVoodooPciDevice
                     value = BinaryPrimitives.ReverseEndianness(value);
                 uint fifoOffset = wrappedGenerationWindow ? offset - 0x00100000u : offset;
                 _voodoo?.WriteFifo((fifoOffset >> 2) & 0xffffu, value);
-                Trace($"fifo write off={offset:x6} value={value:x8}");
+                if (_traceEnabled)
+                    Trace($"fifo write off={offset:x6} value={value:x8}");
             }
             else
             {
@@ -37383,25 +37387,29 @@ internal sealed class VegasVoodooPciDevice
                     // Voodoo 2 ignores ordinary FIFO-able register writes
                     // while its command FIFO is enabled. The guest must send
                     // those writes through the command FIFO aperture instead.
-                    Trace($"reg write ignored cmdfifo off={offset:x6} reg={register:x2} value={value:x8}");
+                    if (_traceEnabled)
+                        Trace($"reg write ignored cmdfifo off={offset:x6} reg={register:x2} value={value:x8}");
                 }
                 else
                 {
                     WriteRegister(registerOffset, value);
                     _voodoo?.WriteRegister(registerOffset, value);
-                    Trace($"reg write off={offset:x6} value={value:x8}");
+                    if (_traceEnabled)
+                        Trace($"reg write off={offset:x6} value={value:x8}");
                 }
             }
         }
         else if (offset < 0x00800000u)
         {
             _voodoo?.WriteLfb32(offset - 0x00400000u, value);
-            Trace($"lfb write off={offset:x6} value={value:x8}");
+            if (_traceEnabled)
+                Trace($"lfb write off={offset:x6} value={value:x8}");
         }
         else
         {
             _voodoo?.WriteTexture32(offset - 0x00800000u, value);
-            Trace($"tex write off={offset:x6} value={value:x8}");
+            if (_traceEnabled)
+                Trace($"tex write off={offset:x6} value={value:x8}");
         }
 
         return true;

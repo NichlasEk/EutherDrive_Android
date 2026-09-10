@@ -388,3 +388,12 @@ kontrollera medlemskap före borttagning av ett tidigare pakethuvud. Fyra
 balanserade långpar vanns med 1,19 procent lägre medeltid och byte-exakt
 fullständig snapshot. Ändringen är nu vanlig kod utan experimentflagga.
 Se [FIFO-checkpointen](gauntlet-dl-fifo-checkpoint-2026-09-10.md).
+
+Både PCI-loggning och texturförberedelse har därefter prövats. Avstängd
+PCI-loggning skapar nu inga strängar: ett riktat 40 000-anropstest går från
+5,76 MB allokeringar till noll, men replaytiden är ungefär neutral.
+Texturkandidaten flyttade fasta samplebeslut till triangelns förberedelse;
+den första positiva mätningen höll inte i bekräftelsen och kandidaten är
+borttagen. Alla tre varianter gav byte-exakt samma fullständiga slutmaskin.
+Även probens slutdump med aktiverad spårning har rättats. Se
+[PCI- och texturcheckpointen](gauntlet-dl-pci-texture-checkpoint-2026-09-10.md).

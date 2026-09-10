@@ -90,6 +90,17 @@ the source-file and main-RAM ranges before copying. This is intended for narrow
 causal replay against an owned disk or RAM oracle; it is not part of the
 runtime baseline.
 
+PCI trace allocation and logging regression checks can run without ROMs:
+
+```sh
+EUTHERDRIVE_GAUNTDL_TEST_PCI_TRACE=1 \
+dotnet tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll
+```
+
+This checks zero allocations across 40,000 warmed, trace-disabled PCI accesses,
+then verifies enabled trace text, the output limit, and the trace counter. The
+check creates disposable PCI devices and restores its environment settings.
+
 The Gauntlet bringup baseline also keeps the Temple weapons object source
 distinct from the resource builder's writable output:
 
