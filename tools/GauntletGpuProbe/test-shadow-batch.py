@@ -95,6 +95,32 @@ try:
 finally:
     lib.gauntlet_shadow_destroy(ctx)
 
+# Audit both sides of dirty-group boundaries, including the final texture page.
+# Non-boolean flags must remain dirty; two high bits must not cancel by summing.
+os.environ['EUTHERDRIVE_GAUNTDL_GPU_SPARSE_SNAPSHOT'] = '1'
+os.environ['EUTHERDRIVE_GAUNTDL_GPU_VERIFY_DIRTY'] = '1'
+os.environ.pop('GAUNTLET_GPU_DROP_TEXTURE_UPDATES', None)
+dirty_mode = True
+for page in (0, 15, 16, 8191):
+    changed = array.array('I', first)
+    changed[8+page*256+255] ^= 1
+    changed[8+textures] ^= 1
+    changed[8+textures+511] ^= 1  # NCC is not represented by dirty flags.
+    dirty_pages = array.array('I', [0]) * 8192
+    dirty_pages[page] = dirty_pages[page ^ 1] = 0x80000000
+    ctx = lib.gauntlet_shadow_create(os.fsencode(root / '.build-tmp/gauntlet-gpu-probe/draw.spv'))
+    assert ctx, lib.gauntlet_shadow_error()
+    try:
+        assert enqueue(ctx, first, 1) == 0, lib.gauntlet_shadow_error()
+        assert enqueue(ctx, changed, 0) == 0, lib.gauntlet_shadow_error()
+        dirty_pages = array.array('I', [0]) * 8192
+        assert enqueue(ctx, changed, 0) == 0, lib.gauntlet_shadow_error()
+        assert enqueue(ctx, first, 0) == -1
+        assert b'Dirty batch tracker missed page' in lib.gauntlet_shadow_error()
+    finally:
+        lib.gauntlet_shadow_destroy(ctx)
+print('dirty group boundaries / high-bit flags / NCC / missed-page audit PASS', flush=True)
+
 # Retain output and texture state across two separately submitted batches.
 # The relocated second draw must patch texture on continuation draw zero.
 dirty_pages = array.array('I', [1]) * 8192

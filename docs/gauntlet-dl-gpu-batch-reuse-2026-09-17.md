@@ -1,5 +1,8 @@
 # Gauntlet DL: återanvändning av fortsatt batchminne
 
+Uppföljning: [grupperad dirty-kontroll](gauntlet-dl-gpu-dirty-groups-2026-09-17.md)
+provar nästa förberedelsekostnad separat, med batchåteranvändning avstängd.
+
 ## Resultat
 
 Opt-in `EUTHERDRIVE_GAUNTDL_GPU_REUSE_BATCH=1` minskar den riktade

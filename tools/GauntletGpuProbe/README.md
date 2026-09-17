@@ -395,6 +395,14 @@ Device times overlap host waits; do not add them to host timings. These are
 coarse pipeline intervals, not isolated shader-instruction or PCIe bandwidth
 measurements. Readback host time includes its recording/submission/wait/query.
 Snapshot preparation is timed for synchronous draws and batch enqueue.
+`EUTHERDRIVE_GAUNTDL_GPU_DIRTY_GROUP_SCAN=1` is an opt-in batch enqueue
+experiment: OR 16 dirty flags at a time and skip a wholly clean texture group.
+Mixed groups keep the original per-page path. Full dirty verification still
+compares every skipped texture word; NCC pages are always visited separately.
+The flag is cached at native session creation, defaults off and changes neither
+the ABI nor the dirty mask layout/counters. It does not require batch reuse.
+See the [dirty-group experiment](../../docs/gauntlet-dl-gpu-dirty-groups-2026-09-17.md)
+for correctness coverage and the mixed end-to-end timing results.
 `EUTHERDRIVE_GAUNTDL_GPU_REUSE_BATCH=1` is an opt-in native experiment for
 resident batch continuations (reset mode 2). It shrinks the previous batch
 to its fixed prefix and clears only metadata, instead of zeroing the unused

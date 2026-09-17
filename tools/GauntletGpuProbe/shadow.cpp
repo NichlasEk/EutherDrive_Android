@@ -25,6 +25,7 @@ struct Shadow {
     uint64_t pagesCompared=0,pagesSkipped=0;
     bool profiling=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_PROFILE");return p && std::strcmp(p,"1")==0; }();
     bool reuseBatch=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_REUSE_BATCH");return p && std::strcmp(p,"1")==0; }();
+    bool groupScan=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_DIRTY_GROUP_SCAN");return p && std::strcmp(p,"1")==0; }();
     bool pollFence=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_FENCE_POLL");return p && std::strcmp(p,"1")==0; }();
     uint64_t pollCompleted=0,pollFallback=0;
     double initMs=0,prepareMs=0,recordMs=0,stagingMs=0,queueMs=0,waitMs=0,queryMs=0,readPixelsMs=0;
@@ -276,6 +277,19 @@ static int enqueueDraw(void* context,const uint32_t* texture,const uint32_t* ncc
         if(reset!=1) {
           ProfileTimer scanTimer(s.profiling?&s.batchScanMs:nullptr);
           for(size_t p=0;p<2097152+512;p+=256) {
+            // Group only texture dirty flags, never NCC. OR (not sum) also
+            // handles non-boolean dirty values without overflow cancellation.
+            if(s.groupScan && dirty && p<pixels && p%(16*256)==0) {
+                uint32_t changed=0;
+                for(size_t i=0;i<16;i++) changed|=dirty[p/256+i];
+                if(!changed) {
+                    if(verify && !std::equal(texture+p,texture+p+16*256,s.input.begin()+8+p))
+                        throw std::runtime_error("Dirty batch tracker missed page group "+std::to_string(p/256));
+                    s.pagesSkipped+=16;
+                    p+=15*256;
+                    continue;
+                }
+            }
             const uint32_t* now=p<2097152?texture+p:ncc+p-2097152;
             if(dirty && p<pixels && !dirty[p/256]) {
                 s.pagesSkipped++;
