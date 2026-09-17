@@ -491,3 +491,10 @@ Två växlade GPU-replayer blir cirka 20,7 procent kortare än sparse-vägen:
 byte-exakta och kontrollen hittar inga missade sidor. NCC jämförs fortsatt
 fullt och segmentstarter återinitialiseras; normalbygget är oförändrat.
 Se [dirty-texture-checkpointen](gauntlet-dl-gpu-dirty-texture-2026-09-17.md).
+
+GPU-checkpointen är pushad som `3eaf4caf`. Fortsatt fasprofilering visar att
+GPU-vägens extra kostnad främst ligger i det synkrona rasterintervallet:
+5,40 s mot CPU-vägens 3,69 s. Samplingsprofil av normalbygget pekar vidare
+mot CPU-rasterloopen och MIPS `Step`/safe-instruction-dispatch. Ingen ny
+runtimeoptimering är införd på basis av detta ännu. Se
+[CPU-fasprofilen](gauntlet-dl-cpu-phase-profile-2026-09-17.md).

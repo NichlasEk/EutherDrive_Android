@@ -110,6 +110,14 @@ timed replay, unlike `score fps`, which counts probe calls. It does not measure
 distinct frames displayed by a host window or input latency. Probe drains any
 active diagnostic GPU session at the timed endpoint before extra CPU steps.
 
+For `EUTHERDRIVE_GAUNTDL_PROFILE_FRAME_PHASES=1` logs, use
+`python3 tools/GauntletProbe/summarize-frame-phases.py <log>`. Nested Voodoo
+timers must not be added to CPU phase totals. A dotnet-trace Speedscope export
+can be filtered to RunFrame stacks with `summarize-replay-stacks.py <json>`;
+this excludes startup, snapshot serialization and worker-only profiles, but
+method attribution still includes inlining/native/wait ambiguities. See the
+[CPU phase checkpoint](../../docs/gauntlet-dl-cpu-phase-profile-2026-09-17.md).
+
 In-process GPU shadow comparison is available in diagnostic builds with
 `EUTHERDRIVE_GAUNTDL_GPU_SHADOW=1`; it checks up to 128 draws while the CPU
 continues to supply all game results. Build the native library first as shown
