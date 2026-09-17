@@ -118,6 +118,11 @@ this excludes startup, snapshot serialization and worker-only profiles, but
 method attribution still includes inlining/native/wait ambiguities. See the
 [CPU phase checkpoint](../../docs/gauntlet-dl-cpu-phase-profile-2026-09-17.md).
 
+For alternating frozen-build benchmarks, `scripts/run-gauntdl-probe-warm.sh`
+accepts `EUTHERDRIVE_GAUNTDL_PROBE_DLL=/absolute/path/GauntletProbe.dll`.
+Keep the complete build output beside the DLL. The default path is unchanged.
+See [CPU dispatch experiments](../../docs/gauntlet-dl-cpu-dispatch-experiments-2026-09-17.md).
+
 In-process GPU shadow comparison is available in diagnostic builds with
 `EUTHERDRIVE_GAUNTDL_GPU_SHADOW=1`; it checks up to 128 draws while the CPU
 continues to supply all game results. Build the native library first as shown

@@ -9,7 +9,7 @@ TARGET_FRAMES="${2:-6770}"
 CPU_STEPS="${3:-60000}"
 SNAPSHOT_PATH="${4:-$REPO_ROOT/.build-tmp/gaunt-k2-clean2-f6750.warm.gz}"
 SNAPSHOT_FRAMES="${5:-6750}"
-PROBE_DLL="$REPO_ROOT/tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll"
+PROBE_DLL="${EUTHERDRIVE_GAUNTDL_PROBE_DLL:-$REPO_ROOT/tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll}"
 
 if [ ! -f "$SNAPSHOT_PATH" ]; then
     echo "Gauntlet warm snapshot not found: $SNAPSHOT_PATH" >&2
