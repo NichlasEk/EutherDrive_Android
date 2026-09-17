@@ -1,5 +1,8 @@
 # Gauntlet DL: kostnadsprofil för residenta batcher
 
+Uppföljning: [batchåteranvändning](gauntlet-dl-gpu-batch-reuse-2026-09-17.md)
+minskar den riktade nollställningskostnaden men visar ännu ingen total fartvinst.
+
 ## Slutsats
 
 Nivå 3 sparar överföringar men lägger till ritningar/barriärer, sidkontroller

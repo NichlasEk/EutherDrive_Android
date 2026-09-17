@@ -24,6 +24,7 @@ struct Shadow {
     uint64_t snapshotCopiedBytes=0;
     uint64_t pagesCompared=0,pagesSkipped=0;
     bool profiling=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_PROFILE");return p && std::strcmp(p,"1")==0; }();
+    bool reuseBatch=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_REUSE_BATCH");return p && std::strcmp(p,"1")==0; }();
     bool pollFence=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_FENCE_POLL");return p && std::strcmp(p,"1")==0; }();
     uint64_t pollCompleted=0,pollFallback=0;
     double initMs=0,prepareMs=0,recordMs=0,stagingMs=0,queueMs=0,waitMs=0,queryMs=0,readPixelsMs=0;
@@ -256,7 +257,14 @@ static int enqueueDraw(void* context,const uint32_t* texture,const uint32_t* ncc
             ProfileTimer continuationTimer(s.profiling?&s.batchContinueMs:nullptr);
             // Header/texture/NCC and output remain resident. Only metadata and
             // immutable patch payloads will be uploaded for this batch.
-            s.batch.assign(batchInitial,0);
+            if(s.reuseBatch) {
+                // A successful keep flush guarantees at least batchInitial
+                // words already exist. Drop old framebuffer/patch payloads;
+                // never upload the retained header/texture/NCC prefix.
+                s.batch.resize(batchInitial);
+                // Preserve deterministic unused metadata slots as before.
+                std::fill(s.batch.begin()+metaAt,s.batch.end(),0);
+            } else s.batch.assign(batchInitial,0);
             s.batchReset=false;s.batchContinuationReady=false;
         }
         std::vector<VkBufferCopy> changes;
