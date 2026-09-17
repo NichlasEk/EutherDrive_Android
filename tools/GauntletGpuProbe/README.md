@@ -419,6 +419,16 @@ defaults off; rebuild native code and shader together. `gpuTileLists` reports
 extra bytes, list entries and capacity fallbacks. With profiling enabled,
 `gpuTile planMs` measures host epoch/list construction; this is included in
 managed flush time, not in native command-recording time.
+`EUTHERDRIVE_GAUNTDL_GPU_TILE_MASKS=1` is an alternative sparse tile encoding
+with `GPU_TILE_BATCH=1`: packed XY plus four 32-bit draw masks per active tile.
+It takes precedence over `GPU_TILE_LISTS` if both are enabled. Host construction
+uses one flat mask array per epoch instead of a vector per tile; the shader visits
+set bits in ascending order (including bits 31/63/95/127). Payload placement,
+capacity fallback and synchronization match lists. `gpuTileLists masks=1`
+identifies the encoding; entries still counts draw/tile intersections. Defaults
+off; native and shader must be rebuilt together. No ABI change.
+See the [tile-mask experiment](../../docs/gauntlet-dl-gpu-tile-masks-2026-09-17.md)
+for exact-state verification and the inconclusive end-to-end timing comparison.
 The [tile-list experiment](../../docs/gauntlet-dl-gpu-tile-lists-2026-09-17.md)
 reduced invocations but did not establish an end-to-end improvement.
 See the [tile-epoch prototype](../../docs/gauntlet-dl-gpu-tile-epochs-2026-09-17.md)

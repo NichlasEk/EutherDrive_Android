@@ -28,6 +28,7 @@ struct Shadow {
     bool groupScan=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_DIRTY_GROUP_SCAN");return p && std::strcmp(p,"1")==0; }();
     bool tileBatch=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH");return p && std::strcmp(p,"1")==0; }();
     bool tileLists=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_TILE_LISTS");return p && std::strcmp(p,"1")==0; }();
+    bool tileMasks=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_TILE_MASKS");return p && std::strcmp(p,"1")==0; }();
     uint64_t tileListBytes=0,tileListEntries=0,tileListFallbacks=0;
     double tilePlanMs=0;
     uint64_t tileDispatches=0,tileDraws=0,tileInvocations=0;
@@ -75,7 +76,29 @@ struct Shadow {
             if(end-d>1) {
                 uint32_t columns=(right-left+15)/16,groups=columns*((bottom-top+7)/8);
                 tiles[d]={uint32_t(m),0x80000000u|uint32_t(end-d),left|(top<<16),columns};
-                if(tileLists) {
+                if(tileMasks) {
+                    std::vector<std::array<uint32_t,4>> bins(groups);
+                    size_t entries=0,active=0;
+                    for(size_t draw=d;draw<end;draw++) {
+                        size_t n=commands[draw][0],index=draw-d;
+                        uint32_t x0=(data[n]-left)/16,x1=(data[n]+data[n+2]-1-left)/16;
+                        uint32_t y0=(data[n+1]-top)/8,y1=(data[n+1]+data[n+3]-1-top)/8;
+                        for(uint32_t y=y0;y<=y1;y++) for(uint32_t x=x0;x<=x1;x++) {
+                            bins[y*columns+x][index/32]|=uint32_t(1)<<(index%32);entries++;
+                        }
+                    }
+                    for(const auto& bin:bins) if(bin[0]|bin[1]|bin[2]|bin[3]) active++;
+                    if(bytes+(lists.size()+active*5)*4<=capacity) {
+                        tiles[d][1]|=0x20000000u;tiles[d][2]=uint32_t(bytes/4+lists.size());
+                        for(uint32_t tile=0;tile<bins.size();tile++) {
+                            const auto& bin=bins[tile];
+                            if(!(bin[0]|bin[1]|bin[2]|bin[3])) continue;
+                            lists.push_back((left+(tile%columns)*16)|((top+(tile/columns)*8)<<16));
+                            lists.insert(lists.end(),bin.begin(),bin.end());
+                        }
+                        groups=uint32_t(active);tileListEntries+=entries;
+                    } else tileListFallbacks++;
+                } else if(tileLists) {
                     std::vector<std::vector<uint32_t>> bins(groups);
                     for(size_t draw=d;draw<end;draw++) {
                         size_t n=commands[draw][0];
@@ -152,7 +175,7 @@ struct Shadow {
         for(size_t d=0;d<commands.size();d++) {
             if(tileBatch && tileGroups[d]) {
                 dispatchInvocations+=uint64_t(tileGroups[d])*128;
-                d+=(tiles[d][1]&0x3fffffffu)-1;
+                d+=(tiles[d][1]&0x1fffffffu)-1;
             } else dispatchInvocations+=uint64_t(((perDrawPixels?(*perDrawPixels)[d]:dispatchPixels)+127)/128)*128;
         }
     }
@@ -173,7 +196,7 @@ void gauntlet_shadow_destroy(void* context) noexcept {
     if(s) std::cout<<"gpuResident pixelReadbacks="<<s->pixelReadbacks<<" pendingPixels="<<s->residentDirty<<std::endl;
     if(s) std::cout<<"gpuDispatch invocations="<<s->dispatchInvocations<<std::endl;
     if(s && s->tileBatch) std::cout<<"gpuTile dispatches="<<s->tileDispatches<<" draws="<<s->tileDraws<<" invocations="<<s->tileInvocations<<" planMs="<<s->tilePlanMs<<std::endl;
-    if(s && s->tileLists) std::cout<<"gpuTileLists bytes="<<s->tileListBytes<<" entries="<<s->tileListEntries<<" capacityFallbacks="<<s->tileListFallbacks<<" planMs="<<s->tilePlanMs<<std::endl;
+    if(s && (s->tileLists || s->tileMasks)) std::cout<<"gpuTileLists bytes="<<s->tileListBytes<<" entries="<<s->tileListEntries<<" capacityFallbacks="<<s->tileListFallbacks<<" planMs="<<s->tilePlanMs<<" masks="<<s->tileMasks<<std::endl;
     if(s) std::cout<<"gpuSnapshot copiedBytes="<<s->snapshotCopiedBytes<<std::endl;
     if(s) std::cout<<"gpuDirty pagesCompared="<<s->pagesCompared<<" pagesSkipped="<<s->pagesSkipped<<std::endl;
     if(s && s->pollFence) std::cout<<"gpuFencePoll completed="<<s->pollCompleted<<" fallback="<<s->pollFallback<<" budgetUs=50"<<std::endl;

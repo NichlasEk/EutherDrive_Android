@@ -1,5 +1,8 @@
 # Gauntlet DL: ordnade triangellistor per tile
 
+Uppföljning: [bitmasker per tile](gauntlet-dl-gpu-tile-masks-2026-09-17.md)
+minskar byggkostnaden, men totaltidsvinsten är ännu inte säker.
+
 ## Resultat
 
 `EUTHERDRIVE_GAUNTDL_GPU_TILE_LISTS=1` tillsammans med `GPU_TILE_BATCH=1`

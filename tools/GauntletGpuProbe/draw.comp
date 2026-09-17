@@ -148,17 +148,29 @@ void main() {
         // 16x8 tiles; triangles retain submission order within each pixel.
         uint tile=gl_WorkGroupID.x,lane=gl_LocalInvocationID.x;
         bool listed=(pc.left&0x40000000u)!=0u;
-        uint xy=listed?data[pc.top+tile*3u]:pc.top;
-        int x=int((xy&65535u)+(listed?0u:(tile%pc.width)*16u)+lane%16u);
-        int y=int((xy>>16)+(listed?0u:(tile/pc.width)*8u)+lane/16u);
+        bool masked=(pc.left&0x20000000u)!=0u;
+        bool sparse=listed||masked;
+        uint xy=sparse?data[pc.top+tile*(masked?5u:3u)]:pc.top;
+        int x=int((xy&65535u)+(sparse?0u:(tile%pc.width)*16u)+lane%16u);
+        int y=int((xy>>16)+(sparse?0u:(tile/pc.width)*8u)+lane/16u);
         int origin=int(data[m+30]),row=origin<0?y:origin-y;
         if(x>=1024 || row<0 || row>=2048) return;
         uint at=uint(row*1024+x),pixel=result[at];
-        uint start=listed?data[pc.top+tile*3u+1u]:0u;
-        uint count=listed?data[pc.top+tile*3u+2u]:(pc.left&0x3fffffffu);
-        for(uint d=0u;d<count;d++) {
-            m=listed?data[start+d]:pc.meta+d*256u;
-            shadePixel(x,y,pixel);
+        if(masked) {
+            for(uint word=0u;word<4u;word++) {
+                uint bits=data[pc.top+tile*5u+1u+word];
+                while(bits!=0u) {
+                    uint index=word*32u+uint(findLSB(bits));bits&=bits-1u;
+                    m=pc.meta+index*256u;shadePixel(x,y,pixel);
+                }
+            }
+        } else {
+            uint start=listed?data[pc.top+tile*3u+1u]:0u;
+            uint count=listed?data[pc.top+tile*3u+2u]:(pc.left&0x1fffffffu);
+            for(uint d=0u;d<count;d++) {
+                m=listed?data[start+d]:pc.meta+d*256u;
+                shadePixel(x,y,pixel);
+            }
         }
         result[at]=pixel;
     } else {

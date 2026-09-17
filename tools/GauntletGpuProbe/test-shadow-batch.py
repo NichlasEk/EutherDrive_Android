@@ -136,7 +136,8 @@ clipped_right[meta] += first[meta+2]-17
 clipped_right[meta+1] += first[meta+3]-9
 clipped_right[meta+2], clipped_right[meta+3] = 17, 9
 for sequence in ((first, variant, first), (first, variant)*64, (first, variant, flipped, flipped),
-                 (clipped_left, clipped_right, clipped_left)):
+                 (clipped_left, clipped_right, clipped_left),
+                 (clipped_left,)*31+(clipped_right,)*33+(clipped_left,)*31+(clipped_right,)*33):
     tile_outputs = []
     for tile_mode in ('0', '1'):
         os.environ['EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH'] = tile_mode
