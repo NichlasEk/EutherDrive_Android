@@ -504,3 +504,8 @@ instruktion samt ordläsning av runtime-status. Alla 16 slutmaskiner matchar
 exakt, men ingen stabil fartvinst visas; båda runtimeändringarna återställdes.
 Warm-runnern stöder nu frysta A/B-byggen. Se
 [dispatchförsöken](gauntlet-dl-cpu-dispatch-experiments-2026-09-17.md).
+
+Även sen färgberäkning och konstant-LOD-snabbväg har provats i rasterloopen.
+Alla 16 slutmaskiner matchar exakt, men ingen stabil fartvinst visas; båda
+återställdes. Ett ROM-fritt LOD-regressionstest med 1 048 576 fall behålls.
+Se [rasterförsöken](gauntlet-dl-raster-experiments-2026-09-17.md).

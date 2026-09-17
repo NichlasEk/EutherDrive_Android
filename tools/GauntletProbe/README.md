@@ -123,6 +123,11 @@ accepts `EUTHERDRIVE_GAUNTDL_PROBE_DLL=/absolute/path/GauntletProbe.dll`.
 Keep the complete build output beside the DLL. The default path is unchanged.
 See [CPU dispatch experiments](../../docs/gauntlet-dl-cpu-dispatch-experiments-2026-09-17.md).
 
+ROM-free texture LOD regression checks:
+`EUTHERDRIVE_GAUNTDL_TEST_TEXTURE_LOD=1 dotnet tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll`.
+The checks cover 1,048,576 input combinations against the original calculation
+order. See [raster experiments](../../docs/gauntlet-dl-raster-experiments-2026-09-17.md).
+
 In-process GPU shadow comparison is available in diagnostic builds with
 `EUTHERDRIVE_GAUNTDL_GPU_SHADOW=1`; it checks up to 128 draws while the CPU
 continues to supply all game results. Build the native library first as shown

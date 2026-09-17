@@ -8,6 +8,12 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_TEXTURE_LOD") == "1")
+{
+    TextureLodChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
+    return;
+}
+
 string? gpuBoundaryTest=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_GPU_STREAM_BOUNDARIES");
 if(gpuBoundaryTest is "capture" or "normal")
 {
