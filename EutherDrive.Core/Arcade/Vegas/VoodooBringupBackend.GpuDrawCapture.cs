@@ -6,6 +6,22 @@ internal partial class VoodooBringupBackend
     private sealed record GpuDrawCapture(string Path, uint[] Meta, uint[] Initial, uint[] Texture,
         uint[] Ncc, long Started, int Frame, int Buffer, long[]? Stats=null);
     private GpuDrawCapture? _gpuDraw;
+    private readonly bool _gpuBackendProfile=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_BACKEND_PROFILE")=="1";
+    private long _gpuSetupTicks,_gpuSetupCalls,_gpuCpuRasterTicks,_gpuCpuRasterCalls,_gpuCpuRasterStarted;
+    private readonly struct GpuSetupTimer : IDisposable
+    {
+        private readonly VoodooBringupBackend? _owner;
+        private readonly long _started;
+        public GpuSetupTimer(VoodooBringupBackend owner) {
+            _owner=owner._gpuBackendProfile?owner:null;
+            _started=_owner is null?0:Stopwatch.GetTimestamp();
+        }
+        public void Dispose() {
+            if(_owner is null) return;
+            _owner._gpuSetupTicks+=Stopwatch.GetTimestamp()-_started;
+            _owner._gpuSetupCalls++;
+        }
+    }
     private int _gpuDrawCount, _gpuDrawEligible, _gpuExtendedColorDrawCount;
     private bool _gpuStreamActive, _gpuStreamStopped;
     private bool _gpuBatchContinuation;
@@ -41,6 +57,10 @@ internal partial class VoodooBringupBackend
     {
         if(_gpuShadow is not null) GpuStreamBoundary("backend-reset");
         _gpuShadow?.Dispose();_gpuShadow=null;
+        if(_gpuBackendProfile && _gpuSetupCalls!=0) {
+            Console.WriteLine(FormattableString.Invariant($"gpuBackendProfile beginInclusiveMs={_gpuSetupTicks*1000.0/Stopwatch.Frequency:F3} beginCalls={_gpuSetupCalls} cpuRasterWindowMs={_gpuCpuRasterTicks*1000.0/Stopwatch.Frequency:F3} cpuRasterCalls={_gpuCpuRasterCalls}"));
+            _gpuSetupTicks=_gpuSetupCalls=_gpuCpuRasterTicks=_gpuCpuRasterCalls=0;
+        }
         _gpuStreamActive=false;_gpuStreamStopped=true;_gpuBatchContinuation=false;_gpuDraw=null;
     }
 
@@ -110,6 +130,7 @@ internal partial class VoodooBringupBackend
         bool has1, MameTextureTriangleState state1, int lodBase0, int lodBase1, int lodOverride,
         long[] gradients, int startAlpha, int alphaDx, int alphaDy)
     {
+        using var setupTimer=new GpuSetupTimer(this);
         bool extendedColor = colors.Mode == 0x0c602c19U;
         if(_gpuTargetProfile) {
             if(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_REPLACE")=="1" ||
@@ -272,7 +293,11 @@ internal partial class VoodooBringupBackend
     private bool TryQueueGpuBatchReplacement()
     {
         if(_gpuTargetStarted!=0) _gpuTargetStarted=Stopwatch.GetTimestamp();
-        if(_gpuShadow is not { Replace:true, Batched:true } || _gpuDraw is null) return false;
+        if(_gpuShadow is not { Replace:true, Batched:true } || _gpuDraw is null) {
+            if(_gpuBackendProfile && !(_gpuShadow is { Replace:true } && _gpuDraw is not null))
+                _gpuCpuRasterStarted=Stopwatch.GetTimestamp();
+            return false;
+        }
         // The sole FillTexturedTriangle caller must not classify this triangle
         // until its result is consumed at a real boundary or batch capacity.
         _gpuDeferredTriangle=true;_gpuDraw=null;
@@ -291,6 +316,10 @@ internal partial class VoodooBringupBackend
     [Conditional("GAUNTLET_GPU_CAPTURE")]
     private void EndGpuDrawCapture(bool coveredAny,int coveredPixels,int zeroPixels)
     {
+        if(_gpuCpuRasterStarted!=0) {
+            _gpuCpuRasterTicks+=Stopwatch.GetTimestamp()-_gpuCpuRasterStarted;
+            _gpuCpuRasterCalls++;_gpuCpuRasterStarted=0;
+        }
         if(_gpuTargetStarted!=0) {
             double elapsed=Stopwatch.GetElapsedTime(_gpuTargetStarted).TotalMilliseconds;
             _gpuTargetStarted=0;

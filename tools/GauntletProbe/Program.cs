@@ -141,8 +141,10 @@ if (!loadedWarmupSnapshot)
 
 RunUntilFrame(adapter, frames, cpuStepsPerFrameConfig, stopPc, frameCheckpoints, summaryContext);
 // Drain diagnostic GPU work at the measured endpoint, even if its draw limit
-// was not reached. Ordinary runs have no session and do not invoke the hook.
-if (FindField(timedBackend.GetType(), "_gpuShadow")?.GetValue(timedBackend) is not null)
+// was not reached. Backend profiling also needs its summary for CPU-only runs.
+// Ordinary runs have neither a session nor profiling and skip this hook.
+if (FindField(timedBackend.GetType(), "_gpuShadow")?.GetValue(timedBackend) is not null ||
+    FindField(timedBackend.GetType(), "_gpuBackendProfile")?.GetValue(timedBackend) is true)
     timedBackend.GetType().GetMethod("CloseGpuShadow", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(timedBackend, null);
 runStopwatch.Stop();
 int runEndSwaps = GetIntField(timedBackend, "_swapBufferCount");

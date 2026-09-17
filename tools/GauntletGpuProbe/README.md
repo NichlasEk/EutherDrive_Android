@@ -377,6 +377,22 @@ packing and host staging. The default remains the full snapshot copy path.
 See [sparse snapshot experiment](../../docs/gauntlet-dl-gpu-sparse-snapshot-2026-09-11.md).
 
 `EUTHERDRIVE_GAUNTDL_GPU_PROFILE=1` enables opt-in aggregate timings printed
+on session disposal. Separately, `EUTHERDRIVE_GAUNTDL_GPU_BACKEND_PROFILE=1`
+in a capture build measures `beginInclusiveMs` (eligibility/environment checks,
+metadata and native Render, including any initialization/boundary work) and
+`cpuRasterWindowMs` (the remaining CPU pixel-loop window, including parallel
+worker waiting). Begin excludes argument construction at its caller. These
+timings overlap native/managed profiles; do not sum them. Probe flushes the
+summary at its measured endpoint even for CPU-only capture runs. No per-draw
+timing lines are emitted. The hooks are compiled out in normal builds.
+`EUTHERDRIVE_GAUNTDL_PROFILE_FRAME_PHASES=1` additionally reports `cpuFifoMs`
+sampled strictly inside the CPU phase and `cpuOutsideFifoMs` for its remainder.
+The latter is not pure JIT time: it includes other CPU-phase memory/device work.
+Frame FIFO totals also include work outside the CPU phase and must not simply
+be subtracted from `cpuMs`. See the
+[remaining-cost profile](../../docs/gauntlet-dl-remaining-costs-2026-09-17.md).
+
+For the native/session profile, timings are printed
 on session disposal. `gpuProfileHost` measures native initialization, snapshot
 preparation, command recording, host staging copies, queue submission, fence
 wait, query retrieval and full-pixel readback calls. `gpuProfileManaged`

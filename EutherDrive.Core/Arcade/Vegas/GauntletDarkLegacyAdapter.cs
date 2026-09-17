@@ -796,6 +796,7 @@ internal sealed class GauntletDarkLegacyMachine
             }
         }
         long cpuStart = Stopwatch.GetTimestamp();
+        long cpuFifoStart = _profileFramePhases ? Voodoo.RuntimeFifoProfileTicks : 0;
         if (_splitVblankCpu)
         {
             Cpu.RunProbeSteps(_vblankCpuSteps);
@@ -808,6 +809,7 @@ internal sealed class GauntletDarkLegacyMachine
             Sio.PulseVblank(state: false);
         }
         long devicesStart = Stopwatch.GetTimestamp();
+        long cpuFifoTicks = _profileFramePhases ? Voodoo.RuntimeFifoProfileTicks-cpuFifoStart : 0;
         PollRuntimeInput(allowInitialsTransition: true);
         MemoryMap.StepFrame();
         Audio.RunFrame();
@@ -822,6 +824,8 @@ internal sealed class GauntletDarkLegacyMachine
                 $"[GAUNTDL:PROFILE] frame-phases " +
                 $"callbacksMs={Stopwatch.GetElapsedTime(frameStart, cpuStart).TotalMilliseconds:F2} " +
                 $"cpuMs={Stopwatch.GetElapsedTime(cpuStart, devicesStart).TotalMilliseconds:F2} " +
+                $"cpuFifoMs={cpuFifoTicks*1000.0/Stopwatch.Frequency:F2} " +
+                $"cpuOutsideFifoMs={(devicesStart-cpuStart-cpuFifoTicks)*1000.0/Stopwatch.Frequency:F2} " +
                 $"devicesMs={Stopwatch.GetElapsedTime(devicesStart, renderStart).TotalMilliseconds:F2} " +
                 $"renderMs={Stopwatch.GetElapsedTime(renderStart, frameEnd).TotalMilliseconds:F2} " +
                 Voodoo.ConsumeRuntimeProfile());
@@ -39972,6 +39976,8 @@ internal sealed class VoodooFacade : IVoodooBackend
         _backend.ClearCommandFifoBulkWriteSource();
     }
     public void RenderFrame(EutherFrameTarget target) => _backend.RenderFrame(target);
+    public long RuntimeFifoProfileTicks => _backend is VoodooBringupBackend bringup ? bringup.RuntimeFifoProfileTicks : 0;
+
     public string ConsumeRuntimeProfile()
         => _backend is VoodooBringupBackend bringup
             ? bringup.ConsumeRuntimeProfile()
@@ -45146,6 +45152,8 @@ internal partial class VoodooBringupBackend : IVoodooBackend
             _decodingCommandFifo = false;
         }
     }
+
+    internal long RuntimeFifoProfileTicks => _commandFifoDecodeTicks;
 
     internal string ConsumeRuntimeProfile()
     {
