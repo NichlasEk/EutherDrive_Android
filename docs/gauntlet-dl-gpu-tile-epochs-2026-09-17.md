@@ -1,5 +1,8 @@
 # Gauntlet DL: pixelägda tile-epoker
 
+Uppföljning: [ordnade listor per tile](gauntlet-dl-gpu-tile-lists-2026-09-17.md)
+minskar invokationer ytterligare men visar ännu ingen säker total fartvinst.
+
 ## Resultat: lovande avgränsad arkitekturändring
 
 Native opt-in `EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH=1` slår ihop sammanhängande

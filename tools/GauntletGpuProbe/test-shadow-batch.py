@@ -129,7 +129,14 @@ variant[meta+17] //= 2
 variant[meta+18] ^= 0xffff
 flipped = array.array('I', variant)
 flipped[meta+30] = 2047 if first[meta+30] == 0xffffffff else 0xffffffff
-for sequence in ((first, variant, first), (first, variant)*64, (first, variant, flipped, flipped)):
+clipped_left, clipped_right = array.array('I', first), array.array('I', variant)
+assert first[meta+2] > 32 and first[meta+3] > 16, 'Fixture must span multiple tiles'
+clipped_left[meta+2], clipped_left[meta+3] = 17, 9
+clipped_right[meta] += first[meta+2]-17
+clipped_right[meta+1] += first[meta+3]-9
+clipped_right[meta+2], clipped_right[meta+3] = 17, 9
+for sequence in ((first, variant, first), (first, variant)*64, (first, variant, flipped, flipped),
+                 (clipped_left, clipped_right, clipped_left)):
     tile_outputs = []
     for tile_mode in ('0', '1'):
         os.environ['EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH'] = tile_mode
@@ -147,7 +154,7 @@ if saved_tile is None:
     os.environ.pop('EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH', None)
 else:
     os.environ['EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH'] = saved_tile
-print('tile epoch overlapping draws / 128 slots / origin boundary differential PASS', flush=True)
+print('tile epoch overlapping draws / 128 slots / origin boundary / sparse edge tiles differential PASS', flush=True)
 
 # Retain output and texture state across two separately submitted batches.
 # The relocated second draw must patch texture on continuation draw zero.

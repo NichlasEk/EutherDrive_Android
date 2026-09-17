@@ -27,6 +27,9 @@ struct Shadow {
     bool reuseBatch=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_REUSE_BATCH");return p && std::strcmp(p,"1")==0; }();
     bool groupScan=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_DIRTY_GROUP_SCAN");return p && std::strcmp(p,"1")==0; }();
     bool tileBatch=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH");return p && std::strcmp(p,"1")==0; }();
+    bool tileLists=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_TILE_LISTS");return p && std::strcmp(p,"1")==0; }();
+    uint64_t tileListBytes=0,tileListEntries=0,tileListFallbacks=0;
+    double tilePlanMs=0;
     uint64_t tileDispatches=0,tileDraws=0,tileInvocations=0;
     bool pollFence=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_FENCE_POLL");return p && std::strcmp(p,"1")==0; }();
     uint64_t pollCompleted=0,pollFallback=0;
@@ -58,6 +61,8 @@ struct Shadow {
         auto& h=gpu;
         std::vector<std::array<uint32_t,4>> tiles(tileBatch?commands.size():0);
         std::vector<uint32_t> tileGroups(tileBatch?commands.size():0);
+        std::vector<uint32_t> lists;
+        auto planStart=profiling?ProfileClock::now():ProfileClock::time_point{};
         if(tileBatch) for(size_t d=0;d<commands.size();) {
             size_t end=d+1;const size_t m=commands[d][0];
             if(data[m+23]!=1) { d++;continue; }
@@ -70,12 +75,42 @@ struct Shadow {
             if(end-d>1) {
                 uint32_t columns=(right-left+15)/16,groups=columns*((bottom-top+7)/8);
                 tiles[d]={uint32_t(m),0x80000000u|uint32_t(end-d),left|(top<<16),columns};
+                if(tileLists) {
+                    std::vector<std::vector<uint32_t>> bins(groups);
+                    for(size_t draw=d;draw<end;draw++) {
+                        size_t n=commands[draw][0];
+                        uint32_t x0=(data[n]-left)/16,x1=(data[n]+data[n+2]-1-left)/16;
+                        uint32_t y0=(data[n+1]-top)/8,y1=(data[n+1]+data[n+3]-1-top)/8;
+                        for(uint32_t y=y0;y<=y1;y++) for(uint32_t x=x0;x<=x1;x++) bins[y*columns+x].push_back(uint32_t(n));
+                    }
+                    size_t active=0,entries=0;
+                    for(const auto& bin:bins) if(!bin.empty()) { active++;entries+=bin.size(); }
+                    size_t words=active*3+entries;
+                    if(bytes+(lists.size()+words)*4<=capacity) {
+                        uint32_t base=uint32_t(bytes/4+lists.size()),cursor=base+uint32_t(active*3);
+                        size_t headers=lists.size();lists.resize(lists.size()+active*3);
+                        for(uint32_t tile=0;tile<bins.size();tile++) if(!bins[tile].empty()) {
+                            lists[headers++]=(left+(tile%columns)*16)|((top+(tile/columns)*8)<<16);
+                            lists[headers++]=cursor;lists[headers++]=uint32_t(bins[tile].size());
+                            lists.insert(lists.end(),bins[tile].begin(),bins[tile].end());cursor+=uint32_t(bins[tile].size());
+                        }
+                        tiles[d][1]|=0x40000000u;tiles[d][2]=base;
+                        groups=uint32_t(active);tileListEntries+=entries;
+                    } else tileListFallbacks++;
+                }
                 tileGroups[d]=groups;tileDispatches++;tileDraws+=end-d;tileInvocations+=uint64_t(groups)*128;
             }
             d=end;
         }
+        if(profiling) tilePlanMs+=std::chrono::duration<double,std::milli>(ProfileClock::now()-planStart).count();
+        size_t listBytes=lists.size()*4;tileListBytes+=listBytes;
+        std::vector<VkBufferCopy> listUploads;
+        const auto* uploads=sparseUploads;
+        if(listBytes && sparseUploads) {
+            listUploads=*sparseUploads;listUploads.push_back({bytes,bytes,listBytes});uploads=&listUploads;
+        }
         { ProfileTimer timer(profiling?&recordMs:nullptr);
-          h.record(bytes,(pixels+statisticsWords)*4,dispatchPixels,2,0,commands,initial,patches,reset,statisticsWords*4,statisticsOnly,sparseUploads,profiling,perDrawPixels,tileBatch?&tiles:nullptr,tileBatch?&tileGroups:nullptr); }
+          h.record(bytes+listBytes,(pixels+statisticsWords)*4,dispatchPixels,2,0,commands,initial,patches,reset,statisticsWords*4,statisticsOnly,uploads,profiling,perDrawPixels,tileBatch?&tiles:nullptr,tileBatch?&tileGroups:nullptr); }
         size_t transferred=bytes;
         { ProfileTimer timer(profiling?&stagingMs:nullptr);
         if(sparseUploads) {
@@ -86,6 +121,8 @@ struct Shadow {
                 transferred+=copy.size;
             }
         } else std::memcpy(h.buffers[0].mapped,data.data(),bytes);
+        if(listBytes) std::memcpy(static_cast<char*>(h.buffers[0].mapped)+bytes,lists.data(),listBytes);
+        transferred+=listBytes;
         }
         { ProfileTimer timer(profiling?&queueMs:nullptr);
         check(vkResetFences(h.device,1,&h.fence));
@@ -115,7 +152,7 @@ struct Shadow {
         for(size_t d=0;d<commands.size();d++) {
             if(tileBatch && tileGroups[d]) {
                 dispatchInvocations+=uint64_t(tileGroups[d])*128;
-                d+=(tiles[d][1]&0x7fffffffu)-1;
+                d+=(tiles[d][1]&0x3fffffffu)-1;
             } else dispatchInvocations+=uint64_t(((perDrawPixels?(*perDrawPixels)[d]:dispatchPixels)+127)/128)*128;
         }
     }
@@ -135,7 +172,8 @@ void gauntlet_shadow_destroy(void* context) noexcept {
     if(s) std::cout<<"gpuShadowTotals submissions="<<s->submissions<<" uploadBytes="<<s->uploaded<<" readbackBytes="<<s->readback<<" patchBytes="<<s->patchBytes<<" queuedDraws="<<s->queuedDraws<<std::endl;
     if(s) std::cout<<"gpuResident pixelReadbacks="<<s->pixelReadbacks<<" pendingPixels="<<s->residentDirty<<std::endl;
     if(s) std::cout<<"gpuDispatch invocations="<<s->dispatchInvocations<<std::endl;
-    if(s && s->tileBatch) std::cout<<"gpuTile dispatches="<<s->tileDispatches<<" draws="<<s->tileDraws<<" invocations="<<s->tileInvocations<<std::endl;
+    if(s && s->tileBatch) std::cout<<"gpuTile dispatches="<<s->tileDispatches<<" draws="<<s->tileDraws<<" invocations="<<s->tileInvocations<<" planMs="<<s->tilePlanMs<<std::endl;
+    if(s && s->tileLists) std::cout<<"gpuTileLists bytes="<<s->tileListBytes<<" entries="<<s->tileListEntries<<" capacityFallbacks="<<s->tileListFallbacks<<" planMs="<<s->tilePlanMs<<std::endl;
     if(s) std::cout<<"gpuSnapshot copiedBytes="<<s->snapshotCopiedBytes<<std::endl;
     if(s) std::cout<<"gpuDirty pagesCompared="<<s->pagesCompared<<" pagesSkipped="<<s->pagesSkipped<<std::endl;
     if(s && s->pollFence) std::cout<<"gpuFencePoll completed="<<s->pollCompleted<<" fallback="<<s->pollFallback<<" budgetUs=50"<<std::endl;

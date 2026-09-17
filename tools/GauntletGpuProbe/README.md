@@ -408,6 +408,19 @@ total invocations including unfused work. Ordinary submission/upload/readback
 boundaries are unchanged. The flag defaults off and needs neither dirty-group
 scanning nor batch-memory reuse. The ordinary shader path remains available;
 the external shadow ABI is unchanged (v4).
+`EUTHERDRIVE_GAUNTDL_GPU_TILE_LISTS=1`, together with `GPU_TILE_BATCH=1`,
+adds ordered per-tile bounding-box lists. Empty tiles are omitted and each
+remaining tile visits only its intersecting draws, in original order. List
+headers and metadata indices are appended after the immutable batch payload,
+uploaded in the same submission (also for sparse resident continuations), and
+never overwrite texture/NCC or patch storage. Epochs whose extra lists would
+exceed the 64 MiB input buffer fall back to coarse tile traversal. The flag
+defaults off; rebuild native code and shader together. `gpuTileLists` reports
+extra bytes, list entries and capacity fallbacks. With profiling enabled,
+`gpuTile planMs` measures host epoch/list construction; this is included in
+managed flush time, not in native command-recording time.
+The [tile-list experiment](../../docs/gauntlet-dl-gpu-tile-lists-2026-09-17.md)
+reduced invocations but did not establish an end-to-end improvement.
 See the [tile-epoch prototype](../../docs/gauntlet-dl-gpu-tile-epochs-2026-09-17.md)
 for timing results, ordering constraints and the host-specific NVIDIA TLS test
 workaround used for the expanded native differential suite.
