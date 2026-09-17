@@ -205,7 +205,7 @@ struct Harness {
             if(tiles && (*tileGroups)[d]) {
                 vkCmdPushConstants(commands,pipelineLayout,VK_SHADER_STAGE_COMPUTE_BIT,0,16,(*tiles)[d].data());
                 vkCmdDispatch(commands,(*tileGroups)[d],1,1);
-                d+=((*tiles)[d][1]&0x7fffffffu)-1;
+                d+=((*tiles)[d][1]&0x3fffffffu)-1;
             } else {
                 vkCmdPushConstants(commands,pipelineLayout,VK_SHADER_STAGE_COMPUTE_BIT,0,16,draws[d].data());
                 vkCmdDispatch(commands,((drawPixels?(*drawPixels)[d]:count)+127)/128,1,1);
