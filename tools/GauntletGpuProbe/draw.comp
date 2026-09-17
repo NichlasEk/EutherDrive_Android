@@ -72,17 +72,9 @@ ivec4 combine(uint mode,ivec4 local,ivec4 other) {
 }
 uint packed565(ivec3 c) { return to565(clamp(c,ivec3(0),ivec3(255))); }
 void countStat(uint index) { if(data[m+31]!=0u) atomicAdd(result[data[5]+data[m+119]+index],1u); }
-void main() {
-    uint i=gl_GlobalInvocationID.x;if(i>=data[5]) return;
-    m=pc.meta;
-    int x=int(pc.left+i%pc.width),y=int(pc.top+i/pc.width);
+void shadePixel(int x,int y,inout uint pixel) {
     if(x<int(data[m]) || y<int(data[m+1]) || x>=int(data[m]+data[m+2]) || y>=int(data[m+1]+data[m+3])) return;
-    uint outputIndex=i;
-    if(data[m+23]!=0u) {
-        int origin=int(data[m+30]);
-        outputIndex=uint((origin<0?y:origin-y)*1024+x);
-    }
-    uint initial=result[outputIndex];
+    uint initial=pixel;
     precise float px=float(x)+0.5,py=float(y)+0.5;
     vec2 a=vec2(uintBitsToFloat(data[m+8]),uintBitsToFloat(data[m+9]));
     vec2 b=vec2(uintBitsToFloat(data[m+10]),uintBitsToFloat(data[m+11]));
@@ -145,7 +137,32 @@ void main() {
     texel=packed565((src*(alpha+1)+dst*(256-alpha))>>8);
     uint outputColor=data[m+20]!=0u?texel:initial&65535u;
     uint outputDepth=data[m+21]!=0u?uint(depth):initial>>16;
-    result[outputIndex]=outputColor|(outputDepth<<16);
+    pixel=outputColor|(outputDepth<<16);
     if(data[m+20]!=0u) countStat(3u);
     if(data[m+28]==0u) countStat(4u);
+}
+void main() {
+    m=pc.meta;
+    if((pc.left&0x80000000u)!=0u) {
+        // One invocation owns a physical pixel throughout this texture epoch.
+        // 16x8 tiles; triangles retain submission order within each pixel.
+        uint tile=gl_WorkGroupID.x,lane=gl_LocalInvocationID.x;
+        int x=int((pc.top&65535u)+(tile%pc.width)*16u+lane%16u);
+        int y=int((pc.top>>16)+(tile/pc.width)*8u+lane/16u);
+        int origin=int(data[m+30]),row=origin<0?y:origin-y;
+        if(x>=1024 || row<0 || row>=2048) return;
+        uint at=uint(row*1024+x),pixel=result[at];
+        for(uint d=0u;d<(pc.left&0x7fffffffu);d++) {
+            m=pc.meta+d*256u;
+            shadePixel(x,y,pixel);
+        }
+        result[at]=pixel;
+    } else {
+        uint i=gl_GlobalInvocationID.x;if(i>=data[5]) return;
+        int x=int(pc.left+i%pc.width),y=int(pc.top+i/pc.width);
+        if(x<int(data[m]) || y<int(data[m+1]) || x>=int(data[m]+data[m+2]) || y>=int(data[m+1]+data[m+3])) return;
+        int origin=int(data[m+30]);
+        uint at=data[m+23]!=0u?uint((origin<0?y:origin-y)*1024+x):i;
+        uint pixel=result[at];shadePixel(x,y,pixel);result[at]=pixel;
+    }
 }

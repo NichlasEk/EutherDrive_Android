@@ -151,7 +151,9 @@ struct Harness {
         const std::vector<std::array<uint32_t,4>>& draws,size_t initial,
         const std::vector<std::vector<VkBufferCopy>>& updates,bool resetOutput=true,size_t statisticsBytes=0,bool statisticsOnly=false,
         const std::vector<VkBufferCopy>* sparseUploads=nullptr,bool profileTransfers=false,
-        const std::vector<uint32_t>* drawPixels=nullptr) {
+        const std::vector<uint32_t>* drawPixels=nullptr,
+        const std::vector<std::array<uint32_t,4>>* tiles=nullptr,
+        const std::vector<uint32_t>* tileGroups=nullptr) {
         if(drawPixels && drawPixels->size()!=draws.size()) throw std::runtime_error("Invalid per-draw dispatch sizes");
         check(vkResetCommandBuffer(commands,0));
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};check(vkBeginCommandBuffer(commands,&begin));
@@ -200,8 +202,14 @@ struct Harness {
                 VkMemoryBarrier sampled{VK_STRUCTURE_TYPE_MEMORY_BARRIER};sampled.srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT;sampled.dstAccessMask=VK_ACCESS_SHADER_READ_BIT;
                 vkCmdPipelineBarrier(commands,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&sampled,0,nullptr,0,nullptr);
             }
-            vkCmdPushConstants(commands,pipelineLayout,VK_SHADER_STAGE_COMPUTE_BIT,0,16,draws[d].data());
-            vkCmdDispatch(commands,((drawPixels?(*drawPixels)[d]:count)+127)/128,1,1);
+            if(tiles && (*tileGroups)[d]) {
+                vkCmdPushConstants(commands,pipelineLayout,VK_SHADER_STAGE_COMPUTE_BIT,0,16,(*tiles)[d].data());
+                vkCmdDispatch(commands,(*tileGroups)[d],1,1);
+                d+=((*tiles)[d][1]&0x7fffffffu)-1;
+            } else {
+                vkCmdPushConstants(commands,pipelineLayout,VK_SHADER_STAGE_COMPUTE_BIT,0,16,draws[d].data());
+                vkCmdDispatch(commands,((drawPixels?(*drawPixels)[d]:count)+127)/128,1,1);
+            }
         }
         vkCmdWriteTimestamp(commands,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,queries,1);
         VkMemoryBarrier done{VK_STRUCTURE_TYPE_MEMORY_BARRIER};done.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_WRITE_BIT;done.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;

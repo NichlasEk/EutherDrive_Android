@@ -121,6 +121,34 @@ for page in (0, 15, 16, 8191):
         lib.gauntlet_shadow_destroy(ctx)
 print('dirty group boundaries / high-bit flags / NCC / missed-page audit PASS', flush=True)
 
+# A same-texture epoch must actually fuse and preserve overlapping pixel order
+# and every statistics slot. The old dispatch path is the differential oracle.
+saved_tile = os.environ.get('EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH')
+variant = array.array('I', first)
+variant[meta+17] //= 2
+variant[meta+18] ^= 0xffff
+flipped = array.array('I', variant)
+flipped[meta+30] = 2047 if first[meta+30] == 0xffffffff else 0xffffffff
+for sequence in ((first, variant, first), (first, variant)*64, (first, variant, flipped, flipped)):
+    tile_outputs = []
+    for tile_mode in ('0', '1'):
+        os.environ['EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH'] = tile_mode
+        ctx = lib.gauntlet_shadow_create(os.fsencode(root / '.build-tmp/gauntlet-gpu-probe/draw.spv'))
+        assert ctx, lib.gauntlet_shadow_error()
+        try:
+            for index, words in enumerate(sequence):
+                assert enqueue(ctx, words, int(index == 0)) == 0, lib.gauntlet_shadow_error()
+            assert lib.gauntlet_shadow_flush(ctx) == 0, lib.gauntlet_shadow_error()
+            tile_outputs.append(c.string_at(lib.gauntlet_shadow_output(ctx), (pixels+128*16)*4))
+        finally:
+            lib.gauntlet_shadow_destroy(ctx)
+    assert tile_outputs[0] == tile_outputs[1], 'Tile fusion pixel/statistics mismatch'
+if saved_tile is None:
+    os.environ.pop('EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH', None)
+else:
+    os.environ['EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH'] = saved_tile
+print('tile epoch overlapping draws / 128 slots / origin boundary differential PASS', flush=True)
+
 # Retain output and texture state across two separately submitted batches.
 # The relocated second draw must patch texture on continuation draw zero.
 dirty_pages = array.array('I', [1]) * 8192

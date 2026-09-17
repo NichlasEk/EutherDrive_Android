@@ -395,6 +395,22 @@ Device times overlap host waits; do not add them to host timings. These are
 coarse pipeline intervals, not isolated shader-instruction or PCIe bandwidth
 measurements. Readback host time includes its recording/submission/wait/query.
 Snapshot preparation is timed for synchronous draws and batch enqueue.
+`EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH=1` enables an experimental fused pixel-owner
+path for native batches. Rebuild both native code and `draw.spv` before using it.
+Consecutive physical-output draws with a common Y origin and no intervening
+texture/NCC patch form an epoch. One 16x8 workgroup tile owns each pixel and
+processes epoch triangles in submission order, keeping packed color/depth in a
+register and preserving per-draw atomic counters. Patch/origin boundaries and
+single draws retain the original dispatch path. This first prototype scans all
+epoch triangles per tile; it does not yet build sparse per-tile triangle lists.
+`gpuTile` counts fused dispatches/draws/invocations; `gpuDispatch` counts actual
+total invocations including unfused work. Ordinary submission/upload/readback
+boundaries are unchanged. The flag defaults off and needs neither dirty-group
+scanning nor batch-memory reuse. The ordinary shader path remains available;
+the external shadow ABI is unchanged (v4).
+See the [tile-epoch prototype](../../docs/gauntlet-dl-gpu-tile-epochs-2026-09-17.md)
+for timing results, ordering constraints and the host-specific NVIDIA TLS test
+workaround used for the expanded native differential suite.
 `EUTHERDRIVE_GAUNTDL_GPU_DIRTY_GROUP_SCAN=1` is an opt-in batch enqueue
 experiment: OR 16 dirty flags at a time and skip a wholly clean texture group.
 Mixed groups keep the original per-page path. Full dirty verification still

@@ -26,6 +26,8 @@ struct Shadow {
     bool profiling=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_PROFILE");return p && std::strcmp(p,"1")==0; }();
     bool reuseBatch=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_REUSE_BATCH");return p && std::strcmp(p,"1")==0; }();
     bool groupScan=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_DIRTY_GROUP_SCAN");return p && std::strcmp(p,"1")==0; }();
+    bool tileBatch=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_TILE_BATCH");return p && std::strcmp(p,"1")==0; }();
+    uint64_t tileDispatches=0,tileDraws=0,tileInvocations=0;
     bool pollFence=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_FENCE_POLL");return p && std::strcmp(p,"1")==0; }();
     uint64_t pollCompleted=0,pollFallback=0;
     double initMs=0,prepareMs=0,recordMs=0,stagingMs=0,queueMs=0,waitMs=0,queryMs=0,readPixelsMs=0;
@@ -54,8 +56,26 @@ struct Shadow {
         const std::vector<uint32_t>* perDrawPixels=nullptr) {
         if(bytes>capacity) throw std::runtime_error("Shadow batch capacity exceeded");
         auto& h=gpu;
+        std::vector<std::array<uint32_t,4>> tiles(tileBatch?commands.size():0);
+        std::vector<uint32_t> tileGroups(tileBatch?commands.size():0);
+        if(tileBatch) for(size_t d=0;d<commands.size();) {
+            size_t end=d+1;const size_t m=commands[d][0];
+            if(data[m+23]!=1) { d++;continue; }
+            uint32_t left=data[m],top=data[m+1],right=left+data[m+2],bottom=top+data[m+3];
+            while(end<commands.size() && commands[end][0]==m+(end-d)*256 && patches[end].empty() &&
+                data[commands[end][0]+23]==1 && data[commands[end][0]+30]==data[m+30]) {
+                size_t n=commands[end][0];left=std::min(left,data[n]);top=std::min(top,data[n+1]);
+                right=std::max(right,data[n]+data[n+2]);bottom=std::max(bottom,data[n+1]+data[n+3]);end++;
+            }
+            if(end-d>1) {
+                uint32_t columns=(right-left+15)/16,groups=columns*((bottom-top+7)/8);
+                tiles[d]={uint32_t(m),0x80000000u|uint32_t(end-d),left|(top<<16),columns};
+                tileGroups[d]=groups;tileDispatches++;tileDraws+=end-d;tileInvocations+=uint64_t(groups)*128;
+            }
+            d=end;
+        }
         { ProfileTimer timer(profiling?&recordMs:nullptr);
-          h.record(bytes,(pixels+statisticsWords)*4,dispatchPixels,2,0,commands,initial,patches,reset,statisticsWords*4,statisticsOnly,sparseUploads,profiling,perDrawPixels); }
+          h.record(bytes,(pixels+statisticsWords)*4,dispatchPixels,2,0,commands,initial,patches,reset,statisticsWords*4,statisticsOnly,sparseUploads,profiling,perDrawPixels,tileBatch?&tiles:nullptr,tileBatch?&tileGroups:nullptr); }
         size_t transferred=bytes;
         { ProfileTimer timer(profiling?&stagingMs:nullptr);
         if(sparseUploads) {
@@ -92,8 +112,12 @@ struct Shadow {
         }
         if(h.validationErrors) throw std::runtime_error("Vulkan shadow validation errors");
         submissions++;uploaded+=transferred;readback+=statisticsOnly?statisticsWords*4:(pixels+statisticsWords)*4;
-        for(size_t d=0;d<commands.size();d++)
-            dispatchInvocations+=uint64_t(((perDrawPixels?(*perDrawPixels)[d]:dispatchPixels)+127)/128)*128;
+        for(size_t d=0;d<commands.size();d++) {
+            if(tileBatch && tileGroups[d]) {
+                dispatchInvocations+=uint64_t(tileGroups[d])*128;
+                d+=(tiles[d][1]&0x7fffffffu)-1;
+            } else dispatchInvocations+=uint64_t(((perDrawPixels?(*perDrawPixels)[d]:dispatchPixels)+127)/128)*128;
+        }
     }
 };
 }
@@ -111,6 +135,7 @@ void gauntlet_shadow_destroy(void* context) noexcept {
     if(s) std::cout<<"gpuShadowTotals submissions="<<s->submissions<<" uploadBytes="<<s->uploaded<<" readbackBytes="<<s->readback<<" patchBytes="<<s->patchBytes<<" queuedDraws="<<s->queuedDraws<<std::endl;
     if(s) std::cout<<"gpuResident pixelReadbacks="<<s->pixelReadbacks<<" pendingPixels="<<s->residentDirty<<std::endl;
     if(s) std::cout<<"gpuDispatch invocations="<<s->dispatchInvocations<<std::endl;
+    if(s && s->tileBatch) std::cout<<"gpuTile dispatches="<<s->tileDispatches<<" draws="<<s->tileDraws<<" invocations="<<s->tileInvocations<<std::endl;
     if(s) std::cout<<"gpuSnapshot copiedBytes="<<s->snapshotCopiedBytes<<std::endl;
     if(s) std::cout<<"gpuDirty pagesCompared="<<s->pagesCompared<<" pagesSkipped="<<s->pagesSkipped<<std::endl;
     if(s && s->pollFence) std::cout<<"gpuFencePoll completed="<<s->pollCompleted<<" fallback="<<s->pollFallback<<" budgetUs=50"<<std::endl;
