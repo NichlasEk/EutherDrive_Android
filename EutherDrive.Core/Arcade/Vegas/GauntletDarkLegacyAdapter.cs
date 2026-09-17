@@ -41414,7 +41414,10 @@ internal partial class VoodooBringupBackend : IVoodooBackend
     public bool CommandFifoEnabled => ((_registers[RegFbiInit7] >> 8) & 1u) != 0;
     public bool HasVideoActivity => _registerWriteCount > 0 || _fifoWriteCount > 0 || _lfbWriteCount > 0 || _textureWriteCount > 0;
     public string DebugStatus
-        => $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +
+    {
+        get {
+            GpuStreamBoundary("debug-status");
+            return $"fifo={_fifoWriteCount}/{_fifoPacketCount} p3={_fifoDrawPacketCount} " +
            $"tri={_directTriangleCommandCount}+{_setupTriangleCommandCount} fill={_fastFillCount} swap={_swapBufferCount} stat={_statusReadCount} " +
            $"lfb={_lfbWriteCount} tex={_textureWriteCount} buf={_frontBufferIndex}/{_backBufferIndex}/{GetColorBufferCount()} " +
            $"texw={_textureMappedWriteCount}/{_textureMappedNonZeroWriteCount}/{_textureMappedZeroWriteCount}/{_textureTouchedWordCount}/0x{_textureTouchedFirstWord:X}/0x{_textureTouchedLastWord:X} " +
@@ -41455,13 +41458,19 @@ internal partial class VoodooBringupBackend : IVoodooBackend
            $"fbz=0x{_registers[RegFbzMode]:X8} lfbm=0x{_registers[RegLfbMode]:X8} fbi3=0x{_registers[RegFbiInit3]:X8} " +
            $"pdtc={_commandFifoPayloadDirectTriangleCommandSuppressCount} " +
            $"t1ob={_commandFifoImplausibleType1OutsideBulkWindowGateCount}/{_commandFifoImplausibleType1OutsideBulkWindowDropCount}";
+        }
+    }
     public string RecentEventStatus => FormatRecentVoodooEvents();
     public string StatusPcProfile => GetStatusPcProfile();
     public string TextureRasterStateProfile => GetTextureRasterStateProfile();
-    public string ProfiledCommonRasterKernelStatus =>
-        $"profiledCommonRaster=tri:{_profiledCommonRasterTriangleCount}/pixels:{_profiledCommonRasterPixelCount}" +
-        $"/iterated:{_profiledIteratedRasterTriangleCount}/{_profiledIteratedRasterPixelCount}" +
-        $"/typed:{(_experimentTypedRasterKernelDispatch ? 1 : 0)}";
+    public string ProfiledCommonRasterKernelStatus {
+        get {
+            GpuStreamBoundary("raster-profile-status");
+            return $"profiledCommonRaster=tri:{_profiledCommonRasterTriangleCount}/pixels:{_profiledCommonRasterPixelCount}" +
+                $"/iterated:{_profiledIteratedRasterTriangleCount}/{_profiledIteratedRasterPixelCount}" +
+                $"/typed:{(_experimentTypedRasterKernelDispatch ? 1 : 0)}";
+        }
+    }
 
     private string GetTexturePixelLodDebugStatus()
         => _experimentTextureMamePixelLod
@@ -49744,6 +49753,9 @@ internal partial class VoodooBringupBackend : IVoodooBackend
                 }
             }
         }
+#if GAUNTLET_GPU_CAPTURE
+        if(_gpuDeferredTriangle) { _gpuDeferredTriangle=false;return; }
+#endif
         if (texturedTriangleFilled)
         {
             _texturedTriangleCoveredCount++;
@@ -51037,6 +51049,7 @@ sampledTexel:
         }
 
 #if GAUNTLET_GPU_CAPTURE
+        if(TryQueueGpuBatchReplacement()) return false;
         if(TryApplyGpuReplacement(ref coveredAny,ref coveredPixels,ref zeroPixels)) { }
         else
 #endif

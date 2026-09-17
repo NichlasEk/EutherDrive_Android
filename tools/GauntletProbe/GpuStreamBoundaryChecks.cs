@@ -16,6 +16,8 @@ internal static class GpuStreamBoundaryChecks
             ("MaterializePendingClear","pending-clear",[0]),
             ("TryRenderLfb","host-present-read",[new EutherFrameTarget([],0,0,0)]),
             ("CapturePresentedColorBuffer","presented-buffer-copy",[0]),
+            ("get_DebugStatus","debug-status",[]),
+            ("get_ProfiledCommonRasterKernelStatus","raster-profile-status",[]),
             ("FillTriangle","flat-triangle",[0f,0f,0f,0f,0f,0f,(ushort)0,"test"]),
             ("FillGradientColorTriangle","gradient-color-triangle",[0f,0f,0f,0f,0f,0f,(ushort)0]),
             ("FillGradientTexturedTriangle","gradient-textured-triangle",[0f,0f,0f,0f,0f,0f,(ushort)0]),
@@ -38,7 +40,23 @@ internal static class GpuStreamBoundaryChecks
             }
             finally { directory.Delete(recursive:true); }
         }
-        Console.WriteLine($"gpuStreamBoundaryChecks cases=11 captureBuild={captureBuild} PASS");
+        Console.WriteLine($"gpuStreamBoundaryChecks cases=13 captureBuild={captureBuild} PASS");
+        object counterBackend=Activator.CreateInstance(type,nonPublic:true)!;
+        var applyBatch=type.GetMethod("ApplyGpuBatchDrawCounters",flags)!;
+        uint[] covered=new uint[16];covered[0]=9;covered[1]=2;covered[2]=1;covered[3]=7;covered[4]=5;covered[6]=9;
+        applyBatch.Invoke(counterBackend,[covered,1]);
+        applyBatch.Invoke(counterBackend,[new uint[16],1]);
+        foreach(var (field,expected) in new (string,long)[] {
+            ("_texturedPixelCount",9),("_texturedZeroPixelCount",2),("_texturedFallbackPixelCount",1),
+            ("_texturedRasterPixelCount",7),("_lfbWriteCount",7),("_profiledCommonRasterPixelCount",5),
+            ("_texturedTriangleCoveredCount",1),("_texturedTriangleRejectedCount",1),("_texturedRejectEmptyRasterCount",1)
+        }) if(Convert.ToInt64(type.GetField(field,flags)!.GetValue(counterBackend))!=expected)
+            throw new InvalidOperationException($"Deferred GPU counter failed: {field}");
+        long[] bufferCounts=(long[])type.GetField("_rasterBufferPixelCounts",flags)!.GetValue(counterBackend)!;
+        long[] lodCounts=(long[])type.GetField("_experimentTextureMamePixelLodCounts",flags)!.GetValue(counterBackend)!;
+        if(bufferCounts[0]!=0 || bufferCounts[1]!=7 || bufferCounts[2]!=0 || lodCounts[0]!=9 || lodCounts.Skip(1).Any(n=>n!=0))
+            throw new InvalidOperationException("Deferred GPU buffer/LOD counters failed");
+        Console.WriteLine("gpuDeferredTriangleCounters covered/empty/buffer/LOD PASS");
         // Exercise the real physical byte writer without creating a Vulkan context.
         Type sessionType=assembly.GetType("EutherDrive.Core.Arcade.Vegas.GpuShadowSession",true)!;
         object session=System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(sessionType);

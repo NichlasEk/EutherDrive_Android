@@ -37,12 +37,14 @@ internal sealed unsafe class GpuShadowSession : IDisposable
     {
         _library=NativeLibrary.Load(Path.GetFullPath(library));
         try {
-            if(Replace && Batched) throw new NotSupportedException("GPU replacement currently requires per-draw synchronization");
+            if(Replace && Batched && (!BatchStatistics || Resident))
+                throw new NotSupportedException("Batch replacement requires batch statistics and non-resident mode");
             if(BatchStatistics && !Batched) throw new NotSupportedException("Batch statistics requires batched shadow mode");
             if(Resident && !Replace) throw new NotSupportedException("Resident mode requires GPU replacement");
             if(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_DIRTY_TEXTURE")=="1") {
-                if(!Resident || !Replace || Batched || Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_INCREMENTAL")!="1" || Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SPARSE_SNAPSHOT")!="1")
-                    throw new NotSupportedException("Dirty tracking requires resident incremental sparse replacement");
+                if((Batched?!BatchStatistics:!Resident || !Replace) ||
+                    Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_INCREMENTAL")!="1" || Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SPARSE_SNAPSHOT")!="1")
+                    throw new NotSupportedException("Dirty tracking requires incremental sparse resident replacement or statistics batches");
                 _dirtyPages=new uint[8192];
             }
             T Bind<T>(string name) where T:Delegate => Marshal.GetDelegateForFunctionPointer<T>(NativeLibrary.GetExport(_library,name));
@@ -53,7 +55,7 @@ internal sealed unsafe class GpuShadowSession : IDisposable
             _draw=Bind<Draw>(Batched?"gauntlet_shadow_enqueue":Resident?"gauntlet_shadow_resident_draw":"gauntlet_shadow_draw");_output=Bind<Output>("gauntlet_shadow_output");
             _flush=Bind<Flush>("gauntlet_shadow_flush");
             _readPixels=Bind<Flush>("gauntlet_shadow_read_pixels");
-            if(_dirtyPages is not null) _dirtyDraw=Bind<DirtyDraw>("gauntlet_shadow_dirty_draw");
+            if(_dirtyPages is not null) _dirtyDraw=Bind<DirtyDraw>(Batched?"gauntlet_shadow_dirty_enqueue":"gauntlet_shadow_dirty_draw");
             _context=Bind<Create>("gauntlet_shadow_create")(Path.GetFullPath(shader));
             if(_context==0) throw new InvalidOperationException(Marshal.PtrToStringUTF8(_error()));
         } catch { NativeLibrary.Free(_library);_library=0;throw; }
@@ -116,6 +118,21 @@ internal sealed unsafe class GpuShadowSession : IDisposable
             throw new InvalidOperationException("CPU batch coverage/return mismatch");
         if(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_COUNTER_CORRUPT_ORACLE")=="1") delta[0]^=1;
         _batchExpected.Add(delta);
+    }
+    public uint[][] FlushAndApplyBatch(ushort[] color,ushort[] depth)
+    {
+        if(_context==0) throw new ObjectDisposedException(nameof(GpuShadowSession));
+        if(!Replace || !Batched || !BatchStatistics || _batchDraws==0 || _batchExpected.Count!=0)
+            throw new InvalidOperationException("Invalid replacement batch order");
+        if(_flush(_context)!=0) throw new InvalidOperationException(Marshal.PtrToStringUTF8(_error()));
+        uint* result=_output(_context);
+        uint[][] statistics=new uint[_batchDraws][];
+        for(int draw=0;draw<_batchDraws;draw++) {
+            statistics[draw]=new uint[16];
+            for(int i=0;i<16;i++) statistics[draw][i]=result[2097152+draw*16+i];
+        }
+        Apply(color,depth);_batchDraws=0;
+        GC.KeepAlive(this);return statistics;
     }
     public uint[] Statistics()
     {

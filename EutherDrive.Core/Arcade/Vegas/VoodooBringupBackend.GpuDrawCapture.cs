@@ -9,6 +9,7 @@ internal partial class VoodooBringupBackend
     private int _gpuDrawCount, _gpuDrawEligible, _gpuExtendedColorDrawCount;
     private bool _gpuStreamActive, _gpuStreamStopped;
     private bool _gpuBatchContinuation;
+    private bool _gpuDeferredTriangle;
     private string? _gpuStreamDirectory;
     private int _gpuStreamBuffer;
     private GpuShadowSession? _gpuShadow;
@@ -51,12 +52,18 @@ internal partial class VoodooBringupBackend
                 catch { _gpuShadow.Dispose();_gpuShadow=null;_gpuStreamActive=false;_gpuStreamStopped=true;throw; }
             }
             if(_gpuShadow.Batched) {
-                try { _gpuShadow.FlushAndCompare(_colorBuffers[_gpuStreamBuffer],_auxBuffer); }
+                try {
+                    if(_gpuShadow.Replace) {
+                        foreach(uint[] statistics in _gpuShadow.FlushAndApplyBatch(_colorBuffers[_gpuStreamBuffer],_auxBuffer)) {
+                            ApplyGpuBatchDrawCounters(statistics,_gpuStreamBuffer);
+                        }
+                    } else _gpuShadow.FlushAndCompare(_colorBuffers[_gpuStreamBuffer],_auxBuffer);
+                }
                 catch { _gpuShadow.Dispose();_gpuShadow=null;_gpuStreamActive=false;_gpuStreamStopped=true;throw; }
             }
             _gpuStreamActive=false;_gpuStreamStopped=_gpuDrawCount>=GpuRuntimeLimit;
             _gpuBatchContinuation=reason=="batch-capacity";
-            string result=_gpuShadow.Replace?"mode=replace cpuRasterSkipped=true rasterCounters=PASS":"mode=shadow colorDepthMismatch=0";
+            string result=_gpuShadow.Replace?(_gpuShadow.Batched?"mode=batch-replace cpuRasterSkipped=true counters=gpu":"mode=replace cpuRasterSkipped=true rasterCounters=PASS"):"mode=shadow colorDepthMismatch=0";
             Console.WriteLine($"gpuShadowBoundary segment={_gpuShadowSegments} draws={_gpuShadowSegmentDraws} totalDraws={_gpuDrawCount} extendedDraws={_gpuExtendedColorDrawCount} reason={reason} {result}");
             if(_gpuStreamStopped) { _gpuShadow.Dispose();_gpuShadow=null; }
             return;
@@ -95,6 +102,10 @@ internal partial class VoodooBringupBackend
         string? streamDirectory = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_STREAM_DIR");
         bool shadow=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW")=="1" ||
             Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_REPLACE")=="1";
+        if(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_REPLACE")=="1" &&
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH")=="1" &&
+            (_visualizeTexturedTriangleEdges || _traceTexturedTriangleRejects || _traceTexturedTriangleCovered || _profileTextureRasterStates))
+            throw new NotSupportedException("Batch replacement cannot defer triangle diagnostics or raster-state profiling");
         if(shadow && (!string.IsNullOrEmpty(directory) || !string.IsNullOrEmpty(streamDirectory)))
             throw new NotSupportedException("Shadow and file capture are mutually exclusive");
         bool stream = shadow || !string.IsNullOrEmpty(streamDirectory);
@@ -215,12 +226,35 @@ internal partial class VoodooBringupBackend
         if(_gpuShadow is not { Replace:true } || _gpuDraw is not {} capture) return false;
         uint[] s=_gpuShadow.Statistics();
         if(!_gpuShadow.Resident) _gpuShadow.Apply(_colorBuffers[capture.Buffer],_auxBuffer);
-        _texturedPixelCount+=s[0];coveredPixels+=(int)s[0];coveredAny=s[0]!=0;
-        _texturedZeroPixelCount+=s[1];zeroPixels+=(int)s[1];_texturedFallbackPixelCount+=s[2];
-        _texturedRasterPixelCount+=s[3];_lfbWriteCount+=s[3];_rasterBufferPixelCounts[capture.Buffer]+=s[3];
+        ApplyGpuRasterCounters(s,capture.Buffer);
+        coveredPixels+=(int)s[0];coveredAny=s[0]!=0;zeroPixels+=(int)s[1];
+        return true;
+    }
+
+    private void ApplyGpuRasterCounters(uint[] s,int buffer)
+    {
+        _texturedPixelCount+=s[0];_texturedZeroPixelCount+=s[1];_texturedFallbackPixelCount+=s[2];
+        _texturedRasterPixelCount+=s[3];_lfbWriteCount+=s[3];_rasterBufferPixelCounts[buffer]+=s[3];
         _profiledCommonRasterPixelCount+=s[4];
         for(int i=0;i<9;i++) _experimentTextureMamePixelLodCounts[i]+=s[6+i];
+    }
+
+    private bool TryQueueGpuBatchReplacement()
+    {
+        if(_gpuShadow is not { Replace:true, Batched:true } || _gpuDraw is null) return false;
+        // The sole FillTexturedTriangle caller must not classify this triangle
+        // until its result is consumed at a real boundary or batch capacity.
+        _gpuDeferredTriangle=true;_gpuDraw=null;
+        if(_gpuDrawCount==GpuRuntimeLimit) GpuStreamBoundary("shadow-limit");
+        else if(_gpuShadowSegmentDraws==128) GpuStreamBoundary("batch-capacity");
         return true;
+    }
+
+    private void ApplyGpuBatchDrawCounters(uint[] statistics,int buffer)
+    {
+        ApplyGpuRasterCounters(statistics,buffer);
+        if(statistics[0]!=0) _texturedTriangleCoveredCount++;
+        else { _texturedTriangleRejectedCount++;_texturedRejectEmptyRasterCount++; }
     }
 
     [Conditional("GAUNTLET_GPU_CAPTURE")]

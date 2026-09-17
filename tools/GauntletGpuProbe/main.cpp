@@ -150,7 +150,9 @@ struct Harness {
     void record(size_t inputBytes,size_t outputBytes,uint32_t count,int upload,size_t tail,
         const std::vector<std::array<uint32_t,4>>& draws,size_t initial,
         const std::vector<std::vector<VkBufferCopy>>& updates,bool resetOutput=true,size_t statisticsBytes=0,bool statisticsOnly=false,
-        const std::vector<VkBufferCopy>* sparseUploads=nullptr,bool profileTransfers=false) {
+        const std::vector<VkBufferCopy>* sparseUploads=nullptr,bool profileTransfers=false,
+        const std::vector<uint32_t>* drawPixels=nullptr) {
+        if(drawPixels && drawPixels->size()!=draws.size()) throw std::runtime_error("Invalid per-draw dispatch sizes");
         check(vkResetCommandBuffer(commands,0));
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};check(vkBeginCommandBuffer(commands,&begin));
         vkCmdResetQueryPool(commands,queries,0,profileTransfers?4:2);
@@ -199,7 +201,7 @@ struct Harness {
                 vkCmdPipelineBarrier(commands,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,0,1,&sampled,0,nullptr,0,nullptr);
             }
             vkCmdPushConstants(commands,pipelineLayout,VK_SHADER_STAGE_COMPUTE_BIT,0,16,draws[d].data());
-            vkCmdDispatch(commands,(count+127)/128,1,1);
+            vkCmdDispatch(commands,((drawPixels?(*drawPixels)[d]:count)+127)/128,1,1);
         }
         vkCmdWriteTimestamp(commands,VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,queries,1);
         VkMemoryBarrier done{VK_STRUCTURE_TYPE_MEMORY_BARRIER};done.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT|VK_ACCESS_TRANSFER_WRITE_BIT;done.dstAccessMask=VK_ACCESS_TRANSFER_READ_BIT;

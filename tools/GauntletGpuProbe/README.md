@@ -113,7 +113,8 @@ in the normal emulator. Results and next integration boundary are recorded in
 `GPU_SHADOW_BATCH=1`. It permits a total draw limit up to 65,536 with automatic
 flush/continuation at 128 draws, while keeping CPU rasterization as oracle.
 Rebuild Core, native and shader together; native batch-statistics capability 1
-is required. This does **not** enable batched replacement. Metadata word 119
+is required. Add `GPU_REPLACE=1` for experimental batched replacement (see below).
+Metadata word 119
 is reserved for native-assigned statistics offsets. See
 [batch statistics checkpoint](../../docs/gauntlet-dl-gpu-batch-statistics-2026-09-17.md).
 
@@ -313,11 +314,17 @@ compares an active segment before releasing its native context.
 
 Each batch currently uploads its initial full texture/NCC state and initial
 framebuffer, metadata, and patch payloads. Between draws it uploads no CPU
-framebuffer results. Texture change detection still scans/copies CPU snapshots;
-this is **not** dirty tracking in the emulated texture write path. Capacity
+framebuffer results. By default, texture change detection scans/copies CPU snapshots.
+With `GPU_BATCH_STATS=1`, `GPU_INCREMENTAL=1`, `GPU_SPARSE_SNAPSHOT=1` and
+`GPU_DIRTY_TEXTURE=1` (all with the `EUTHERDRIVE_GAUNTDL_` prefix), the native
+`gauntlet_shadow_dirty_enqueue` entry point uses the emulated texture writer's
+dirty pages and copies only changed snapshot pages. NCC pages are always checked.
+`GPU_VERIFY_DIRTY=1` independently scans skipped pages and rejects missed writes.
+Capacity
 is bounded to 128 draws and 64 MiB of input; exceeding it aborts the diagnostic
-run instead of silently dropping work. The overall shadow limit remains 128
-draws. A finalizer can release resources but cannot verify an unfinished batch;
+run instead of silently dropping work. Without batch statistics the overall
+shadow limit remains 128; with statistics, full batches flush and continue up
+to the configured total limit (maximum 65,536). A finalizer can release resources but cannot verify an unfinished batch;
 require a completed shadow-limit/boundary log when evaluating a run.
 
 `gpuShadowTotals` reports submissions, uploaded/readback bytes and patch bytes.
@@ -370,23 +377,24 @@ dispatch, post-dispatch (barriers/statistics copy), and boundary pixel readback.
 Device times overlap host waits; do not add them to host timings. These are
 coarse pipeline intervals, not isolated shader-instruction or PCIe bandwidth
 measurements. Readback host time includes its recording/submission/wait/query.
-Snapshot preparation is currently timed for synchronous draws, not batch enqueue.
+Snapshot preparation is timed for synchronous draws and batch enqueue.
 Rebuild native and capture-enabled Core; ABI remains v4. Profiling defaults off.
 Measured results and timing boundaries are in the
 [CPU/GPU profile](../../docs/gauntlet-dl-gpu-profile-2026-09-11.md).
 
-`EUTHERDRIVE_GAUNTDL_GPU_BBOX=1` optionally restricts each synchronous runtime
+`EUTHERDRIVE_GAUNTDL_GPU_BBOX=1` optionally restricts each synchronous or batched runtime
 draw dispatch to its metadata bounding box. The push constants map invocation
 indices to that box, while GDR2 still writes to physical color/depth addresses.
-The shader's output/statistics buffer layout is unchanged; batch shadow and
-offline draws retain their original dispatch. Rebuild native; ABI remains v4.
+The shader's output/statistics buffer layout is unchanged. Batches retain an
+individual dispatch size for each draw; offline draws retain their original
+dispatch. Rebuild native; ABI remains v4.
 `gpuDispatch invocations` counts launched invocations, including 128-thread
 workgroup rounding. The flag also works with per-draw CPU/GPU shadow checks.
 See [bounding-box results](../../docs/gauntlet-dl-gpu-bbox-proof-2026-09-11.md).
 
 `EUTHERDRIVE_GAUNTDL_GPU_DRAW_LIMIT=4096` expands the diagnostic runtime
-window (default 128, accepted range 1–65536). Batched shadow remains capped
-at 128; offline capture limits are unchanged. The limit is cached per backend.
+window (default 128, accepted range 1–65536). Batches without statistics remain
+capped at 128; offline capture limits are unchanged. The limit is cached per backend.
 Probe explicitly drains/disposes an active GPU session at the timed endpoint,
 even when fewer eligible draws occur. A completed run must report no pending
 pixels. The `displayRate` line measures the delta in executed swap commands
@@ -431,8 +439,15 @@ for full-state verification and transfer counts.
 CPU pixel loop for up to 128 selected draws by default. Build the native library and
 capture-enabled Core as above; ABI version 4 includes GPU raster statistics
 and explicit resident framebuffer readback.
-Do **not** set `EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH=1`: replacement currently
-requires immediate per-draw counters/return values and rejects batch mode.
+For experimental batch replacement set `EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH=1`
+and `EUTHERDRIVE_GAUNTDL_GPU_BATCH_STATS=1`. Do **not** set `GPU_RESIDENT`:
+batch replacement currently reads back the full framebuffer at each boundary,
+including capacity boundaries. Pixel, LOD, covered/rejected-triangle and empty
+raster counters are consumed in draw order at flush, before CPU readers/writers.
+Triangle-edge visualization, covered/rejected-triangle tracing and raster-state
+profiling are explicitly rejected because they need immediate per-draw results.
+Debug/profile status reads also flush. Ordinary non-capture builds ignore this
+path. See [batch replacement checkpoint](../../docs/gauntlet-dl-gpu-batch-replacement-2026-09-17.md).
 
 ```sh
 DOTNET_TieredCompilation=0 EUTHERDRIVE_GAUNTDL_GPU_REPLACE=1 \
@@ -451,9 +466,10 @@ the native context is released and all rendering continues on the CPU.
 
 Per-draw shadow mode now independently compares those counters against the
 CPU, in addition to comparing every color/depth pixel. The output buffer has
-16 trailing statistic words, zeroed before dispatch; metadata word 31 enables
-statistics only for native per-draw operation. Offline GDR captures must keep
-that flag zero. Batch shadow mode remains available without per-draw stats.
+16 statistic words per draw, zeroed before dispatch (128 rows for batches);
+metadata word 31 enables native runtime statistics. Offline GDR captures must
+keep that flag zero. Batch shadow supports both statistics-off and independent
+per-draw CPU-oracle validation modes.
 
 `EUTHERDRIVE_GAUNTDL_GPU_COUNTER_CORRUPT_ORACLE=1` changes only a local expected
 counter and must trigger a counter mismatch. Pixel-oracle corruption is a

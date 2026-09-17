@@ -544,3 +544,13 @@ draws går i 104 submissions med full bild-/räknarmatch och byte-exakt
 slutmaskin. CPU-oraklet kör fortfarande, så detta är inte snabb replacement
 ännu. Kapacitetsfortsättning, texturpatchar och negativkontroller är testade.
 Se [batch-statistik-checkpointen](gauntlet-dl-gpu-batch-statistics-2026-09-17.md).
+
+## GPU batch replacement checkpoint, 2026-09-17
+
+Riktig opt-in-batchersättning är implementerad: 9 012 CPU-rasteriseringar
+ersätts av 104 GPU-submissions, med per-draw-räknare och byte-exakt slutmaskin.
+Bbox-dispatch och dirty/sparse-textursnapshots fungerar även för batcher.
+Tre växlade prov ger CPU-median 11,8358 s och GPU-median 13,4096 s: ingen
+defaultändring eller påstådd spelbarhetsvinst. Nästa GPU-steg är resident
+data mellan batcher; mätprofilen visar betydligt mer överförings-/förberedelse-
+kostnad än shaderberäkning. Se [checkpoint](gauntlet-dl-gpu-batch-replacement-2026-09-17.md).
