@@ -82,7 +82,11 @@ internal partial class VoodooBringupBackend
         if(stream) {
             if(!string.IsNullOrEmpty(directory)) throw new NotSupportedException("Choose draw OR stream capture");
             directory=streamDirectory;
-            if(!common) GpuStreamBoundary("unsupported-textured-state");
+            if(!common) {
+                if(_gpuStreamActive && shadow && Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_PROFILE")=="1")
+                    Console.WriteLine($"gpuUnsupportedState fbz={_registers[RegFbzMode]:x8} cp={_registers[RegFbzColorPath]:x8} alpha={_registers[RegAlphaMode]:x8} fog={_registers[RegFogMode]:x8} tm0={state0.Mode:x8} tm1={state1.Mode:x8}");
+                GpuStreamBoundary("unsupported-textured-state");
+            }
             if(_gpuStreamActive && buffer!=_gpuStreamBuffer) GpuStreamBoundary("draw-buffer-change");
             if(_gpuStreamStopped) return;
             // Clamped Y would alias multiple shader invocations to one pixel.

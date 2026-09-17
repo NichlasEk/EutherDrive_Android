@@ -133,6 +133,12 @@ ROM-free bilinear filter checks:
 This compares 1,156,784 cases with the original per-channel formula.
 See [packed texture filtering](../../docs/gauntlet-dl-packed-texture-filter-2026-09-17.md).
 
+`python3 tools/GauntletProbe/summarize-gpu-sync.py LOG` audits a completed
+profiled synchronous resident GPU session, reports segment boundaries and
+an explicitly hypothetical batch count. `gpuUnsupportedState` profile rows
+identify the first unsupported render state ending each segment.
+See [GPU synchronization audit](../../docs/gauntlet-dl-gpu-sync-audit-2026-09-17.md).
+
 In-process GPU shadow comparison is available in diagnostic builds with
 `EUTHERDRIVE_GAUNTDL_GPU_SHADOW=1`; it checks up to 128 draws while the CPU
 continues to supply all game results. Build the native library first as shown

@@ -515,3 +515,9 @@ Packad bilinjär texturfiltrering behålls: sex växlade gamla/nya par ger
 Alla tolv slutmaskiner matchar exakt och 1 156 784 filtertestfall passerar.
 Android-vinst är ännu inte mätt. Se
 [filtercheckpointen](gauntlet-dl-packed-texture-filter-2026-09-17.md).
+
+Ny GPU-audit visar att alla 70 segment bryts av två TMU-kombinationer med
+färgkombination `0c602c19`. Draw-fence-väntan är cirka 0,62–0,63 s av
+12,73–12,81 s. Nästa steg är verifierat stöd för dessa renderlägen innan
+större asynkron replacement införs. Ingen synkronisering är borttagen.
+Se [synkroniseringsauditen](gauntlet-dl-gpu-sync-audit-2026-09-17.md).
