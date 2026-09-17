@@ -27,6 +27,45 @@ var av; `DOTNET_TieredCompilation=0`. GPU-init/slutdränering ingår, men inte
 snapshot-inläsning/slutdump. Samtliga nio fulla slutmaskiner matchar oraklet.
 Artefakter: `.build-tmp/gpu-level3-bench-{cpu,level2,level3}-{1,2,3}{.log,-final.warm.gz}`.
 
+## Ommätning 2026-09-17, cirka 14:03–14:07 lokal tid
+
+Samma roterade ordning och flaggor som ovan, nytt capture-bygge från
+`9e6d0913`, utan egna samtidiga byggen eller andra tunga testjobb:
+
+| Läge | Prov 1 | Prov 2 | Prov 3 | Median |
+|---|---:|---:|---:|---:|
+| CPU | 14,6817 s | 13,7680 s | 14,2920 s | 14,2920 s |
+| GPU nivå 2 | 15,6107 s | 15,7795 s | 14,9272 s | 15,6107 s |
+| GPU nivå 3 | 15,3634 s | 15,1095 s | 15,3853 s | 15,3634 s |
+
+En kort `vmstat`-kontroll före bygget visade 83–87 % idle och ingen aktiv
+swaptrafik. Det är inte bevis på ostörd körning: load average vid provstarter
+varierade 4,80–9,22 (första värdet kan också påverkas av det avslutade bygget).
+Andra processer lämnades orörda. CPU-referensen varierade fortfarande
+0,914 s, och nivå 3 var snabbare än nivå 2 i två prov men långsammare i ett.
+
+Nivå 3:s median var cirka 1,6 % lägre än nivå 2:s, men cirka 7,5 % högre
+än CPU:ns. Detta är beskrivande siffror för denna serie, inte en säker
+optimeringsvinst. Ingen GPU-seger eller spelbar bildfrekvens är visad.
+Probes `fps` är inte spelets bildfrekvens.
+
+Alla nio dekomprimerade slutmaskiner matchade SHA-256-oraklet nedan;
+alla bildhashar var `0xe87b12da`. Artefakter:
+`.build-tmp/gpu-level3-retest-{cpu,level2,level3}-{1,2,3}{.log,-final.warm.gz}`.
+
+Slutsats: behåll opt-in. Nästa riktade experiment bör först dela upp
+GPU-vägens värdarbete, kopieringar, submissions och väntetider. Det är en
+profilhypotes, inte en uppmätt flaskhals; fler stödda små trianglar räcker
+inte som prestandabevis.
+
+Normal Release för Probe/UI återställdes och byggde utan fel. Gräns-/pending-
+pixel-/dirty-/limit-testerna samt 720 tillståndsfall, 393 216 RGB-fall och
+65 536 alfafall passerade. Normal replay med GPU-/target-profilflaggor och
+obefintligt nativebibliotek matchade också full-state-oraklet
+(`.build-tmp/gpu-level3-retest-normal{.log,-final.warm.gz}`). Dess `runMs`
+var 11 998,8, men detta ensamma prov i ett annat bygge ingår inte i tabellen
+och isolerar inte capture-overhead från förändrad värdbelastning.
+
 ## Avgränsat stöd
 
 `EUTHERDRIVE_GAUNTDL_GPU_EXTENDED_COLOR_PATH=3` inkluderar nivå 1/2 och
