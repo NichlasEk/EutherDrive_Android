@@ -397,3 +397,97 @@ den första positiva mätningen höll inte i bekräftelsen och kandidaten är
 borttagen. Alla tre varianter gav byte-exakt samma fullständiga slutmaskin.
 Även probens slutdump med aktiverad spårning har rättats. Se
 [PCI- och texturcheckpointen](gauntlet-dl-pci-texture-checkpoint-2026-09-10.md).
+
+Ett första avgränsat GPU-prov finns nu: 558 872 verkliga samplingsanrop från
+16 trianglar ger byte-exakt samma RGBA på RTX 4090 som C#-samplern. GPU med
+nya requests men kvarliggande texturer är i provet cirka 2,1 gånger snabbare
+än åtta CPU-workers; full uppladdning är däremot långsammare. Det är en
+fristående sampling-replay, inte en GPU-renderad spelbild eller ny spelhastighet.
+Inspelningen kompileras bort i normalbygget. Nästa steg är draw-replay med
+kvarliggande textur-/färg-/djupbuffertar och GPU-genererade koordinater, följt
+av exakt färg-/djupjämförelse. Se
+[GPU-provet](gauntlet-dl-gpu-sampling-proof-2026-09-10.md).
+
+Draw-steget är nu verifierat offline: 16 kompletta common-state-trianglar
+matchar exakt färg/djup, liksom ordnade batcher om fyra respektive två draws
+med gemensamma GPU-buffertar. Nästa gräns är en renderingsström med
+texturuppdateringar, clears och CPU-läsbarriärer, följt av live-integration.
+Ingen ny spelhastighet är ännu uppmätt. Se
+[draw-checkpointen](gauntlet-dl-gpu-draw-proof-2026-09-10.md).
+
+Nästa steg har nu också verifierats offline: sammanhängande segment med
+26, 32 och 4 draws, full färg-/djupjämförelse och ordnade NCC-uppdateringar.
+Råtexturkopior testas separat med en pixelbevarande texturflytt och negativ
+kontroll. Clear/swap/CPU-access avslutar segmenten; de körs ännu inte på GPU.
+Nästa integrationsgräns är runtime shadow-körning med flush/fallback och
+återupptagning. Se [stream-checkpointen](gauntlet-dl-gpu-stream-proof-2026-09-10.md).
+
+Runtime shadow fungerar nu via ett in-process C-ABI: 256 draws i två
+replayfönster matchar färg/djup exakt, inklusive återupptagning efter CPU-
+rendering av unsupported states. CPU:n är fortfarande auktoritativ och
+detta är seriell dubbelkörning, inte en prestandavinst. Nästa steg är köad
+segmentkörning och dirty-uppladdningar i runtime. Se
+[runtime-checkpointen](gauntlet-dl-gpu-runtime-shadow-2026-09-10.md).
+
+Runtime-batchning är nu verifierad: samma 128 draws i första fönstret kräver
+tre inlämningar i stället för 128, med cirka 21,7 gånger mindre uppladdning
+och 42,7 gånger mindre readback. Full färg/djup och fullständig slutmaskin
+matchar. CPU:n levererar fortfarande spelresultatet; detta minskar kostnaden
+för shadow-verifieringen, inte ännu spelets rasterarbete. Se
+[batch-checkpointen](gauntlet-dl-gpu-runtime-batch-2026-09-10.md).
+
+Ett begränsat faktiskt ersättningsläge är nu verifierat: GPU:n ersätter
+CPU-pixelloopen för 128 draws i vardera av två fönster, med byte-exakt samma
+fullständiga slutmaskin. GPU-räknare bevarar rasterloopens sidoeffekter och
+har kontrollerats mot CPU-shadow. Ersättningen synkar fortfarande per draw,
+så ingen säker fartökning är påvisad. Nästa steg är mindre överföringar och
+explicit CPU/GPU-buffersynk. Se
+[ersättningscheckpointen](gauntlet-dl-gpu-replacement-proof-2026-09-11.md).
+
+Färg/djup kan nu ligga kvar på GPU mellan ersatta draws. Två 128-draw-fönster
+ger byte-exakt samma fullständiga slutmaskin, med endast 64 byte räknare per
+draw och full pixel-readback vid segmentgränser. Första fönstrets readback
+minskar cirka 42,7 gånger. Texturuppladdningen är ännu full per draw och ingen
+säker fartökning är påvisad. Nästa steg är inkrementella texturöverföringar.
+Se [resident-checkpointen](gauntlet-dl-gpu-resident-proof-2026-09-11.md).
+
+Resident ersättning har nu valbara inkrementella textur/NCC-uppladdningar.
+Två fönster matchar hela CPU-slutmaskinen exakt; första fönstrets uppladdning
+minskar från 1,10 GB till 50,5 MB. Snapshot-skanning på CPU och fence per draw
+kvarstår, så detta är ännu ingen påvisad spelbarhetsvinst. Nästa mätning bör
+öka det verifierade ersättningsfönstret och räkna verkliga swaps/sekund.
+Se [inkrementell checkpoint](gauntlet-dl-gpu-incremental-proof-2026-09-11.md).
+
+Det större GPU-fönstret är nu mätt: 2 890 ersatta draws över 70 segment
+matchar hela CPU-slutmaskinen, men GPU-vägen ger cirka 1,9 swaps/s mot CPU:ns
+3,35 i två växlade omkörningar utan Vulkan-validering. Ingen standardändring:
+GPU-experimentet är långsammare. Nästa konkreta försök är bounding-box-begränsad
+dispatch; nu startas 2 097 152 shader-invokationer per draw. Se
+[utökat fönster och mätning](gauntlet-dl-gpu-expanded-window-2026-09-11.md).
+
+Bounding-box-dispatch är nu provad och state-exakt för samma 2 890 draws.
+Den minskar invokationerna cirka 338 gånger men visar ingen fartvinst:
+1,94–2,04 swaps/s mot full-dispatch 2,09 och CPU 3,43 i denna jämförelse.
+Flaggan förblir avstängd. Nästa steg är att profilera CPU/GPU-tidsandelar,
+inte anta att färre invokationer betyder högre speltempo. Se
+[bounding-box-provet](gauntlet-dl-gpu-bbox-proof-2026-09-11.md).
+
+CPU/GPU-profilering är nu tillagd. Två bbox-replayer mäter cirka 5,3 s native
+snapshot-förberedelser, 2,5–2,6 s fence-väntan och endast 0,16–0,17 s device-
+dispatch. Full dispatch mäter cirka 0,20 s device-dispatch. Nästa avgränsade
+försök är att uppdatera CPU-texturspegeln endast för ändrade block, med scan-
+kostnaden kvar som separat begränsning. GPU-tiderna överlappar host-väntan
+och får inte adderas till den. Se [tidsprofilen](gauntlet-dl-gpu-profile-2026-09-11.md).
+
+CPU-texturspegeln kan nu uppdateras bara för ändrade block. Två växlade prov
+minskar native-förberedelser från cirka 4,93 s till 1,91 s och GPU-replaytid
+cirka 14,5 procent i medel, till 2,46–2,55 swaps/s. Fullminnesskanning och
+fence per draw kvarstår; CPU-standardvägen är fortfarande snabbare.
+Se [sparse snapshot-provet](gauntlet-dl-gpu-sparse-snapshot-2026-09-11.md).
+
+Skrivspårade textursidor har nu provats med full kontrollskanning som orakel.
+Två växlade GPU-replayer blir cirka 20,7 procent kortare än sparse-vägen:
+3,12–3,17 swaps/s, native-förberedelser cirka 0,22 s. Slutmaskinerna är
+byte-exakta och kontrollen hittar inga missade sidor. NCC jämförs fortsatt
+fullt och segmentstarter återinitialiseras; normalbygget är oförändrat.
+Se [dirty-texture-checkpointen](gauntlet-dl-gpu-dirty-texture-2026-09-17.md).

@@ -1,6 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <DefineConstants Condition="'$(GauntletGpuCapture)' == 'true'">$(DefineConstants);GAUNTLET_GPU_CAPTURE</DefineConstants>
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>

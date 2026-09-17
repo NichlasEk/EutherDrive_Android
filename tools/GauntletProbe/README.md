@@ -90,6 +90,35 @@ the source-file and main-RAM ranges before copying. This is intended for narrow
 causal replay against an owned disk or RAM oracle; it is not part of the
 runtime baseline.
 
+An opt-in diagnostic build can record real texture-sampling and common-state draw batches for an
+offline Vulkan comparison. See [GauntletGpuProbe](../GauntletGpuProbe/README.md).
+This is an offline experiment, not a GPU-rendered gameplay mode; ordinary
+builds omit its capture calls entirely.
+
+The diagnostic build also captures contiguous common-state segments with full
+color/depth oracles and ordered texture/NCC updates. See the
+[stream checkpoint](../../docs/gauntlet-dl-gpu-stream-proof-2026-09-10.md).
+ROM-free boundary checks use `EUTHERDRIVE_GAUNTDL_TEST_GPU_STREAM_BOUNDARIES=capture`
+on a capture-enabled build and `=normal` after restoring the ordinary build.
+These also check nine runtime draw-limit cases. The optional
+`EUTHERDRIVE_GAUNTDL_GPU_DRAW_LIMIT` defaults to 128; see the
+[expanded-window checkpoint](../../docs/gauntlet-dl-gpu-expanded-window-2026-09-11.md)
+for limits and the measured GPU slowdown.
+
+`displayRate` reports executed swap-command delta and swaps/second over the
+timed replay, unlike `score fps`, which counts probe calls. It does not measure
+distinct frames displayed by a host window or input latency. Probe drains any
+active diagnostic GPU session at the timed endpoint before extra CPU steps.
+
+In-process GPU shadow comparison is available in diagnostic builds with
+`EUTHERDRIVE_GAUNTDL_GPU_SHADOW=1`; it checks up to 128 draws while the CPU
+continues to supply all game results. Build the native library first as shown
+in [GauntletGpuProbe](../GauntletGpuProbe/README.md#in-process-runtime-shadow-comparison).
+
+Add `EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH=1` for queued segment comparison
+and ordered dirty-page uploads. CPU rendering remains authoritative; see
+the [batch checkpoint](../../docs/gauntlet-dl-gpu-runtime-batch-2026-09-10.md).
+
 PCI trace allocation and logging regression checks can run without ROMs:
 
 ```sh

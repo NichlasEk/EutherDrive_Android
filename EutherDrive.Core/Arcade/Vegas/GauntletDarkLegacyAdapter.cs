@@ -39886,10 +39886,17 @@ internal sealed class VoodooFacade : IVoodooBackend
 
     public void Reset()
     {
+        CloseGpuShadowBackend(_backend);
         _backend = VoodooTraceBackend.IsEnabled()
             ? new VoodooTraceBackend()
             : new VoodooBringupBackend();
         ApplyCpuPcProvider();
+    }
+
+    [Conditional("GAUNTLET_GPU_CAPTURE")]
+    private static void CloseGpuShadowBackend(IVoodooBackend backend)
+    {
+        if(backend is VoodooBringupBackend bringup) bringup.CloseGpuShadow();
     }
 
     public void WriteRegister(uint address, uint value) => _backend.WriteRegister(address, value);
@@ -39991,7 +39998,7 @@ internal sealed class VoodooFacade : IVoodooBackend
     }
 }
 
-internal class VoodooBringupBackend : IVoodooBackend
+internal partial class VoodooBringupBackend : IVoodooBackend
 {
     private const int LfbBytes = 4 * 1024 * 1024;
     private const int LfbPixels = LfbBytes / 2;
@@ -43480,6 +43487,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     public virtual uint ReadLfb32(uint offset)
     {
+        GpuStreamBoundary("cpu-lfb-read");
         uint lfbMode = _registers[RegLfbMode];
         int pixel = GetLfbPixelOffset(offset, IsTwoPixelLfbFormat((int)(lfbMode & 0x0fu)), lfbMode);
         ushort[] buffer = GetLfbReadBuffer(lfbMode);
@@ -43495,6 +43503,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     public virtual void WriteLfb32(uint offset, uint value)
     {
+        GpuStreamBoundary("cpu-lfb-write");
         MirrorLfbWriteToCommandFifoStorage(offset, value);
         uint lfbMode = _registers[RegLfbMode];
         if (lfbMode == 0x00002011u)
@@ -44133,6 +44142,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         uint newValue = (oldValue & ~mask) | ((uint)value << shift);
         TraceTextureOverwrite((int)wordOffset, byteOffset, oldValue, newValue, mask);
         _textureMemory[wordOffset] = newValue;
+        MarkGpuTextureWrite((int)wordOffset, oldValue != newValue);
         TrackTextureLastWriter((int)wordOffset);
         TrackTextureMappedWrite((int)wordOffset, value);
     }
@@ -44394,6 +44404,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private bool TryRenderLfb(EutherFrameTarget target)
     {
+        GpuStreamBoundary("host-present-read");
         if (_lfbWriteCount == 0)
             return false;
 
@@ -44649,6 +44660,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private void FastFill()
     {
+        GpuStreamBoundary("fast-fill");
         uint clipX = _registers[0x46];
         uint clipY = _registers[0x47];
         int x0 = Math.Clamp((int)((clipX >> 16) & 0x7ff), 0, 1024);
@@ -49864,6 +49876,7 @@ internal class VoodooBringupBackend : IVoodooBackend
 
     private bool FillTriangle(float ax, float ay, float bx, float by, float cx, float cy, ushort color, string source)
     {
+        GpuStreamBoundary("flat-triangle");
         if (!float.IsFinite(ax) || !float.IsFinite(ay) ||
             !float.IsFinite(bx) || !float.IsFinite(by) ||
             !float.IsFinite(cx) || !float.IsFinite(cy))
@@ -50132,6 +50145,7 @@ internal class VoodooBringupBackend : IVoodooBackend
         float cy,
         ushort fallbackColor)
     {
+        GpuStreamBoundary("gradient-color-triangle");
         if (!float.IsFinite(ax) || !float.IsFinite(ay) ||
             !float.IsFinite(bx) || !float.IsFinite(by) ||
             !float.IsFinite(cx) || !float.IsFinite(cy))
@@ -50558,10 +50572,19 @@ internal class VoodooBringupBackend : IVoodooBackend
             !_traceTextureSampleWriters &&
             !_traceTwoTmuSamples &&
             !_traceTmu1SamplePages;
+        BeginGpuSampleCapture(ref useParallelRaster, (long)(maxX - minX) * (maxY - minY));
         _texturedBoundingPixelCount += (long)(maxX - minX) * (maxY - minY);
         if (useParallelRaster)
             _parallelRasterTriangleCount++;
         int parallelCoveredFlag = 0;
+        BeginGpuDrawCapture(useProfiledCommonRasterKernel && !traceSampleSummary && !traceTexturedPixels && !_profilePixelLastWriters, minX, minY, maxX, maxY,
+            setupAx, setupAy, area > 0, a, b, c, bufferIndex, zaColor, fogColor,
+            fbzColorPathState, mameRgbMask, mameAuxMask, mameDepthTest, fallbackColor,
+            hasTmu0TriangleState, tmu0TriangleState, hasTmu1TriangleState, tmu1TriangleState,
+            triangleLodBase8p8, triangleLodBase1_8p8, triangleTargetLod,
+            new long[] { setupStartW, setupDwDx, setupDwDy, fogStartW, fogDwDx, fogDwDy,
+                startS, dSdX, dSdY, startT, dTdX, dTdY, textureStartW, textureDwDx, textureDwDy,
+                startS1, dS1dX, dS1dY, startT1, dT1dX, dT1dY, textureStartW1, textureD1wDx, textureD1wDy });
         void RasterRow<TKernel>(int y)
             where TKernel : struct
         {
@@ -51007,6 +51030,10 @@ sampledTexel:
             Parallel.For(minY, maxY, _parallelTextureRasterOptions, RasterRow<TKernel>);
         }
 
+#if GAUNTLET_GPU_CAPTURE
+        if(TryApplyGpuReplacement(ref coveredAny,ref coveredPixels,ref zeroPixels)) { }
+        else
+#endif
         if (useParallelRaster)
         {
             if (_experimentTypedRasterKernelDispatch)
@@ -51051,6 +51078,8 @@ sampledTexel:
             }
         }
 
+        EndGpuDrawCapture(coveredAny,coveredPixels,zeroPixels);
+        EndGpuSampleCapture();
         if (textureRasterStateStats is not null)
             textureRasterStateStats.RasterPixels += _texturedRasterPixelCount - textureRasterPixelStart;
 
@@ -51574,6 +51603,7 @@ sampledTexel:
         float cy,
         ushort fallbackColor)
     {
+        GpuStreamBoundary("gradient-textured-triangle");
         if (!IsTextureRasterEnabled() ||
             !float.IsFinite(ax) || !float.IsFinite(ay) ||
             !float.IsFinite(bx) || !float.IsFinite(by) ||
@@ -52459,6 +52489,7 @@ sampledTexel:
                     rgb565);
             }
         }
+        RecordGpuSample(tmu, iterS, iterT, iterW, targetLod, in triangleState, reciprocalWOverride, result);
         return result;
     }
 
@@ -55385,6 +55416,7 @@ sampledTexel:
 
     private void DrawLfbLine(float ax, float ay, float bx, float by, ushort color)
     {
+        GpuStreamBoundary("lfb-line");
         if (!float.IsFinite(ax) || !float.IsFinite(ay) || !float.IsFinite(bx) || !float.IsFinite(by))
             return;
 
@@ -56185,6 +56217,7 @@ sampledTexel:
 
     private void ExecuteSwapBuffers(uint command)
     {
+        GpuStreamBoundary("swap");
         _swapBufferCount++;
         _lastSwapCommand = command;
 
@@ -56237,6 +56270,7 @@ sampledTexel:
 
     private bool CapturePresentedColorBuffer(int bufferIndex)
     {
+        GpuStreamBoundary("presented-buffer-copy");
         long drawActivity = unchecked(
             _lfbWriteCount +
             _solidRasterPixelCount +
@@ -56291,6 +56325,7 @@ sampledTexel:
         if ((uint)bufferIndex >= (uint)_pendingClearValid.Length || !_pendingClearValid[bufferIndex])
             return;
 
+        GpuStreamBoundary("pending-clear");
         int x0 = _pendingClearX0[bufferIndex];
         int x1 = _pendingClearX1[bufferIndex];
         int y0 = _pendingClearY0[bufferIndex];

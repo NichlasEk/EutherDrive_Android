@@ -1,0 +1,146 @@
+#version 450
+#extension GL_ARB_gpu_shader_int64 : require
+#extension GL_ARB_gpu_shader_fp64 : require
+#extension GL_GOOGLE_include_directive : require
+layout(local_size_x=128) in;
+layout(set=0,binding=0,std430) readonly buffer Input { uint data[]; };
+layout(set=0,binding=1,std430) buffer Output { uint result[]; };
+layout(push_constant) uniform DrawParameters { uint meta,left,top,width; } pc;
+#include "sampling.glsl"
+uint m;
+const int dither[16]=int[](0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5);
+const int logFraction[128]=int[](
+0,2,5,8,11,14,16,19,22,25,27,30,33,35,38,40,
+43,46,48,51,53,56,58,61,63,65,68,70,73,75,77,80,
+82,84,87,89,91,93,96,98,100,102,104,106,109,111,113,115,
+117,119,121,123,125,127,129,132,134,136,138,140,141,143,145,147,
+149,151,153,155,157,159,161,162,164,166,168,170,172,173,175,177,
+179,181,182,184,186,188,189,191,193,194,196,198,200,201,203,205,
+206,208,209,211,213,214,216,218,219,221,222,224,225,227,229,230,
+232,233,235,236,238,239,241,242,244,245,247,248,250,251,253,254);
+int wfloat(int64_t w) {
+    uint64_t u=uint64_t(w);uint hi=uint(u>>32),lo=uint(u);
+    int leading=hi!=0u ? 31-findMSB(hi) : 63-findMSB(lo);
+    int e=leading-16;
+    if(e<0) return 0;
+    if(e>=16) return 65535;
+    return int((uint(e)<<12)|(uint(u>>(35-e))^8191u))+1;
+}
+int fastLog(int64_t w) {
+    if(w<int64_t(0)) return 0;
+    uvec2 bits=unpackDouble2x32(double(w));uint part=bits.y>>13;
+    return ((int(part>>7)-1023-32)<<8)|logFraction[part&127u];
+}
+int lodAt(uint p,int baseLod,int64_t w,int x,int y) {
+    if(baseLod==(-2147483647-1)) return int(data[p+16]);
+    int v=baseLod;
+    if((data[p+4]&1u)!=0u) v-=fastLog(w);
+    v+=int(data[p+10]);
+    if(data[p+12]!=0u) v+=dither[(y&3)*4+(x&3)]<<4;
+    v=min(max(v,int(data[p+8])),int(data[p+9]));
+    int lod=clamp(v>>8,0,8);lod+=int((~data[p+11]>>lod)&1u);
+    return clamp(lod,0,8);
+}
+int64_t gradient(uint p,int dx,int dy) { return (i64(p)+int64_t(dy)*i64(p+4))+int64_t(dx)*i64(p+2); }
+ivec4 sampleTmu(uint p,int lod,int64_t s,int64_t t,int64_t w,double reciprocal) {
+    uint level=p+24u+uint(lod)*3u;
+    SampleState state=SampleState(data[p+4],data[p+3],data[level+2],data[p+5],data[p+6],data[p+7],lod,int(data[level]),int(data[level+1]));
+    return sampleTexture(state,s,t,w,reciprocal);
+}
+int combineChannel(uint mode,int local,int localAlpha,int other,int otherAlpha,bool alpha) {
+    int zeroBit=alpha?21:12,subBit=alpha?22:13,selShift=alpha?23:14,reverseBit=alpha?26:17;
+    int addShift=alpha?27:18,invertBit=alpha?29:20;
+    int value=((mode>>zeroBit)&1u)!=0u?0:other;
+    if(((mode>>subBit)&1u)!=0u) value-=local;
+    uint sel=(mode>>selShift)&7u;
+    int factor=sel==1u?local:sel==2u?otherAlpha:sel==3u?localAlpha:0;
+    // LOD is passed to the software combiner as an integer level << 8;
+    // its fractional factor (selector 5) is therefore always zero here.
+    if(((mode>>reverseBit)&1u)==0u) factor^=255;
+    factor++;
+    uint addSel=(mode>>addShift)&(alpha?1u:3u);
+    int add=addSel==1u?local:(!alpha&&addSel==2u)?localAlpha:0;
+    value=clamp((value*factor>>8)+add,0,255);
+    if(((mode>>invertBit)&1u)!=0u) value^=255;
+    return value;
+}
+ivec4 combine(uint mode,ivec4 local,ivec4 other) {
+    return ivec4(combineChannel(mode,local.r,local.a,other.r,other.a,false),
+        combineChannel(mode,local.g,local.a,other.g,other.a,false),
+        combineChannel(mode,local.b,local.a,other.b,other.a,false),
+        combineChannel(mode,local.a,local.a,other.a,other.a,true));
+}
+uint packed565(ivec3 c) { return to565(clamp(c,ivec3(0),ivec3(255))); }
+void countStat(uint index) { if(data[m+31]!=0u) atomicAdd(result[data[5]+index],1u); }
+void main() {
+    uint i=gl_GlobalInvocationID.x;if(i>=data[5]) return;
+    m=pc.meta;
+    int x=int(pc.left+i%pc.width),y=int(pc.top+i/pc.width);
+    if(x<int(data[m]) || y<int(data[m+1]) || x>=int(data[m]+data[m+2]) || y>=int(data[m+1]+data[m+3])) return;
+    uint outputIndex=i;
+    if(data[m+23]!=0u) {
+        int origin=int(data[m+30]);
+        outputIndex=uint((origin<0?y:origin-y)*1024+x);
+    }
+    uint initial=result[outputIndex];
+    precise float px=float(x)+0.5,py=float(y)+0.5;
+    vec2 a=vec2(uintBitsToFloat(data[m+8]),uintBitsToFloat(data[m+9]));
+    vec2 b=vec2(uintBitsToFloat(data[m+10]),uintBitsToFloat(data[m+11]));
+    vec2 c=vec2(uintBitsToFloat(data[m+12]),uintBitsToFloat(data[m+13]));
+    precise float e0=(px-b.x)*(c.y-b.y)-(py-b.y)*(c.x-b.x);
+    precise float e1=(px-c.x)*(a.y-c.y)-(py-c.y)*(a.x-c.x);
+    precise float e2=(px-a.x)*(b.y-a.y)-(py-a.y)*(b.x-a.x);
+    if(data[m+6]!=0u ? !(e0>=0&&e1>=0&&e2>=0) : !(e0<=0&&e1<=0&&e2<=0)) return;
+    int dx=x-int(data[m+4]),dy=y-int(data[m+5]);
+    int depth=clamp(wfloat(gradient(m+32,dx,dy))+(int(data[m+7]<<16)>>16),0,65535);
+    if(data[m+22]!=0u && depth>int(initial>>16)) return;
+    uint p0=m+128,p1=m+192;
+    int64_t s0=gradient(m+44,dx,dy),t0=gradient(m+50,dx,dy),w0=gradient(m+56,dx,dy);
+    int64_t s1=gradient(m+62,dx,dy),t1=gradient(m+68,dx,dy),w1=gradient(m+74,dx,dy);
+    bool has0=data[p0+13]!=0u,has1=data[p1+13]!=0u;
+    int lod0=has0?lodAt(p0,int(data[m+80]),w0,x,y):int(data[m+82]);
+    countStat(0u);countStat(6u+uint(lod0));
+    ivec4 combined=ivec4(0);
+    if(has0 && data[p0+14]!=0u) {
+        combined=sampleTmu(p0,lod0,s0,t0,w0,0.0lf);
+    } else {
+        precise double reciprocal=has0&&has1&&(data[p0+4]&1u)!=0u&&(data[p1+4]&1u)!=0u&&w0!=int64_t(0)&&w0==w1 ? 256.0lf/double(w0):0.0lf;
+        if(has1) {
+            int lod1=lodAt(p1,int(data[m+81]),w1,x,y);
+            ivec4 local=sampleTmu(p1,lod1,s1,t1,w1,reciprocal);
+            if(data[m+26]!=0u && all(equal(local.rgb,ivec3(0)))) local.rgb=ivec3(255);
+            combined=data[p1+14]!=0u?local:combine(data[p1],local,combined);
+        }
+        if(has0) {
+            ivec4 local=sampleTmu(p0,lod0,s0,t0,w0,reciprocal);
+            combined=data[p0+15]!=0u ? ivec4((combined.rgb*(local.rgb+ivec3(1)))>>8,local.a)
+                : data[p0+14]!=0u?local:combine(data[p0],local,combined);
+        }
+    }
+    uint texel=packed565(combined.rgb);
+    if(texel==0u) {
+        countStat(1u);
+        if(data[m+24]!=0u) { texel=data[m+27]!=0u?data[m+27]:65535u;countStat(2u); }
+        else if(data[m+25]!=0u) return;
+    }
+    ivec3 tr=rgb565(texel,255).rgb,local=rgb565(data[m+14],255).rgb,other=rgb565(data[m+15],255).rgb;
+    texel=packed565(other*(tr+ivec3(1))/256+local);
+    int fogDepth=wfloat(gradient(m+38,dx,dy));
+    uint table=data[m+84+uint(fogDepth>>11)];int shift=((fogDepth>>10)&1)*16;
+    int delta=int((table>>shift)&255u),blend=int((table>>(shift+8))&255u);
+    int deltaValue=(delta&252)*((fogDepth>>2)&255);
+    if((delta&2)!=0) deltaValue=-deltaValue;
+    deltaValue=(deltaValue>>6)+dither[(y&3)*4+(x&3)];
+    int factor=blend+(deltaValue>>4)+1;
+    ivec3 color=rgb565(texel,255).rgb,fog=rgb565(data[m+18],255).rgb;
+    texel=packed565(color+(((fog-color)*factor)>>8));
+    int alpha=int(data[m+17])*(combined.a+1)/256;
+    if(alpha<=0) return;
+    ivec3 src=rgb565(texel,255).rgb,dst=rgb565(initial&65535u,255).rgb;
+    texel=packed565((src*(alpha+1)+dst*(256-alpha))>>8);
+    uint outputColor=data[m+20]!=0u?texel:initial&65535u;
+    uint outputDepth=data[m+21]!=0u?uint(depth):initial>>16;
+    result[outputIndex]=outputColor|(outputDepth<<16);
+    if(data[m+20]!=0u) countStat(3u);
+    countStat(4u);
+}

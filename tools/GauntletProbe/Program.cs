@@ -8,6 +8,13 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+string? gpuBoundaryTest=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_GPU_STREAM_BOUNDARIES");
+if(gpuBoundaryTest is "capture" or "normal")
+{
+    GpuStreamBoundaryChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly,gpuBoundaryTest=="capture");
+    return;
+}
+
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_PCI_TRACE") == "1")
 {
     VoodooPciTraceChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
@@ -90,6 +97,8 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_GENERATED_CONDI
 }
 
 long runStartFrame = adapter.FrameCounter.GetValueOrDefault();
+object timedBackend = GetField(GetProperty(GetField(adapter, "_machine"), "Voodoo"), "_backend");
+int runStartSwaps = GetIntField(timedBackend, "_swapBufferCount");
 var runStopwatch = Stopwatch.StartNew();
 if (!loadedWarmupSnapshot)
 {
@@ -113,7 +122,14 @@ if (!loadedWarmupSnapshot)
 }
 
 RunUntilFrame(adapter, frames, cpuStepsPerFrameConfig, stopPc, frameCheckpoints, summaryContext);
+// Drain diagnostic GPU work at the measured endpoint, even if its draw limit
+// was not reached. Ordinary runs have no session and do not invoke the hook.
+if (FindField(timedBackend.GetType(), "_gpuShadow")?.GetValue(timedBackend) is not null)
+    timedBackend.GetType().GetMethod("CloseGpuShadow", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(timedBackend, null);
 runStopwatch.Stop();
+int runEndSwaps = GetIntField(timedBackend, "_swapBufferCount");
+Console.WriteLine($"displayRate startSwaps={runStartSwaps} endSwaps={runEndSwaps} " +
+    $"swapDelta={runEndSwaps-runStartSwaps} swapsPerSecond={(runEndSwaps-runStartSwaps)/runStopwatch.Elapsed.TotalSeconds:F3}");
 PrintRequestedGuestMemoryWords(adapter, "final");
 
 int extraSteps = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_EXTRA_CPU_STEPS"), out int parsedExtraSteps)
@@ -2338,6 +2354,10 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
 static void LoadVoodoo(BinaryReader reader, object facade, int version)
 {
     object backend = GetField(facade, "_backend");
+    // Raw snapshot restoration bypasses guest texture writes. Drain and stop
+    // any diagnostic GPU session before replacing its CPU backing buffers.
+    if (FindField(backend.GetType(), "_gpuShadow")?.GetValue(backend) is not null)
+        backend.GetType().GetMethod("CloseGpuShadow", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)!.Invoke(backend, null);
     ReadUIntArrayInto(reader, GetFieldValue<uint[]>(backend, "_registers"));
     ReadUShortArrayArrayInto(reader, GetFieldValue<ushort[][]>(backend, "_colorBuffers"));
     ReadUIntList(reader, GetFieldValue<IList>(backend, "_fifoBuffer"));
