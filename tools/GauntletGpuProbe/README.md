@@ -109,6 +109,14 @@ in the normal emulator. Results and next integration boundary are recorded in
 
 ## Common-state draws and ordered batches
 
+`EUTHERDRIVE_GAUNTDL_GPU_BATCH_STATS=1` adds per-draw counter validation to
+`GPU_SHADOW_BATCH=1`. It permits a total draw limit up to 65,536 with automatic
+flush/continuation at 128 draws, while keeping CPU rasterization as oracle.
+Rebuild Core, native and shader together; native batch-statistics capability 1
+is required. This does **not** enable batched replacement. Metadata word 119
+is reserved for native-assigned statistics offsets. See
+[batch statistics checkpoint](../../docs/gauntlet-dl-gpu-batch-statistics-2026-09-17.md).
+
 Optional diagnostic extension: `EUTHERDRIVE_GAUNTDL_GPU_EXTENDED_COLOR_PATH=1`
 also admits two strictly gated `0x0c602c19` color-path/TMU combinations.
 Rebuild capture-Core, native library and shader together. Metadata word 28

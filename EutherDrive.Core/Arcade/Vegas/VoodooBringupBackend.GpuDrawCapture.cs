@@ -8,6 +8,7 @@ internal partial class VoodooBringupBackend
     private GpuDrawCapture? _gpuDraw;
     private int _gpuDrawCount, _gpuDrawEligible, _gpuExtendedColorDrawCount;
     private bool _gpuStreamActive, _gpuStreamStopped;
+    private bool _gpuBatchContinuation;
     private string? _gpuStreamDirectory;
     private int _gpuStreamBuffer;
     private GpuShadowSession? _gpuShadow;
@@ -25,7 +26,8 @@ internal partial class VoodooBringupBackend
         if(string.IsNullOrEmpty(value)) return 128;
         if(!int.TryParse(value,out int limit) || limit<1 || limit>65536)
             throw new ArgumentException("GPU draw limit must be between 1 and 65536");
-        if(limit>128 && Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH")=="1")
+        if(limit>128 && Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH")=="1" &&
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_BATCH_STATS")!="1")
             throw new NotSupportedException("Batched shadow remains limited to 128 draws");
         return limit;
     }
@@ -35,12 +37,13 @@ internal partial class VoodooBringupBackend
     {
         if(_gpuShadow is not null && _gpuStreamActive) GpuStreamBoundary("backend-reset");
         _gpuShadow?.Dispose();_gpuShadow=null;
-        _gpuStreamActive=false;_gpuStreamStopped=true;_gpuDraw=null;
+        _gpuStreamActive=false;_gpuStreamStopped=true;_gpuBatchContinuation=false;_gpuDraw=null;
     }
 
     [Conditional("GAUNTLET_GPU_CAPTURE")]
     private void GpuStreamBoundary(string reason)
     {
+        if(reason!="batch-capacity") _gpuBatchContinuation=false;
         if (!_gpuStreamActive) return;
         if(_gpuShadow is not null) {
             if(_gpuShadow.Resident) {
@@ -52,6 +55,7 @@ internal partial class VoodooBringupBackend
                 catch { _gpuShadow.Dispose();_gpuShadow=null;_gpuStreamActive=false;_gpuStreamStopped=true;throw; }
             }
             _gpuStreamActive=false;_gpuStreamStopped=_gpuDrawCount>=GpuRuntimeLimit;
+            _gpuBatchContinuation=reason=="batch-capacity";
             string result=_gpuShadow.Replace?"mode=replace cpuRasterSkipped=true rasterCounters=PASS":"mode=shadow colorDepthMismatch=0";
             Console.WriteLine($"gpuShadowBoundary segment={_gpuShadowSegments} draws={_gpuShadowSegmentDraws} totalDraws={_gpuDrawCount} extendedDraws={_gpuExtendedColorDrawCount} reason={reason} {result}");
             if(_gpuStreamStopped) { _gpuShadow.Dispose();_gpuShadow=null; }
@@ -110,7 +114,7 @@ internal partial class VoodooBringupBackend
             }
         }
         if ((!shadow && string.IsNullOrEmpty(directory)) || !common || _gpuDrawCount >= (shadow?GpuRuntimeLimit:stream?32:8)) return;
-        if (!_gpuStreamActive && (maxX - minX) * (maxY - minY) < 8192) return;
+        if (!_gpuStreamActive && !_gpuBatchContinuation && (maxX - minX) * (maxY - minY) < 8192) return;
         int skip = int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_DRAW_SKIP"), out int n) ? n : 0;
         if (!_gpuStreamActive && _gpuDrawEligible++ < skip) return;
         if (ShouldTrackTextureSampleDiagnostics() || _gpuSamples is not null ||
@@ -160,15 +164,16 @@ internal partial class VoodooBringupBackend
                 Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW_LIBRARY") ?? ".build-tmp/gauntlet-gpu-probe/libgauntlet_shadow.so",
                 Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW_SHADER") ?? ".build-tmp/gauntlet-gpu-probe/draw.spv");
             bool reset=!_gpuStreamActive;
-            m[31]=_gpuShadow.Batched?0u:1u;
+            m[31]=_gpuShadow.Batched && !_gpuShadow.BatchStatistics?0u:1u;
             if(reset) { _gpuShadowSegments++;_gpuShadowSegmentDraws=0; }
             try { _gpuShadow.Render(_textureMemory,ncc,m,_colorBuffers[buffer],_auxBuffer,reset); }
             catch { _gpuShadow.Dispose();_gpuShadow=null;_gpuStreamActive=false;_gpuStreamStopped=true;throw; }
             _gpuStreamActive=true;_gpuStreamBuffer=buffer;
+            _gpuBatchContinuation=false;
             _gpuDrawCount++;_gpuShadowSegmentDraws++;
             if(extendedColor) _gpuExtendedColorDrawCount++;
             _gpuDraw=new("",m,[],[],[],Stopwatch.GetTimestamp(),_renderFrame,buffer,
-                _gpuShadow.Batched?null:SnapshotGpuCounters(buffer));
+                _gpuShadow.Batched && !_gpuShadow.BatchStatistics?null:SnapshotGpuCounters(buffer));
             return;
         }
         Directory.CreateDirectory(directory);
@@ -225,6 +230,8 @@ internal partial class VoodooBringupBackend
         double cpuMs=Stopwatch.GetElapsedTime(capture.Started).TotalMilliseconds;_gpuDraw=null;
         if(_gpuShadow is not null) {
             try {
+                if(_gpuShadow.BatchStatistics)
+                    _gpuShadow.AddBatchOracle(capture.Stats!,SnapshotGpuCounters(capture.Buffer),coveredAny,coveredPixels,zeroPixels);
                 if(!_gpuShadow.Batched) {
                     if(!_gpuShadow.Replace) _gpuShadow.Compare(_colorBuffers[capture.Buffer],_auxBuffer);
                     uint[] gpu=_gpuShadow.Statistics();long[] after=SnapshotGpuCounters(capture.Buffer);
@@ -240,6 +247,7 @@ internal partial class VoodooBringupBackend
             }
             catch { _gpuShadow.Dispose();_gpuShadow=null;_gpuStreamActive=false;_gpuStreamStopped=true;throw; }
             if(_gpuDrawCount==GpuRuntimeLimit) GpuStreamBoundary("shadow-limit");
+            else if(_gpuShadow is { BatchStatistics:true } && _gpuShadowSegmentDraws==128) GpuStreamBoundary("batch-capacity");
             return;
         }
         uint[] expected=ReadGpuDrawRectangle(capture.Meta,capture.Buffer);

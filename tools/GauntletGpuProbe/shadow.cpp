@@ -39,17 +39,17 @@ struct Shadow {
         ProfileTimer timer(profiling?&initMs:nullptr);
         input[0]=0x32524447;input[1]=2;input[2]=2097152;input[3]=512;
         input[4]=256;input[5]=pixels;
-        gpu.init(load(shader),capacity,(pixels+16)*4);
+        gpu.init(load(shader),capacity,(pixels+128*16)*4);
         std::cout<<"gpuShadow device="<<gpu.properties.deviceName<<std::endl;
     }
     void submit(const std::vector<uint32_t>& data,size_t bytes,size_t initial,
         const std::vector<std::array<uint32_t,4>>& commands,
         const std::vector<std::vector<VkBufferCopy>>& patches,bool reset,bool statisticsOnly=false,
-        const std::vector<VkBufferCopy>* sparseUploads=nullptr,uint32_t dispatchPixels=pixels) {
+        const std::vector<VkBufferCopy>* sparseUploads=nullptr,uint32_t dispatchPixels=pixels,size_t statisticsWords=16) {
         if(bytes>capacity) throw std::runtime_error("Shadow batch capacity exceeded");
         auto& h=gpu;
         { ProfileTimer timer(profiling?&recordMs:nullptr);
-          h.record(bytes,(pixels+16)*4,dispatchPixels,2,0,commands,initial,patches,reset,64,statisticsOnly,sparseUploads,profiling); }
+          h.record(bytes,(pixels+statisticsWords)*4,dispatchPixels,2,0,commands,initial,patches,reset,statisticsWords*4,statisticsOnly,sparseUploads,profiling); }
         size_t transferred=bytes;
         { ProfileTimer timer(profiling?&stagingMs:nullptr);
         if(sparseUploads) {
@@ -85,13 +85,14 @@ struct Shadow {
             gpuPreMs+=ticksMs(ticks[2],ticks[0]);gpuDispatchMs+=ticksMs(ticks[0],ticks[1]);gpuPostMs+=ticksMs(ticks[1],ticks[3]);
         }
         if(h.validationErrors) throw std::runtime_error("Vulkan shadow validation errors");
-        submissions++;uploaded+=transferred;readback+=statisticsOnly?64:(pixels+16)*4;
+        submissions++;uploaded+=transferred;readback+=statisticsOnly?statisticsWords*4:(pixels+statisticsWords)*4;
         dispatchInvocations+=uint64_t((dispatchPixels+127)/128)*128*commands.size();
     }
 };
 }
 extern "C" {
 int gauntlet_shadow_abi_version() noexcept { return 4; }
+int gauntlet_shadow_batch_stats_version() noexcept { return 1; }
 const char* gauntlet_shadow_error() { return lastError.c_str(); }
 void* gauntlet_shadow_create(const char* shader) noexcept {
     try { lastError.clear();return new Shadow(shader); }
@@ -250,6 +251,7 @@ int gauntlet_shadow_enqueue(void* context,const uint32_t* texture,const uint32_t
         }
         size_t m=metaAt+s.draws.size()*256;
         std::copy_n(meta,256,s.batch.begin()+m);
+        s.batch[m+119]=uint32_t(s.draws.size()*16);
         s.draws.push_back({uint32_t(m),0,0,1024});s.updates.push_back(std::move(changes));
         std::copy_n(texture,2097152,s.input.begin()+8);
         std::copy_n(ncc,512,s.input.begin()+8+2097152);
@@ -261,7 +263,7 @@ int gauntlet_shadow_flush(void* context) noexcept {
         if(!context) throw std::runtime_error("Null shadow context");
         auto& s=*static_cast<Shadow*>(context);
         if(s.draws.empty()) throw std::runtime_error("No queued shadow draws");
-        s.submit(s.batch,s.batch.size()*4,batchInitial,s.draws,s.updates,true);
+        s.submit(s.batch,s.batch.size()*4,batchInitial,s.draws,s.updates,true,false,nullptr,pixels,128*16);
         s.draws.clear();s.updates.clear();return 0;
     } catch(const std::exception& e) { lastError=e.what();return -1; }
 }

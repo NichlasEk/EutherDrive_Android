@@ -61,7 +61,9 @@ internal static class GpuStreamBoundaryChecks
         Console.WriteLine($"gpuDirtyWriterChecks cases=5 captureBuild={captureBuild} PASS");
         string? savedLimit=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_DRAW_LIMIT");
         string? savedBatch=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH");
+        string? savedStats=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_BATCH_STATS");
         try {
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_BATCH_STATS",null);
             var read=type.GetMethod("ReadGpuRuntimeLimit",BindingFlags.Static|BindingFlags.NonPublic)!;
             foreach(var (value,batch,expected) in new (string?,string?,int)[] {
                 (null,null,128),("1",null,1),("4096",null,4096),("65536",null,65536),
@@ -75,9 +77,23 @@ internal static class GpuStreamBoundaryChecks
                 if(actual!=expected) throw new InvalidOperationException($"GPU limit test failed: {value}/{batch}");
             }
             Console.WriteLine("gpuRuntimeLimitChecks cases=9 PASS");
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH","1");
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_BATCH_STATS","1");
+            foreach(int limit in new[]{129,4096,65536}) {
+                Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_DRAW_LIMIT",limit.ToString());
+                if((int)read.Invoke(null,null)! != limit) throw new InvalidOperationException("Batch-statistics runtime limit failed");
+            }
+            Console.WriteLine("gpuBatchStatisticsLimitChecks cases=3 PASS");
+            object continuingBackend=Activator.CreateInstance(type,nonPublic:true)!;
+            type.GetField("_gpuBatchContinuation",flags)!.SetValue(continuingBackend,true);
+            type.GetMethod("ReadLfb32",flags)!.Invoke(continuingBackend,[0u]);
+            bool continuation=(bool)type.GetField("_gpuBatchContinuation",flags)!.GetValue(continuingBackend)!;
+            if(continuation==captureBuild) throw new InvalidOperationException("GPU batch continuation boundary failed");
+            Console.WriteLine("gpuBatchContinuationBoundary PASS");
         } finally {
             Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_DRAW_LIMIT",savedLimit);
             Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH",savedBatch);
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_BATCH_STATS",savedStats);
         }
     }
 }

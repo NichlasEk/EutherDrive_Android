@@ -18,6 +18,8 @@ lib.gauntlet_shadow_flush.argtypes = [c.c_void_p]
 lib.gauntlet_shadow_output.argtypes = [c.c_void_p]
 lib.gauntlet_shadow_output.restype = c.c_void_p
 assert lib.gauntlet_shadow_abi_version() == 4
+assert lib.gauntlet_shadow_batch_stats_version() == 1
+lib.gauntlet_shadow_draw.argtypes = [c.c_void_p] * 6 + [c.c_int]
 assert sys.byteorder == 'little'
 os.environ['GAUNTLET_GPU_VALIDATION'] = '1'
 pixels, textures = 2097152, 2097152
@@ -67,6 +69,23 @@ def enqueue(ctx, words, reset):
                                       pointer(words, meta), pointer(colors), pointer(depth), reset)
 
 
+# Independent per-draw dispatches provide an oracle for slot isolation/order.
+# CPU-derived fixture pixels remain the independent final-image oracle.
+first[meta+31] = second[meta+31] = 1
+os.environ.pop('GAUNTLET_GPU_DROP_TEXTURE_UPDATES', None)
+ctx = lib.gauntlet_shadow_create(os.fsencode(root / '.build-tmp/gauntlet-gpu-probe/draw.spv'))
+assert ctx, lib.gauntlet_shadow_error()
+statistics = []
+try:
+    for index, words in enumerate((first, second)):
+        assert lib.gauntlet_shadow_draw(ctx, pointer(words,8), pointer(words,8+textures),
+            pointer(words,meta), pointer(colors), pointer(depth), int(index==0)) == 0, lib.gauntlet_shadow_error()
+        result = (c.c_uint32*(pixels+16)).from_address(lib.gauntlet_shadow_output(ctx))
+        statistics.append(list(result[pixels:pixels+16]))
+    assert statistics[0] != statistics[1], 'Fixtures must distinguish statistics slots'
+finally:
+    lib.gauntlet_shadow_destroy(ctx)
+
 for drop in (False, True):
     if drop:
         os.environ['GAUNTLET_GPU_DROP_TEXTURE_UPDATES'] = '1'
@@ -77,6 +96,9 @@ for drop in (False, True):
     try:
         assert lib.gauntlet_shadow_flush(ctx) == -1  # empty flush
         assert enqueue(ctx, first, 0) == -1  # missing initial framebuffer
+        first[meta+119] = 16
+        assert enqueue(ctx, first, 1) == -1  # caller cannot select an output slot
+        first[meta+119] = 0
         assert enqueue(ctx, first, 1) == 0, lib.gauntlet_shadow_error()
         assert enqueue(ctx, second, 1) == -1  # do not overwrite pending draws
         assert enqueue(ctx, second, 0) == 0, lib.gauntlet_shadow_error()
@@ -84,7 +106,27 @@ for drop in (False, True):
         result = (c.c_uint32 * pixels).from_address(lib.gauntlet_shadow_output(ctx))
         mismatches = sum(result[i] != value for i, value in enumerate(expected))
         assert (mismatches > 0) if drop else (mismatches == 0), mismatches
+        if not drop:
+            counters = (c.c_uint32*(128*16)).from_address(lib.gauntlet_shadow_output(ctx)+pixels*4)
+            for index, expected_stats in enumerate(statistics):
+                assert list(counters[index*16:(index+1)*16]) == expected_stats, index
+            assert all(value == 0 for value in counters[32:]), 'Unused slots must be cleared'
+            assert list(counters[:16]) != statistics[1], 'Swapped per-draw oracle must fail'
+            print('batch per-draw statistics / slot isolation / reserved offset PASS', flush=True)
         print(f'ABI batch relocation dropUpdates={drop} mismatches={mismatches} PASS', flush=True)
         assert lib.gauntlet_shadow_flush(ctx) == -1
+        if not drop:
+            # A new, shorter batch must not expose previous slot 1 results.
+            assert enqueue(ctx, first, 1) == 0, lib.gauntlet_shadow_error()
+            assert lib.gauntlet_shadow_flush(ctx) == 0, lib.gauntlet_shadow_error()
+            counters = (c.c_uint32*(128*16)).from_address(lib.gauntlet_shadow_output(ctx)+pixels*4)
+            assert list(counters[:16]) == statistics[0]
+            assert all(value == 0 for value in counters[16:])
+            first[meta+31] = 0  # legacy no-statistics batch remains supported
+            assert enqueue(ctx, first, 1) == 0, lib.gauntlet_shadow_error()
+            assert lib.gauntlet_shadow_flush(ctx) == 0, lib.gauntlet_shadow_error()
+            assert all(value == 0 for value in counters)
+            first[meta+31] = 1
+            print('batch reset clears stale slots / legacy no-statistics PASS', flush=True)
     finally:
         lib.gauntlet_shadow_destroy(ctx)

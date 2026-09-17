@@ -538,3 +538,9 @@ Kort valbar fence-pollning före oförändrad ordinarie väntan minskar nivå 2:
 replaytid cirka 4,86 procent i fyra växlade par; alla slutmaskiner matchar.
 CPU-/energikostnad är inte mätt, normal CPU är fortfarande snabbare, och
 pollning är av som standard. Se [väntprovet](gauntlet-dl-gpu-fence-poll-2026-09-17.md).
+
+Batch-shadow kan nu verifiera varje draws statistik separat: samma 9 012
+draws går i 104 submissions med full bild-/räknarmatch och byte-exakt
+slutmaskin. CPU-oraklet kör fortfarande, så detta är inte snabb replacement
+ännu. Kapacitetsfortsättning, texturpatchar och negativkontroller är testade.
+Se [batch-statistik-checkpointen](gauntlet-dl-gpu-batch-statistics-2026-09-17.md).
