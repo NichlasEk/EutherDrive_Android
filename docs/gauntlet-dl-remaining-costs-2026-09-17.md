@@ -1,5 +1,9 @@
 # Gauntlet DL: återstående CPU- och GPU-förberedelsekostnader
 
+Uppföljning: [stackprovtagning av CPU-loopen](gauntlet-dl-cpu-stack-profile-2026-09-17.md)
+pekar på batchdispatch/blockcache och PCI/FIFO-skrivningar; inlinad RAM-tid
+kan inte separeras exakt med den metoden.
+
 ## Slutsats
 
 Profilen pekar på ett större nästa mål än fler små tile-varianter: cirka
