@@ -521,3 +521,9 @@ färgkombination `0c602c19`. Draw-fence-väntan är cirka 0,62–0,63 s av
 12,73–12,81 s. Nästa steg är verifierat stöd för dessa renderlägen innan
 större asynkron replacement införs. Ingen synkronisering är borttagen.
 Se [synkroniseringsauditen](gauntlet-dl-gpu-sync-audit-2026-09-17.md).
+
+De två första `0c602c19`-kombinationerna stöds nu bakom en separat diagnostisk
+flagga. Full-state och shadow/validering passerar: 573 ytterligare GPU-draws.
+Readbacks är fortfarande 70 och tidsproven visar ingen vinst. Nästa två
+TMU-par och ett avvikande fbz-läge återstår innan färre segment kan påvisas.
+Se [utökad färgväg](gauntlet-dl-gpu-extended-color-path-2026-09-17.md).

@@ -223,6 +223,7 @@ static bool validateCapture(const std::vector<uint32_t>& input,bool allowStatist
     if(draw) {
         auto m=&input[requests];
         if(m[31]>(allowStatistics?1u:0u)) throw std::runtime_error("Unsupported capture statistics flag");
+        if(m[28]>1u) throw std::runtime_error("Unsupported draw color path");
         if(!m[2] || !m[3] || m[2]>1024 || m[3]>2048 || uint64_t(m[0])+m[2]>1024 || uint64_t(m[1])+m[3]>2048 || (stream?count!=2097152:uint64_t(m[2])*m[3]!=count) || m[19]!=0xb4779 || m[23]!=(stream?1u:0u))
             throw std::runtime_error("Unsupported draw geometry/state");
         if(stream && m[30]!=UINT32_MAX && (m[30]>=2048 || uint64_t(m[1])+m[3]>m[30]+1))

@@ -124,7 +124,12 @@ void main() {
         else if(data[m+25]!=0u) return;
     }
     ivec3 tr=rgb565(texel,255).rgb,local=rgb565(data[m+14],255).rgb,other=rgb565(data[m+15],255).rgb;
-    texel=packed565(other*(tr+ivec3(1))/256+local);
+    if(data[m+28]==1u) {
+        // Preserve CPU's wrapping 32-bit setup interpolation before clamping.
+        uint rowAlpha=data[m+116]+uint(dy)*data[m+118];
+        int iteratedAlpha=clamp(int(rowAlpha+uint(dx)*data[m+117])>>12,0,255);
+        texel=packed565(tr*(iteratedAlpha+1)/256);
+    } else texel=packed565(other*(tr+ivec3(1))/256+local);
     int fogDepth=wfloat(gradient(m+38,dx,dy));
     uint table=data[m+84+uint(fogDepth>>11)];int shift=((fogDepth>>10)&1)*16;
     int delta=int((table>>shift)&255u),blend=int((table>>(shift+8))&255u);
@@ -142,5 +147,5 @@ void main() {
     uint outputDepth=data[m+21]!=0u?uint(depth):initial>>16;
     result[outputIndex]=outputColor|(outputDepth<<16);
     if(data[m+20]!=0u) countStat(3u);
-    countStat(4u);
+    if(data[m+28]==0u) countStat(4u);
 }

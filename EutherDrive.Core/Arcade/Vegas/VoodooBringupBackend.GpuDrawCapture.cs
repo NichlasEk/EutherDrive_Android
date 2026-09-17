@@ -6,7 +6,7 @@ internal partial class VoodooBringupBackend
     private sealed record GpuDrawCapture(string Path, uint[] Meta, uint[] Initial, uint[] Texture,
         uint[] Ncc, long Started, int Frame, int Buffer, long[]? Stats=null);
     private GpuDrawCapture? _gpuDraw;
-    private int _gpuDrawCount, _gpuDrawEligible;
+    private int _gpuDrawCount, _gpuDrawEligible, _gpuExtendedColorDrawCount;
     private bool _gpuStreamActive, _gpuStreamStopped;
     private string? _gpuStreamDirectory;
     private int _gpuStreamBuffer;
@@ -53,7 +53,7 @@ internal partial class VoodooBringupBackend
             }
             _gpuStreamActive=false;_gpuStreamStopped=_gpuDrawCount>=GpuRuntimeLimit;
             string result=_gpuShadow.Replace?"mode=replace cpuRasterSkipped=true rasterCounters=PASS":"mode=shadow colorDepthMismatch=0";
-            Console.WriteLine($"gpuShadowBoundary segment={_gpuShadowSegments} draws={_gpuShadowSegmentDraws} totalDraws={_gpuDrawCount} reason={reason} {result}");
+            Console.WriteLine($"gpuShadowBoundary segment={_gpuShadowSegments} draws={_gpuShadowSegmentDraws} totalDraws={_gpuDrawCount} extendedDraws={_gpuExtendedColorDrawCount} reason={reason} {result}");
             if(_gpuStreamStopped) { _gpuShadow.Dispose();_gpuShadow=null; }
             return;
         }
@@ -70,8 +70,10 @@ internal partial class VoodooBringupBackend
         int buffer, ushort za, ushort fog, FbzColorPathState colors, bool rgbMask, bool auxMask,
         bool depthTest, ushort fallback, bool has0, MameTextureTriangleState state0,
         bool has1, MameTextureTriangleState state1, int lodBase0, int lodBase1, int lodOverride,
-        long[] gradients)
+        long[] gradients, int startAlpha, int alphaDx, int alphaDy)
     {
+        bool extendedColor = colors.Mode == 0x0c602c19U;
+        if(extendedColor && Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_EXTENDED_COLOR_PATH")!="1") common=false;
         string? directory = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_DRAW_DIR");
         string? streamDirectory = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_STREAM_DIR");
         bool shadow=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW")=="1" ||
@@ -111,6 +113,8 @@ internal partial class VoodooBringupBackend
         m[18]=fog; m[19]=_registers[RegFbzMode]; m[20]=rgbMask?1u:0u; m[21]=auxMask?1u:0u; m[22]=depthTest?1u:0u;
         m[24]=_visualizeZeroTextureFallback?1u:0u; m[25]=_treatZeroTextureTexelAsTransparent?1u:0u;
         m[26]=_experimentTmu1ZeroAsNeutralWhite?1u:0u; m[27]=fallback;
+        m[28]=extendedColor?1u:0u;
+        m[116]=(uint)startAlpha;m[117]=(uint)alphaDx;m[118]=(uint)alphaDy;
         m[23]=stream?1u:0u;m[30]=(uint)GetRasterYOrigin();
         for (int i=0;i<gradients.Length;i++) { m[32+2*i]=(uint)gradients[i];m[33+2*i]=(uint)((ulong)gradients[i]>>32); }
         m[80]=(uint)lodBase0;m[81]=(uint)lodBase1;m[82]=(uint)lodOverride;
@@ -149,6 +153,7 @@ internal partial class VoodooBringupBackend
             catch { _gpuShadow.Dispose();_gpuShadow=null;_gpuStreamActive=false;_gpuStreamStopped=true;throw; }
             _gpuStreamActive=true;_gpuStreamBuffer=buffer;
             _gpuDrawCount++;_gpuShadowSegmentDraws++;
+            if(extendedColor) _gpuExtendedColorDrawCount++;
             _gpuDraw=new("",m,[],[],[],Stopwatch.GetTimestamp(),_renderFrame,buffer,
                 _gpuShadow.Batched?null:SnapshotGpuCounters(buffer));
             return;

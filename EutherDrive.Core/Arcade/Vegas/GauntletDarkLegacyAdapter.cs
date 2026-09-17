@@ -50577,14 +50577,22 @@ internal partial class VoodooBringupBackend : IVoodooBackend
         if (useParallelRaster)
             _parallelRasterTriangleCount++;
         int parallelCoveredFlag = 0;
-        BeginGpuDrawCapture(useProfiledCommonRasterKernel && !traceSampleSummary && !traceTexturedPixels && !_profilePixelLastWriters, minX, minY, maxX, maxY,
+        BeginGpuDrawCapture((useProfiledCommonRasterKernel ||
+            (_experimentMameTwoTmuCombine && _experimentFbzColorPathRgbCombine && _experimentSetupMameFog &&
+             useMameAuxDepth && fbzMode == 0x000b4779U && fbzColorPath == 0x0c602c19U &&
+             alphaMode == 0x00045119U && fogMode == 0x000000c1U && !alpha8Mask &&
+             hasTmu0TriangleState && hasTmu1TriangleState &&
+             ((tmu0TriangleState.Mode == 0x8c24110fU && tmu1TriangleState.Mode == 0x8c241acfU) ||
+              (tmu0TriangleState.Mode == 0x80000009U && tmu1TriangleState.Mode == 0x8c24110fU)))) &&
+            !traceSampleSummary && !traceTexturedPixels && !_profilePixelLastWriters, minX, minY, maxX, maxY,
             setupAx, setupAy, area > 0, a, b, c, bufferIndex, zaColor, fogColor,
             fbzColorPathState, mameRgbMask, mameAuxMask, mameDepthTest, fallbackColor,
             hasTmu0TriangleState, tmu0TriangleState, hasTmu1TriangleState, tmu1TriangleState,
             triangleLodBase8p8, triangleLodBase1_8p8, triangleTargetLod,
             new long[] { setupStartW, setupDwDx, setupDwDy, fogStartW, fogDwDx, fogDwDy,
                 startS, dSdX, dSdY, startT, dTdX, dTdY, textureStartW, textureDwDx, textureDwDy,
-                startS1, dS1dX, dS1dY, startT1, dT1dX, dT1dY, textureStartW1, textureD1wDx, textureD1wDy });
+                startS1, dS1dX, dS1dY, startT1, dT1dX, dT1dY, textureStartW1, textureD1wDx, textureD1wDy },
+            setupStartA, setupDaDx, setupDaDy);
         void RasterRow<TKernel>(int y)
             where TKernel : struct
         {

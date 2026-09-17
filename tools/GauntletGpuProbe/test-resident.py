@@ -78,6 +78,12 @@ def compare(words,expect_mismatch=False):
 
 try:
     assert lib.gauntlet_shadow_read_pixels(ctx)==-1
+    saved_path=first[meta+28]
+    first[meta+28]=2
+    assert draw(first,1)==-1
+    assert b'Unsupported draw color path' in lib.gauntlet_shadow_error()
+    first[meta+28]=saved_path
+    print('unknown color-path metadata rejected PASS',flush=True)
     assert draw(first,1)==0,lib.gauntlet_shadow_error()
     if tracked and relocate:
         dirty[:]=array.array('I',[0])*8192

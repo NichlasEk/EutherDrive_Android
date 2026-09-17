@@ -109,6 +109,13 @@ in the normal emulator. Results and next integration boundary are recorded in
 
 ## Common-state draws and ordered batches
 
+Optional diagnostic extension: `EUTHERDRIVE_GAUNTDL_GPU_EXTENDED_COLOR_PATH=1`
+also admits two strictly gated `0x0c602c19` color-path/TMU combinations.
+Rebuild capture-Core, native library and shader together. Metadata word 28
+selects the color path; words 116–118 hold iterated-alpha gradients.
+The extension is off by default and has not improved replay speed yet.
+See [extended color-path checkpoint](../../docs/gauntlet-dl-gpu-extended-color-path-2026-09-17.md).
+
 `draw.comp` adds coverage, fixed-point gradients, perspective divide,
 per-pixel LOD, both TMUs and combination, fog, alpha blending, RGB565/depth
 writes. It shares `sampling.glsl` with the sampler. Only the existing

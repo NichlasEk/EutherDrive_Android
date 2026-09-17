@@ -139,6 +139,10 @@ an explicitly hypothetical batch count. `gpuUnsupportedState` profile rows
 identify the first unsupported render state ending each segment.
 See [GPU synchronization audit](../../docs/gauntlet-dl-gpu-sync-audit-2026-09-17.md).
 
+ROM-free extended GPU color-path formula checks:
+`EUTHERDRIVE_GAUNTDL_TEST_EXTENDED_COLOR_PATH=1 dotnet tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll`.
+See [extended color-path checkpoint](../../docs/gauntlet-dl-gpu-extended-color-path-2026-09-17.md).
+
 In-process GPU shadow comparison is available in diagnostic builds with
 `EUTHERDRIVE_GAUNTDL_GPU_SHADOW=1`; it checks up to 128 draws while the CPU
 continues to supply all game results. Build the native library first as shown

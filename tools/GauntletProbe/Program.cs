@@ -8,6 +8,12 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_EXTENDED_COLOR_PATH") == "1")
+{
+    ExtendedColorPathChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
+    return;
+}
+
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_TEXTURE_FILTER") == "1")
 {
     TextureFilterChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
