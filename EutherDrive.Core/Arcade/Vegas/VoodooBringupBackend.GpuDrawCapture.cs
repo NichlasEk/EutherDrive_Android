@@ -36,7 +36,7 @@ internal partial class VoodooBringupBackend
     [Conditional("GAUNTLET_GPU_CAPTURE")]
     internal void CloseGpuShadow()
     {
-        if(_gpuShadow is not null && _gpuStreamActive) GpuStreamBoundary("backend-reset");
+        if(_gpuShadow is not null) GpuStreamBoundary("backend-reset");
         _gpuShadow?.Dispose();_gpuShadow=null;
         _gpuStreamActive=false;_gpuStreamStopped=true;_gpuBatchContinuation=false;_gpuDraw=null;
     }
@@ -45,7 +45,15 @@ internal partial class VoodooBringupBackend
     private void GpuStreamBoundary(string reason)
     {
         if(reason!="batch-capacity") _gpuBatchContinuation=false;
-        if (!_gpuStreamActive) return;
+        if (!_gpuStreamActive) {
+            // A capacity flush may have consumed counters but left pixels on
+            // the GPU. CPU access/reset must drain them even with no new draw.
+            if(_gpuShadow is { BatchPixelsPending:true } pending) {
+                try { pending.SynchronizePixels(_colorBuffers[_gpuStreamBuffer],_auxBuffer); }
+                catch { pending.Dispose();_gpuShadow=null;_gpuStreamStopped=true;throw; }
+            }
+            return;
+        }
         if(_gpuShadow is not null) {
             if(_gpuShadow.Resident) {
                 try { _gpuShadow.SynchronizePixels(_colorBuffers[_gpuStreamBuffer],_auxBuffer); }
@@ -53,17 +61,19 @@ internal partial class VoodooBringupBackend
             }
             if(_gpuShadow.Batched) {
                 try {
+                    bool keepResident=_gpuShadow.BatchResident && reason=="batch-capacity";
                     if(_gpuShadow.Replace) {
-                        foreach(uint[] statistics in _gpuShadow.FlushAndApplyBatch(_colorBuffers[_gpuStreamBuffer],_auxBuffer)) {
+                        foreach(uint[] statistics in _gpuShadow.FlushAndApplyBatch(_colorBuffers[_gpuStreamBuffer],_auxBuffer,keepResident)) {
                             ApplyGpuBatchDrawCounters(statistics,_gpuStreamBuffer);
                         }
-                    } else _gpuShadow.FlushAndCompare(_colorBuffers[_gpuStreamBuffer],_auxBuffer);
+                    } else _gpuShadow.FlushAndCompare(_colorBuffers[_gpuStreamBuffer],_auxBuffer,keepResident);
                 }
                 catch { _gpuShadow.Dispose();_gpuShadow=null;_gpuStreamActive=false;_gpuStreamStopped=true;throw; }
             }
             _gpuStreamActive=false;_gpuStreamStopped=_gpuDrawCount>=GpuRuntimeLimit;
             _gpuBatchContinuation=reason=="batch-capacity";
-            string result=_gpuShadow.Replace?(_gpuShadow.Batched?"mode=batch-replace cpuRasterSkipped=true counters=gpu":"mode=replace cpuRasterSkipped=true rasterCounters=PASS"):"mode=shadow colorDepthMismatch=0";
+            string result=_gpuShadow.Replace?(_gpuShadow.Batched?"mode=batch-replace cpuRasterSkipped=true counters=gpu": "mode=replace cpuRasterSkipped=true rasterCounters=PASS"):
+                (_gpuShadow.BatchPixelsPending?"mode=shadow counters=PASS pixels=pending":"mode=shadow colorDepthMismatch=0");
             Console.WriteLine($"gpuShadowBoundary segment={_gpuShadowSegments} draws={_gpuShadowSegmentDraws} totalDraws={_gpuDrawCount} extendedDraws={_gpuExtendedColorDrawCount} reason={reason} {result}");
             if(_gpuStreamStopped) { _gpuShadow.Dispose();_gpuShadow=null; }
             return;
@@ -117,7 +127,8 @@ internal partial class VoodooBringupBackend
                     Console.WriteLine($"gpuUnsupportedState fbz={_registers[RegFbzMode]:x8} cp={_registers[RegFbzColorPath]:x8} alpha={_registers[RegAlphaMode]:x8} fog={_registers[RegFogMode]:x8} tm0={state0.Mode:x8} tm1={state1.Mode:x8}");
                 GpuStreamBoundary("unsupported-textured-state");
             }
-            if(_gpuStreamActive && buffer!=_gpuStreamBuffer) GpuStreamBoundary("draw-buffer-change");
+            if((_gpuStreamActive || _gpuShadow is { BatchPixelsPending:true }) && buffer!=_gpuStreamBuffer)
+                GpuStreamBoundary("draw-buffer-change");
             if(_gpuStreamStopped) return;
             // Clamped Y would alias multiple shader invocations to one pixel.
             if(GetRasterYOrigin()>=0 && maxY>GetRasterYOrigin()+1) {

@@ -17,10 +17,13 @@ lib.gauntlet_shadow_error.restype = c.c_char_p
 lib.gauntlet_shadow_enqueue.argtypes = [c.c_void_p] * 6 + [c.c_int]
 lib.gauntlet_shadow_dirty_enqueue.argtypes = [c.c_void_p] * 6 + [c.c_int, c.c_void_p]
 lib.gauntlet_shadow_flush.argtypes = [c.c_void_p]
+lib.gauntlet_shadow_flush_keep.argtypes = [c.c_void_p]
+lib.gauntlet_shadow_read_pixels.argtypes = [c.c_void_p]
 lib.gauntlet_shadow_output.argtypes = [c.c_void_p]
 lib.gauntlet_shadow_output.restype = c.c_void_p
 assert lib.gauntlet_shadow_abi_version() == 4
 assert lib.gauntlet_shadow_batch_stats_version() == 1
+assert lib.gauntlet_shadow_batch_resident_version() == 1
 lib.gauntlet_shadow_draw.argtypes = [c.c_void_p] * 6 + [c.c_int]
 assert sys.byteorder == 'little'
 os.environ['GAUNTLET_GPU_VALIDATION'] = '1'
@@ -89,6 +92,63 @@ try:
         result = (c.c_uint32*(pixels+16)).from_address(lib.gauntlet_shadow_output(ctx))
         statistics.append(list(result[pixels:pixels+16]))
     assert statistics[0] != statistics[1], 'Fixtures must distinguish statistics slots'
+finally:
+    lib.gauntlet_shadow_destroy(ctx)
+
+# Retain output and texture state across two separately submitted batches.
+# The relocated second draw must patch texture on continuation draw zero.
+dirty_pages = array.array('I', [1]) * 8192
+os.environ.pop('GAUNTLET_GPU_DROP_TEXTURE_UPDATES', None)
+os.environ['EUTHERDRIVE_GAUNTDL_GPU_BBOX'] = '1'
+os.environ['EUTHERDRIVE_GAUNTDL_GPU_SPARSE_SNAPSHOT'] = '1'
+os.environ['EUTHERDRIVE_GAUNTDL_GPU_VERIFY_DIRTY'] = '1'
+for dirty_mode in (False, True):
+    ctx = lib.gauntlet_shadow_create(os.fsencode(root / '.build-tmp/gauntlet-gpu-probe/draw.spv'))
+    assert ctx, lib.gauntlet_shadow_error()
+    try:
+        assert enqueue(ctx, first, -1) == -1
+        assert enqueue(ctx, first, 3) == -1
+        assert enqueue(ctx, first, 2) == -1  # no retained batch
+        assert enqueue(ctx, first, 1) == 0, lib.gauntlet_shadow_error()
+        assert lib.gauntlet_shadow_flush_keep(ctx) == 0, lib.gauntlet_shadow_error()
+        assert enqueue(ctx, second, 1) == -1  # cannot discard resident pixels
+        assert enqueue(ctx, second, 2) == 0, lib.gauntlet_shadow_error()
+        assert lib.gauntlet_shadow_read_pixels(ctx) == -1  # queued draw not executed
+        assert lib.gauntlet_shadow_flush(ctx) == 0, lib.gauntlet_shadow_error()
+        result = (c.c_uint32*(pixels+128*16)).from_address(lib.gauntlet_shadow_output(ctx))
+        assert list(result[:pixels]) == list(expected)
+        assert list(result[pixels:pixels+16]) == statistics[1]
+        assert not any(result[pixels+16:])
+        assert lib.gauntlet_shadow_read_pixels(ctx) == -1  # full flush already read pixels
+        # Boundary/reset immediately after a keep flush, with no next draw.
+        assert enqueue(ctx, first, 1) == 0, lib.gauntlet_shadow_error()
+        assert lib.gauntlet_shadow_flush_keep(ctx) == 0, lib.gauntlet_shadow_error()
+        assert lib.gauntlet_shadow_read_pixels(ctx) == 0, lib.gauntlet_shadow_error()
+        assert list(result[:pixels]) == list(first[initial+pixels:])
+        assert enqueue(ctx, second, 2) == -1  # continuation was invalidated by CPU read
+        assert enqueue(ctx, first, 1) == 0, lib.gauntlet_shadow_error()
+        assert lib.gauntlet_shadow_flush(ctx) == 0, lib.gauntlet_shadow_error()
+        assert list(result[:pixels]) == list(first[initial+pixels:])
+        print(f'resident batch dirty={dirty_mode} continuation/relocation/counters/drain/reset PASS', flush=True)
+    finally:
+        lib.gauntlet_shadow_destroy(ctx)
+
+# Negative control specifically for patches on continuation draw zero:
+# without the full dirty audit, a falsely clean mask must corrupt the image.
+dirty_mode = True
+dirty_pages = array.array('I', [0]) * 8192
+os.environ['EUTHERDRIVE_GAUNTDL_GPU_VERIFY_DIRTY'] = '0'
+ctx = lib.gauntlet_shadow_create(os.fsencode(root / '.build-tmp/gauntlet-gpu-probe/draw.spv'))
+assert ctx, lib.gauntlet_shadow_error()
+try:
+    assert enqueue(ctx, first, 1) == 0, lib.gauntlet_shadow_error()
+    assert lib.gauntlet_shadow_flush_keep(ctx) == 0, lib.gauntlet_shadow_error()
+    assert enqueue(ctx, second, 2) == 0, lib.gauntlet_shadow_error()
+    assert lib.gauntlet_shadow_flush(ctx) == 0, lib.gauntlet_shadow_error()
+    result = (c.c_uint32*pixels).from_address(lib.gauntlet_shadow_output(ctx))
+    mismatches = sum(result[i] != value for i, value in enumerate(expected))
+    assert mismatches > 0
+    print(f'resident continuation missed dirty patch negative control mismatches={mismatches} PASS', flush=True)
 finally:
     lib.gauntlet_shadow_destroy(ctx)
 

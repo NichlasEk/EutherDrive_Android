@@ -554,3 +554,12 @@ Tre växlade prov ger CPU-median 11,8358 s och GPU-median 13,4096 s: ingen
 defaultändring eller påstådd spelbarhetsvinst. Nästa GPU-steg är resident
 data mellan batcher; mätprofilen visar betydligt mer överförings-/förberedelse-
 kostnad än shaderberäkning. Se [checkpoint](gauntlet-dl-gpu-batch-replacement-2026-09-17.md).
+
+## Residenta kapacitetsbatcher, 2026-09-17
+
+GPU-bild och texturer kan nu ligga kvar över kapacitetsflushar. Samma 9 012
+draws/104 submissions ger 32,5 % mindre upload/readback och byte-exakt
+slutmaskin. Tre roterade prov ger median 14,4769→14,0931 s jämfört med gamla
+batchvägen, 2,65 % kortare tid. CPU-medianen i samma prov är 12,3787 s;
+GPU-läget är fortfarande opt-in och inte snabbare än CPU. Se
+[resident batch-checkpoint](gauntlet-dl-gpu-resident-batches-2026-09-17.md).

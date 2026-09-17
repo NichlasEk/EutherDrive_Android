@@ -312,7 +312,7 @@ together, followed by one full readback and comparison against current CPU
 buffers, before the boundary's CPU operation executes. Reset flushes and
 compares an active segment before releasing its native context.
 
-Each batch currently uploads its initial full texture/NCC state and initial
+By default each batch uploads its initial full texture/NCC state and initial
 framebuffer, metadata, and patch payloads. Between draws it uploads no CPU
 framebuffer results. By default, texture change detection scans/copies CPU snapshots.
 With `GPU_BATCH_STATS=1`, `GPU_INCREMENTAL=1`, `GPU_SPARSE_SNAPSHOT=1` and
@@ -441,13 +441,25 @@ capture-enabled Core as above; ABI version 4 includes GPU raster statistics
 and explicit resident framebuffer readback.
 For experimental batch replacement set `EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH=1`
 and `EUTHERDRIVE_GAUNTDL_GPU_BATCH_STATS=1`. Do **not** set `GPU_RESIDENT`:
-batch replacement currently reads back the full framebuffer at each boundary,
+batch replacement by default reads back the full framebuffer at each boundary,
 including capacity boundaries. Pixel, LOD, covered/rejected-triangle and empty
 raster counters are consumed in draw order at flush, before CPU readers/writers.
 Triangle-edge visualization, covered/rejected-triangle tracing and raster-state
 profiling are explicitly rejected because they need immediate per-draw results.
 Debug/profile status reads also flush. Ordinary non-capture builds ignore this
 path. See [batch replacement checkpoint](../../docs/gauntlet-dl-gpu-batch-replacement-2026-09-17.md).
+
+`EUTHERDRIVE_GAUNTDL_GPU_BATCH_RESIDENT=1` additionally retains GPU color/depth
+and texture/NCC across capacity boundaries. It requires batched statistics,
+works with both shadow and replacement, and is distinct from per-draw
+`GPU_RESIDENT` (do not combine them). Capacity flush reads only the 128-row
+statistics table; the next batch uploads metadata and texture/NCC patches.
+True CPU boundaries still read/compare or apply all pixels, even when no new
+draw was enqueued after the capacity flush. Native batch-resident capability 1
+and `gauntlet_shadow_flush_keep` are required. Enqueue reset modes are 0
+(append), 1 (fresh CPU snapshot), and 2 (continue a retained batch). Mode 2
+is rejected after a full readback or without a preceding keep flush.
+See [resident batch checkpoint](../../docs/gauntlet-dl-gpu-resident-batches-2026-09-17.md).
 
 ```sh
 DOTNET_TieredCompilation=0 EUTHERDRIVE_GAUNTDL_GPU_REPLACE=1 \

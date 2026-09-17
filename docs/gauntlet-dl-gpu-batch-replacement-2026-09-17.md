@@ -101,8 +101,8 @@ nio vanliga limiter och tre batch-statistiklimiter.
 Managed negativkontroll förstör CPU-oraklets första räknare och avvisas vid
 flush (`cpu=4931 gpu=4930`). Alla fyra förbjudna triangel-diagnostiklägen
 avvisas också som avsett. Äldre resident-/per-draw-native-regression passerar.
-Replay med replacement-limit 1 och 129 (stopp direkt respektive efter
-kapacitetsfortsättning) ger också exakt samma full-state-hash:
+Replay med replacement-limit 1 och 129 (stopp direkt respektive senare i
+strömmen, utan att nå en full kapacitetsbatch) ger också exakt samma full-state-hash:
 `.build-tmp/gpu-batch-limit-{1,129}{.log,-final.warm.gz}`.
 
 Normal Release för Probe/UI är återställd och bygger utan fel. Samtliga

@@ -8,6 +8,22 @@ internal static class GpuStreamBoundaryChecks
     {
         Type type=assembly.GetType("EutherDrive.Core.Arcade.Vegas.VoodooBringupBackend",true)!;
         const BindingFlags flags=BindingFlags.Instance|BindingFlags.Public|BindingFlags.NonPublic;
+        Type sessionType=assembly.GetType("EutherDrive.Core.Arcade.Vegas.GpuShadowSession",true)!;
+        void CheckPendingBoundary(string method,object[] args) {
+            object backend=Activator.CreateInstance(type,nonPublic:true)!;
+            object pending=System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(sessionType);
+            sessionType.GetProperty("BatchPixelsPending",flags)!.SetValue(pending,true);
+            type.GetField("_gpuShadow",flags)!.SetValue(backend,pending);
+            if(method=="MaterializePendingClear")
+                ((bool[])type.GetField("_pendingClearValid",flags)!.GetValue(backend)!)[0]=true;
+            // Deliberately disposed context: reaching synchronization must throw
+            // before any native call. No active batch exists in this state.
+            bool reached=false;
+            try { type.GetMethod(method,flags)!.Invoke(backend,args); }
+            catch(TargetInvocationException e) when(e.InnerException is ObjectDisposedException) { reached=true; }
+            finally { ((IDisposable)pending).Dispose(); }
+            if(reached!=captureBuild) throw new InvalidOperationException($"Pending GPU pixels bypassed boundary: {method}");
+        }
         foreach(var (method,reason,args) in new (string,string,object[])[] {
             ("ReadLfb32","cpu-lfb-read",[0u]),
             ("WriteLfb32","cpu-lfb-write",[0u,0u]),
@@ -39,8 +55,11 @@ internal static class GpuStreamBoundaryChecks
                     throw new InvalidOperationException($"GPU stream boundary failed: {method}, captureBuild={captureBuild}");
             }
             finally { directory.Delete(recursive:true); }
+            CheckPendingBoundary(method,args);
         }
         Console.WriteLine($"gpuStreamBoundaryChecks cases=13 captureBuild={captureBuild} PASS");
+        CheckPendingBoundary("CloseGpuShadow",[]);
+        Console.WriteLine($"gpuPendingPixelBoundaries cases=14 captureBuild={captureBuild} PASS");
         object counterBackend=Activator.CreateInstance(type,nonPublic:true)!;
         var applyBatch=type.GetMethod("ApplyGpuBatchDrawCounters",flags)!;
         uint[] covered=new uint[16];covered[0]=9;covered[1]=2;covered[2]=1;covered[3]=7;covered[4]=5;covered[6]=9;
@@ -58,7 +77,6 @@ internal static class GpuStreamBoundaryChecks
             throw new InvalidOperationException("Deferred GPU buffer/LOD counters failed");
         Console.WriteLine("gpuDeferredTriangleCounters covered/empty/buffer/LOD PASS");
         // Exercise the real physical byte writer without creating a Vulkan context.
-        Type sessionType=assembly.GetType("EutherDrive.Core.Arcade.Vegas.GpuShadowSession",true)!;
         object session=System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(sessionType);
         uint[] dirty=new uint[8192];
         sessionType.GetField("_dirtyPages",flags)!.SetValue(session,dirty);

@@ -23,9 +23,12 @@ internal sealed unsafe class GpuShadowSession : IDisposable
     public void MarkTextureWrite(int wordOffset) { if(_dirtyPages is not null) _dirtyPages[wordOffset>>8]=1; }
     private readonly Output _output;
     private readonly Flush _flush;
+    private readonly Flush? _flushKeep;
     private readonly Flush _readPixels;
     public bool Batched { get; }=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW_BATCH")=="1";
     public bool BatchStatistics { get; }=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_BATCH_STATS")=="1";
+    public bool BatchResident { get; }=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_BATCH_RESIDENT")=="1";
+    public bool BatchPixelsPending { get; private set; }
     private readonly List<long[]> _batchExpected=[];
     private int _batchDraws;
     public bool Replace { get; }=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_REPLACE")=="1";
@@ -40,6 +43,8 @@ internal sealed unsafe class GpuShadowSession : IDisposable
             if(Replace && Batched && (!BatchStatistics || Resident))
                 throw new NotSupportedException("Batch replacement requires batch statistics and non-resident mode");
             if(BatchStatistics && !Batched) throw new NotSupportedException("Batch statistics requires batched shadow mode");
+            if(BatchResident && (!Batched || !BatchStatistics || Resident))
+                throw new NotSupportedException("Resident batches require batch statistics and no per-draw resident flag");
             if(Resident && !Replace) throw new NotSupportedException("Resident mode requires GPU replacement");
             if(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_DIRTY_TEXTURE")=="1") {
                 if((Batched?!BatchStatistics:!Resident || !Replace) ||
@@ -54,6 +59,11 @@ internal sealed unsafe class GpuShadowSession : IDisposable
             _destroy=Bind<Destroy>("gauntlet_shadow_destroy");_error=Bind<Error>("gauntlet_shadow_error");
             _draw=Bind<Draw>(Batched?"gauntlet_shadow_enqueue":Resident?"gauntlet_shadow_resident_draw":"gauntlet_shadow_draw");_output=Bind<Output>("gauntlet_shadow_output");
             _flush=Bind<Flush>("gauntlet_shadow_flush");
+            if(BatchResident) {
+                if(Bind<Version>("gauntlet_shadow_batch_resident_version")()!=1)
+                    throw new NotSupportedException("Unsupported resident batch capability");
+                _flushKeep=Bind<Flush>("gauntlet_shadow_flush_keep");
+            }
             _readPixels=Bind<Flush>("gauntlet_shadow_read_pixels");
             if(_dirtyPages is not null) _dirtyDraw=Bind<DirtyDraw>(Batched?"gauntlet_shadow_dirty_enqueue":"gauntlet_shadow_dirty_draw");
             _context=Bind<Create>("gauntlet_shadow_create")(Path.GetFullPath(shader));
@@ -67,8 +77,9 @@ internal sealed unsafe class GpuShadowSession : IDisposable
             throw new ArgumentException("Invalid GPU shadow buffers");
         if(BatchStatistics && (reset != (_batchDraws==0) || _batchDraws>=128))
             throw new InvalidOperationException("Invalid managed batch statistics order");
+        int resetMode=reset?(BatchPixelsPending?2:1):0;
         fixed(uint* t=texture,n=ncc,m=meta,dirty=_dirtyPages) fixed(ushort* c=color,d=depth)
-            if((_dirtyDraw is not null?_dirtyDraw(_context,t,n,m,c,d,reset?1:0,dirty):_draw(_context,t,n,m,c,d,reset?1:0))!=0)
+            if((_dirtyDraw is not null?_dirtyDraw(_context,t,n,m,c,d,resetMode,dirty):_draw(_context,t,n,m,c,d,resetMode))!=0)
                 throw new InvalidOperationException(Marshal.PtrToStringUTF8(_error()));
         if(_dirtyPages is not null) Array.Clear(_dirtyPages);
         if(BatchStatistics) _batchDraws++;
@@ -89,13 +100,13 @@ internal sealed unsafe class GpuShadowSession : IDisposable
         if(mismatches!=0) throw new InvalidOperationException($"GPU shadow color/depth mismatches={mismatches} first={first}");
         GC.KeepAlive(this);
     }
-    public void FlushAndCompare(ushort[] color,ushort[] depth)
+    public void FlushAndCompare(ushort[] color,ushort[] depth,bool keepResident=false)
     {
         if(_context==0) throw new ObjectDisposedException(nameof(GpuShadowSession));
         if(BatchStatistics && (_batchDraws==0 || _batchExpected.Count!=_batchDraws))
             throw new InvalidOperationException("Missing CPU batch oracle");
-        if(_flush(_context)!=0) throw new InvalidOperationException(Marshal.PtrToStringUTF8(_error()));
-        Compare(color,depth);
+        FlushBatch(keepResident);
+        if(!keepResident) Compare(color,depth);
         if(BatchStatistics) {
             uint* result=_output(_context);
             for(int draw=0;draw<_batchDraws;draw++) for(int i=0;i<17;i++) {
@@ -119,19 +130,27 @@ internal sealed unsafe class GpuShadowSession : IDisposable
         if(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_COUNTER_CORRUPT_ORACLE")=="1") delta[0]^=1;
         _batchExpected.Add(delta);
     }
-    public uint[][] FlushAndApplyBatch(ushort[] color,ushort[] depth)
+    private void FlushBatch(bool keepResident)
+    {
+        if(keepResident && !BatchResident) throw new InvalidOperationException("Resident batch mode is disabled");
+        if((keepResident?_flushKeep!:_flush)(_context)!=0)
+            throw new InvalidOperationException(Marshal.PtrToStringUTF8(_error()));
+        BatchPixelsPending=keepResident;
+    }
+    public uint[][] FlushAndApplyBatch(ushort[] color,ushort[] depth,bool keepResident=false)
     {
         if(_context==0) throw new ObjectDisposedException(nameof(GpuShadowSession));
         if(!Replace || !Batched || !BatchStatistics || _batchDraws==0 || _batchExpected.Count!=0)
             throw new InvalidOperationException("Invalid replacement batch order");
-        if(_flush(_context)!=0) throw new InvalidOperationException(Marshal.PtrToStringUTF8(_error()));
+        FlushBatch(keepResident);
         uint* result=_output(_context);
         uint[][] statistics=new uint[_batchDraws][];
         for(int draw=0;draw<_batchDraws;draw++) {
             statistics[draw]=new uint[16];
             for(int i=0;i<16;i++) statistics[draw][i]=result[2097152+draw*16+i];
         }
-        Apply(color,depth);_batchDraws=0;
+        if(!keepResident) Apply(color,depth);
+        _batchDraws=0;
         GC.KeepAlive(this);return statistics;
     }
     public uint[] Statistics()
@@ -155,7 +174,8 @@ internal sealed unsafe class GpuShadowSession : IDisposable
     {
         if(_context==0) throw new ObjectDisposedException(nameof(GpuShadowSession));
         if(_readPixels(_context)!=0) throw new InvalidOperationException(Marshal.PtrToStringUTF8(_error()));
-        Apply(color,depth);GC.KeepAlive(this);
+        if(BatchResident && !Replace) Compare(color,depth);else Apply(color,depth);
+        BatchPixelsPending=false;GC.KeepAlive(this);
     }
     public void Dispose()
     {
