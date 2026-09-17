@@ -34,7 +34,8 @@ internal sealed unsafe class GpuShadowSession : IDisposable
     public bool Replace { get; }=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_REPLACE")=="1";
     public bool Resident { get; }=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_RESIDENT")=="1";
     private readonly bool _profiling=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_PROFILE")=="1";
-    private double _applyMs;
+    private double _applyMs,_renderMs,_flushMs,_statisticsMs;
+    private long _renderCalls,_flushCalls;
 
     public GpuShadowSession(string library,string shader)
     {
@@ -72,6 +73,7 @@ internal sealed unsafe class GpuShadowSession : IDisposable
     }
     public void Render(uint[] texture,uint[] ncc,uint[] meta,ushort[] color,ushort[] depth,bool reset)
     {
+        long started=_profiling?Stopwatch.GetTimestamp():0;
         if(_context==0) throw new ObjectDisposedException(nameof(GpuShadowSession));
         if(texture.Length!=2097152 || ncc.Length!=512 || meta.Length!=256 || color.Length!=2097152 || depth.Length!=2097152)
             throw new ArgumentException("Invalid GPU shadow buffers");
@@ -83,6 +85,7 @@ internal sealed unsafe class GpuShadowSession : IDisposable
                 throw new InvalidOperationException(Marshal.PtrToStringUTF8(_error()));
         if(_dirtyPages is not null) Array.Clear(_dirtyPages);
         if(BatchStatistics) _batchDraws++;
+        if(_profiling) { _renderMs+=Stopwatch.GetElapsedTime(started).TotalMilliseconds;_renderCalls++; }
         GC.KeepAlive(this);
     }
     public void Compare(ushort[] color,ushort[] depth)
@@ -132,10 +135,12 @@ internal sealed unsafe class GpuShadowSession : IDisposable
     }
     private void FlushBatch(bool keepResident)
     {
+        long started=_profiling?Stopwatch.GetTimestamp():0;
         if(keepResident && !BatchResident) throw new InvalidOperationException("Resident batch mode is disabled");
         if((keepResident?_flushKeep!:_flush)(_context)!=0)
             throw new InvalidOperationException(Marshal.PtrToStringUTF8(_error()));
         BatchPixelsPending=keepResident;
+        if(_profiling) { _flushMs+=Stopwatch.GetElapsedTime(started).TotalMilliseconds;_flushCalls++; }
     }
     public uint[][] FlushAndApplyBatch(ushort[] color,ushort[] depth,bool keepResident=false)
     {
@@ -143,12 +148,14 @@ internal sealed unsafe class GpuShadowSession : IDisposable
         if(!Replace || !Batched || !BatchStatistics || _batchDraws==0 || _batchExpected.Count!=0)
             throw new InvalidOperationException("Invalid replacement batch order");
         FlushBatch(keepResident);
+        long statisticsStarted=_profiling?Stopwatch.GetTimestamp():0;
         uint* result=_output(_context);
         uint[][] statistics=new uint[_batchDraws][];
         for(int draw=0;draw<_batchDraws;draw++) {
             statistics[draw]=new uint[16];
             for(int i=0;i<16;i++) statistics[draw][i]=result[2097152+draw*16+i];
         }
+        if(_profiling) _statisticsMs+=Stopwatch.GetElapsedTime(statisticsStarted).TotalMilliseconds;
         if(!keepResident) Apply(color,depth);
         _batchDraws=0;
         GC.KeepAlive(this);return statistics;
@@ -180,7 +187,8 @@ internal sealed unsafe class GpuShadowSession : IDisposable
     public void Dispose()
     {
         if(_context!=0) {
-            if(_profiling) Console.WriteLine($"gpuProfileManaged applyPixelsMs={_applyMs:F3}");
+            // Render/flush include native time; do not add them to native totals.
+            if(_profiling) Console.WriteLine(FormattableString.Invariant($"gpuProfileManaged applyPixelsMs={_applyMs:F3} renderInclusiveMs={_renderMs:F3} flushInclusiveMs={_flushMs:F3} batchStatisticsMs={_statisticsMs:F3} renderCalls={_renderCalls} flushCalls={_flushCalls}"));
             _destroy(_context);_context=0;
         }
         if(_library!=0) { NativeLibrary.Free(_library);_library=0; }

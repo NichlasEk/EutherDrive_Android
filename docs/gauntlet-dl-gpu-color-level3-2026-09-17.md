@@ -1,5 +1,8 @@
 # Gauntlet DL: färgnivå 3, TMU1-format 0
 
+Uppföljning: [uppdelad GPU-kostnadsprofil](gauntlet-dl-gpu-cost-profile-2026-09-17.md)
+visar var överföringsvinsten motverkas av fler draws och CPU-förberedelser.
+
 ## Resultat: korrekt, fartvinsten är inte fastställd
 
 Tre roterade jämförelser i samma capture-build gav följande tider:

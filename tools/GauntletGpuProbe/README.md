@@ -380,16 +380,31 @@ See [sparse snapshot experiment](../../docs/gauntlet-dl-gpu-sparse-snapshot-2026
 on session disposal. `gpuProfileHost` measures native initialization, snapshot
 preparation, command recording, host staging copies, queue submission, fence
 wait, query retrieval and full-pixel readback calls. `gpuProfileManaged`
-measures unpacking completed pixels into CPU color/depth arrays.
+measures unpacking completed pixels into CPU color/depth arrays (`applyPixelsMs`),
+the complete managed Render and FlushBatch calls (`renderInclusiveMs` and
+`flushInclusiveMs`, including native work), and replacement batch statistics
+allocation/copy (`batchStatisticsMs`). Call counts allow checking draw/submission
+coverage. Inclusive times overlap native totals: do not add them together.
+They do not cover backend eligibility checks, metadata construction before Render,
+or CPU fallback rasterization. Timers run only with profiling enabled; no per-draw
+timing log is emitted. The managed summary uses invariant decimal formatting.
 `gpuProfileDevice` uses Vulkan timestamps for pre-dispatch (upload/setup),
-dispatch, post-dispatch (barriers/statistics copy), and boundary pixel readback.
+dispatch (including inter-draw barriers and texture patches), post-dispatch
+(barriers/output copy), and boundary pixel readback.
 Device times overlap host waits; do not add them to host timings. These are
 coarse pipeline intervals, not isolated shader-instruction or PCIe bandwidth
 measurements. Readback host time includes its recording/submission/wait/query.
 Snapshot preparation is timed for synchronous draws and batch enqueue.
+`gpuProfileBatchPrepare` further splits batch preparation into fresh framebuffer/
+texture packing (`resetMs`), resident batch zero-initialization (`continuationMs`),
+page scanning and patch construction (`scanPatchMs`), and full texture/NCC mirror
+copies (`mirrorMs`). These intervals are nested inside `prepareMs`; their sum
+does not include validation, metadata, environment checks and other bookkeeping.
 Rebuild native and capture-enabled Core; ABI remains v4. Profiling defaults off.
 Measured results and timing boundaries are in the
 [CPU/GPU profile](../../docs/gauntlet-dl-gpu-profile-2026-09-11.md).
+For resident batches and color levels 2/3, see the
+[batch cost profile](../../docs/gauntlet-dl-gpu-cost-profile-2026-09-17.md).
 
 `EUTHERDRIVE_GAUNTDL_GPU_BBOX=1` optionally restricts each synchronous or batched runtime
 draw dispatch to its metadata bounding box. The push constants map invocation

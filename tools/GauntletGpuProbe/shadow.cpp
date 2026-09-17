@@ -27,6 +27,7 @@ struct Shadow {
     bool pollFence=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_FENCE_POLL");return p && std::strcmp(p,"1")==0; }();
     uint64_t pollCompleted=0,pollFallback=0;
     double initMs=0,prepareMs=0,recordMs=0,stagingMs=0,queueMs=0,waitMs=0,queryMs=0,readPixelsMs=0;
+    double batchResetMs=0,batchContinueMs=0,batchScanMs=0,batchMirrorMs=0;
     double gpuPreMs=0,gpuDispatchMs=0,gpuPostMs=0,gpuPixelReadMs=0;
     double ticksMs(uint64_t start,uint64_t end) const {
         uint64_t mask=gpu.timestampBits==64?UINT64_MAX:(uint64_t(1)<<gpu.timestampBits)-1;
@@ -114,6 +115,8 @@ void gauntlet_shadow_destroy(void* context) noexcept {
     if(s && s->profiling) {
         std::cout<<"gpuProfileHost initMs="<<s->initMs<<" prepareMs="<<s->prepareMs<<" recordMs="<<s->recordMs<<" stagingMs="<<s->stagingMs<<" queueMs="<<s->queueMs<<" waitMs="<<s->waitMs<<" queryMs="<<s->queryMs<<" readPixelsMs="<<s->readPixelsMs<<std::endl;
         std::cout<<"gpuProfileDevice preDispatchMs="<<s->gpuPreMs<<" dispatchMs="<<s->gpuDispatchMs<<" postDispatchMs="<<s->gpuPostMs<<" pixelReadMs="<<s->gpuPixelReadMs<<std::endl;
+        // These are nested inside prepareMs, not additional host costs.
+        std::cout<<"gpuProfileBatchPrepare resetMs="<<s->batchResetMs<<" continuationMs="<<s->batchContinueMs<<" scanPatchMs="<<s->batchScanMs<<" mirrorMs="<<s->batchMirrorMs<<std::endl;
     }
     if(s && s->gpu.messenger) std::cout<<"gpuShadow synchronizationValidationErrors="<<s->gpu.validationErrors.load()<<std::endl;
     delete s;
@@ -241,6 +244,7 @@ static int enqueueDraw(void* context,const uint32_t* texture,const uint32_t* ncc
         std::copy_n(meta,256,s.input.begin()+metaAt);
         validateCapture(s.input,true);
         if(reset==1) {
+            ProfileTimer resetTimer(s.profiling?&s.batchResetMs:nullptr);
             s.batch.assign(batchInitial+pixels,0);
             std::copy_n(s.input.begin(),8,s.batch.begin());
             s.batch[4]=128*256;
@@ -249,6 +253,7 @@ static int enqueueDraw(void* context,const uint32_t* texture,const uint32_t* ncc
             for(size_t i=0;i<pixels;i++) s.batch[batchInitial+i]=color[i]|uint32_t(depth[i])<<16;
             s.batchReset=true;
         } else if(reset==2) {
+            ProfileTimer continuationTimer(s.profiling?&s.batchContinueMs:nullptr);
             // Header/texture/NCC and output remain resident. Only metadata and
             // immutable patch payloads will be uploaded for this batch.
             s.batch.assign(batchInitial,0);
@@ -260,7 +265,9 @@ static int enqueueDraw(void* context,const uint32_t* texture,const uint32_t* ncc
         const char* verifyFlag=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_VERIFY_DIRTY");
         bool verify=verifyFlag && std::strcmp(verifyFlag,"1")==0;
         if(dirty && !sparse) throw std::runtime_error("Dirty batch requires sparse snapshots");
-        if(reset!=1) for(size_t p=0;p<2097152+512;p+=256) {
+        if(reset!=1) {
+          ProfileTimer scanTimer(s.profiling?&s.batchScanMs:nullptr);
+          for(size_t p=0;p<2097152+512;p+=256) {
             const uint32_t* now=p<2097152?texture+p:ncc+p-2097152;
             if(dirty && p<pixels && !dirty[p/256]) {
                 s.pagesSkipped++;
@@ -278,6 +285,7 @@ static int enqueueDraw(void* context,const uint32_t* texture,const uint32_t* ncc
                 changes.back().size+=copy.size;
             else changes.push_back(copy);
             s.patchBytes+=1024;
+          }
         }
         size_t m=metaAt+s.draws.size()*256;
         std::copy_n(meta,256,s.batch.begin()+m);
@@ -288,6 +296,7 @@ static int enqueueDraw(void* context,const uint32_t* texture,const uint32_t* ncc
         s.drawPixels.push_back(bbox?meta[2]*meta[3]:pixels);
         s.updates.push_back(std::move(changes));
         if(reset==1 || !sparse) {
+            ProfileTimer mirrorTimer(s.profiling?&s.batchMirrorMs:nullptr);
             std::copy_n(texture,2097152,s.input.begin()+8);
             std::copy_n(ncc,512,s.input.begin()+8+2097152);
             s.snapshotCopiedBytes+=(pixels+512)*4;
