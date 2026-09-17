@@ -10,6 +10,9 @@ internal partial class VoodooBringupBackend
     private bool _gpuStreamActive, _gpuStreamStopped;
     private bool _gpuBatchContinuation;
     private bool _gpuDeferredTriangle;
+    private readonly bool _gpuTargetProfile=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_TARGET_PROFILE")=="1";
+    private long _gpuTargetStarted,_gpuTargetRasterBefore;
+    private int _gpuTargetBoundingPixels;
     private string? _gpuStreamDirectory;
     private int _gpuStreamBuffer;
     private GpuShadowSession? _gpuShadow;
@@ -87,13 +90,17 @@ internal partial class VoodooBringupBackend
 
     private static bool IsGpuExtendedColorState(uint fbz, uint tm0, uint tm1, int level)
     {
-        if(level is not (1 or 2)) return false;
+        if(level is not (1 or 2 or 3)) return false;
+        if(level==3 && IsGpuLevel3State(fbz,tm0,tm1)) return true;
         if(fbz==0x000b4779U && ((tm0==0x8c24110fU && tm1==0x8c241acfU) ||
             (tm0==0x80000009U && tm1==0x8c24110fU))) return true;
-        return level==2 &&
+        return level>=2 &&
             ((fbz==0x000b4779U && tm0==0x8c24110fU && tm1==0x8c24110fU) ||
              ((fbz is 0x000b4779U or 0x000b4379U) && tm0==0x8c24190fU && tm1==0x8c241acfU));
     }
+
+    private static bool IsGpuLevel3State(uint fbz,uint tm0,uint tm1)
+        => fbz==0x000b4779U && tm0==0x8c24110fU && tm1==0x8c2410cfU;
 
     [Conditional("GAUNTLET_GPU_CAPTURE")]
     private void BeginGpuDrawCapture(bool common, int minX, int minY, int maxX, int maxY,
@@ -104,6 +111,18 @@ internal partial class VoodooBringupBackend
         long[] gradients, int startAlpha, int alphaDx, int alphaDy)
     {
         bool extendedColor = colors.Mode == 0x0c602c19U;
+        if(_gpuTargetProfile) {
+            if(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_REPLACE")=="1" ||
+                Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW")=="1" ||
+                !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_DRAW_DIR")) ||
+                !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_STREAM_DIR")))
+                throw new NotSupportedException("Target raster timing requires CPU-only execution without GPU/file capture");
+            if(common && extendedColor && IsGpuLevel3State(_registers[RegFbzMode],state0.Mode,state1.Mode)) {
+                _gpuTargetBoundingPixels=(maxX-minX)*(maxY-minY);
+                _gpuTargetRasterBefore=_texturedRasterPixelCount;
+                _gpuTargetStarted=1; // Arm here; start after metadata/setup at the CPU loop.
+            }
+        }
         if(extendedColor) {
             int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_EXTENDED_COLOR_PATH"),out int level);
             common &= IsGpuExtendedColorState(_registers[RegFbzMode],state0.Mode,state1.Mode,level);
@@ -252,6 +271,7 @@ internal partial class VoodooBringupBackend
 
     private bool TryQueueGpuBatchReplacement()
     {
+        if(_gpuTargetStarted!=0) _gpuTargetStarted=Stopwatch.GetTimestamp();
         if(_gpuShadow is not { Replace:true, Batched:true } || _gpuDraw is null) return false;
         // The sole FillTexturedTriangle caller must not classify this triangle
         // until its result is consumed at a real boundary or batch capacity.
@@ -271,6 +291,11 @@ internal partial class VoodooBringupBackend
     [Conditional("GAUNTLET_GPU_CAPTURE")]
     private void EndGpuDrawCapture(bool coveredAny,int coveredPixels,int zeroPixels)
     {
+        if(_gpuTargetStarted!=0) {
+            double elapsed=Stopwatch.GetElapsedTime(_gpuTargetStarted).TotalMilliseconds;
+            _gpuTargetStarted=0;
+            Console.WriteLine(FormattableString.Invariant($"gpuTargetRaster state=level3 cpuMs={elapsed:F6} bbox={_gpuTargetBoundingPixels} covered={coveredPixels} zero={zeroPixels} raster={_texturedRasterPixelCount-_gpuTargetRasterBefore}"));
+        }
         if(_gpuDraw is not {} capture) return;
         double cpuMs=Stopwatch.GetElapsedTime(capture.Started).TotalMilliseconds;_gpuDraw=null;
         if(_gpuShadow is not null) {

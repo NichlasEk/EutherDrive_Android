@@ -12,14 +12,17 @@ internal static class ExtendedColorPathChecks
         var second = new HashSet<(uint, uint, uint)>(first) {
             (0xb4779, 0x8c24110f, 0x8c24110f), (0xb4779, 0x8c24190f, 0x8c241acf),
             (0xb4379, 0x8c24190f, 0x8c241acf) };
+        var third = new HashSet<(uint, uint, uint)>(second) {
+            (0xb4779, 0x8c24110f, 0x8c2410cf) };
         int gateCases = 0;
-        foreach (int level in new[] { -1, 0, 1, 2, 3 })
+        foreach (int level in new[] { -1, 0, 1, 2, 3, 4 })
         foreach (uint fbz in new uint[] { 0xb4779, 0xb4379, 0, 0xb4778 })
         foreach (uint tm0 in new uint[] { 0x8c24110f, 0x80000009, 0x8c24190f, 0x8c241acf, 0 })
-        foreach (uint tm1 in new uint[] { 0x8c24110f, 0x80000009, 0x8c24190f, 0x8c241acf, 0 })
+        foreach (uint tm1 in new uint[] { 0x8c24110f, 0x80000009, 0x8c24190f, 0x8c241acf, 0x8c2410cf, 0 })
         {
             bool expected = level == 1 ? first.Contains((fbz, tm0, tm1)) :
-                level == 2 && second.Contains((fbz, tm0, tm1));
+                level == 2 ? second.Contains((fbz, tm0, tm1)) :
+                level == 3 && third.Contains((fbz, tm0, tm1));
             if (gate(fbz, tm0, tm1, level) != expected)
                 throw new InvalidOperationException("Extended color state allowlist mismatch");
             gateCases++;

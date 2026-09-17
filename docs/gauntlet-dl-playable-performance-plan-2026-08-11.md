@@ -563,3 +563,13 @@ slutmaskin. Tre roterade prov ger median 14,4769→14,0931 s jämfört med gamla
 batchvägen, 2,65 % kortare tid. CPU-medianen i samma prov är 12,3787 s;
 GPU-läget är fortfarande opt-in och inte snabbare än CPU. Se
 [resident batch-checkpoint](gauntlet-dl-gpu-resident-batches-2026-09-17.md).
+
+## Färgnivå 3: fler små draws, osäker tidsvinst, 2026-09-17
+
+En strikt ytterligare TMU-kombination är verifierad med befintlig shader.
+GPU-täckningen ökar 9 012→17 173 draws och fulla pixelgränser minskar 70→37.
+Mållägets 7 419 CPU-draws skriver dock bara 41 191 pixlar och tar cirka
+27,7 ms i det instrumenterade pixelfönstret. Samtidig värdbelastning gav
+för stor tidsvariation för att fastställa en förbättring; ingen CPU-seger
+eller defaultändring hävdas. Alla slutmaskiner och shadow-orakel är exakta.
+Se [nivå 3-checkpoint](gauntlet-dl-gpu-color-level3-2026-09-17.md).

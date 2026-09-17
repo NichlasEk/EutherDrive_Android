@@ -131,6 +131,15 @@ Both levels remain diagnostic: the larger coverage currently increases total
 replay time with synchronous per-draw submission. See
 [level 2 checkpoint](../../docs/gauntlet-dl-gpu-color-level2-2026-09-17.md).
 
+Value `3` also admits the exact FBZ `000b4779`, TMU0 `8c24110f`, TMU1
+`8c2410cf` combination with the existing extended color/alpha/fog gates.
+This reuses existing TMU1 format-0 sampling; native/shader/ABI are unchanged.
+Levels 1 and 2 retain their existing allowlists. For CPU-only cost diagnosis,
+`EUTHERDRIVE_GAUNTDL_GPU_TARGET_PROFILE=1` logs this state's per-draw raster
+time and pixel counts in a capture-build; GPU execution and file capture are
+rejected while this profiler is enabled. Logging is outside the timed raster
+window. See [level 3 checkpoint](../../docs/gauntlet-dl-gpu-color-level3-2026-09-17.md).
+
 `EUTHERDRIVE_GAUNTDL_GPU_FENCE_POLL=1` optionally polls draw-fence status for
 a 50-microsecond deadline before the unchanged mandatory fence wait.
 It remains synchronous and may consume additional CPU/energy. It is off by
