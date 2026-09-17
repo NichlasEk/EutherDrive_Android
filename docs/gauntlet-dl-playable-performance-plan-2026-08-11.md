@@ -527,3 +527,14 @@ flagga. Full-state och shadow/validering passerar: 573 ytterligare GPU-draws.
 Readbacks är fortfarande 70 och tidsproven visar ingen vinst. Nästa två
 TMU-par och ett avvikande fbz-läge återstår innan färre segment kan påvisas.
 Se [utökad färgväg](gauntlet-dl-gpu-extended-color-path-2026-09-17.md).
+
+Färgvägens nivå 2 tillåter nästa tre registerkombinationer med exakta slutstater
+och godkänd Vulkan-validering. 9 012 draws flyttas till GPU, men 70 readbacks
+kvarstår och tiden ökar cirka 10,7 procent mot nivå 1. Detta behålls som
+avstängd diagnostik, inte snabb standardväg. Se
+[nivå 2-checkpointen](gauntlet-dl-gpu-color-level2-2026-09-17.md).
+
+Kort valbar fence-pollning före oförändrad ordinarie väntan minskar nivå 2:s
+replaytid cirka 4,86 procent i fyra växlade par; alla slutmaskiner matchar.
+CPU-/energikostnad är inte mätt, normal CPU är fortfarande snabbare, och
+pollning är av som standard. Se [väntprovet](gauntlet-dl-gpu-fence-poll-2026-09-17.md).

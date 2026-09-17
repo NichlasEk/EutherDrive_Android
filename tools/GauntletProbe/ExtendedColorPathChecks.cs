@@ -5,6 +5,26 @@ internal static class ExtendedColorPathChecks
     public static void Run(Assembly assembly)
     {
         Type backend = assembly.GetType("EutherDrive.Core.Arcade.Vegas.VoodooBringupBackend", true)!;
+        var gate = backend.GetMethod("IsGpuExtendedColorState", BindingFlags.Static | BindingFlags.NonPublic)!
+            .CreateDelegate<Func<uint, uint, uint, int, bool>>();
+        var first = new HashSet<(uint, uint, uint)> {
+            (0xb4779, 0x8c24110f, 0x8c241acf), (0xb4779, 0x80000009, 0x8c24110f) };
+        var second = new HashSet<(uint, uint, uint)>(first) {
+            (0xb4779, 0x8c24110f, 0x8c24110f), (0xb4779, 0x8c24190f, 0x8c241acf),
+            (0xb4379, 0x8c24190f, 0x8c241acf) };
+        int gateCases = 0;
+        foreach (int level in new[] { -1, 0, 1, 2, 3 })
+        foreach (uint fbz in new uint[] { 0xb4779, 0xb4379, 0, 0xb4778 })
+        foreach (uint tm0 in new uint[] { 0x8c24110f, 0x80000009, 0x8c24190f, 0x8c241acf, 0 })
+        foreach (uint tm1 in new uint[] { 0x8c24110f, 0x80000009, 0x8c24190f, 0x8c241acf, 0 })
+        {
+            bool expected = level == 1 ? first.Contains((fbz, tm0, tm1)) :
+                level == 2 && second.Contains((fbz, tm0, tm1));
+            if (gate(fbz, tm0, tm1, level) != expected)
+                throw new InvalidOperationException("Extended color state allowlist mismatch");
+            gateCases++;
+        }
+        Console.WriteLine($"extendedColorStateChecks cases={gateCases} PASS");
         Type state = backend.GetNestedType("FbzColorPathState", BindingFlags.NonPublic)!;
         var ctor = state.GetConstructors().Single();
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;

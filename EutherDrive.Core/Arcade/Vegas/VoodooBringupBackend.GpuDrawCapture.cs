@@ -64,6 +64,16 @@ internal partial class VoodooBringupBackend
         writer.WriteLine(message);
     }
 
+    private static bool IsGpuExtendedColorState(uint fbz, uint tm0, uint tm1, int level)
+    {
+        if(level is not (1 or 2)) return false;
+        if(fbz==0x000b4779U && ((tm0==0x8c24110fU && tm1==0x8c241acfU) ||
+            (tm0==0x80000009U && tm1==0x8c24110fU))) return true;
+        return level==2 &&
+            ((fbz==0x000b4779U && tm0==0x8c24110fU && tm1==0x8c24110fU) ||
+             ((fbz is 0x000b4779U or 0x000b4379U) && tm0==0x8c24190fU && tm1==0x8c241acfU));
+    }
+
     [Conditional("GAUNTLET_GPU_CAPTURE")]
     private void BeginGpuDrawCapture(bool common, int minX, int minY, int maxX, int maxY,
         int setupAx, int setupAy, bool positive, SetupVertex a, SetupVertex b, SetupVertex c,
@@ -73,7 +83,10 @@ internal partial class VoodooBringupBackend
         long[] gradients, int startAlpha, int alphaDx, int alphaDy)
     {
         bool extendedColor = colors.Mode == 0x0c602c19U;
-        if(extendedColor && Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_EXTENDED_COLOR_PATH")!="1") common=false;
+        if(extendedColor) {
+            int.TryParse(Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_EXTENDED_COLOR_PATH"),out int level);
+            common &= IsGpuExtendedColorState(_registers[RegFbzMode],state0.Mode,state1.Mode,level);
+        }
         string? directory = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_DRAW_DIR");
         string? streamDirectory = Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_STREAM_DIR");
         bool shadow=Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_GPU_SHADOW")=="1" ||

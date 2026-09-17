@@ -23,6 +23,8 @@ struct Shadow {
     uint64_t snapshotCopiedBytes=0;
     uint64_t pagesCompared=0,pagesSkipped=0;
     bool profiling=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_PROFILE");return p && std::strcmp(p,"1")==0; }();
+    bool pollFence=[] { auto p=std::getenv("EUTHERDRIVE_GAUNTDL_GPU_FENCE_POLL");return p && std::strcmp(p,"1")==0; }();
+    uint64_t pollCompleted=0,pollFallback=0;
     double initMs=0,prepareMs=0,recordMs=0,stagingMs=0,queueMs=0,waitMs=0,queryMs=0,readPixelsMs=0;
     double gpuPreMs=0,gpuDispatchMs=0,gpuPostMs=0,gpuPixelReadMs=0;
     double ticksMs(uint64_t start,uint64_t end) const {
@@ -65,6 +67,17 @@ struct Shadow {
         check(vkQueueSubmit(h.queue,1,&info,h.fence));
         }
         { ProfileTimer timer(profiling?&waitMs:nullptr);
+          if(pollFence) {
+              const auto deadline=ProfileClock::now()+std::chrono::microseconds(50);
+              bool completed=false;
+              do {
+                  VkResult status=vkGetFenceStatus(h.device,h.fence);
+                  if(status==VK_SUCCESS) { completed=true;break; }
+                  if(status!=VK_NOT_READY) check(status);
+              } while(ProfileClock::now()<deadline);
+              if(completed) pollCompleted++;else pollFallback++;
+          }
+          // Preserve the original wait and synchronization contract in both cases.
           check(vkWaitForFences(h.device,1,&h.fence,VK_TRUE,UINT64_MAX)); }
         if(profiling) {
             ProfileTimer timer(&queryMs);uint64_t ticks[4];
@@ -91,6 +104,7 @@ void gauntlet_shadow_destroy(void* context) noexcept {
     if(s) std::cout<<"gpuDispatch invocations="<<s->dispatchInvocations<<std::endl;
     if(s) std::cout<<"gpuSnapshot copiedBytes="<<s->snapshotCopiedBytes<<std::endl;
     if(s) std::cout<<"gpuDirty pagesCompared="<<s->pagesCompared<<" pagesSkipped="<<s->pagesSkipped<<std::endl;
+    if(s && s->pollFence) std::cout<<"gpuFencePoll completed="<<s->pollCompleted<<" fallback="<<s->pollFallback<<" budgetUs=50"<<std::endl;
     if(s && s->profiling) {
         std::cout<<"gpuProfileHost initMs="<<s->initMs<<" prepareMs="<<s->prepareMs<<" recordMs="<<s->recordMs<<" stagingMs="<<s->stagingMs<<" queueMs="<<s->queueMs<<" waitMs="<<s->waitMs<<" queryMs="<<s->queryMs<<" readPixelsMs="<<s->readPixelsMs<<std::endl;
         std::cout<<"gpuProfileDevice preDispatchMs="<<s->gpuPreMs<<" dispatchMs="<<s->gpuDispatchMs<<" postDispatchMs="<<s->gpuPostMs<<" pixelReadMs="<<s->gpuPixelReadMs<<std::endl;

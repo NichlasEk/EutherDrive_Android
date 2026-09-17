@@ -84,6 +84,14 @@ try:
     assert b'Unsupported draw color path' in lib.gauntlet_shadow_error()
     first[meta+28]=saved_path
     print('unknown color-path metadata rejected PASS',flush=True)
+    saved_fbz=first[meta+19]
+    first[meta+28]=0
+    first[meta+19]=0xb4379
+    assert draw(first,1)==-1
+    assert b'Unsupported draw geometry/state' in lib.gauntlet_shadow_error()
+    first[meta+19]=saved_fbz
+    first[meta+28]=saved_path
+    print('depth-write-disabled state requires extended color path PASS',flush=True)
     assert draw(first,1)==0,lib.gauntlet_shadow_error()
     if tracked and relocate:
         dirty[:]=array.array('I',[0])*8192
@@ -104,6 +112,15 @@ try:
     assert draw(first,1)==0,lib.gauntlet_shadow_error()
     assert lib.gauntlet_shadow_read_pixels(ctx)==0,lib.gauntlet_shadow_error()
     compare(first)
+    extended=array.array('I',first)
+    extended[meta+28]=1
+    extended[meta+19]=0xb4379
+    extended[meta+21]=0
+    assert draw(extended,1)==0,lib.gauntlet_shadow_error()
+    assert lib.gauntlet_shadow_read_pixels(ctx)==0,lib.gauntlet_shadow_error()
+    output=(c.c_uint32*pixels).from_address(lib.gauntlet_shadow_output(ctx))
+    assert all(output[i]>>16==first[initial+i]>>16 for i in range(pixels))
+    print('extended disabled depth-write preserves initial depth PASS',flush=True)
     print('resident two-draw chain / readback / reset / negative ordering PASS',flush=True)
 finally:
     lib.gauntlet_shadow_destroy(ctx)

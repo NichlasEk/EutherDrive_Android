@@ -50579,11 +50579,9 @@ internal partial class VoodooBringupBackend : IVoodooBackend
         int parallelCoveredFlag = 0;
         BeginGpuDrawCapture((useProfiledCommonRasterKernel ||
             (_experimentMameTwoTmuCombine && _experimentFbzColorPathRgbCombine && _experimentSetupMameFog &&
-             useMameAuxDepth && fbzMode == 0x000b4779U && fbzColorPath == 0x0c602c19U &&
+             useMameAuxDepth && (fbzMode is 0x000b4779U or 0x000b4379U) && fbzColorPath == 0x0c602c19U &&
              alphaMode == 0x00045119U && fogMode == 0x000000c1U && !alpha8Mask &&
-             hasTmu0TriangleState && hasTmu1TriangleState &&
-             ((tmu0TriangleState.Mode == 0x8c24110fU && tmu1TriangleState.Mode == 0x8c241acfU) ||
-              (tmu0TriangleState.Mode == 0x80000009U && tmu1TriangleState.Mode == 0x8c24110fU)))) &&
+             hasTmu0TriangleState && hasTmu1TriangleState)) &&
             !traceSampleSummary && !traceTexturedPixels && !_profilePixelLastWriters, minX, minY, maxX, maxY,
             setupAx, setupAy, area > 0, a, b, c, bufferIndex, zaColor, fogColor,
             fbzColorPathState, mameRgbMask, mameAuxMask, mameDepthTest, fallbackColor,

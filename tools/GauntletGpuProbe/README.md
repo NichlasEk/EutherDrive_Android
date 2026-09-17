@@ -116,6 +116,17 @@ selects the color path; words 116–118 hold iterated-alpha gradients.
 The extension is off by default and has not improved replay speed yet.
 See [extended color-path checkpoint](../../docs/gauntlet-dl-gpu-extended-color-path-2026-09-17.md).
 
+Value `2` of the same flag adds three more strictly allowlisted combinations,
+including the observed depth-write-disabled state. Value `1` is unchanged.
+Both levels remain diagnostic: the larger coverage currently increases total
+replay time with synchronous per-draw submission. See
+[level 2 checkpoint](../../docs/gauntlet-dl-gpu-color-level2-2026-09-17.md).
+
+`EUTHERDRIVE_GAUNTDL_GPU_FENCE_POLL=1` optionally polls draw-fence status for
+a 50-microsecond deadline before the unchanged mandatory fence wait.
+It remains synchronous and may consume additional CPU/energy. It is off by
+default. See [fence polling measurements](../../docs/gauntlet-dl-gpu-fence-poll-2026-09-17.md).
+
 `draw.comp` adds coverage, fixed-point gradients, perspective divide,
 per-pixel LOD, both TMUs and combination, fog, alpha blending, RGB565/depth
 writes. It shares `sampling.glsl` with the sampler. Only the existing
