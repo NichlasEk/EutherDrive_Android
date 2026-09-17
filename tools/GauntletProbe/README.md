@@ -128,6 +128,11 @@ ROM-free texture LOD regression checks:
 The checks cover 1,048,576 input combinations against the original calculation
 order. See [raster experiments](../../docs/gauntlet-dl-raster-experiments-2026-09-17.md).
 
+ROM-free bilinear filter checks:
+`EUTHERDRIVE_GAUNTDL_TEST_TEXTURE_FILTER=1 dotnet tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll`.
+This compares 1,156,784 cases with the original per-channel formula.
+See [packed texture filtering](../../docs/gauntlet-dl-packed-texture-filter-2026-09-17.md).
+
 In-process GPU shadow comparison is available in diagnostic builds with
 `EUTHERDRIVE_GAUNTDL_GPU_SHADOW=1`; it checks up to 128 draws while the CPU
 continues to supply all game results. Build the native library first as shown

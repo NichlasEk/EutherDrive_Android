@@ -52680,13 +52680,20 @@ sampledTexel:
         int weight10 = fx * inverseY;
         int weight01 = inverseX * fy;
         int weight11 = fx * fy;
-        static byte Blend(byte a, byte b, byte c, byte d, int w00, int w10, int w01, int w11)
-            => (byte)Math.Clamp((a * w00 + b * w10 + c * w01 + d * w11 + 0x8000) >> 16, 0, 255);
+        // The sole caller supplies 8-bit fractions. Weights sum to 65536;
+        // each rounded channel sum fits in 24 bits, so 32-bit lanes cannot carry.
+        Debug.Assert((uint)fx <= 256 && (uint)fy <= 256);
+        static ulong Pack(byte low, byte high) => low | ((ulong)high << 32);
+        ulong rg = Pack(c00.R, c00.G) * (uint)weight00 +
+            Pack(c10.R, c10.G) * (uint)weight10 +
+            Pack(c01.R, c01.G) * (uint)weight01 +
+            Pack(c11.R, c11.G) * (uint)weight11 + 0x0000800000008000UL;
+        ulong ba = Pack(c00.B, c00.A) * (uint)weight00 +
+            Pack(c10.B, c10.A) * (uint)weight10 +
+            Pack(c01.B, c01.A) * (uint)weight01 +
+            Pack(c11.B, c11.A) * (uint)weight11 + 0x0000800000008000UL;
         return new TextureRgba(
-            Blend(c00.R, c10.R, c01.R, c11.R, weight00, weight10, weight01, weight11),
-            Blend(c00.G, c10.G, c01.G, c11.G, weight00, weight10, weight01, weight11),
-            Blend(c00.B, c10.B, c01.B, c11.B, weight00, weight10, weight01, weight11),
-            Blend(c00.A, c10.A, c01.A, c11.A, weight00, weight10, weight01, weight11));
+            (byte)(rg >> 16), (byte)(rg >> 48), (byte)(ba >> 16), (byte)(ba >> 48));
     }
 
     private static TextureRgba CombineTextureMame(uint mode, TextureRgba local, TextureRgba other, int lod8p8)

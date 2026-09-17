@@ -509,3 +509,9 @@ Warm-runnern stöder nu frysta A/B-byggen. Se
 Alla 16 slutmaskiner matchar exakt, men ingen stabil fartvinst visas; båda
 återställdes. Ett ROM-fritt LOD-regressionstest med 1 048 576 fall behålls.
 Se [rasterförsöken](gauntlet-dl-raster-experiments-2026-09-17.md).
+
+Packad bilinjär texturfiltrering behålls: sex växlade gamla/nya par ger
+1,93 procent kortare replaytid i medel på denna host (fyra av sex par vinner).
+Alla tolv slutmaskiner matchar exakt och 1 156 784 filtertestfall passerar.
+Android-vinst är ännu inte mätt. Se
+[filtercheckpointen](gauntlet-dl-packed-texture-filter-2026-09-17.md).
