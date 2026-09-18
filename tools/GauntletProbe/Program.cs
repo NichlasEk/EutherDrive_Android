@@ -8,6 +8,12 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_FIFO_PACKET_MEMBERSHIP") == "1")
+{
+    FifoPacketMembershipChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
+    return;
+}
+
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_BLOCK_FAST_CACHE") == "1")
 {
     RuntimeBlockFastCacheChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
@@ -2511,6 +2517,8 @@ static void ReadStandardFifoGenerationState(BinaryReader reader, object backend,
     MethodInfo addHeader = completeSet.GetType().GetMethod("Add")!;
     foreach (int header in completeHeaders)
         addHeader.Invoke(completeSet, [header]);
+    backend.GetType().GetMethod("RebuildCommandFifoCompletePacketMembership",
+        BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(backend, null);
     SetField(backend, "_cmdFifoValidCount", reader.ReadInt32());
     SetField(backend, "_cmdFifoWriteGenerationBase", reader.ReadInt32());
     SetField(backend, "_cmdFifoWriteQueueIndex", reader.ReadInt32());

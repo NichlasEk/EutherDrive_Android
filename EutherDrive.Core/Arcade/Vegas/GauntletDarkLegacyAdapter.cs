@@ -40261,6 +40261,9 @@ internal partial class VoodooBringupBackend : IVoodooBackend
     private readonly bool[] _cmdFifoStoragePacketOwnerValid = new bool[CmdFifoFramebufferWords];
     private readonly int[] _cmdFifoStoragePacketOwnerHeaderLogicalIndex = new int[CmdFifoFramebufferWords];
     private readonly SortedSet<int> _cmdFifoCompletePacketHeaders = [];
+    private readonly HashSet<int>? _cmdFifoCompletePacketMembership =
+        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable(
+            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_FIFO_PACKET_MEMBERSHIP")) ? [] : null;
     private readonly ulong[] _cmdFifoStorageLastWritePc = new ulong[CmdFifoFramebufferWords];
     private readonly uint[] _cmdFifoStorageLastWriteValue = new uint[CmdFifoFramebufferWords];
     private readonly int[] _cmdFifoStorageLastWriteLogicalIndex = new int[CmdFifoFramebufferWords];
@@ -42024,7 +42027,7 @@ internal partial class VoodooBringupBackend : IVoodooBackend
             int writtenStorage = CommandFifoStorageIndex(logicalWriteIndex);
             bool writtenPacketComplete =
                 _cmdFifoStoragePacketOwnerValid[writtenStorage] &&
-                _cmdFifoCompletePacketHeaders.Contains(
+                ContainsCompleteCommandFifoPacket(
                     _cmdFifoStoragePacketOwnerHeaderLogicalIndex[writtenStorage]);
             deferIncompleteStandardPacket = !writtenPacketComplete;
         }
@@ -42101,8 +42104,7 @@ internal partial class VoodooBringupBackend : IVoodooBackend
             int oldHeader = _cmdFifoStoragePacketOwnerHeaderLogicalIndex[normalized];
             // A later body write can refer to an owner already removed by an
             // earlier overwrite. Avoid a removal search for an absent header.
-            if (_cmdFifoCompletePacketHeaders.Contains(oldHeader))
-                _cmdFifoCompletePacketHeaders.Remove(oldHeader);
+            RemoveCompleteCommandFifoPacket(oldHeader);
         }
         bool sequentialBody = logicalWriteIndex == state.NextLogicalIndex &&
                               state.BodyWordsRemaining > 0;
@@ -42115,7 +42117,7 @@ internal partial class VoodooBringupBackend : IVoodooBackend
             _cmdFifoStoragePacketOwnerHeaderLogicalIndex[normalized] = state.HeaderLogicalIndex;
             state = state with { BodyWordsRemaining = state.BodyWordsRemaining - 1 };
             if (state.BodyWordsRemaining == 0)
-                _cmdFifoCompletePacketHeaders.Add(state.HeaderLogicalIndex);
+                AddCompleteCommandFifoPacket(state.HeaderLogicalIndex);
         }
         else
         {
@@ -42133,7 +42135,7 @@ internal partial class VoodooBringupBackend : IVoodooBackend
                 _cmdFifoStoragePacketOwnerValid[normalized] = true;
                 _cmdFifoStoragePacketOwnerHeaderLogicalIndex[normalized] = logicalWriteIndex;
                 if (wordsNeeded == 1)
-                    _cmdFifoCompletePacketHeaders.Add(logicalWriteIndex);
+                    AddCompleteCommandFifoPacket(logicalWriteIndex);
             }
             else
             {
@@ -42145,6 +42147,34 @@ internal partial class VoodooBringupBackend : IVoodooBackend
 
         state = state with { NextLogicalIndex = logicalWriteIndex + 1 };
         _cmdFifoPacketMapProducerStates[producer] = state;
+    }
+
+    private bool ContainsCompleteCommandFifoPacket(int header)
+        => _cmdFifoCompletePacketMembership is { } membership
+            ? membership.Contains(header) : _cmdFifoCompletePacketHeaders.Contains(header);
+
+    private void AddCompleteCommandFifoPacket(int header)
+    {
+        _cmdFifoCompletePacketHeaders.Add(header);
+        _cmdFifoCompletePacketMembership?.Add(header);
+    }
+
+    private void RemoveCompleteCommandFifoPacket(int header)
+    {
+        // Preserve the absent-header shortcut. Full logical indices (including
+        // generation bits) are keys; physical FIFO aliases must stay distinct.
+        bool present = _cmdFifoCompletePacketMembership is { } membership
+            ? membership.Remove(header) : _cmdFifoCompletePacketHeaders.Contains(header);
+        if (present)
+            _cmdFifoCompletePacketHeaders.Remove(header);
+    }
+
+    internal void RebuildCommandFifoCompletePacketMembership()
+    {
+        if (_cmdFifoCompletePacketMembership is not { } membership)
+            return;
+        membership.Clear();
+        membership.UnionWith(_cmdFifoCompletePacketHeaders);
     }
 
     private void TrackCommandFifoType3ProducerWord(int storageIndex, uint value)
@@ -42319,6 +42349,7 @@ internal partial class VoodooBringupBackend : IVoodooBackend
         Array.Clear(_cmdFifoStoragePacketOwnerValid);
         Array.Clear(_cmdFifoStoragePacketOwnerHeaderLogicalIndex);
         _cmdFifoCompletePacketHeaders.Clear();
+        _cmdFifoCompletePacketMembership?.Clear();
         Array.Clear(_cmdFifoStorageLastWritePc);
         Array.Clear(_cmdFifoStorageLastWriteValue);
         Array.Clear(_cmdFifoStorageLastWriteLogicalIndex);
