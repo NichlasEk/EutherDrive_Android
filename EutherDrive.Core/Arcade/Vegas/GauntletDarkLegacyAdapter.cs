@@ -52387,7 +52387,10 @@ sampledTexel:
         int LodMin8p8,
         int LodMax8p8,
         uint LodMask,
-        TextureFetchLayout[] Layouts);
+        TextureFetchLayout[] Layouts)
+    {
+        public PackedNcc[]? PackedNccLut { get; init; }
+    }
 
     private readonly record struct TextureLayoutCacheKey(
         uint Mode,
@@ -52423,7 +52426,10 @@ sampledTexel:
             (int)(lod & 0x3fu) << 6,
             (int)((lod >> 6) & 0x3fu) << 6,
             DecodeTextureLodMask(lod),
-            layouts);
+            layouts)
+        {
+            PackedNccLut = _experimentFusedNcc ? _packedNccLuts[tmu, (mode >> 5) & 1] : null
+        };
     }
 
     private TextureFetchLayout[] GetCachedMameTextureFetchLayouts(int tmu, uint mode, uint lod, uint base0)
@@ -52468,7 +52474,7 @@ sampledTexel:
         }
 
         TextureRgba[] lut = _tmuNccRgbaLuts[tmu][table];
-        if (_tmuNccRgbaLutValid[tmu, table])
+        if (_tmuNccRgbaLutValid[tmu, table] && (!_experimentFusedNcc || _packedNccLuts[tmu, table] is not null))
             return lut;
 
         for (int value = 0; value < lut.Length; value++)
@@ -52477,6 +52483,7 @@ sampledTexel:
             Rgb565ToBytes(rgb, out int r, out int g, out int b);
             lut[value] = new TextureRgba((byte)r, (byte)g, (byte)b, 255);
         }
+        if (_experimentFusedNcc) RebuildPackedNcc(tmu, table, lut);
         _tmuNccRgbaLutValid[tmu, table] = true;
         return lut;
     }
@@ -52542,6 +52549,16 @@ sampledTexel:
             int y1 = Coordinate24_8ToTexelIndex(t24_8 + (1 << (targetLod + 8)), layout.Height, targetLod, clampT);
             if (_fixTextureTOriginFlip)
                 y1 = layout.Height - 1 - y1;
+            if (format is 1 or 9 && triangleState.NccRgbaLut is not null &&
+                triangleState.PackedNccLut is { } packed && !triangleState.TrackSampleDiagnostics)
+            {
+                int fractionX = (int)(Coordinate24_8Fraction(s24_8, targetLod) * 256.0f);
+                int fractionY = (int)(Coordinate24_8Fraction(t24_8, targetLod) * 256.0f);
+                TextureRgba fused = SampleFusedNcc(tmu, x0, x1, y0, y1, layout.Width,
+                    format, layout.BaseAddress, triangleState.Swap16BitBytes, packed, fractionX, fractionY);
+                RecordGpuSample(tmu, iterS, iterT, iterW, targetLod, in triangleState, reciprocalWOverride, fused);
+                return fused;
+            }
             ReadTextureRgbaPairAt(
                 tmu,
                 x0,

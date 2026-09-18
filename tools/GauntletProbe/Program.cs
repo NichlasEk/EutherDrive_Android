@@ -8,6 +8,12 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_FUSED_NCC") == "1")
+{
+    FusedNccChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
+    return;
+}
+
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_FIFO_PC_FILTER") == "1")
 {
     FifoPcFilterChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
@@ -642,6 +648,7 @@ static void LoadRequestedMameVoodooTmuRegisters(GauntletDarkLegacyAdapter adapte
     object backend = GetField(GetProperty(GetField(adapter, "_machine"), "Voodoo"), "_backend");
     uint[][] registers = GetFieldValue<uint[][]>(backend, "_tmuRegisters");
     bool[][] valid = GetFieldValue<bool[][]>(backend, "_tmuRegisterValid");
+    backend.GetType().GetMethod("InvalidateNccSamplingCaches")!.Invoke(backend, null);
     const int registerCount = 0x100;
     const int registerBytes = registerCount * sizeof(uint);
 
@@ -2394,6 +2401,7 @@ static void SaveVoodoo(BinaryWriter writer, object facade)
 static void LoadVoodoo(BinaryReader reader, object facade, int version)
 {
     object backend = GetField(facade, "_backend");
+    backend.GetType().GetMethod("InvalidateNccSamplingCaches")!.Invoke(backend, null);
     // Raw snapshot restoration bypasses guest texture writes. Drain and stop
     // any diagnostic GPU session before replacing its CPU backing buffers.
     if (FindField(backend.GetType(), "_gpuShadow")?.GetValue(backend) is not null)
