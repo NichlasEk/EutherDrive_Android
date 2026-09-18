@@ -35132,9 +35132,11 @@ internal sealed class VegasMemoryMap
             // are shorter than the period, so their remainder is already known.
             ulong decrement = timerTicks < period ? timerTicks : timerTicks % period;
             bool expired = timerTicks >= (ulong)counter + 1UL || (period != 0 && timerTicks >= period);
+            // decrement < period; when counter < decrement their difference
+            // is also below period, so wrapping needs no second remainder.
             ulong next = counter >= decrement
                 ? counter - decrement
-                : period - ((decrement - counter) % period);
+                : period - (decrement - counter);
             if (next == period)
                 next = 0;
             // Counter registers cannot overlap timer control bits. Updating them

@@ -18,7 +18,7 @@ internal static class NileClockChecks
             0x40000000000, ulong.MaxValue];
         int checks = 0;
         foreach (uint reload in reloads)
-        foreach (uint counter in new[] { 0U, 1U, reload, unchecked(reload + 1), uint.MaxValue })
+        foreach (uint counter in new[] { 0U, 1U, reload, unchecked(reload + 1), unchecked(reload + 2), uint.MaxValue })
         foreach (ulong step in ticks)
         for (byte mask = 0; mask < 16; mask++)
         for (int state = 0; state < 4; state++)

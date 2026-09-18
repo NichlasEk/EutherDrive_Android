@@ -64,12 +64,12 @@ Detaljer: [NCC-rapport](gauntlet-dl-fused-ncc-filter-2026-09-18.md).
 2. Validera nya CPU-kandidater mot det befintliga fullständiga replay-oraklet
    och mät med växlande referens-/kandidatbyggen.
 3. För större lyft: återvänd till bred CPU-exekveringsväg eller rendererarbete
-   utifrån profilen, inte en ny godtycklig gäst-PC-region. Senaste CPU-profil
-   före NCC visade cirka 41 % MIPS, 36 % texturraster och 17 % övrig Voodoo
-   på huvudtrådens replay-stack; detta är stackvikt, inte additiva CPU-cykler
-   över alla trådar. Profilen föregår timeråterställningen: samla en ny profil
-   med aktiva timers innan nästa CPU/JIT-prioritering. GPU-offload är inte
-   bevisat snabbare av dessa data.
+   utifrån profilen, inte en ny godtycklig gäst-PC-region. Ny profil med
+   aktiva timers på `a6bcd536` visar cirka 40 % MIPS, 31 % texturraster,
+   14 % övrig Voodoo och 11 % CP0/Nile på huvudtrådens replay-stack.
+   Detta är stackvikt inklusive väntan, inte additiva CPU-cykler över alla
+   trådar. [Profil och timerförsök](gauntlet-dl-nile-single-tick-2026-09-18.md).
+   GPU-offload är inte bevisat snabbare av dessa data.
 
 Profil: [CPU-profil efter FIFO-fix](gauntlet-dl-cpu-profile-after-fifo-filter-2026-09-18.md).
 Återimplementera inte de redan prövade försöken utan nytt underlag:
