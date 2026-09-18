@@ -8,13 +8,15 @@ internal static class RuntimeBlockFastCacheChecks
     {
         const string prefix = "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_";
         string[] variables = [prefix + "BLOCK_FAST_CACHE", prefix + "SAFE_INSTRUCTION_BATCHES",
-            prefix + "COMPILED_BLOCKS", "EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_MIN_INSTRUCTIONS"];
+            prefix + "COMPILED_BLOCKS", "EUTHERDRIVE_GAUNTDL_RUNTIME_COMPILED_BLOCK_MIN_INSTRUCTIONS",
+            "EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_BLOCK_CACHE", "EUTHERDRIVE_GAUNTDL_RUNTIME_BLOCK_FAST_CACHE_SIZE"];
         string?[] previous = variables.Select(Environment.GetEnvironmentVariable).ToArray();
         try
         {
             foreach (string variable in variables)
                 Environment.SetEnvironmentVariable(variable, "1");
             Environment.SetEnvironmentVariable(variables[3], "4");
+            Environment.SetEnvironmentVariable(variables[5], "256");
             Type memoryType = assembly.GetType("EutherDrive.Core.Arcade.Vegas.VegasMemoryMap", true)!;
             Type type = assembly.GetType("EutherDrive.Core.Arcade.Vegas.MipsR5000Core", true)!;
             object memory = Activator.CreateInstance(memoryType)!;
@@ -90,9 +92,45 @@ internal static class RuntimeBlockFastCacheChecks
             Check(!(bool)Call("TryRunRuntimeCompiledBlock", entry, 0U, first)!, "Compiled guard accepted stale code");
             Check(!ReferenceEquals(first, Get(entry)), "Compiled guard retained stale L1 entry");
 
+            Reset();
+            Get(entry);
+            Get(entry);
+            Get(collision);
+            Get(entry);
+            Call("InvalidateRuntimeSafeInstructionBlock", entry);
+            Get(entry);
+            Check((string)type.GetProperty("RuntimeBlockCacheProfileStatus")!.GetValue(cpu)! ==
+                "runtimeBlockCache slots=256 lookups=5 hits=1 collisions=2 emptyHits=0 dictionaryHits=1 builds=3 invalidations=1",
+                "Cache counters did not account for the known access sequence");
+            Get(emptyPc);
+            Get(emptyPc);
+            Check((ulong)Field("_blockCacheEmptyHits").GetValue(cpu)! == 1, "Empty hits not counted");
+            Reset();
+            Check((string)type.GetProperty("RuntimeBlockCacheProfileStatus")!.GetValue(cpu)! ==
+                "runtimeBlockCache slots=256 lookups=0 hits=0 collisions=0 emptyHits=0 dictionaryHits=0 builds=0 invalidations=0",
+                "Reset retained counters");
+            foreach ((string value, int expected) in new[] { ("64", 64), ("4096", 4096),
+                ("65536", 65536), ("1000", 256), ("131072", 256), ("0", 256), ("bad", 256) })
+            {
+                Environment.SetEnvironmentVariable(variables[5], value);
+                object sized = Activator.CreateInstance(type, [memory])!;
+                Array slots = (Array)Field("_runtimeSafeBlockFastCache").GetValue(sized)!;
+                Check(slots.Length == expected, $"Incorrect cache size for {value}");
+                object Lookup(ulong pc) => type.GetMethod("GetRuntimeSafeInstructionBlock", flags)!.Invoke(sized, [pc])!;
+                object original = Lookup(entry);
+                object colliding = Lookup(entry + (ulong)expected * 4);
+                Check(!ReferenceEquals(original, colliding) && ReferenceEquals(original, Lookup(entry)),
+                    $"Collision handling failed for {value}");
+                type.GetMethod("InvalidateRuntimeSafeInstructionBlock", flags)!.Invoke(sized, [entry]);
+                Check(!ReferenceEquals(original, Lookup(entry)), $"Invalidation failed for {value}");
+            }
             Environment.SetEnvironmentVariable(variables[0], "0");
+            Environment.SetEnvironmentVariable(variables[4], "0");
             object disabled = Activator.CreateInstance(type, [memory])!;
             Check(Field("_runtimeSafeBlockFastCache").GetValue(disabled) is null, "Disabled cache allocated storage");
+            type.GetMethod("GetRuntimeSafeInstructionBlock", flags)!.Invoke(disabled, [entry]);
+            Check((ulong)Field("_blockCacheLookups").GetValue(disabled)! == 0 &&
+                (ulong)Field("_blockCacheBuilds").GetValue(disabled)! == 0, "Disabled profiling counted work");
             Console.WriteLine($"runtimeBlockFastCacheChecks=passed cases:{checks}");
         }
         finally

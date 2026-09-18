@@ -215,6 +215,8 @@ if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_REGI
     Console.WriteLine(GetProperty(cpu, "RuntimeRegionProfileStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_SAFE_BLOCKS") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeSafeBlockProfileStatus"));
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_BLOCK_CACHE") == "1")
+    Console.WriteLine(GetProperty(cpu, "RuntimeBlockCacheProfileStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_BLOCK_TRANSITIONS") == "1")
     Console.WriteLine(GetProperty(cpu, "RuntimeBlockTransitionProfileStatus"));
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_CODE_PAGES") == "1")

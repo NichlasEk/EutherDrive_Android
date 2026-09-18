@@ -88,6 +88,8 @@ Dessa innehåller ROM-härlett tillstånd och checkas inte in.
 
 ## Nästa steg
 
+Uppföljning: [träffgradsprofil och 4096-postersförsök](gauntlet-dl-block-cache-profile-2026-09-18.md).
+
 Mät träffgrad/kollisioner i en separat diagnostikkörning innan cachetabellen
 görs större. Om uppslagen redan träffar bra är det mer motiverat att undersöka
 batch-/blockövergångar och minska återgångarna till `Step` än att fortsätta

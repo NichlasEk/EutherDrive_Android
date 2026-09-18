@@ -1288,10 +1288,11 @@ internal sealed partial class MipsR5000Core
         _runtimeBlockTransitionProfileCounts = [];
     private readonly Dictionary<uint, RuntimeCodePageProfileStats> _runtimeCodePageProfile = [];
     private readonly Dictionary<ulong, RuntimeSafeBlock> _runtimeSafeInstructionBlocks = [];
-    private readonly RuntimeSafeBlockCacheEntry[]? _runtimeSafeBlockFastCache =
-        GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable(
-            "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BLOCK_FAST_CACHE"))
-            ? new RuntimeSafeBlockCacheEntry[256] : null;
+    private readonly RuntimeSafeBlockCacheEntry[]? _runtimeSafeBlockFastCache = CreateRuntimeSafeBlockFastCache();
+    private readonly bool _profileRuntimeBlockCache = GauntletDarkLegacyAdapter.IsTruthy(
+        Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_PROFILE_RUNTIME_BLOCK_CACHE"));
+    private ulong _blockCacheLookups, _blockCacheHits, _blockCacheCollisions,
+        _blockCacheEmptyHits, _blockCacheDictionaryHits, _blockCacheBuilds, _blockCacheInvalidations;
     private bool _runtimeRegionProfileActive;
     private ulong _runtimeRegionProfileStart;
     private ulong _runtimeRegionProfileLastPc;
@@ -2308,6 +2309,10 @@ internal sealed partial class MipsR5000Core
     public string OpcodeProfileStatus => GetOpcodeProfileStatus();
     public string RuntimeRegionProfileStatus => GetRuntimeRegionProfileStatus();
     public string RuntimeSafeBlockProfileStatus => GetRuntimeSafeBlockProfileStatus();
+    public string RuntimeBlockCacheProfileStatus =>
+        $"runtimeBlockCache slots={_runtimeSafeBlockFastCache?.Length ?? 0} lookups={_blockCacheLookups} " +
+        $"hits={_blockCacheHits} collisions={_blockCacheCollisions} emptyHits={_blockCacheEmptyHits} " +
+        $"dictionaryHits={_blockCacheDictionaryHits} builds={_blockCacheBuilds} invalidations={_blockCacheInvalidations}";
     public string RuntimeBlockTransitionProfileStatus => GetRuntimeBlockTransitionProfileStatus();
     public string RuntimeCodePageProfileStatus => GetRuntimeCodePageProfileStatus();
     public string RuntimeCounterWaitRegionStatus =>
@@ -2362,6 +2367,8 @@ internal sealed partial class MipsR5000Core
         _runtimeBlockTransitionProfileCounts.Clear();
         _runtimeCodePageProfile.Clear();
         _runtimeSafeInstructionBlocks.Clear();
+        _blockCacheLookups = _blockCacheHits = _blockCacheCollisions = _blockCacheEmptyHits =
+            _blockCacheDictionaryHits = _blockCacheBuilds = _blockCacheInvalidations = 0;
         if (_runtimeSafeBlockFastCache is not null)
             Array.Clear(_runtimeSafeBlockFastCache);
         _runtimeRegionProfileActive = false;
@@ -5465,12 +5472,25 @@ internal sealed partial class MipsR5000Core
         public RuntimeSafeBlock? Block;
     }
 
+    private static RuntimeSafeBlockCacheEntry[]? CreateRuntimeSafeBlockFastCache()
+    {
+        if (!GauntletDarkLegacyAdapter.IsTruthy(Environment.GetEnvironmentVariable(
+                "EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BLOCK_FAST_CACHE")))
+            return null;
+        int size = ParsePositiveInt("EUTHERDRIVE_GAUNTDL_RUNTIME_BLOCK_FAST_CACHE_SIZE", 256);
+        if (size < 64 || size > 65536 || (size & (size - 1)) != 0)
+            size = 256;
+        return new RuntimeSafeBlockCacheEntry[size];
+    }
+
     private void InvalidateRuntimeSafeInstructionBlock(ulong pc)
     {
+        if (_profileRuntimeBlockCache)
+            _blockCacheInvalidations++;
         _runtimeSafeInstructionBlocks.Remove(pc);
         if (_runtimeSafeBlockFastCache is not null)
         {
-            ref RuntimeSafeBlockCacheEntry entry = ref _runtimeSafeBlockFastCache[(int)(pc >> 2) & 255];
+            ref RuntimeSafeBlockCacheEntry entry = ref _runtimeSafeBlockFastCache[(int)(pc >> 2) & (_runtimeSafeBlockFastCache.Length - 1)];
             if (entry.Pc == pc)
                 entry = default;
         }
@@ -5479,14 +5499,26 @@ internal sealed partial class MipsR5000Core
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private RuntimeSafeBlock GetRuntimeSafeInstructionBlock(ulong pc)
     {
+        if (_profileRuntimeBlockCache)
+            _blockCacheLookups++;
         if (_runtimeSafeBlockFastCache is null)
             return GetRuntimeSafeInstructionBlockSlow(pc);
 
-        ref RuntimeSafeBlockCacheEntry entry = ref _runtimeSafeBlockFastCache[(int)(pc >> 2) & 255];
+        ref RuntimeSafeBlockCacheEntry entry = ref _runtimeSafeBlockFastCache[(int)(pc >> 2) & (_runtimeSafeBlockFastCache.Length - 1)];
         // Full PC tags preserve address aliases; null distinguishes an unused slot
         // from a cached empty block. Entry-word validation remains at execution.
         if (entry.Pc == pc && entry.Block is not null)
+        {
+            if (_profileRuntimeBlockCache)
+            {
+                _blockCacheHits++;
+                if (entry.Block.Instructions.Length == 0)
+                    _blockCacheEmptyHits++;
+            }
             return entry.Block;
+        }
+        if (_profileRuntimeBlockCache && entry.Block is not null)
+            _blockCacheCollisions++;
         RuntimeSafeBlock block = GetRuntimeSafeInstructionBlockSlow(pc);
         entry.Pc = pc;
         entry.Block = block;
@@ -5497,7 +5529,13 @@ internal sealed partial class MipsR5000Core
     {
         const int maxInstructions = 64;
         if (_runtimeSafeInstructionBlocks.TryGetValue(pc, out RuntimeSafeBlock? cached))
+        {
+            if (_profileRuntimeBlockCache)
+                _blockCacheDictionaryHits++;
             return cached;
+        }
+        if (_profileRuntimeBlockCache)
+            _blockCacheBuilds++;
 
         List<RuntimeSafeInstruction> instructions = new(maxInstructions);
         ulong currentPc = pc;
