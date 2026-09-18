@@ -9,6 +9,12 @@ fullständiga replay-slutdumpar och växlade Linux-mätningar. NCC-resultaten
 nedan är föregående checkpoint, inte en beställning på enhetsprov.
 
 Senaste fortsättning:
+[CPU-dispatch-/statusläsningsförsök](gauntlet-dl-runtime-state-load-2026-09-18.md).
+Två kandidater förkastades efter växlade mätningar utan stabil tidsvinst.
+Runtime-koden är oförändrad från `52a3cf40`; 5120 nya statuskontroller och
+mätunderlag har tillkommit. Nästa spår: maskinkod/anropskostnad i CPU-dispatch.
+
+Föregående timerfix:
 [Nile-timeråterställning och klockoptimering](gauntlet-dl-nile-clock-2026-09-18.md).
 Snapshotladdaren måste återställa timeraktivitetsmasken från kontrollregistren.
 Den gamla 32f8-slutdumpen hade bortkopplade timers; aktuellt orakel är fe8b,
