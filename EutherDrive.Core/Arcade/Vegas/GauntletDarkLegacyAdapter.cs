@@ -42017,8 +42017,7 @@ internal partial class VoodooBringupBackend : IVoodooBackend
         }
 
         ulong writePc = CpuPcProvider?.Invoke() ?? 0;
-        bool deferWriteDecodeForPc = _experimentCommandFifoDeferWriteDecodePcs.Any(
-            candidate => (candidate & 0xffffffffUL) == (writePc & 0xffffffffUL));
+        bool deferWriteDecodeForPc = ContainsCommandFifoPc(_experimentCommandFifoDeferWriteDecodePcs, writePc);
         bool deferIncompleteStandardPacket = false;
         if (_fixStandardCommandFifoDecodeCompletePackets &&
             !_fixMameCommandFifoModel &&
@@ -42177,6 +42176,16 @@ internal partial class VoodooBringupBackend : IVoodooBackend
         membership.UnionWith(_cmdFifoCompletePacketHeaders);
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool ContainsCommandFifoPc(ulong[] candidates, ulong pc)
+    {
+        uint lowPc = unchecked((uint)pc);
+        foreach (ulong candidate in candidates)
+            if (unchecked((uint)candidate) == lowPc)
+                return true;
+        return false;
+    }
+
     private void TrackCommandFifoType3ProducerWord(int storageIndex, uint value)
     {
         if (!_experimentCommandFifoGateType3ProducerBodyHeader &&
@@ -42190,8 +42199,7 @@ internal partial class VoodooBringupBackend : IVoodooBackend
         bool type3Header = type == 3u && code <= 2u && vertices > 0;
         ulong writePc = CpuPcProvider?.Invoke() ?? 0;
         bool explicitHeaderPc = _experimentCommandFifoType3ProducerHeaderPcs.Length == 0 ||
-                                _experimentCommandFifoType3ProducerHeaderPcs.Any(
-                                    candidate => (candidate & 0xffffffffUL) == (writePc & 0xffffffffUL));
+                                ContainsCommandFifoPc(_experimentCommandFifoType3ProducerHeaderPcs, writePc);
         if (_experimentCommandFifoType4BodyYieldToGlyphType3Header &&
             (writePc & 0xffffffffUL) == 0x800c4e5cUL)
         {
@@ -42305,8 +42313,7 @@ internal partial class VoodooBringupBackend : IVoodooBackend
         bool type4Header = (value & 7u) == 4u;
         ulong writePc = CpuPcProvider?.Invoke() ?? 0;
         bool explicitHeaderPc = _experimentCommandFifoType4ProducerHeaderPcs.Length == 0 ||
-                                _experimentCommandFifoType4ProducerHeaderPcs.Any(
-                                    candidate => (candidate & 0xffffffffUL) == (writePc & 0xffffffffUL));
+                                ContainsCommandFifoPc(_experimentCommandFifoType4ProducerHeaderPcs, writePc);
         bool resyncHeader = type4Header && explicitHeaderPc;
         bool glyphType3Header =
             _experimentCommandFifoType4BodyYieldToGlyphType3Header &&

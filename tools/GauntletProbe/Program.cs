@@ -8,6 +8,12 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_FIFO_PC_FILTER") == "1")
+{
+    FifoPcFilterChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
+    return;
+}
+
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_FIFO_PACKET_MEMBERSHIP") == "1")
 {
     FifoPacketMembershipChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
