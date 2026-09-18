@@ -5619,6 +5619,31 @@ internal sealed partial class MipsR5000Core
             case 0x0f:
                 _gpr[rt] = SignExtend32((uint)instruction.UnsignedImmediate << 16);
                 return;
+            case 0x11 when !_profileOpcodes:
+                switch (rs)
+                {
+                    case 0x00: _gpr[rt] = (uint)_fpr[instruction.Rd]; break;
+                    case 0x01: _gpr[rt] = _fpr[instruction.Rd]; break;
+                    case 0x02: _gpr[rt] = _fcr[instruction.Rd]; break;
+                    case 0x04: _fpr[instruction.Rd] = (uint)_gpr[rt]; break;
+                    case 0x05: _fpr[instruction.Rd] = _gpr[rt]; break;
+                    case 0x06: _fcr[instruction.Rd] = (uint)_gpr[rt]; break;
+                    case 0x10:
+                        ExecuteCop1SingleFormat(pc, instruction.Op, rt, instruction.Rd,
+                            instruction.Shift, instruction.Function);
+                        break;
+                    default:
+                        ExecuteCop1(pc, instruction.Op, rs, rt, instruction.Rd);
+                        break;
+                }
+                return;
+            case 0x13 when !_profileOpcodes:
+                ExecuteCop1X(pc, instruction.Op, rs, rt);
+                return;
+            case 0x18:
+            case 0x19:
+                _gpr[rt] = unchecked((ulong)((long)_gpr[rs] + simm));
+                return;
             case 0x20:
                 _gpr[rt] = unchecked((ulong)(sbyte)_memory.ReadRuntimeData8(_gpr[rs] + (ulong)(long)simm));
                 return;

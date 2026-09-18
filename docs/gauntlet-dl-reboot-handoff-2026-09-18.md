@@ -1,5 +1,20 @@
 # Gauntlet DL – återstartspunkt 2026-09-18
 
+## Korrigerad arbetsinriktning efter återstart
+
+Användaren har uttryckligen förtydligat att det pågående arbetet gäller
+MIPS-JIT och prestanda här på Linux. Android-/ARM64-mätning är inte nästa
+steg eller ett villkor för detta arbete. Fortsätt med CPU-exekveringsvägen,
+fullständiga replay-slutdumpar och växlade Linux-mätningar. NCC-resultaten
+nedan är föregående checkpoint, inte en beställning på enhetsprov.
+
+Senaste lokala fortsättning:
+[COP1-dispatch i safe-block-vägen](gauntlet-dl-safe-cop1-dispatch-2026-09-18.md).
+3,02 % kortare median i första Linux-fönstret; senare fönster neutralt.
+Alla fullständiga slutdumpar och 2528 riktade CPU-fall matchar referensen.
+Probe/UI bygger. Kod, test och rapport hör till samma COP1-checkpoint.
+Ingen mätning eller byggprocess från detta pass behöver återupptas.
+
 ## Börja här efter omstart
 
 Repo: `/home/nichlas/EutherDrive_Android`, branch `main`.
@@ -37,10 +52,10 @@ Detaljer: [NCC-rapport](gauntlet-dl-fused-ncc-filter-2026-09-18.md).
 
 ## Fortsätt härnäst
 
-1. Validera opt-in NCC-vägen på en annan representativ spelsekvens med egen
-   referensdump; anta inte att hash nedan gäller andra replayfönster.
-2. Mät på ARM64/Android om lämplig enhet finns. Behåll flaggan av som standard
-   tills både korrekthet och vinst är verifierade där.
+1. Fortsätt med den breda CPU-exekveringsvägen och JIT på Linux enligt
+   användarens korrigerade inriktning. Behåll NCC-flaggan som opt-in.
+2. Validera nya CPU-kandidater mot det befintliga fullständiga replay-oraklet
+   och mät med växlande referens-/kandidatbyggen.
 3. För större lyft: återvänd till bred CPU-exekveringsväg eller rendererarbete
    utifrån profilen, inte en ny godtycklig gäst-PC-region. Senaste CPU-profil
    före NCC visade cirka 41 % MIPS, 36 % texturraster och 17 % övrig Voodoo

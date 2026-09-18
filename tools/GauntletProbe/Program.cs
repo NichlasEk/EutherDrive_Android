@@ -8,6 +8,12 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_SAFE_COP1_DISPATCH") == "1")
+{
+    SafeCop1DispatchChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
+    return;
+}
+
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_FUSED_NCC") == "1")
 {
     FusedNccChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
