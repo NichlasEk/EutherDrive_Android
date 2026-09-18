@@ -8,6 +8,12 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_CP0_CLOCK") == "1")
+{
+    Cp0ClockChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
+    return;
+}
+
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_RUNTIME_MAIN_STATE") == "1")
 {
     RuntimeMainStateChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);

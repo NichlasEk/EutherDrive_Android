@@ -9,10 +9,17 @@ fullständiga replay-slutdumpar och växlade Linux-mätningar. NCC-resultaten
 nedan är föregående checkpoint, inte en beställning på enhetsprov.
 
 Senaste fortsättning:
+[Kompakt CP0 och inlining](gauntlet-dl-cp0-inline-2026-09-18.md).
+Genererad maskinkod verifierad; sex av sex vunna par över två Linux-fönster,
+3,84 % respektive 2,20 % kortare medeltid mot `cbc43991`. Alla tolv
+fullständiga slutdumpar matchar exakt. 900 nya CP0-gränsfall.
+Nästa spår: undvik anrop till avstängd compiled-block-väg före hjälparen.
+
+Föregående försök:
 [CPU-dispatch-/statusläsningsförsök](gauntlet-dl-runtime-state-load-2026-09-18.md).
 Två kandidater förkastades efter växlade mätningar utan stabil tidsvinst.
-Runtime-koden är oförändrad från `52a3cf40`; 5120 nya statuskontroller och
-mätunderlag har tillkommit. Nästa spår: maskinkod/anropskostnad i CPU-dispatch.
+Runtime-koden i den checkpointen var oförändrad från `52a3cf40`;
+5120 nya statuskontroller och mätunderlag tillkom.
 
 Föregående timerfix:
 [Nile-timeråterställning och klockoptimering](gauntlet-dl-nile-clock-2026-09-18.md).

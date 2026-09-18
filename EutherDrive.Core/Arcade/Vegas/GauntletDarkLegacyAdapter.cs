@@ -32731,6 +32731,7 @@ internal sealed partial class MipsR5000Core
         return register == 9 ? _cp0[9] : _cp0[register];
     }
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AdvanceCp0Count(ulong delta)
     {
         if (delta == 0 || _freezeCp0CountAdvance)
@@ -32740,9 +32741,9 @@ internal sealed partial class MipsR5000Core
 
         uint oldCount = (uint)_cp0[9];
         uint compare = (uint)_cp0[11];
-        ulong ticksUntilCompare = compare >= oldCount
-            ? compare - (ulong)oldCount
-            : 0x1_0000_0000UL - oldCount + compare;
+        // Count and Compare are 32-bit: subtraction modulo 2^32 gives
+        // the same forward distance, including wrap and equality at zero.
+        ulong ticksUntilCompare = unchecked(compare - oldCount);
 
         _cp0[9] = (uint)(oldCount + delta);
         if (ticksUntilCompare != 0 && delta >= ticksUntilCompare)
