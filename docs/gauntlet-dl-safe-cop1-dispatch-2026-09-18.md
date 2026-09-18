@@ -9,6 +9,11 @@ I Linux-replay 6750→7950 vann slutvarianten tre av fyra växlade par:
 medeltid och ett vunnet par av två. Förbättringen är därför belagd lokalt i
 första fönstret, inte som en generell procentsats för hela spelet.
 
+Senare samma dag upptäcktes att warm-loadern inte återställde Nile-timrarnas
+aktivitetsmask. Mätningarna i denna rapport gäller den dåvarande basen med
+bortkopplat timerarbete. Använd den nya referensen i
+[Nile-rapporten](gauntlet-dl-nile-clock-2026-09-18.md) för fortsatt arbete.
+
 Detta optimerar den avkodade mellannivån i CPU/JIT-arbetet. Ingen ny
 gästkodgenerator, PC-specifik region, tidsaggregering eller GPU-väg införs.
 Det första fönstret ger ungefär 4,28 swap-kommandon/s med kandidaten;

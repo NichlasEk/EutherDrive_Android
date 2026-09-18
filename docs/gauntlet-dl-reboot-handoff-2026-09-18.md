@@ -8,7 +8,14 @@ steg eller ett villkor för detta arbete. Fortsätt med CPU-exekveringsvägen,
 fullständiga replay-slutdumpar och växlade Linux-mätningar. NCC-resultaten
 nedan är föregående checkpoint, inte en beställning på enhetsprov.
 
-Senaste lokala fortsättning:
+Senaste fortsättning:
+[Nile-timeråterställning och klockoptimering](gauntlet-dl-nile-clock-2026-09-18.md).
+Snapshotladdaren måste återställa timeraktivitetsmasken från kontrollregistren.
+Den gamla 32f8-slutdumpen hade bortkopplade timers; aktuellt orakel är fe8b,
+se det fullständiga SHA256-värdet i reproduktionen nedan. Mot korrekt
+timerreferens gav optimeringen 17,94 % kortare median och fyra vunna par.
+
+Föregående CPU-checkpoint, pushad som `dd68e135`:
 [COP1-dispatch i safe-block-vägen](gauntlet-dl-safe-cop1-dispatch-2026-09-18.md).
 3,02 % kortare median i första Linux-fönstret; senare fönster neutralt.
 Alla fullständiga slutdumpar och 2528 riktade CPU-fall matchar referensen.
@@ -18,15 +25,15 @@ Ingen mätning eller byggprocess från detta pass behöver återupptas.
 ## Börja här efter omstart
 
 Repo: `/home/nichlas/EutherDrive_Android`, branch `main`.
-Senaste kodcheckpoint: **`ee918186`**, pushad till `origin/main`.
-Denna anteckning tillkommer som separat dokumentationscommit.
+Historisk NCC-kodcheckpoint före återstart: **`ee918186`**.
+Aktuell fortsättning och förändrat timerorakel beskrivs ovan.
 Inget GauntletProbe-test eller dotnet-bygge körde när anteckningen skrevs.
 Ingen bakgrundskörning behöver återupptas efter omstart.
 
 Användaren vill fortsätta mot spelbart Gauntlet Dark Legacy, med uppmätta
 förbättringar och commit/push av bra, verifierade ändringar.
 
-## Senaste resultat
+## Tidigare NCC-resultat
 
 Vi har implementerat **sammanslagen NCC-texelhämtning och bilinjär filtrering**
 för format 1/9 i CPU-renderern. Det är inte en ny GPU-backend.
@@ -60,7 +67,9 @@ Detaljer: [NCC-rapport](gauntlet-dl-fused-ncc-filter-2026-09-18.md).
    utifrån profilen, inte en ny godtycklig gäst-PC-region. Senaste CPU-profil
    före NCC visade cirka 41 % MIPS, 36 % texturraster och 17 % övrig Voodoo
    på huvudtrådens replay-stack; detta är stackvikt, inte additiva CPU-cykler
-   över alla trådar. GPU-offload är inte bevisat snabbare av dessa data.
+   över alla trådar. Profilen föregår timeråterställningen: samla en ny profil
+   med aktiva timers innan nästa CPU/JIT-prioritering. GPU-offload är inte
+   bevisat snabbare av dessa data.
 
 Profil: [CPU-profil efter FIFO-fix](gauntlet-dl-cpu-profile-after-fifo-filter-2026-09-18.md).
 Återimplementera inte de redan prövade försöken utan nytt underlag:
@@ -74,25 +83,24 @@ eller profilerare under benchmark. Välj nya artefaktnamn vid upprepning.
 
 ```sh
 dotnet build tools/GauntletProbe/GauntletProbe.csproj -c Release -m:1 /clp:ErrorsOnly
-env EUTHERDRIVE_GAUNTDL_TEST_FUSED_NCC=1 \
+env EUTHERDRIVE_GAUNTDL_TEST_NILE_CLOCK=1 \
  dotnet tools/GauntletProbe/bin/Release/net8.0/GauntletProbe.dll
 
 env DOTNET_TieredCompilation=0 \
- EUTHERDRIVE_GAUNTDL_EXPERIMENT_FUSED_NCC=1 \
  EUTHERDRIVE_GAUNTDL_EXPERIMENT_RUNTIME_BLOCK_FAST_CACHE=1 \
  EUTHERDRIVE_GAUNTDL_RUNTIME_BLOCK_FAST_CACHE_SIZE=4096 \
  EUTHERDRIVE_GAUNTDL_EXPERIMENT_FIFO_PACKET_MEMBERSHIP=1 \
- EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=.build-tmp/reboot-ncc-1-final.warm.gz \
+ EUTHERDRIVE_GAUNTDL_SAVE_FINAL_STATE=.build-tmp/reboot-nile-1-final.warm.gz \
  scripts/run-gauntdl-probe-warm.sh \
  /home/nichlas/roms/MAME/Midway/Vegas/gauntd 7950 90000 \
  .build-tmp/gaunt-k2-clean2-f6750.warm.gz 6750 \
- > .build-tmp/reboot-ncc-1.log 2>&1
+ > .build-tmp/reboot-nile-1.log 2>&1
 
-gzip -dc .build-tmp/reboot-ncc-1-final.warm.gz | sha256sum
+gzip -dc .build-tmp/reboot-nile-1-final.warm.gz | sha256sum
 ```
 
 Förväntad **dekomprimerad slutdump-SHA256**, replay 6750→7950:
-`32f8e9c49dcc5498c044bb602156ef6e82fe5dec64f27c99749f3a6fe298053a`.
+`fe8b7adabe915e51785414d2c1f6e3a5ef836b9159d14062bbf7f8e2dd1fd7ce`.
 Bildhash `0xe87b12da`, 41 swap-kommandon.
 
 Indatasnapshot finns lokalt (7,1 MiB):
@@ -100,7 +108,7 @@ Indatasnapshot finns lokalt (7,1 MiB):
 Dess **komprimerade fil-SHA256**, kontrollerad inför omstart:
 `312ef133ae70d40e2c437772ea79f96884d0eee687daabd4776ce9c166494df2`.
 
-För av/på-jämförelse: samma binär, ändra bara FUSED_NCC till 0/1, kör minst
+Historisk NCC-jämförelse (före timerfixen): samma binär, ändra bara FUSED_NCC till 0/1, kör minst
 fyra växlande par och jämför fulla sluttillstånd. Separat original finns
 också i `.build-tmp/fused-ncc-reference-head` (detached `599d05bd`). Dess
 Probe-DLL kan väljas via `EUTHERDRIVE_GAUNTDL_PROBE_DLL`; den variabeln

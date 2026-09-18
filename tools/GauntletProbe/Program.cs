@@ -8,6 +8,12 @@ using System.Security.Cryptography;
 using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Vegas;
 
+if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_NILE_CLOCK") == "1")
+{
+    NileClockChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
+    return;
+}
+
 if (Environment.GetEnvironmentVariable("EUTHERDRIVE_GAUNTDL_TEST_SAFE_COP1_DISPATCH") == "1")
 {
     SafeCop1DispatchChecks.Run(typeof(GauntletDarkLegacyAdapter).Assembly);
@@ -2063,6 +2069,7 @@ static void LoadMemoryMap(BinaryReader reader, object memory, int version)
 {
     ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_mainRam"));
     ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_nileRegisters"));
+    memory.GetType().GetMethod("RestoreNileTimerMaskAfterSnapshotLoad")!.Invoke(memory, null);
     ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_fpgaConfigRegisters"));
     ReadByteArrayInto(reader, GetFieldValue<byte[]>(memory, "_cpuIoRegisters"));
     ReadUShortArrayInto(reader, GetFieldValue<ushort[]>(memory, "_ioasicRegisters"));

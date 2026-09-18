@@ -35128,14 +35128,20 @@ internal sealed class VegasMemoryMap
             uint reload = ReadNileRegister32(baseOffset);
             uint counter = ReadNileRegister32(baseOffset + NileTimerCounterOffset);
             ulong period = (ulong)reload + 1UL;
-            ulong decrement = period == 0 ? timerTicks : timerTicks % period;
+            // The uint reload makes period nonzero. Most individual CPU ticks
+            // are shorter than the period, so their remainder is already known.
+            ulong decrement = timerTicks < period ? timerTicks : timerTicks % period;
             bool expired = timerTicks >= (ulong)counter + 1UL || (period != 0 && timerTicks >= period);
             ulong next = counter >= decrement
                 ? counter - decrement
                 : period - ((decrement - counter) % period);
             if (next == period)
                 next = 0;
-            WriteNileRegister32(baseOffset + NileTimerCounterOffset, (uint)next);
+            // Counter registers cannot overlap timer control bits. Updating them
+            // does not require rescanning the four controls for the active mask.
+            uint nativeNext = BitConverter.IsLittleEndian
+                ? (uint)next : BinaryPrimitives.ReverseEndianness((uint)next);
+            Unsafe.WriteUnaligned(ref _nileRegisters[(int)(baseOffset + NileTimerCounterOffset)], nativeNext);
             if (expired)
             {
                 if (timer == 2)
@@ -35722,6 +35728,12 @@ internal sealed class VegasMemoryMap
         uint native = BitConverter.IsLittleEndian ? value : BinaryPrimitives.ReverseEndianness(value);
         Unsafe.WriteUnaligned(ref _nileRegisters[(int)offset], native);
         RefreshNileActiveTimerMaskForWrite(offset, 4);
+    }
+
+    public void RestoreNileTimerMaskAfterSnapshotLoad()
+    {
+        _nileActiveTimerMask = 0;
+        RefreshNileActiveTimerMaskForWrite(NileTimer0ControlOffset, 4 * NileTimerStride);
     }
 
     private void RefreshNileActiveTimerMaskForWrite(uint offset, uint length)
