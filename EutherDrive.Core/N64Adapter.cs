@@ -31,6 +31,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
     private uint _sampleRate = 44100;
     private uint _channels = 2;
     private long _runFrameCount;
+    private int _statisticsGeneration;
     private long _noFramebufferCount;
     private long _noAudioCount;
     private bool _hasSeenFramebuffer;
@@ -59,6 +60,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
 
         _resolvedRomPath = PrepareRomPathForCore(path);
         _core.LoadROM(_resolvedRomPath);
+        Interlocked.Increment(ref _statisticsGeneration);
         _romPath = path;
         _romIdentity = CreateRomIdentity(path);
         _started = false;
@@ -82,6 +84,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         if (string.IsNullOrWhiteSpace(_resolvedRomPath) || !File.Exists(_resolvedRomPath))
             _resolvedRomPath = PrepareRomPathForCore(_romPath);
         _core.LoadROM(_resolvedRomPath);
+        Interlocked.Increment(ref _statisticsGeneration);
         _started = false;
         _audioBuffer = Array.Empty<short>();
         _runFrameCount = 0;
@@ -122,6 +125,8 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
     public RomIdentity? RomIdentity => _romIdentity;
 
     public long? FrameCounter => _runFrameCount;
+    public long GraphicsTaskCounter => _core.GraphicsTaskCount;
+    public int StatisticsGeneration => Volatile.Read(ref _statisticsGeneration);
 
     public void SetMasterVolumePercent(int percent)
     {
@@ -229,6 +234,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
             throw new EndOfStreamException();
         _audioBuffer = Array.Empty<short>();
         _core.LoadState(reader);
+        Interlocked.Increment(ref _statisticsGeneration);
         _started = _core.IsRunning;
         _hasSeenFramebuffer = framebufferLength > 0 && !IsBgraFramebufferBlank(_frameBuffer);
         _loadedStateBlankHoldFrames = _hasSeenFramebuffer ? 12 : 0;

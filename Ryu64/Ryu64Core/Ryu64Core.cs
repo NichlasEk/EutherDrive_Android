@@ -78,6 +78,7 @@ namespace Ryu64Core
         public string GameName => rom?.Name?.Trim() ?? "No ROM loaded";
         public string LastFramebufferStatus => _lastFramebufferStatus;
         public string LastPerformanceStatus => R4300.memory?.PerformanceSummary ?? "perf=unavailable";
+        public long GraphicsTaskCount => R4300.memory?.RspGraphicsTaskCount ?? 0;
         public string LastExecutionStatus
         {
             get

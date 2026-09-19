@@ -315,7 +315,11 @@ namespace Ryu64.MIPS
 
         private static int ToFastLookupIndex(int Value)
         {
-            return ((Value >> 10) & 0x00F) | ((Value >> 18) & 0xFF0);
+            // MIPS selects the primary operation with bits 31:26 and SPECIAL
+            // / COP functions with bits 5:0. Operand-register bits are poor
+            // discriminators and left most SPECIAL operations in long lists.
+            // Full mask validation and original precedence remain unchanged.
+            return ((Value >> 20) & 0xFC0) | (Value & 0x03F);
         }
 
         public static InstInfo GetOpcodeInfo(uint Opcode)

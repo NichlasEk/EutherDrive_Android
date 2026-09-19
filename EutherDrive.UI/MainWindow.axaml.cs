@@ -192,6 +192,11 @@ public partial class MainWindow : Window
     private double _pendingMachineRoomSeekSeconds;
     private string? _renderBackendFallbackReason;
     private readonly Stopwatch _fpsSw = Stopwatch.StartNew();
+    private N64Adapter? _n64MeterCore;
+    private int _n64MeterGeneration;
+    private long _n64MeterTicks;
+    private long _n64MeterTasks;
+    private double _n64GraphicsTasksPerSecond;
     private readonly Stopwatch _earlyMagentaTimer = new();
     private readonly PsxInterlaceReconstructor _psxInterlaceReconstructor = new();
     private bool _earlyMagentaReported;
@@ -4631,7 +4636,34 @@ public partial class MainWindow : Window
                 : "idle";
 
         if (!romRunning)
+        {
+            _n64MeterCore = null;
             return $"{backend} / {resolution}";
+        }
+
+        if (_core is N64Adapter n64)
+        {
+            long now = Stopwatch.GetTimestamp();
+            long tasks = n64.GraphicsTaskCounter;
+            int generation = n64.StatisticsGeneration;
+            if (!ReferenceEquals(_n64MeterCore, n64) || generation != _n64MeterGeneration || tasks < _n64MeterTasks)
+            {
+                _n64MeterCore = n64;
+                _n64MeterGeneration = generation;
+                _n64MeterTasks = tasks;
+                _n64MeterTicks = now;
+                _n64GraphicsTasksPerSecond = 0;
+            }
+            else if (now - _n64MeterTicks >= Stopwatch.Frequency)
+            {
+                _n64GraphicsTasksPerSecond = (tasks - _n64MeterTasks) * (double)Stopwatch.Frequency / (now - _n64MeterTicks);
+                _n64MeterTasks = tasks;
+                _n64MeterTicks = now;
+            }
+            // RSP graphics tasks measure real work, not repeated UI polling.
+            // They are intentionally labeled gfx/s, not unique displayed FPS.
+            return $"{backend} / {resolution} / {_n64GraphicsTasksPerSecond:0.0} gfx/s";
+        }
 
         double emuFps = Volatile.Read(ref _emuActualFps);
         if (emuFps > 0.1)
@@ -4670,6 +4702,9 @@ public partial class MainWindow : Window
     {
         if (!romRunning)
             return "idle";
+
+        if (_core is N64Adapter)
+            return $"UI polling {Volatile.Read(ref _emuActualFps):0.0}/s; not game fps";
 
         if (_core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter gauntlet)
             return GetDeckMonitorGauntletStatus(gauntlet);

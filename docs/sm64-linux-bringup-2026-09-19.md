@@ -479,3 +479,49 @@ execution change; use fixed-work RDP replays to protect graphics. Do not
 trade away watchdog, interrupt, depth, coverage, or arithmetic behavior for
 a headline frame-rate gain. Validate real desktop input and audible output
 separately from the automated probes.
+
+## Follow-up 11: instruction decode and honest N64 rate display
+
+The user's OpenGL screenshot showed 56.3 fps in the deck monitor. Source
+inspection confirms that this counted N64Adapter.RunFrame calls, including
+calls reusing an existing framebuffer. It was not evidence of 56.3 newly
+rendered game frames per second. Presentation/backend selection does not
+turn the N64 software RDP into an OpenGL hardware renderer.
+
+The MIPS opcode index now selects the six primary-opcode bits and six
+function bits, instead of mixing primary-opcode and operand-register bits.
+It retains the same 4096 buckets, full mask checks, and original first-match
+precedence. `--check-opcodes REFERENCE_DLL` compares 852358 encodings against
+an ordered scan of every instruction definition, including 16617 rejected
+encodings. It checks handler, mask, value, cycle cost, and disassembly text.
+
+The fixed 799110-instruction lookup workload fell from median 49.707 ms to
+19.294 ms, with identical checksum 5851944. Whole-scene alternating runs
+were only 116/114 tasks before versus 117/115 after in 20 seconds: a very
+small change, not a demonstrated large game-speed gain. Logs:
+`opcode-{check,reference-1,current-1,reference-2,current-2}.log`.
+
+A separate runtime-loop prefilter was tested (671 complete-state cases
+passed) but removed: 122/121 versus 123/121 tasks was not a dependable
+whole-scene win. `runtime-gate-*` artifacts describe the rejected candidate,
+not the committed core. Do not accidentally reintroduce that experiment.
+
+The N64-only deck monitor now labels real RSP graphics-task throughput as
+`gfx/s` and labels the old poll frequency `UI polling .../s; not game fps`.
+Graphics tasks are not claimed to equal unique displayed frames. The meter
+resets across cartridge/reset/savestate generations and pause/restart. It
+does not alter pacing, the existing FrameCounter, controller handling, or
+audio. Audio work remains deferred as requested.
+
+Final accepted-source rebuild: `faster-final-ui-build.log`, 0 errors, 384
+warnings. Repeated opcode check: 50.173 versus 19.814 ms; all 852358 cases
+pass. Render/interrupt checks: 6845 passed; snapshot 240-to-1 check passed.
+The isolated final UI smoke (`fps-final-smoke-u8PAi2/ui.png`) visibly shows
+`6.0 gfx/s` alongside `UI polling 44.2/s; not game fps`, confirming the two
+rates are separate. The test used Bitmap/Xvfb with audio output disabled;
+it does not assert an OpenGL or audible-playback improvement. The diagnostic
+emulator was stopped after capture, and no user settings were modified.
+
+This pass improves instruction lookup but does not achieve 60 actual game
+frames per second. The next major performance work remains RSP execution
+and software RDP rendering, not increasing UI polling frequency.
