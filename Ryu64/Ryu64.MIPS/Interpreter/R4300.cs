@@ -504,9 +504,7 @@ namespace Ryu64.MIPS
         {
             // N64 RCP interrupts are routed through MI and appear on CP0 IP2.
             ulong cause = Registers.COP0.Reg[Registers.COP0.CAUSE_REG];
-            uint miIntr = memory.ReadUInt32(0xA4300008u);
-            uint miMask = memory.ReadUInt32(0xA430000Cu);
-            bool rcpPending = (miIntr & miMask & 0x3Fu) != 0;
+            bool rcpPending = memory.HasPendingRcpInterrupt;
 
             // Only control IP2 from MI; preserve all other pending IP bits (timer/SW/etc).
             // Mupen clears ExcCode when an interrupt is made pending, so guest code which
@@ -1538,6 +1536,7 @@ namespace Ryu64.MIPS
         {
             uint physical = basePc & 0x1FFFFFFFu;
             if (!memory.TryReadRdramUInt32PhysicalFast(physical, out uint op0)
+                || (op0 != 0x2129FFF8u && op0 != 0x2529FFF8u && op0 != 0xAD000000u)
                 || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x04u, out uint op1)
                 || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x08u, out uint op2)
                 || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x0Cu, out uint op3)
@@ -1658,6 +1657,7 @@ namespace Ryu64.MIPS
                 uint basePc = pc - offset;
                 uint physical = basePc & 0x1FFFFFFFu;
                 if (!memory.TryReadRdramUInt32PhysicalFast(physical, out uint op0)
+                    || op0 != 0x8C8B0004u
                     || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x04u, out uint op1)
                     || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x08u, out uint op2)
                     || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x0Cu, out uint op3)
@@ -1746,6 +1746,7 @@ namespace Ryu64.MIPS
                 uint basePc = pc - offset;
                 uint physical = basePc & 0x1FFFFFFFu;
                 if (!memory.TryReadRdramUInt32PhysicalFast(physical, out uint op0)
+                    || op0 != 0x24420008u
                     || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x04u, out uint op1)
                     || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x08u, out uint op2)
                     || !memory.TryReadRdramUInt32PhysicalFast(physical + 0x0Cu, out uint op3)

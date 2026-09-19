@@ -20,6 +20,14 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_LOWSEG_NULLPAGE_FALLBACK"), "1", StringComparison.Ordinal);
         private static readonly bool TraceN64Io =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_IO"), "1", StringComparison.Ordinal);
+        // Like the other tracing options, read once at startup, not on every
+        // guest memory store or RSP register poll (getenv dominates those paths).
+        private static readonly bool TracePiDma =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSpDma =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_DMA"), "1", StringComparison.Ordinal);
+        private static readonly bool TraceSpMmio =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_MMIO"), "1", StringComparison.Ordinal);
         private static readonly bool TraceRspTaskDmem =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RSP_TASK_DMEM"), "1", StringComparison.Ordinal);
         private static readonly bool TracePiInterruptLifecycle =
@@ -470,19 +478,19 @@ namespace Ryu64.MIPS
 
         private static bool IsTraceN64PiDmaEnabled()
         {
-            return string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal);
+            return TracePiDma;
         }
 
         private static bool IsTraceN64SpDmaEnabled()
         {
             return IsTraceN64PiDmaEnabled()
-                || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_DMA"), "1", StringComparison.Ordinal);
+                || TraceSpDma;
         }
 
         private static bool IsTraceN64SpMmioEnabled()
         {
             return IsTraceN64SpDmaEnabled()
-                || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_SP_MMIO"), "1", StringComparison.Ordinal);
+                || TraceSpMmio;
         }
 
         private static bool ShouldTraceSpRegisterStore(uint physicalAddress)
@@ -633,6 +641,9 @@ namespace Ryu64.MIPS
         public readonly byte[] MI_INTR_REG_R      = new byte[4];
         public readonly byte[] MI_INTR_MASK_REG_R = new byte[4];
         public readonly byte[] MI_INTR_MASK_REG_W = new byte[4];
+        // This is the internal wire to CPU IP2, not a guest bus transaction.
+        // All six MI interrupt bits live in the low byte of these big-endian registers.
+        internal bool HasPendingRcpInterrupt => (MI_INTR_REG_R[3] & MI_INTR_MASK_REG_R[3] & 0x3F) != 0;
 
         public readonly byte[] VI_STATUS_REG_RW  = new byte[4];
         public readonly byte[] VI_ORIGIN_REG_RW  = new byte[4];
@@ -693,6 +704,9 @@ namespace Ryu64.MIPS
         public readonly byte[] PIFROM    = new byte[1984];
         public readonly byte[] PIFRAM    = new byte[64];
         private readonly byte[] _joybusEeprom = new byte[2048];
+        // Keep the backing size stable for existing savestates; only the
+        // cartridge's actual addressable capacity and Joybus ID vary.
+        private readonly int _joybusEepromSize;
         private readonly byte[] _controllerPak = new byte[32 * 1024];
         private readonly byte[] OpenBus  = new byte[4];
         private readonly byte[] _rom;
@@ -796,8 +810,11 @@ namespace Ryu64.MIPS
         private readonly byte[] _rdpTmem = new byte[4096];
         private readonly ushort[] _rdpTlut = new ushort[256];
         private readonly byte[] _rdpHiddenBits = new byte[8388608 / 2];
-        private const uint RdpTmemByteAddrXor = 3u;
-        private const uint RdpTmemByteDwordSwapXor = 7u;
+        // TMEM halfwords are stored as big-endian byte pairs. The word-index
+        // XOR of 1 therefore corresponds to byte-index XOR 2, not the native
+        // little-endian XOR 3. Mixed-size LoadBlock/fetch must agree.
+        private const uint RdpTmemByteAddrXor = 2u;
+        private const uint RdpTmemByteDwordSwapXor = 6u;
         private const uint RdpTmemWordAddrXor = 1u;
         private const uint RdpTmemWordDwordSwapXor = 3u;
         private uint _lastRdpColorImageAddress;
@@ -837,6 +854,10 @@ namespace Ryu64.MIPS
         private long _rdpPixelWriteCount;
         private long _rdpNonZeroPixelWriteCount;
         private long _perfRdpDisplayListTicks;
+        private long _perfRspGraphicsTicks;
+        private long _perfRspGraphicsCalls;
+        private long _perfRspAudioTicks;
+        private long _perfRspAudioCalls;
         private long _perfRdpDisplayListCalls;
         private long _perfRdpTexturedTriangleTicks;
         private long _perfRdpTexturedTriangleCalls;
@@ -963,6 +984,8 @@ namespace Ryu64.MIPS
                 long scanPixels = Volatile.Read(ref _perfRdpVisibleScanPixels);
 
                 return
+                    $"rspGfx={_perfRspGraphicsCalls}/{TicksToMs(_perfRspGraphicsTicks):0.###}ms " +
+                    $"rspAudio={_perfRspAudioCalls}/{TicksToMs(_perfRspAudioTicks):0.###}ms " +
                     $"rdpList={displayListCalls}/{TicksToMs(displayListTicks):0.###}ms avg={AvgTicksMs(displayListTicks, displayListCalls):0.###}ms " +
                     $"triTex={triCalls}/{TicksToMs(triTicks):0.###}ms avg={AvgTicksMs(triTicks, triCalls):0.###}ms " +
                     $"texRect={rectCalls}/{TicksToMs(rectTicks):0.###}ms avg={AvgTicksMs(rectTicks, rectCalls):0.###}ms " +
@@ -2258,7 +2281,9 @@ namespace Ryu64.MIPS
                     flip,
                     bytesPerPixel);
             }
-            if (!wrote)
+            // A textured primitive that fails alpha/depth or samples transparent
+            // texels is not an untextured primitive. Do not paint over it.
+            if (!wrote && (command & 0x02) == 0)
             {
                 if ((command & 0x04) != 0 && TryReadRdpShadeCoefficients(commandAddress, xbusDmem, out RdpTriangleShadeCoefficients shade))
                     wrote = DrawRdpShadedTriangle(xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, shade, useDepth ? triangleDepth : default, useDepth, bytesPerPixel);
@@ -2735,10 +2760,12 @@ namespace Ryu64.MIPS
 
         private static uint RdpDepthFixedToComparator(long zFixed)
         {
-            long sz = (zFixed >> 10) & 0x3FFFFFL;
-            if (sz > 0x3FFFFL)
+            // Pixel-center equivalent of the RDP's >>10 span conversion,
+            // then >>3 coverage correction and 19-bit depth clipping.
+            uint sz = (uint)(zFixed >> 13) & 0x7FFFFu;
+            if ((sz & 0x60000u) == 0x40000u)
                 return 0x3FFFFu;
-            return (uint)sz;
+            return sz & 0x3FFFFu;
         }
 
         private static uint NormalizeRdpDzPix(uint dzDxHigh, uint dzDyHigh)
@@ -2785,12 +2812,8 @@ namespace Ryu64.MIPS
 
         private static int RdpTriangleTextureFixedToTexel(long value)
         {
-            long texel = value >> 19;
-            if (texel > int.MaxValue)
-                return int.MaxValue;
-            if (texel < int.MinValue)
-                return int.MinValue;
-            return (int)texel;
+            // Without perspective division, the signed high half is S10.5.
+            return (short)(value >> 16) >> 5;
         }
 
         private static void RdpTriangleTextureFixedToTexels(
@@ -2807,8 +2830,8 @@ namespace Ryu64.MIPS
             {
                 s = RdpTriangleTextureFixedToTexel(sFixed);
                 t = RdpTriangleTextureFixedToTexel(tFixed);
-                fracS = (int)((sFixed >> 14) & 0x1F);
-                fracT = (int)((tFixed >> 14) & 0x1F);
+                fracS = (int)((sFixed >> 16) & 0x1F);
+                fracT = (int)((tFixed >> 16) & 0x1F);
                 return;
             }
 
@@ -2817,8 +2840,8 @@ namespace Ryu64.MIPS
             {
                 s = RdpTriangleTextureFixedToTexel(sFixed);
                 t = RdpTriangleTextureFixedToTexel(tFixed);
-                fracS = (int)((sFixed >> 14) & 0x1F);
-                fracT = (int)((tFixed >> 14) & 0x1F);
+                fracS = (int)((sFixed >> 16) & 0x1F);
+                fracT = (int)((tFixed >> 16) & 0x1F);
                 return;
             }
 
@@ -3102,12 +3125,15 @@ namespace Ryu64.MIPS
             uint g = RdpShadeFixedComponentTo8(gFixed);
             uint b = RdpShadeFixedComponentTo8(bFixed);
             uint a = RdpShadeFixedComponentTo8(aFixed);
-            return (r << 24) | (g << 16) | (b << 8) | (a == 0 ? 0xFFu : a);
+            return (r << 24) | (g << 16) | (b << 8) | a;
         }
 
         private static uint RdpShadeFixedComponentTo8(long value)
         {
-            long component = value >> 14;
+            // RDP shade coefficients are 16.16. The reference rasterizer's
+            // intermediate >>14 is followed by a two-bit coverage correction.
+            // In this pixel-center path convert directly to eight-bit color.
+            long component = value >> 16;
             if (component <= 0)
                 return 0;
             return (uint)Math.Min(0xFFL, component);
@@ -5821,6 +5847,7 @@ namespace Ryu64.MIPS
         public Memory(byte[] Rom)
         {
             _rom = Rom;
+            _joybusEepromSize = GetCartridgeEepromSize(Rom);
             _rspInterpreter = new RspInterpreter(this);
             for (int i = 0; i < _rdpHiddenBits.Length; i++)
                 _rdpHiddenBits[i] = 3;
@@ -6113,7 +6140,7 @@ namespace Ryu64.MIPS
         {
             if (_piDmaBusy || _piInterruptDelayArmed)
             {
-                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+                if (TracePiDma)
                 {
                     Common.Logger.PrintWarningLine(
                         $"[N64PIDMA] suppress-rearm pc=0x{Registers.R4300.PC:x8} " +
@@ -6124,7 +6151,7 @@ namespace Ryu64.MIPS
                 return;
             }
 
-            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            if (TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64PIDMA] arm pc=0x{Registers.R4300.PC:x8} " +
@@ -6148,7 +6175,7 @@ namespace Ryu64.MIPS
 
         private void FinalizePiDmaCompletion()
         {
-            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            if (TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64PIDMA] complete-enter pc=0x{Registers.R4300.PC:x8} " +
@@ -6165,7 +6192,7 @@ namespace Ryu64.MIPS
 
             SetMiPiInterrupt(immediate: true);
 
-            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            if (TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64PIDMA] complete-exit pc=0x{Registers.R4300.PC:x8} " +
@@ -6257,7 +6284,7 @@ namespace Ryu64.MIPS
             if (!ValidatePiRequest("cart-io", 0u, 0u, physical))
                 return;
 
-            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            if (TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64PIDMA] cart-io-start pc=0x{Registers.R4300.PC:x8} " +
@@ -6281,7 +6308,7 @@ namespace Ryu64.MIPS
             WriteBigEndianWord(PI_STATUS_REG_R, piStatus);
 
             if (TracePiInterruptLifecycle
-                || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+                || TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64PIIRQ] reject source={source} pc=0x{Registers.R4300.PC:x8} " +
@@ -6845,7 +6872,7 @@ namespace Ryu64.MIPS
                     $"dram=0x{DramAddr:x8} cart=0x{CartAddr:x8} piStatus=0x{ReadBigEndianWord(PI_STATUS_REG_R):x8} " +
                     $"miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8}");
             }
-            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            if (TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64PIDMA] wr-start pc=0x{Registers.R4300.PC:x8} " +
@@ -6889,7 +6916,7 @@ namespace Ryu64.MIPS
                     $"dram=0x{DramAddr:x8} cart=0x{CartAddr:x8} mirror={MirrorPiRdLenAsCartToDram} " +
                     $"piStatus=0x{ReadBigEndianWord(PI_STATUS_REG_R):x8} miIntr=0x{ReadBigEndianWord(MI_INTR_REG_R):x8}");
             }
-            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            if (TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64PIDMA] rd-start pc=0x{Registers.R4300.PC:x8} " +
@@ -7035,7 +7062,7 @@ namespace Ryu64.MIPS
             if ((value & 0x00000002) != 0)
             {
                 _piIrqClearCount++;
-                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+                if (TracePiDma)
                 {
                     Common.Logger.PrintWarningLine(
                         $"[N64PIDMA] status-clear pc=0x{Registers.R4300.PC:x8} value=0x{value:x8} " +
@@ -7054,7 +7081,7 @@ namespace Ryu64.MIPS
                 piStatus &= ~PiStatusInterrupt;
                 ClearMiPiInterrupt();
 
-                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+                if (TracePiDma)
                 {
                     Common.Logger.PrintWarningLine(
                         $"[N64PIDMA] status-clear-done pc=0x{Registers.R4300.PC:x8} " +
@@ -7737,6 +7764,7 @@ namespace Ryu64.MIPS
             string stopReason;
             bool completed;
             _rspTaskDispatching = true;
+            long rspPerfStart = StartPerfTimer();
             try
             {
                 completed = _rspInterpreter.ExecuteTask(out executedInstructions, out stopReason);
@@ -7744,6 +7772,10 @@ namespace Ryu64.MIPS
             finally
             {
                 _rspTaskDispatching = false;
+                if (hasTask && task.Type == 1)
+                    AddPerfTicks(ref _perfRspGraphicsTicks, ref _perfRspGraphicsCalls, rspPerfStart);
+                else if (hasTask && task.Type == 2)
+                    AddPerfTicks(ref _perfRspAudioTicks, ref _perfRspAudioCalls, rspPerfStart);
             }
 
             if (!completed && string.IsNullOrEmpty(stopReason))
@@ -8355,7 +8387,7 @@ namespace Ryu64.MIPS
         private void SetMiPiInterrupt(bool immediate = false)
         {
             const byte MiPiIntrBit = 0x10; // MI_INTR_REG bit for PI
-            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            if (TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64PIDMA] raise-pi pc=0x{Registers.R4300.PC:x8} immediate={immediate} " +
@@ -8393,7 +8425,7 @@ namespace Ryu64.MIPS
         private void ClearMiPiInterrupt()
         {
             const byte MiPiIntrBit = 0x10; // MI_INTR_REG bit for PI
-            if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+            if (TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64PIDMA] clear-pi pc=0x{Registers.R4300.PC:x8} " +
@@ -9009,7 +9041,7 @@ namespace Ryu64.MIPS
                 return;
 
             PIFRAM[rxIndex + 0] = 0x00;
-            PIFRAM[rxIndex + 1] = 0xC0; // 16K EEPROM present.
+            PIFRAM[rxIndex + 1] = _joybusEepromSize == 512 ? (byte)0x80 : (byte)0xC0;
             PIFRAM[rxIndex + 2] = 0x00;
         }
 
@@ -9019,7 +9051,9 @@ namespace Ryu64.MIPS
                 return;
 
             int block = PIFRAM[cmdIndex + 1] & 0xFF;
-            int offset = (block * 8) % _joybusEeprom.Length;
+            int offset = block * 8;
+            if (offset + 8 > _joybusEepromSize)
+                return;
             int count = Math.Min(8, Math.Min(rxLen, 64 - rxIndex));
             Array.Copy(_joybusEeprom, offset, PIFRAM, rxIndex, count);
         }
@@ -9030,10 +9064,30 @@ namespace Ryu64.MIPS
                 return;
 
             int block = PIFRAM[cmdIndex + 1] & 0xFF;
-            int offset = (block * 8) % _joybusEeprom.Length;
+            int offset = block * 8;
+            if (offset + 8 > _joybusEepromSize)
+                return;
             Array.Copy(PIFRAM, cmdIndex + 2, _joybusEeprom, offset, 8);
             if (rxLen >= 1 && rxIndex < 64)
                 PIFRAM[rxIndex] = 0x00;
+        }
+
+        private static int GetCartridgeEepromSize(byte[] rom)
+        {
+            // Verified original SM64 US, Europe and Japan cartridge checksums.
+            // Early libultra EEPROM routines require the 4-Kbit (512-byte) ID;
+            // reporting 16 Kbit makes them return an error while holding SI access.
+            // Other cartridges retain the previous default pending a full database.
+            if (rom.Length >= 0x18)
+            {
+                uint crc1 = ((uint)rom[0x10] << 24) | ((uint)rom[0x11] << 16) | ((uint)rom[0x12] << 8) | rom[0x13];
+                uint crc2 = ((uint)rom[0x14] << 24) | ((uint)rom[0x15] << 16) | ((uint)rom[0x16] << 8) | rom[0x17];
+                if ((crc1 == 0x635A2BFF && crc2 == 0x8B022326)
+                    || (crc1 == 0xA03CF036 && crc2 == 0xBCC1C5D2)
+                    || (crc1 == 0x4EAA3D0E && crc2 == 0x74757C24))
+                    return 512;
+            }
+            return 2048;
         }
 
         private void ReadControllerPak(int cmdIndex, int txLen, int rxIndex, int rxLen)
@@ -9872,7 +9926,7 @@ namespace Ryu64.MIPS
 
             if (havePhysical
                 && physical <= 0x00000300u
-                && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+                && TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64LOWRAMCPU8] old=0x{oldValue:x2} new=0x{value:x2} {BuildLowRamStoreContext(index, physical, 1)}");
@@ -9961,7 +10015,7 @@ namespace Ryu64.MIPS
                     && !ShouldTraceWatchRange(index, physical, 2)
                     && !ShouldTraceSpRegisterStore(physical)
                     && !(physical <= 0x00000300u
-                        && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal)))
+                        && TracePiDma))
                 {
                     RDRAM[physical] = (byte)(value >> 8);
                     RDRAM[physical + 1u] = (byte)value;
@@ -9996,7 +10050,7 @@ namespace Ryu64.MIPS
 
             if (havePhysical
                 && physical <= 0x00000300u
-                && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+                && TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64LOWRAMCPU16] old=0x{oldValue:x4} new=0x{value:x4} {BuildLowRamStoreContext(index, physical, 2)}");
@@ -10141,7 +10195,7 @@ namespace Ryu64.MIPS
                     && !ShouldTraceWatchRange(index, physical)
                     && !ShouldTraceSpRegisterStore(physical)
                     && !(physical <= 0x00000300u
-                        && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal)))
+                        && TracePiDma))
                 {
                     RDRAM[physical] = (byte)(value >> 24);
                     RDRAM[physical + 1u] = (byte)(value >> 16);
@@ -10193,7 +10247,7 @@ namespace Ryu64.MIPS
 
             if (havePhysical
                 && physical <= 0x00000300u
-                && string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+                && TracePiDma)
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64LOWRAMCPU] write32 pc=0x{Registers.R4300.PC:x8} vaddr=0x{index:x8} phys=0x{physical:x8} " +
@@ -10488,7 +10542,7 @@ namespace Ryu64.MIPS
                         lowRamOldWords[word] = ReadUInt32Physical(word);
                 }
 
-                if (string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+                if (TracePiDma)
                 {
                     uint destEnd = dest + (uint)Math.Max(0, chunk - 1);
                     if (dest <= 0x00000300u && destEnd >= 0x00000000u)
@@ -10568,7 +10622,7 @@ namespace Ryu64.MIPS
                     }
 
                     if (TracePiInterruptLifecycle
-                        || string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_PI_DMA"), "1", StringComparison.Ordinal))
+                        || TracePiDma)
                     {
                         Common.Logger.PrintWarningLine(
                             $"[N64PIDMA] rom-zero-fill pc=0x{Registers.R4300.PC:x8} " +
