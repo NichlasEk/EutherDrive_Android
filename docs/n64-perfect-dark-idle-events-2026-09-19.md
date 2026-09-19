@@ -56,3 +56,8 @@ taskset -c 6 dotnet tools/N64Probe/bin/Release/net8.0/N64Probe.dll --bench-idle-
 
 Use `N64_PROBE_EXPECT_IDLE_DISABLED=1` with one of the trace/disable flags to
 validate rejection. Benchmarks must run without concurrent emulation/builds.
+
+Follow-up: the COP1 issue is fixed and menu progression is verified in
+[n64-perfect-dark-cop1-2026-09-19.md](n64-perfect-dark-cop1-2026-09-19.md).
+A subsequent explicit single-step rejection test brings boundary coverage to
+270 cases. Single-step mode, like debugging/tracing, bypasses idle batching.

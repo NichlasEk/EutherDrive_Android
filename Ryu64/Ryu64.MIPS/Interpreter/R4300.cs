@@ -335,6 +335,16 @@ namespace Ryu64.MIPS
                 || (firstWord & 0xFC000000u) == 0x0C000000u;
         }
 
+        private sealed class Cop1UnusableException : Exception { }
+
+        private static void RaiseCop1UnusableException(uint pc)
+        {
+            const ulong causeCeMask = 3UL << 28;
+            Registers.COP0.Reg[Registers.COP0.CAUSE_REG] =
+                (Registers.COP0.Reg[Registers.COP0.CAUSE_REG] & ~causeCeMask) | (1UL << 28);
+            RaiseCpuException(11UL << 2, pc);
+        }
+
         internal static void RaiseCpuException(ulong exceptionCode, uint faultingPc)
         {
             ulong status = Registers.COP0.Reg[Registers.COP0.STATUS_REG];
@@ -2362,6 +2372,12 @@ namespace Ryu64.MIPS
             }
             else
             {
+                uint primary = Opcode >> 26;
+                // COP1 and its four load/store opcodes require CU1. Throw so
+                // a fault in a delay slot aborts the enclosing branch as well.
+                if ((primary == 0x11 || (primary & 0x33) == 0x31)
+                    && (Registers.COP0.Reg[Registers.COP0.STATUS_REG] & 0x20000000UL) == 0)
+                    throw new Cop1UnusableException();
                 OpcodeTable.OpcodeDesc Desc = new OpcodeTable.OpcodeDesc(Opcode);
                 ref readonly OpcodeTable.InstInfo Info = ref OpcodeTable.GetOpcodeInfoRef(Opcode);
                 if (TraceSm64DispatchWindow || Common.Variables.Debug)
@@ -3671,6 +3687,11 @@ namespace Ryu64.MIPS
                             {
                                 RaiseCpuException(CauseExcCodeRi, pc);
                             }
+                            continue;
+                        }
+                        catch (Cop1UnusableException)
+                        {
+                            RaiseCop1UnusableException(pc);
                             continue;
                         }
                         catch (Common.Exceptions.TLBMissException tlbMiss)

@@ -12,6 +12,7 @@ internal static class CpuIdleEventChecks
         var batch = typeof(R4300).GetMethod("TryAdvanceMappedIdleLoop", flags)!.CreateDelegate<Func<uint, uint, uint>>();
         var fetch = typeof(R4300).GetMethod("ReadOpcode", flags)!.CreateDelegate<Func<uint, uint>>();
         var service = typeof(R4300).GetMethod("ServiceInterrupts", flags)!.CreateDelegate<Func<uint, bool>>();
+        var cop1Fault = typeof(R4300).GetMethod("RaiseCop1UnusableException", flags)!.CreateDelegate<Action<uint>>();
         var countField = typeof(R4300).GetField("Count", flags)!;
         R4300.memory = new Memory(new byte[4096]);
         OpcodeTable.Init();
@@ -142,7 +143,11 @@ internal static class CpuIdleEventChecks
                     uint opcode = fetch(pc);
                     uint cycles = fast && opcode == 0x1000ffff ? batch(pc, (uint)(2_000_000 - Ryu64.Common.Measure.InstructionCount)) : 0;
                     if (cycles != 0) batched += cycles;
-                    else R4300.InterpretOpcode(opcode);
+                    else
+                    {
+                        try { R4300.InterpretOpcode(opcode); }
+                        catch (Exception ex) when (ex.GetType().Name == "Cop1UnusableException") { cop1Fault(pc); }
+                    }
                 }
                 double ms = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
                 hash = Hash();
