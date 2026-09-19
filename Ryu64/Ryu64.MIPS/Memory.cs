@@ -463,7 +463,7 @@ namespace Ryu64.MIPS
                 $"old=0x{oldValue:x16} new=0x{newValue:x16} {BuildLowRamStoreContext(virtualAddress, physicalAddress, size)}");
         }
 
-        private static bool IsRspDescriptorDmemAddress(uint spAddress, uint size = 1)
+        internal static bool IsRspDescriptorDmemAddress(uint spAddress, uint size = 1)
         {
             if ((spAddress & 0x1000u) != 0)
                 return false;

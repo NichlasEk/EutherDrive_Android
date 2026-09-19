@@ -1306,6 +1306,18 @@ namespace Ryu64.MIPS
             if (end > 16)
                 end = 16;
 
+            // LQV/SQV stop at the next 16-byte DMEM boundary and at the
+            // register boundary. Thus this range cannot wrap either array.
+            // Retain the byte path for tracing and descriptor writes.
+            if (!TraceRspFlow && (isLoad || !Memory.IsRspDescriptorDmemAddress(addr, (uint)(end - element))))
+            {
+                if (isLoad)
+                    Buffer.BlockCopy(_memory.SP_MEM_RW, (int)addr, _vr, vt * 16 + element, end - element);
+                else
+                    Buffer.BlockCopy(_vr, vt * 16 + element, _memory.SP_MEM_RW, (int)addr, end - element);
+                return;
+            }
+
             for (int i = element; i < end; i++)
             {
                 if (isLoad)
@@ -1572,33 +1584,48 @@ namespace Ryu64.MIPS
                 : value;
         }
 
-        private void LoadVectorShuffled(int vt, int element, ushort[] dest)
+        private unsafe void LoadVectorShuffled(int vt, int element, ushort[] dest)
         {
             element &= 0xF;
-            if (element >= 8)
-            {
-                ushort value = ReadVectorLane16(vt, element - 8);
-                for (int lane = 0; lane < 8; lane++) dest[lane] = value;
-                return;
-            }
             if (element < 2)
             {
                 LoadVectorUnshuffled(vt, dest);
                 return;
             }
-            if (element < 4)
+            if ((uint)vt >= 32u || dest.Length < 8)
+                throw new ArgumentOutOfRangeException();
+            fixed (ushort* lanes = dest)
             {
-                int odd = element & 1;
-                for (int lane = 0; lane < 8; lane += 2)
-                    dest[lane] = dest[lane + 1] = ReadVectorLane16(vt, lane + odd);
-                return;
+                // Repeated halfwords have the same representation on either
+                // host byte order. Two packed stores replace eight lane stores.
+                if (element >= 8)
+                {
+                    ulong value = ReadVectorLane16(vt, element - 8) * 0x0001000100010001ul;
+                    ((ulong*)lanes)[0] = value;
+                    ((ulong*)lanes)[1] = value;
+                }
+                else if (element < 4)
+                {
+                    int odd = element & 1;
+                    for (int pair = 0; pair < 4; pair++)
+                        ((uint*)lanes)[pair] = ReadVectorLane16(vt, pair * 2 + odd) * 0x00010001u;
+                }
+                else
+                {
+                    ushort low = ReadVectorLane16(vt, element - 4);
+                    ushort high = ReadVectorLane16(vt, element);
+                    if (StrictHalfVectorShuffle)
+                    {
+                        ((ulong*)lanes)[0] = low * 0x0001000100010001ul;
+                        ((ulong*)lanes)[1] = high * 0x0001000100010001ul;
+                    }
+                    else
+                    {
+                        ((uint*)lanes)[0] = ((uint*)lanes)[2] = low * 0x00010001u;
+                        ((uint*)lanes)[1] = ((uint*)lanes)[3] = high * 0x00010001u;
+                    }
+                }
             }
-
-            ushort low = ReadVectorLane16(vt, element - 4);
-            ushort high = ReadVectorLane16(vt, element);
-            int halfMask = StrictHalfVectorShuffle ? 4 : 2;
-            for (int lane = 0; lane < 8; lane++)
-                dest[lane] = (lane & halfMask) == 0 ? low : high;
         }
 
         private unsafe void StoreVector(int vt, ushort[] src)

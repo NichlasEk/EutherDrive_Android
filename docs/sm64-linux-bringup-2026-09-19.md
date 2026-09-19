@@ -560,3 +560,46 @@ This validates the output path, not listening quality or physical speakers.
 Underruns remain: emulation produces substantially less than one second of
 audio per wall-clock second. This is not yet smooth real-time audio and does
 not establish correct music/instrument/effect emulation by listening.
+
+## Follow-up 13: RSP vector transfer/shuffle optimization
+
+Kept two local RSP improvements: LQV/SQV use a contiguous block copy where
+neither DMEM nor register boundaries can wrap, and shuffled vector operands
+use packed repeated-halfword stores. Descriptor writes and flow tracing
+retain the byte-at-a-time path. Both strict and legacy half-shuffle layouts
+are preserved. No instruction counts, watchdog limits, DMA timing, frame
+skipping or audio settings were changed.
+
+An experimental memory-side watchdog-signature cache passed differential
+tests but did not improve whole-scene throughput; it was removed. Logs named
+`rsp-cache-*` describe that rejected experiment, not the accepted code.
+
+Expanded `--check-rsp REFERENCE_DLL`: 32768 shuffle cases, 2048 register-copy
+cases, 9216 instruction cases (including extra LQV/SQV boundary and descriptor
+addresses), 64 finite tasks and two watchdog cases per shuffle mode. Both
+modes match the pre-change core, including full serialized task state.
+Reference binaries: `.build-tmp/sm64-20260919/pre-packed-shuffle/`.
+
+Fixed-work measurements in `rsp-quad-check-final.log`: one million quad
+transfers fell from 65.66 to 28.32 ms; mixed shuffled vector arithmetic fell
+from 108.87 to 101.67 ms. Repeated quad tests measured roughly 66 to 27 ms.
+These are microbenchmarks, NOT a corresponding game FPS improvement.
+Twenty-second whole-scene runs remained around 150 graphics tasks, including
+152 before, 151 shuffle-only and 150 with quad copies. No reliable whole-game
+FPS increase was established. A user-owned desktop emulator was also running
+and was left untouched. `rsp-final-before/after-audio` additionally overlapped
+a build and must not be used for a speedup claim; `rsp-verified-*` repeats the
+audio-enabled comparison after the build.
+That final comparison completed 151 versus 152 graphics tasks in about
+20 seconds, still too small a difference to claim a reliable FPS gain.
+
+Audio checks and all 6845 render/interrupt checks pass. Linux Release UI
+build: `rsp-final-ui-build.log`, zero errors (501 existing warnings).
+Cold boot reached the Mario head screen and generated 612306 stereo samples
+(6.942 seconds) over a 25-second capture; 478820 nonzero, peak 29481. This is
+functional audio-path coverage, not an audible-quality test. Artifacts:
+`rsp-final-cold/`, `rsp-final-check.log`, `rsp-final-check-legacy.log`.
+
+Next useful step is a fixed-work real RSP task capture/profile or a larger
+execution-engine improvement. Do not treat these small vector optimizations
+as a solution to the remaining interpreter/RDP cost or audio underruns.

@@ -42,6 +42,7 @@ internal static class RspChecks
         var (_, rsp, type) = Create(typeof(Memory).Assembly);
         var registers = (byte[])type.GetField("_vr", Private)!.GetValue(rsp)!;
         var load = type.GetMethod("LoadVectorUnshuffled", Private)!.CreateDelegate<Action<int, ushort[]>>(rsp);
+        var shuffle = type.GetMethod("LoadVectorShuffled", Private)!.CreateDelegate<Action<int, int, ushort[]>>(rsp);
         var store = type.GetMethod("StoreVector", Private)!.CreateDelegate<Action<int, ushort[]>>(rsp);
         ushort[] lanes = new ushort[10];
         byte[] before = new byte[registers.Length];
@@ -59,6 +60,20 @@ internal static class RspChecks
                     throw new Exception($"RSP vector load lane order changed: reg={reg} lane={lane}");
             if (lanes[8] != 0xabcd || lanes[9] != 0xabcd || !registers.SequenceEqual(before))
                 throw new Exception("RSP vector load overran scratch or modified registers");
+            for (int element = 0; element < 16; element++)
+            {
+                shuffle(reg, element, lanes);
+                for (int lane = 0; lane < 8; lane++)
+                {
+                    int halfMask = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_STRICT_HALF_SHUFFLE") == "0" ? 2 : 4;
+                    int sourceLane = element < 2 ? lane : element < 4 ? (lane & ~1) + (element & 1)
+                        : element < 8 ? element - 4 + ((lane & halfMask) == 0 ? 0 : 4) : element - 8;
+                    if (lanes[lane] != BinaryPrimitives.ReadUInt16BigEndian(before.AsSpan(reg * 16 + sourceLane * 2)))
+                        throw new Exception($"RSP shuffle reg={reg} element={element} lane={lane}");
+                }
+                if (lanes[8] != 0xabcd || lanes[9] != 0xabcd || !registers.SequenceEqual(before))
+                    throw new Exception("RSP shuffle overran scratch or modified registers");
+            }
             for (int lane = 0; lane < 8; lane++)
             {
                 lanes[lane] = (ushort)random.Next(65536);
@@ -70,6 +85,7 @@ internal static class RspChecks
             cases++;
         }
         Console.WriteLine($"rspVectorCopyCases={cases} passed");
+        Console.WriteLine($"rspVectorShuffleCases={cases * 16} passed");
     }
 
     private static (object memory, object rsp, Type type) Create(Assembly assembly)
@@ -139,6 +155,19 @@ internal static class RspChecks
             Record(step(0, 0xe8000000 | instruction, out _));
             count++;
         }
+        // LQV/SQV fast-copy boundaries, including descriptor tracing fallback,
+        // DMEM wrapping and high address bits ignored by the RSP.
+        foreach (uint address in new uint[] { 0, 0x3f0, 0x400, 0x410, 0x420, 0x430, 0xfe0, 0x12345000 })
+        for (uint element = 0; element < 16; element++)
+        for (uint alignment = 0; alignment < 16; alignment++)
+        {
+            Initialize();
+            ((uint[])arrays[0])[1] = address + alignment;
+            uint instruction = 1u << 21 | 31u << 16 | 4u << 11 | element << 7;
+            Record(step(0, 0xc8000000 | instruction, out _));
+            Record(step(0, 0xe8000000 | instruction, out _));
+            count++;
+        }
         return Convert.ToHexString(hash.GetHashAndReset());
     }
 
@@ -151,6 +180,17 @@ internal static class RspChecks
         var timer = Stopwatch.StartNew();
         for (int i = 0; i < 1_000_000; i++) execute(0, 0x4a071ac0 | (uint)(i & 15), out _);
         Console.WriteLine($"rspBench={label} milliseconds={timer.Elapsed.TotalMilliseconds:F2} allocated={GC.GetAllocatedBytesForCurrentThread() - before}");
+        for (int i = 0; i < 20000; i++) execute(0, 0x4a071ac0 | (uint)(i & 15) << 21 | (uint)(i & 15), out _);
+        timer.Restart();
+        for (int i = 0; i < 1_000_000; i++) execute(0, 0x4a071ac0 | (uint)(i & 15) << 21 | (uint)(i & 15), out _);
+        Console.WriteLine($"rspShuffleBench={label} milliseconds={timer.Elapsed.TotalMilliseconds:F2}");
+        var step = type.GetMethod("Step", Private)!.CreateDelegate<Execute>(rsp);
+        var registers = (uint[])type.GetField("_gpr", Private)!.GetValue(rsp)!;
+        registers[1] = 0x800;
+        for (int i = 0; i < 20000; i++) step(0, ((i & 1) == 0 ? 0xc8000000u : 0xe8000000u) | 1u << 21 | 7u << 16 | 4u << 11, out _);
+        timer.Restart();
+        for (int i = 0; i < 1_000_000; i++) step(0, ((i & 1) == 0 ? 0xc8000000u : 0xe8000000u) | 1u << 21 | 7u << 16 | 4u << 11, out _);
+        Console.WriteLine($"rspQuadBench={label} milliseconds={timer.Elapsed.TotalMilliseconds:F2}");
     }
 
     private static string CheckTasks(Assembly assembly)
