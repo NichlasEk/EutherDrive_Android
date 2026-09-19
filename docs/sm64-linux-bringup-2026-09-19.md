@@ -394,3 +394,24 @@ compared on every repetition and between builds, not just visible pixels.
 
 These are software-RDP costs only; CPU/RSP work is additional, so these
 numbers must not be presented as whole-game frame rates.
+
+## Follow-up 9: prepared color-combiner cases
+
+SetCombine and state loading now classify each mux bank into exact
+passthrough, RGBA multiplication, RGB multiplication with independent alpha,
+or the unchanged general evaluator. The derived dispatch is not serialized.
+Fast multiplication retains the generic evaluator's `(+128) >> 8` rounding,
+not the separate fallback modulation helper's division by 255.
+
+`--check-combiner REFERENCE_DLL` passes 156352 color cases across curated and
+random muxes, all cycle modes, edge/random colors, independent RGB/alpha,
+COMBINED feedback, and loading a prior mode over a different live mode.
+Digest: `63F29003B3E83B0973B4678E0FFF4E616DA4FFFF54CC25CED12BEFA63F5D55C2`.
+All 6845 render/interrupt assertions still pass. Fixed-work complete-state
+replays match exactly against `pre-combiner/Ryu64.MIPS.dll`:
+
+- Tree: median 51.791 ms before, 40.677 ms after (~21% less rendering time).
+- Logo: median 16.467 ms before, 12.371 ms after (~25% less).
+
+Logs: `combiner-{check,render-check,tree-bench,logo-bench}.log`. Compare each
+paired run, not absolute timings from different host-load periods.

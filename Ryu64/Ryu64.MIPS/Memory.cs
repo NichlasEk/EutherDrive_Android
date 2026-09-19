@@ -803,6 +803,9 @@ namespace Ryu64.MIPS
         private uint _rdpOtherModesCvgDest;
         private bool _rdpCombineModeSet;
         private RdpCombineMode _rdpCombine;
+        // Derived from the mux; rebuilt after commands/state loads, not serialized.
+        private int _rdpCombineFast0;
+        private int _rdpCombineFast1;
         private uint _rdpTextureImageAddress;
         private uint _rdpTextureImageWidth;
         private uint _rdpTextureImageSize;
@@ -1264,6 +1267,7 @@ namespace Ryu64.MIPS
             _rdpOtherModesCvgDest = reader.ReadUInt32();
             _rdpCombineModeSet = reader.ReadBoolean();
             _rdpCombine = ReadRdpCombine(reader);
+            PrepareRdpCombineFastPaths();
             _rdpTextureImageAddress = reader.ReadUInt32();
             _rdpTextureImageWidth = reader.ReadUInt32();
             _rdpTextureImageSize = reader.ReadUInt32();
@@ -3160,6 +3164,7 @@ namespace Ryu64.MIPS
             uint combined = 0u;
             if (_rdpOtherModesCycleType == 1u)
                 combined = EvaluateRdpCombineCycle(
+                _rdpCombineFast0,
                 _rdpCombine.SubARgb0,
                 _rdpCombine.SubBRgb0,
                 _rdpCombine.MulRgb0,
@@ -3174,6 +3179,7 @@ namespace Ryu64.MIPS
                 shade);
 
             combined = EvaluateRdpCombineCycle(
+                    _rdpCombineFast1,
                     _rdpCombine.SubARgb1,
                     _rdpCombine.SubBRgb1,
                     _rdpCombine.MulRgb1,
@@ -3191,6 +3197,7 @@ namespace Ryu64.MIPS
         }
 
         private uint EvaluateRdpCombineCycle(
+            int fastPath,
             int subRgbA,
             int subRgbB,
             int mulRgb,
@@ -3204,6 +3211,25 @@ namespace Ryu64.MIPS
             uint texel1,
             uint shade)
         {
+            if (fastPath == 1)
+                return (RdpRgbAddInput(addRgb, combined, texel0, texel1, shade) & 0xFFFFFF00u)
+                    | RdpAlphaInput(addAlpha, combined, texel0, texel1, shade);
+
+            if (fastPath == 2 || fastPath == 3)
+            {
+                uint left = RdpRgbSubAInput(subRgbA, combined, texel0, texel1, shade);
+                uint right = RdpRgbMulInput(mulRgb, combined, texel0, texel1, shade);
+                // Preserve the generic combiner's +128 then /256 arithmetic.
+                // The older fallback modulation helper divides by 255 instead.
+                uint red = (((left >> 24) * (right >> 24)) + 128u) >> 8;
+                uint green = ((((left >> 16) & 255u) * ((right >> 16) & 255u)) + 128u) >> 8;
+                uint blue = ((((left >> 8) & 255u) * ((right >> 8) & 255u)) + 128u) >> 8;
+                uint alphaProduct = fastPath == 2
+                    ? (((left & 255u) * (right & 255u)) + 128u) >> 8
+                    : RdpAlphaInput(addAlpha, combined, texel0, texel1, shade);
+                return (red << 24) | (green << 16) | (blue << 8) | alphaProduct;
+            }
+
             uint a = RdpRgbSubAInput(subRgbA, combined, texel0, texel1, shade);
             uint b = RdpRgbSubBInput(subRgbB, combined, texel0, texel1, shade);
             uint c = RdpRgbMulInput(mulRgb, combined, texel0, texel1, shade);
@@ -3521,7 +3547,36 @@ namespace Ryu64.MIPS
             _rdpCombine.AddRgb1 = (int)((mode >> 6) & 0x7u);
             _rdpCombine.SubBA1 = (int)((mode >> 3) & 0x7u);
             _rdpCombine.AddA1 = (int)(mode & 0x7u);
+            PrepareRdpCombineFastPaths();
             _rdpCombineModeSet = true;
+        }
+
+        private void PrepareRdpCombineFastPaths()
+        {
+            _rdpCombineFast0 = ClassifyRdpCombineCycle(
+                _rdpCombine.SubARgb0, _rdpCombine.SubBRgb0, _rdpCombine.MulRgb0, _rdpCombine.AddRgb0,
+                _rdpCombine.SubAA0, _rdpCombine.SubBA0, _rdpCombine.MulA0, _rdpCombine.AddA0);
+            _rdpCombineFast1 = ClassifyRdpCombineCycle(
+                _rdpCombine.SubARgb1, _rdpCombine.SubBRgb1, _rdpCombine.MulRgb1, _rdpCombine.AddRgb1,
+                _rdpCombine.SubAA1, _rdpCombine.SubBA1, _rdpCombine.MulA1, _rdpCombine.AddA1);
+        }
+
+        private static int ClassifyRdpCombineCycle(int a, int b, int c, int d, int aa, int ab, int ac, int ad)
+        {
+            a &= 15; b &= 15; c &= 31; d &= 7;
+            aa &= 7; ab &= 7; ac &= 7; ad &= 7;
+            bool rgbProductZero = c == 6 || c >= 13 || (a == b && a <= 5);
+            bool alphaProductZero = ac == 7 || aa == ab;
+            if (rgbProductZero && alphaProductZero)
+                return 1; // Independent RGB/alpha passthrough.
+            if (b >= 6 && d == 7)
+            {
+                if (a <= 5 && c <= 5 && aa == a && ac == c && ab == 7 && ad == 7)
+                    return 2; // Same RGBA sources, pure multiplication.
+                if (alphaProductZero)
+                    return 3; // RGB multiplication plus independent alpha.
+            }
+            return 0;
         }
 
         private void ExecuteRdpSetTileSize(uint w0, uint w1)
