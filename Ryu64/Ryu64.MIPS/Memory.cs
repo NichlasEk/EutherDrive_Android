@@ -969,6 +969,7 @@ namespace Ryu64.MIPS
         private const uint CpuCyclesPerSecond = CpuCyclesPerViFrame * 60u;
         private const uint DefaultViLinesPerFrame = 1024;
         private const uint DefaultCpuCyclesPerViLine = CpuCyclesPerViFrame / DefaultViLinesPerFrame;
+        private static readonly uint[] CpuCyclesPerViLineTable = BuildCpuCyclesPerViLineTable();
         private const uint PlausibleFramebufferOriginFloor = 0x00001000u;
         private const uint RdramPageSize = 0x1000u;
         private const int RdramPageCount = (8 * 1024 * 1024) / 0x1000;
@@ -5996,11 +5997,23 @@ namespace Ryu64.MIPS
 
         private uint GetCpuCyclesPerViLine(uint viLinesPerFrame)
         {
-            if (viLinesPerFrame == 0)
-                return DefaultCpuCyclesPerViLine;
+            // VI_V_SYNC has ten bits. Precompute its line periods instead of
+            // dividing again for every emulated CPU instruction. No cached
+            // register state needs invalidation after writes or savestate loads.
+            if (viLinesPerFrame < CpuCyclesPerViLineTable.Length)
+                return CpuCyclesPerViLineTable[viLinesPerFrame];
 
             uint cpuCyclesPerViLine = CpuCyclesPerViFrame / viLinesPerFrame;
             return (cpuCyclesPerViLine == 0) ? 1u : cpuCyclesPerViLine;
+        }
+
+        private static uint[] BuildCpuCyclesPerViLineTable()
+        {
+            var periods = new uint[1025];
+            periods[0] = DefaultCpuCyclesPerViLine;
+            for (uint lines = 1; lines < periods.Length; lines++)
+                periods[lines] = Math.Max(1u, CpuCyclesPerViFrame / lines);
+            return periods;
         }
 
         private void RefreshViCurrentRegister()
