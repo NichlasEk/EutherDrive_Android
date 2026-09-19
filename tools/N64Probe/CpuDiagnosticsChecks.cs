@@ -41,7 +41,7 @@ internal static class CpuDiagnosticsChecks
                 foreach (uint address in new uint[] { 0x80322e0c, 0x80322e10, 0x80322e20, 0x80322e24 })
                 {
                     pc.SetValue(null, address);
-                    foreach (uint instruction in new uint[] { 0x24420001, 0x00431826, 0x34645678, 0x00042880 })
+                    foreach (uint instruction in new uint[] { 0, 0x1000ffff, 0x24420001, 0x00431826, 0x34645678, 0x00042880 })
                         interpret(instruction);
                 }
                 foreach (uint instruction in new uint[] { 0x70000000, 0x00200000 })

@@ -322,18 +322,32 @@ namespace Ryu64.MIPS
             return ((Value >> 20) & 0xFC0) | (Value & 0x03F);
         }
 
-        public static InstInfo GetOpcodeInfo(uint Opcode)
+        public static InstInfo GetOpcodeInfo(uint Opcode) => GetOpcodeInfoRef(Opcode);
+
+        // The initialized table is immutable. Avoid copying its metadata through
+        // the CPU dispatch path on every instruction.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        internal static ref readonly InstInfo GetOpcodeInfoRef(uint Opcode)
         {
             if (Volatile.Read(ref _initialized) == 0)
                 Init();
+            InstInfo[] list = FastLookup[ToFastLookupIndex((int)Opcode)];
+            if (list != null)
+            {
+                for (int i = 0; i < list.Length; i++)
+                {
+                    ref readonly InstInfo info = ref list[i];
+                    if ((Opcode & info.Mask) == info.Value)
+                        return ref info;
+                }
+            }
+            return ref ThrowUnsupportedOpcode(Opcode);
+        }
 
-            InstInfo[][] lookup = FastLookup;
-            int idx = ToFastLookupIndex((int)Opcode);
-            InstInfo[] list = lookup[idx];
-            if (list == null)
-                throw new NotImplementedException($"Instruction \"{Convert.ToString(Opcode, 2).PadLeft(32, '0')}\" isn't a implemented MIPS instruction.  PC: 0x{Registers.R4300.PC:x8}");
-
-            return GetOpcodeInfoFromList(list, Opcode);
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private static ref readonly InstInfo ThrowUnsupportedOpcode(uint Opcode)
+        {
+            throw new NotImplementedException($"Instruction \"{Convert.ToString(Opcode, 2).PadLeft(32, '0')}\" isn't a implemented MIPS instruction.  PC: 0x{Registers.R4300.PC:x8}");
         }
 
         public static InstInfo GetOpcodeInfoFromList(InstInfo[] InstList, uint Opcode)

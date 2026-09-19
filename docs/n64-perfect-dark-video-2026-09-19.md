@@ -73,3 +73,6 @@ EUTHERDRIVE_N64_PERF=1 dotnet tools/N64Probe/bin/Release/net8.0/N64Probe.dll --c
 The remaining CPU/RSP/rendering cost can still make Perfect Dark slow. The
 7 gfx/s display counts completed graphics tasks, not unique presented frames.
 No new whole-game performance percentage is claimed from this readback test.
+
+CPU profiling and the following optimization checkpoint are recorded in
+[n64-perfect-dark-performance-2026-09-19.md](n64-perfect-dark-performance-2026-09-19.md).

@@ -2277,6 +2277,8 @@ namespace Ryu64.MIPS
 
         }
 
+        private static readonly OpcodeTable.OpcodeDesc SelfBranchOpcode = new OpcodeTable.OpcodeDesc(0x1000FFFFu);
+
         public static void InterpretOpcode(uint Opcode)
         {
             if (Registers.R4300.Reg[0] != 0) Registers.R4300.Reg[0] = 0;
@@ -2289,16 +2291,34 @@ namespace Ryu64.MIPS
                 Count = 0x0;
             }
 
-            OpcodeTable.OpcodeDesc Desc = new OpcodeTable.OpcodeDesc(Opcode);
-            OpcodeTable.InstInfo   Info = OpcodeTable.GetOpcodeInfo(Opcode);
+            uint cycles;
+            if (Opcode == 0 && !TraceSm64DispatchWindow && !Common.Variables.Debug)
+            {
+                // NOP is SLL r0,r0,0. Preserve the normal instruction boundary
+                // below (Count, RANDOM, devices and interrupts), without decode.
+                Registers.R4300.PC += 4;
+                cycles = 1;
+            }
+            else if (Opcode == 0x1000FFFFu && !TraceSm64DispatchWindow && !Common.Variables.Debug)
+            {
+                // Keep the branch handler's delay-slot fetch, exceptions and
+                // trace behavior. Only the immutable opcode decode is shared.
+                InstInterp.BEQ(SelfBranchOpcode);
+                cycles = 1;
+            }
+            else
+            {
+                OpcodeTable.OpcodeDesc Desc = new OpcodeTable.OpcodeDesc(Opcode);
+                ref readonly OpcodeTable.InstInfo Info = ref OpcodeTable.GetOpcodeInfoRef(Opcode);
+                if (TraceSm64DispatchWindow || Common.Variables.Debug)
+                    TraceCpuDispatch(Opcode, Desc, Info);
+                Info.Interpret(Desc);
+                cycles = Info.Cycles;
+            }
 
-            if (TraceSm64DispatchWindow || Common.Variables.Debug)
-                TraceCpuDispatch(Opcode, Desc, Info);
-
-            Info.Interpret(Desc);
-            CycleCounter += Info.Cycles;
-            Count        += Info.Cycles;
-            memory?.Tick(Info.Cycles);
+            CycleCounter += cycles;
+            Count += cycles;
+            memory?.Tick(cycles);
             uint previousCount = (uint)Registers.COP0.Reg[Registers.COP0.COUNT_REG];
             uint newCount = (uint)(Count >> 1);
             Registers.COP0.Reg[Registers.COP0.COUNT_REG] = newCount;
