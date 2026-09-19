@@ -206,9 +206,8 @@ public partial class MainWindow : Window
     private static readonly bool SkipUiBlitEnabled =
         Environment.GetEnvironmentVariable("EUTHERDRIVE_SKIP_UI_BLIT") == "1";
     private readonly Action _presentOnUiAction;
-    private IEmulatorCore? _pendingPresentCore;
-    private int _pendingPresentQueued;
-    private long _nextPostedPresentTicks;
+    private readonly LatestPresentationRequest<IEmulatorCore> _presentRequests = new();
+    private readonly PublishedFrameBuffer _publishedDariusFrame = new();
     private byte[] _glSwapPresentBuffer = Array.Empty<byte>();
     private byte[] _presentSnapshotBuffer = Array.Empty<byte>();
     private TateRotation _tateRotation = TateRotation.Off;
@@ -9438,15 +9437,17 @@ public partial class MainWindow : Window
     private long _uiProfileAudioTicks;
     private long _uiProfileSubmitTicks;
     private long _uiProfileRenderTicks;
+    private long _uiProfilePresentCount;
+    private long _uiProfileLastPresentTicks;
+    private long _uiProfileMaxPresentGapTicks;
     private double _presentationTargetWidth;
     private double _presentationTargetHeight;
     private bool _detachedNativeOverlayBoundsValid;
 
     private void ResetPresentationState(bool clearBitmap)
     {
-        _pendingPresentCore = null;
-        _pendingPresentQueued = 0;
-        _nextPostedPresentTicks = 0;
+        _presentRequests.Clear();
+        _publishedDariusFrame.Clear();
         _glSwapPresentBuffer = Array.Empty<byte>();
         _presentSnapshotBuffer = Array.Empty<byte>();
         _tateFrameBuffer = Array.Empty<byte>();
@@ -9457,6 +9458,7 @@ public partial class MainWindow : Window
         _lastPresentedWidth = 0;
         _lastPresentedHeight = 0;
         _presentedFrames = 0;
+        _uiProfileLastPresentTicks = 0;
         _detachedNativeOverlayBoundsValid = false;
 
         if (!clearBitmap)
@@ -9479,7 +9481,25 @@ public partial class MainWindow : Window
             return;
 
         long renderStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
-        long currentFrameId = TryGetCoreFrameCounter(core) ?? _presentTickCounter;
+        int publishedWidth = 0, publishedHeight = 0, publishedStride = 0;
+        long publishedFrameId = 0;
+        if (core is DariusGaidenAdapter && !_emuRunning)
+        {
+            // Renderer changes can request a redraw while emulation is paused.
+            lock (_coreAudioLock)
+            {
+                var pausedFrame = core.GetFrameBuffer(out int pw, out int ph, out int ps);
+                _publishedDariusFrame.Publish(core, pausedFrame, pw, ph, ps,
+                    TryGetCoreFrameCounter(core) ?? 0);
+            }
+        }
+        if (core is DariusGaidenAdapter && !_publishedDariusFrame.TryCopy(core,
+                ref _presentSnapshotBuffer, out publishedWidth, out publishedHeight,
+                out publishedStride, out publishedFrameId))
+            return;
+        long currentFrameId = core is DariusGaidenAdapter
+            ? publishedFrameId
+            : TryGetCoreFrameCounter(core) ?? _presentTickCounter;
         if (core is InterlaceTestCore itc)
             currentFrameId = itc.GetFrameId();
 
@@ -9535,7 +9555,14 @@ public partial class MainWindow : Window
         int w;
         int h;
         int srcStride;
-        if (ShouldSnapshotFrameBufferForPresentation(core))
+        if (core is DariusGaidenAdapter)
+        {
+            w = publishedWidth;
+            h = publishedHeight;
+            srcStride = publishedStride;
+            src = _presentSnapshotBuffer.AsSpan(0, srcStride * h);
+        }
+        else if (ShouldSnapshotFrameBufferForPresentation(core))
         {
             bool lockTaken = false;
             int lockTimeoutMs = GetPresentationCoreLockTimeoutMs(core);
@@ -9682,7 +9709,22 @@ public partial class MainWindow : Window
         MaybeStartCrtPowerIntro();
 
         if (TraceUiProfile)
+        {
             _uiProfileRenderTicks += Stopwatch.GetTimestamp() - renderStart;
+            Interlocked.Increment(ref _uiProfilePresentCount);
+            long now = Stopwatch.GetTimestamp();
+            long previous = Interlocked.Exchange(ref _uiProfileLastPresentTicks, now);
+            if (previous != 0)
+            {
+                long gap = now - previous;
+                long maximum;
+                do
+                {
+                    maximum = Interlocked.Read(ref _uiProfileMaxPresentGapTicks);
+                    if (gap <= maximum) break;
+                } while (Interlocked.CompareExchange(ref _uiProfileMaxPresentGapTicks, gap, maximum) != maximum);
+            }
+        }
     }
 
     private ReadOnlySpan<byte> ApplyTateRotation(
@@ -10514,17 +10556,18 @@ public partial class MainWindow : Window
 
     private void PresentPendingFrame()
     {
-        Interlocked.Exchange(ref _pendingPresentQueued, 0);
-        var core = _pendingPresentCore;
-        _pendingPresentCore = null;
-        if (core != null && ReferenceEquals(core, _core))
-            RenderFrame(core);
-
-        if (Volatile.Read(ref _pendingPresentQueued) != 0)
+        // Keep ownership until rendering finishes. Releasing it at entry lets
+        // the producer post a callback that the consumer then posts again.
+        var core = _presentRequests.Take();
+        try
         {
-            var nextCore = _pendingPresentCore;
-            if (nextCore != null)
-                PostPendingPresent(nextCore);
+            if (core != null && ReferenceEquals(core, _core))
+                RenderFrame(core);
+        }
+        finally
+        {
+            if (_presentRequests.Complete())
+                PostPendingPresent();
         }
     }
 
@@ -10541,16 +10584,13 @@ public partial class MainWindow : Window
 
     private static bool ShouldSnapshotFrameBufferForPresentation(IEmulatorCore core)
         => core is Pgm2Adapter
-            || core is DariusGaidenAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter;
 
     private static int GetPresentationCoreLockTimeoutMs(IEmulatorCore core)
-        => core is DariusGaidenAdapter
-            ? 3
-            : core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
-                ? 0
-                : -1;
+        => core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
+            ? 0
+            : -1;
 
     private static bool ShouldUseNativeDesktopPsxPresenter(IEmulatorCore? core)
     {
@@ -10573,60 +10613,15 @@ public partial class MainWindow : Window
 
     private void QueuePresentFrameOnUi(IEmulatorCore core)
     {
-        _pendingPresentCore = core;
-        if (Interlocked.Exchange(ref _pendingPresentQueued, 1) != 0)
-            return;
-
-        PostPendingPresent(core);
+        if (_presentRequests.Publish(core))
+            PostPendingPresent();
     }
 
-    private void PostPendingPresent(IEmulatorCore core)
+    private void PostPendingPresent()
     {
-        var priority = core is DariusGaidenAdapter
-            ? DispatcherPriority.Background
-            : DispatcherPriority.Render;
-        int delayMs = ComputePostedPresentDelayMs(core);
-        if (delayMs <= 0)
-        {
-            Dispatcher.UIThread.Post(_presentOnUiAction, priority);
-            return;
-        }
-
-        _ = PostPendingPresentAfterDelayAsync(delayMs, priority);
-    }
-
-    private async Task PostPendingPresentAfterDelayAsync(int delayMs, DispatcherPriority priority)
-    {
-        try
-        {
-            await Task.Delay(delayMs).ConfigureAwait(false);
-        }
-        catch (TaskCanceledException)
-        {
-            return;
-        }
-
-        if (Volatile.Read(ref _pendingPresentQueued) != 0)
-            Dispatcher.UIThread.Post(_presentOnUiAction, priority);
-    }
-
-    private int ComputePostedPresentDelayMs(IEmulatorCore core)
-    {
-        if (core is not DariusGaidenAdapter dariusg)
-            return 0;
-
-        double targetFps = Math.Clamp(dariusg.GetTargetFps(), 30.0, 60.0);
-        long intervalTicks = Math.Max(1, (long)Math.Round(Stopwatch.Frequency / targetFps));
-        long now = Stopwatch.GetTimestamp();
-        long next = Interlocked.Read(ref _nextPostedPresentTicks);
-        long scheduled = next <= now ? now : next;
-        Interlocked.Exchange(ref _nextPostedPresentTicks, scheduled + intervalTicks);
-
-        long delayTicks = scheduled - now;
-        if (delayTicks <= 0)
-            return 0;
-
-        return Math.Clamp((int)Math.Ceiling(delayTicks * 1000.0 / Stopwatch.Frequency), 1, 100);
+        // The emulation loop already paces production. A second delayed clock
+        // can drift into the next core frame and accumulate stale callbacks.
+        Dispatcher.UIThread.Post(_presentOnUiAction, DispatcherPriority.Render);
     }
 
     private void UpdatePadTypeFromUi()
@@ -10892,6 +10887,12 @@ public partial class MainWindow : Window
                     ApplyInputToCore(core);
                     long runStart = TraceUiProfile ? Stopwatch.GetTimestamp() : 0;
                     core.RunFrame();
+                    if (core is DariusGaidenAdapter)
+                    {
+                        var frame = core.GetFrameBuffer(out int width, out int height, out int stride);
+                        _publishedDariusFrame.Publish(core, frame, width, height, stride,
+                            TryGetCoreFrameCounter(core) ?? 0);
+                    }
                     if (TraceUiProfile)
                         _uiProfileRunFrameTicks += Stopwatch.GetTimestamp() - runStart;
                     if (countFrameCounterDelta && frameCounterBefore.HasValue && TryGetProducedVideoFrameCounter(core) is long frameCounterAfter)
@@ -11146,8 +11147,10 @@ public partial class MainWindow : Window
                     double audioMs = (_uiProfileAudioTicks / ticksPerSec) * 1000.0;
                     double submitMs = (_uiProfileSubmitTicks / ticksPerSec) * 1000.0;
                     double renderMs = (_uiProfileRenderTicks / ticksPerSec) * 1000.0;
+                    long presents = Interlocked.Exchange(ref _uiProfilePresentCount, 0);
+                    double presentGapMs = Interlocked.Exchange(ref _uiProfileMaxPresentGapTicks, 0) * 1000.0 / ticksPerSec;
                     Console.WriteLine(
-                        $"[UI-PROFILE] fps={fps:0.###} run_ms={runMs:0.0} audio_ms={audioMs:0.0} submit_ms={submitMs:0.0} render_ms={renderMs:0.0}");
+                        $"[UI-PROFILE] fps={fps:0.###} run_ms={runMs:0.0} audio_ms={audioMs:0.0} submit_ms={submitMs:0.0} render_ms={renderMs:0.0} present_submit={presents} present_gap_max_ms={presentGapMs:0.0}");
                     _uiProfileRunFrameTicks = 0;
                     _uiProfileAudioTicks = 0;
                     _uiProfileSubmitTicks = 0;

@@ -2,6 +2,12 @@
 
 ## Latest checkpoint: 2026-09-19
 
+Latest UI follow-up: [presentation handoff](darius-gaiden-ui-presentation-2026-09-19.md).
+User testing exposed missing pictures despite faster core replay. Darius now
+publishes completed frame copies without UI/core-lock contention, and posted
+callbacks coalesce without the extra delayed Darius presentation clock.
+Concurrency tests pass; the user's real OpenGL playback still needs a retest.
+
 Latest performance follow-up: [task-table overhead reduction](darius-gaiden-task-table-performance-2026-09-19.md).
 Direct RAM reads for diagnostic scheduler-table scanning reduce mean frame
 time by 22.4% / 35.2% in the two user slots, with identical full video/audio
