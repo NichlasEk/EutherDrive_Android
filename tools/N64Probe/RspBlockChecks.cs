@@ -11,8 +11,8 @@ internal static class RspBlockChecks
 
     internal static void Run(string reference)
     {
-        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT") != "1")
-            throw new Exception("Enable EUTHERDRIVE_N64_RSP_BLOCK_JIT=1 for this check.");
+        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT") == "0")
+            throw new Exception("Remove EUTHERDRIVE_N64_RSP_BLOCK_JIT=0 for this check.");
         Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_TASK_MAX_INSTRUCTIONS", "61");
         string actual = Check(typeof(Memory).Assembly, true);
         var context = new AssemblyLoadContext("reference-blocks", true);
@@ -50,7 +50,9 @@ internal static class RspBlockChecks
             0x8c000000, 0xac000000, 0x00000021, 0x00000023, 0x00000024, 0x00000025,
             0x00000026, 0x00000027, 0x0000002a, 0x0000002b, 0x00000000, 0x00000002,
             0x00000003, 0x4a000005, 0x4a00000d, 0x4a00000e, 0x4a00000f, 0x4a00002c,
-            0xc8002000, 0xe8002000 };
+            0xc8002000, 0xe8002000, 0x20000000, 0x28000000, 0x2c000000,
+            0x80000000, 0x84000000, 0x90000000, 0x94000000, 0xa0000000, 0xa4000000,
+            0x00000004, 0x00000006, 0x00000007, 0x00000020, 0x00000022 };
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
@@ -65,15 +67,19 @@ internal static class RspBlockChecks
                 BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + cursor), word);
                 cursor = (cursor + 4) & 0xfff;
             }
-            Op(0x24010001);
+            Op(0x24010fff); // Force first memory-form accesses across DMEM's edge.
             for (int i = 0; i < 24; i++)
             {
-                uint form = forms[random.Next(forms.Length)];
+                // Every form is selected explicitly at least once, in addition
+                // to randomized surrounding instructions and register values.
+                uint form = i == 0 ? forms[iteration % forms.Length] : forms[random.Next(forms.Length)];
                 uint fields = (uint)random.Next(32) << 21 | (uint)random.Next(32) << 16;
                 uint word = form >> 26 == 0 ? form | fields | (uint)random.Next(32) << 11 | (uint)random.Next(32) << 6
                     : form >> 26 == 0x12 ? form | fields | (uint)random.Next(32) << 11 | (uint)random.Next(32) << 6
                     : form >> 26 == 0x32 || form >> 26 == 0x3a ? form | fields | (uint)random.Next(16) << 7 | (uint)random.Next(128)
                     : form | fields | (uint)random.Next(65536);
+                if (i == 0 && (form >> 26) >= 0x20 && (form >> 26) <= 0x2b)
+                    word = form | 1u << 21 | 2u << 16;
                 Op(word);
             }
             uint target = (uint)((cursor + 16) & 0xfff);

@@ -7,10 +7,11 @@ namespace Ryu64.MIPS
 {
     internal sealed partial class RspInterpreter
     {
-        // Experimental, deliberately off until a consistent whole-game gain is
-        // established. A warm task benchmark alone is not enough to enable it.
+        // Default-on after SM64 differential/replay checks. Keep an explicit
+        // interpreter override for diagnosis and platform fallback below.
         private static readonly bool BlockJitEnabled =
-            Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT") == "1";
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT") != "0";
+        private const int MaxBlockInstructions = 16;
         // Per interpreter: no cross-emulator mutable compilation cache.
         [NonSerialized] private readonly Func<RspInterpreter, uint, uint, int>[] _blocks = BlockJitEnabled ? new Func<RspInterpreter, uint, uint, int>[1024] : null;
         [NonSerialized] private readonly uint[] _blockFirstWords = BlockJitEnabled ? new uint[1024] : null;
@@ -50,12 +51,12 @@ namespace Ryu64.MIPS
             // its complete identity before allocating any expression nodes.
             var key = new System.Text.StringBuilder(start.ToString("x3"));
             int length = 0;
-            for (; length < 8 && start + length * 4 < 4096; length++)
+            for (; length < MaxBlockInstructions && start + length * 4 < 4096; length++)
             {
                 uint word = _memory.ReadSpImemWord(start + (uint)length * 4);
                 if (IsBlockBranch(word))
                 {
-                    if (length < 7 && start + length * 4 + 4 < 4096)
+                    if (length < MaxBlockInstructions - 1 && start + length * 4 + 4 < 4096)
                     {
                         uint delay = _memory.ReadSpImemWord(start + (uint)length * 4 + 4);
                         if (IsBlockInstruction(delay))
@@ -139,7 +140,7 @@ namespace Ryu64.MIPS
                 int op = (int)(word >> 26);
                 int target = (int)((word >> (op == 0 ? 11 : 16)) & 31);
                 bool writesTrackedGpr = op == 3 || (!IsBlockBranch(word)
-                    && op != 0x2b && op != 0x12 && op != 0x32 && op != 0x3a
+                    && !IsScalarStore(op) && op != 0x12 && op != 0x32 && op != 0x3a
                     && (ProgressGprMask & (1u << target)) != 0);
                 if (writesTrackedGpr)
                 {
@@ -171,9 +172,19 @@ namespace Ryu64.MIPS
                     || function == 0x1d || (function >= 0x20 && function <= 0x2d)
                     || (function >= 0x30 && function <= 0x37);
             if (op == 0x32 || op == 0x3a) return ((word >> 11) & 31) <= 11;
-            return op == 0 ? function == 0 || function == 2 || function == 3 || function == 0x21
-                || function == 0x23 || (function >= 0x24 && function <= 0x27) || function == 0x2a || function == 0x2b
-                : op == 9 || op == 12 || op == 13 || op == 14 || op == 15 || op == 0x23 || op == 0x2b;
+            return IsScalarBlockInstruction(word);
+        }
+
+        private static bool IsScalarStore(int op) => op == 0x28 || op == 0x29 || op == 0x2b;
+
+        private static bool IsScalarBlockInstruction(uint word)
+        {
+            int op = (int)(word >> 26), function = (int)(word & 63);
+            return op == 0 ? function == 0 || function == 2 || function == 3 || function == 4
+                || function == 6 || function == 7 || (function >= 0x20 && function <= 0x27)
+                || function == 0x2a || function == 0x2b
+                : (op >= 8 && op <= 15) || op == 0x20 || op == 0x21 || op == 0x23
+                    || op == 0x24 || op == 0x25 || IsScalarStore(op);
         }
 
         private static uint SwapBlockWord(uint word) => (word >> 24) | ((word >> 8) & 0xff00)
@@ -244,11 +255,8 @@ namespace Ryu64.MIPS
         private static Expression CompileScalarExpression(ParameterExpression self, uint word)
         {
             int op = (int)(word >> 26), function = (int)(word & 63);
-            bool special = op == 0 && (function == 0 || function == 2 || function == 3
-                || function == 0x21 || function == 0x23 || (function >= 0x24 && function <= 0x27)
-                || function == 0x2a || function == 0x2b);
-            if (!special && op != 9 && op != 12 && op != 13 && op != 14 && op != 15 && op != 0x23 && op != 0x2b)
-                return null;
+            if (!IsScalarBlockInstruction(word)) return null;
+            bool special = op == 0;
             int rs = (int)((word >> 21) & 31), rt = (int)((word >> 16) & 31), rd = (int)((word >> 11) & 31);
             int shift = (int)((word >> 6) & 31);
             Expression Register(int index) => Expression.ArrayIndex(Expression.Field(self, "_gpr"), Expression.Constant(index));
@@ -264,7 +272,12 @@ namespace Ryu64.MIPS
                     case 0: value = Expression.LeftShift(right, Expression.Constant(shift)); break;
                     case 2: value = Expression.RightShift(right, Expression.Constant(shift)); break;
                     case 3: value = Expression.Convert(Expression.RightShift(Expression.Convert(right, typeof(int)), Expression.Constant(shift)), typeof(uint)); break;
+                    case 4: value = Expression.LeftShift(right, Expression.Convert(Expression.And(left, Uint(31)), typeof(int))); break;
+                    case 6: value = Expression.RightShift(right, Expression.Convert(Expression.And(left, Uint(31)), typeof(int))); break;
+                    case 7: value = Expression.Convert(Expression.RightShift(Expression.Convert(right, typeof(int)), Expression.Convert(Expression.And(left, Uint(31)), typeof(int))), typeof(uint)); break;
+                    case 0x20:
                     case 0x21: value = Expression.Add(left, right); break;
+                    case 0x22:
                     case 0x23: value = Expression.Subtract(left, right); break;
                     case 0x24: value = Expression.And(left, right); break;
                     case 0x25: value = Expression.Or(left, right); break;
@@ -275,16 +288,23 @@ namespace Ryu64.MIPS
                 }
             }
             else if (op == 15) value = Uint(word << 16);
-            else if (op == 0x23 || op == 0x2b)
+            else if (op >= 0x20)
             {
                 Expression address = Expression.Add(Register(rs), Uint(unchecked((uint)(short)word)));
+                if (op == 0x28) return Call("WriteByte", address, Expression.Convert(Register(rt), typeof(byte)));
+                if (op == 0x29) return Call("WriteHalf", address, Expression.Convert(Register(rt), typeof(ushort)));
                 if (op == 0x2b) return Call("WriteWord", address, Register(rt));
-                value = Call("ReadWord", address);
+                value = Call(op == 0x20 || op == 0x24 ? "ReadByte" : op == 0x21 || op == 0x25 ? "ReadHalf" : "ReadWord", address);
+                if (op == 0x20 || op == 0x21)
+                    value = Expression.Convert(Expression.Convert(value, op == 0x20 ? typeof(sbyte) : typeof(short)), typeof(int));
+                if (value.Type != typeof(uint)) value = Expression.Convert(value, typeof(uint));
             }
             else
             {
-                Expression right = Uint(op == 9 ? unchecked((uint)(short)word) : word & 65535);
-                value = op == 9 ? Expression.Add(Register(rs), right)
+                Expression right = Uint(op <= 11 ? unchecked((uint)(short)word) : word & 65535);
+                value = op <= 9 ? (Expression)Expression.Add(Register(rs), right)
+                    : op == 10 ? (Expression)Expression.Condition(Expression.LessThan(Expression.Convert(Register(rs), typeof(int)), Expression.Constant((int)(short)word)), Uint(1), Uint(0))
+                    : op == 11 ? (Expression)Expression.Condition(Expression.LessThan(Register(rs), right), Uint(1), Uint(0))
                     : op == 12 ? Expression.And(Register(rs), right)
                     : op == 13 ? Expression.Or(Register(rs), right)
                     : Expression.ExclusiveOr(Register(rs), right);

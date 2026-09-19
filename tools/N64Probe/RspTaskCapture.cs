@@ -124,8 +124,8 @@ internal sealed class RspTaskCapture : TextWriter
                 if (iteration >= 0) times.Add(elapsed);
             }
             times.Sort();
-            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT") == "1")
-                Console.WriteLine($"blockCompilations={rsp.GetType().GetField("_blockCompilations", Private)?.GetValue(rsp)} blockInstructions={rsp.GetType().GetField("_blockInstructions", Private)?.GetValue(rsp)}");
+            if (rsp.GetType().GetField("_blockInstructions", Private)?.GetValue(rsp) is long blockInstructions && blockInstructions > 0)
+                Console.WriteLine($"blockCompilations={rsp.GetType().GetField("_blockCompilations", Private)?.GetValue(rsp)} blockInstructions={blockInstructions}");
             // A collectible reference load context changes JIT/static-access
             // costs. Use it for correctness only; compare speed in separate
             // processes with the same harness and each core in the default ALC.

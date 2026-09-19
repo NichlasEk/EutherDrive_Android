@@ -1,7 +1,12 @@
 # Super Mario 64: Linux bring-up, 2026-09-19
 
-Status: **controllable Mario, but still well below real-time and visually incorrect**. This is the
-existing Ryu64 interpreter/RSP/software-RDP path, not Android or a new JIT.
+Current execution path: Linux Ryu64 with the R4300 interpreter, **default-on RSP
+block JIT**, and software RDP. `EUTHERDRIVE_N64_RSP_BLOCK_JIT=0` restores the RSP
+interpreter. See follow-up 23 for the latest default and measurements; older
+follow-ups retain their historical opt-in instructions.
+
+Initial bring-up status (historical): controllable Mario, but well below real-time
+and visually incorrect, using the interpreter/RSP/software-RDP path on Linux.
 
 ## Verified fixes
 
@@ -1065,3 +1070,57 @@ Strict block digest: `96ABAFA5E63E172F0D20EBF9C6A55FF512022F6AAC899C318B9631A9B8
 legacy-shuffle digest: `2B0989F1323EB77592042CB9F87C9BED89B3219A45B821223DC709DE8A3FF38E`.
 Default-path 6845 render/interrupt cases and audio FIFO/snapshot/resampler checks
 also pass. Probe and Linux UI Release builds pass (UI: 0 errors, 501 warnings).
+
+## Follow-up 23: default-on RSP JIT and wider scalar coverage
+
+At the user's explicit request, RSP block JIT is now the default. Normal Linux UI
+launches need no flag. `EUTHERDRIVE_N64_RSP_BLOCK_JIT=0` remains the interpreter
+escape hatch; dynamic compilation platform failures retain the existing fallback.
+The block differential checker now accepts an unset flag and requires that actual
+compiled instructions executed. Task replay diagnostics report compilation counts
+for default-on runs as well, rather than only explicit `=1` runs.
+
+Increased the block limit from 8 to 16. An initial graphics-task pair was 65.271 ms
+with 16 versus 67.602 ms with the old 8-instruction implementation, identical full
+state. Added direct emission of LB/LBU/LH/LHU, SB/SH, variable shifts, ADD/SUB
+aliases, ADDI, SLTI and SLTIU. These preserve current interpreter sign extension,
+unsigned comparisons, shift masking, wrapping arithmetic and DMEM addressing.
+Scalar-store classification also excludes stores from tracked-register progress
+checkpoints. Shared scalar admission logic keeps block scanning and emission in
+agreement. Unsupported/CP0/lifecycle/trace paths still use the interpreter.
+
+With wider scalar coverage, the captured graphics task runs 12235920 instructions
+in compiled blocks over 17 replays, about 91% versus the previous roughly 65%.
+A separate-process pair against the first 16-instruction version was 59.132 vs
+64.661 ms median (~9% less task time), with identical full CPU/memory/private-RSP
+state. Reference previous shipped JIT binaries: `pre-default-jit/` at `c7f68d6c`;
+intermediate 16-instruction binaries: `jit16-baseline/`.
+
+The 64 synthetic block programs now guarantee each supported test form appears,
+with explicit scalar memory accesses at DMEM 0xfff to exercise wrapping. Both
+shuffle modes pass against the pre-JIT interpreter (`pre-block-jit/`): strict hash
+`6924F59901728CC24F310628BE001E9F5A5C5457DFD6CD3C5035B4B35C1FF0B1`, legacy hash
+`57F3EB875F6F4E25E7F4F8AD915FDF3AF72A0FD4C6D30115C5C66AF195D6C257`.
+Logs use `jit16-*`, `jit8-*`, `jit-scalar-*` and `jit-default-*` in
+`.build-tmp/sm64-20260919/`. Normal launches use the rebuilt UI without an extra
+environment setting. Sound tempo, rendering quality and frame skipping are unchanged.
+
+Audio-enabled minute comparisons against the previous shipped JIT, in both process
+orders: 603 -> 686 graphics tasks, then 621 -> 662. Combined 1224 -> 1348 is about
+10% more completed tasks, but the runs were not exactly equal in duration:
+61.44/61.32 seconds in the first pair and 61.21/62.85 in the second. Normalizing
+combined tasks by observed elapsed time gives about 9% higher throughput, with
+individual gains roughly 4-14%. Do not generalize to all scenes or claim precise
+UI FPS. The old version
+was explicitly run with `EUTHERDRIVE_N64_RSP_BLOCK_JIT=1`; the new version ran with
+the variable unset. No user process was stopped or reconfigured; measurements ran
+without overlapping builds or other probes. Run the normal `dotnet run --project
+EutherDrive.UI -c Release --no-build` command after restarting the UI to use the
+new default, or append the ROM path as before.
+
+Final validation passes with the flag unset: 10368 RSP instruction cases plus
+synthetic DMA/watchdog tasks, both captured graphics/audio tasks with exact full
+state, 6845 rendering/interrupt cases and audio FIFO/snapshot/resampler checks.
+The explicit `=0` fallback also replays the graphics task with identical state
+and no compiled-block execution. Probe and Linux UI Release builds succeed
+(UI: 0 errors, 501 warnings). The user can restart normally with `--no-build`.
