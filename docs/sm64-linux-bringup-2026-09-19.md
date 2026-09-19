@@ -800,3 +800,40 @@ instruction cases each), including branch/delay-slot, DMA and watchdog tasks;
 UI build; their embedded benchmark timings are not performance evidence.
 Final Linux Release UI build passed with zero errors and 501 existing warnings
 (`loop-ui-build.log`).
+
+## Follow-up 18: scalar RSP access and cold trace code
+
+Split register-write logging out of `WriteGpr`, keep scalar load/store trace
+calls behind the existing immutable trace flag, and request inlining for the
+small register/word/halfword access helpers. The memory functions, wrap rules,
+zero-register rule and progress-dirty tracking are unchanged. Trace messages
+still run before the same writes and include the same old/new values.
+
+New `--check-rsp-scalar REFERENCE_DLL` compares 2048 deterministic cases with
+all 32 GPRs, unchanged-value writes, unaligned and wrapping DMEM addresses,
+and word/halfword/byte reads and writes. It hashes results, dirty flags, final
+register/memory state and exact trace text. Run it separately with
+`EUTHERDRIVE_TRACE_N64_RSP_FLOW=0` and `=1`; enabled tracing must emit text.
+
+Baseline is `e2bfa115`, copied to `.build-tmp/sm64-20260919/pre-gpr-inline/`.
+Initial complete graphics-task medians (794278 instructions, separate
+processes, tiering disabled) were 94.607 ms baseline, 85.416 changed,
+88.946 baseline, 85.931 changed, 86.325 baseline. The first baseline is noisy;
+the later runs suggest only a small gain, not a claimed 10% improvement.
+Every replay preserves the complete captured end state. An extra experiment
+forcing accumulator helpers inline did not clearly improve further and was
+reverted. Accepted intermediate binaries are in `gpr-inline-only/`.
+
+One audio-enabled 20-second scene pair completed 186 -> 191 graphics tasks
+(about 3% more). This is not a guaranteed FPS improvement; host load varies.
+Logs: `gpr-{before,after}-scene.log`. No user process or settings were changed.
+
+Final validation passes: scalar state/trace checks in both trace modes,
+10368 RSP instruction cases plus synthetic DMA/branch/watchdog tasks in both
+shuffle modes, vector-copy/shuffle checks, 6845 render/interrupt checks, and
+audio FIFO/resampling checks. Captured audio task (18824 instructions) retains
+its exact CPU/memory/private-RSP end state. Final checks ran alongside the UI
+build; their timing output is not used as performance evidence. Logs use the
+`gpr-` prefix, including `gpr-scalar-final{,-trace}-check.log`.
+Linux Release UI build passed with zero errors and 501 existing warnings
+(`gpr-ui-build.log`).

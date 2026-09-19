@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 
 namespace Ryu64.MIPS
 {
@@ -1710,21 +1711,27 @@ namespace Ryu64.MIPS
             }
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private uint ReadWord(uint address)
         {
             // Scalar RSP loads/stores address DMEM; only instruction fetch uses IMEM.
             uint aligned = address & 0x0FFFu;
             uint value = _memory.ReadSpDmemWord(aligned);
-            TraceRspStackWordAccess(isWrite: false, aligned, value);
-            TraceRspScalarRead("word", aligned, value);
+            if (TraceRspFlow)
+            {
+                TraceRspStackWordAccess(isWrite: false, aligned, value);
+                TraceRspScalarRead("word", aligned, value);
+            }
             return value;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private ushort ReadHalf(uint address)
         {
             uint aligned = address & 0x0FFFu;
             ushort value = (ushort)((ReadByte(aligned) << 8) | ReadByte((aligned + 1u) & 0x0FFFu));
-            TraceRspScalarRead("half", address & 0x0FFFu, value);
+            if (TraceRspFlow)
+                TraceRspScalarRead("half", address & 0x0FFFu, value);
             return value;
         }
 
@@ -1739,10 +1746,12 @@ namespace Ryu64.MIPS
             return value;
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void WriteWord(uint address, uint value)
         {
             uint aligned = address & 0x0FFFu;
-            TraceRspStackWordAccess(isWrite: true, aligned, value);
+            if (TraceRspFlow)
+                TraceRspStackWordAccess(isWrite: true, aligned, value);
             _memory.WriteSpDmemWord(aligned, value);
         }
 
@@ -1800,21 +1809,28 @@ namespace Ryu64.MIPS
             WriteWord(aligned, (word & ~mask) | ((uint)value << shift));
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void WriteGpr(uint reg, uint value)
         {
             if (reg != 0)
             {
-                if (TraceRspFlow && (reg == 2 || reg == 11 || reg == 12 || reg == 19 || reg == 20 || reg == 24 || reg == 25 || reg == 26 || reg == 27 || reg == 31))
-                {
-                    Common.Logger.PrintWarningLine(
-                        $"[N64RSPGPR] pc=0x{(_pc & 0x0ffcu):x3} r{reg} old=0x{_gpr[reg]:x8} new=0x{value:x8} " +
-                        $"t3=0x{_gpr[11]:x8} t4=0x{_gpr[12]:x8} s3=0x{_gpr[19]:x8} s4=0x{_gpr[20]:x8} " +
-                        $"r24=0x{_gpr[24]:x8} ra=0x{_gpr[31]:x8} r25=0x{_gpr[25]:x8} r26=0x{_gpr[26]:x8} r27=0x{_gpr[27]:x8} r28=0x{_gpr[28]:x8} r29=0x{_gpr[29]:x8}");
-                }
+                if (TraceRspFlow)
+                    TraceRspGprWrite(reg, value);
                 // These are exactly the GPRs included in ComputeProgressSignature.
                 if ((0x87030002u & (1u << (int)reg)) != 0 && _gpr[reg] != value)
                     _progressRegistersDirty = true;
                 _gpr[reg] = value;
+            }
+        }
+
+        private void TraceRspGprWrite(uint reg, uint value)
+        {
+            if (reg == 2 || reg == 11 || reg == 12 || reg == 19 || reg == 20 || reg == 24 || reg == 25 || reg == 26 || reg == 27 || reg == 31)
+            {
+                Common.Logger.PrintWarningLine(
+                    $"[N64RSPGPR] pc=0x{(_pc & 0x0ffcu):x3} r{reg} old=0x{_gpr[reg]:x8} new=0x{value:x8} " +
+                    $"t3=0x{_gpr[11]:x8} t4=0x{_gpr[12]:x8} s3=0x{_gpr[19]:x8} s4=0x{_gpr[20]:x8} " +
+                    $"r24=0x{_gpr[24]:x8} ra=0x{_gpr[31]:x8} r25=0x{_gpr[25]:x8} r26=0x{_gpr[26]:x8} r27=0x{_gpr[27]:x8} r28=0x{_gpr[28]:x8} r29=0x{_gpr[29]:x8}");
             }
         }
 
