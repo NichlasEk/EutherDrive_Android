@@ -434,3 +434,48 @@ than the earlier memory-loop prefilter; host/scene variation still applies.
 An actual .NET disassembly (`cpu-disasm.log`) confirmed that the large CPU
 loop was already compiled with FullOpts and disabled trace branches folded
 away. It was therefore not refactored speculatively to chase trace overhead.
+
+## Linux checkpoint, 2026-09-19 10:20 Europe/Paris
+
+All implementation slices above are committed and pushed. The Release UI
+was rebuilt after the final CPU change: 0 errors, 501 warnings
+(`final-ui-build.log`). User-owned Gauntlet files and unrelated artifacts
+were left untouched. ROMs, savestates, command tapes, traces, and screenshots
+remain untracked under `.build-tmp/sm64-20260919/`.
+
+Final verification:
+
+- 90-second fresh boot, normal tiering, scripted Start/A: reaches file
+  selection and Peach's introductory letter, no reported unknown CPU
+  opcodes or halt. `final-cold/frame-0030.png` and `frame-0075.png`.
+- Latest Linux Bitmap UI in isolated Xvfb: recognizable Mario head and
+  PRESS START. `final-ui-smoke-cMESZ5/ui.png`, `ui.log`. It was stopped after
+  the smoke check; no test emulator processes remain running.
+- Thirty-second saved-scene controller check: Mario jumps and moves from
+  Z=4354 to Z=2955.64, with forward velocity 31.45 at the end.
+  `final-input.log`, `final-input/`. This is emulated controller input,
+  not a physical keyboard/gamepad test.
+- Final suites: render/interrupt 6845, EEPROM 18, DMA 108 complete-state
+  differential sequences, RSP 7168 vector cases plus 2048 direct-copy cases
+  and finite-task/watchdog comparisons. Snapshot coalescing check passes.
+  CPU gates: 648; sampler: 40960; combiner: 156352 in their dedicated logs.
+
+Still not full-speed gameplay. The fixed test scene is roughly 5-6 graphics
+tasks per wall-clock second, and RSP execution/software rendering remain
+the main cost. Some small visual seams/texture artifacts remain visible,
+including the Mario-cap emblem in the UI head shot. Audio processing was
+covered by unchanged RSP results, but playback was not listened to; the UI
+smoke explicitly disabled audio output. Savestates still do not include all
+private RSP execution state, so cold-boot checks remain essential.
+
+To try the freshly built Linux app (restart an older instance first):
+
+```sh
+dotnet run --project EutherDrive.UI -c Release --no-build -- "/home/nichlas/roms/N64/Super_Mario_64_(USA)-.n64"
+```
+
+Next session: profile this exact checkpoint before choosing a larger RSP/CPU
+execution change; use fixed-work RDP replays to protect graphics. Do not
+trade away watchdog, interrupt, depth, coverage, or arithmetic behavior for
+a headline frame-rate gain. Validate real desktop input and audible output
+separately from the automated probes.
