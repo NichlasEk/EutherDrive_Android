@@ -877,3 +877,55 @@ All experiment logs remain in `.build-tmp/sm64-20260919/`, prefixed `mac-`,
 `progress-prefix-`, `decode-`, or `cpu-dispatch-`. `pre-mac-lanes/` contains the
 accepted reference binaries. Probe rebuilt successfully after reverting all
 runtime changes; the existing Linux UI remains on the accepted implementation.
+
+## Follow-up 20: constant-shade textured triangles
+
+Several further RSP experiments did not justify shipping: packed word reads,
+a task-scoped pinned instruction fetch, and an opt-in scalar expression-tree
+JIT all preserved captured task state but lacked a consistent speed benefit.
+The per-instruction JIT retained interpreter bookkeeping and indirect-call
+overhead; larger blocks would be a different, more substantial project. None
+of these experiments remain in the runtime. A decoded TMEM color cache, both
+fully refreshed and incrementally updated, was also reverted: texture-load
+overhead largely canceled the sampling gain.
+
+The retained narrow renderer change recognizes triangles whose eight used
+shade derivatives (RGBA d/dx and d/de) are all zero. It computes the same clamped
+shade once, skips redundant row/pixel interpolation, and still executes the
+original texture filtering, combiner, alpha/depth tests and pixel writes.
+Nonconstant shading retains the original calculations. No audio timing,
+instruction timing, filtering quality or frame-skipping change.
+
+Separate-process fixed-work tree replay (2604 command chunks, 12 measured
+runs, tiering disabled for both): 30.052 -> 27.842 ms and, in reversed order,
+30.157 -> 26.587 ms. About 7-12% less time in this captured rendering workload;
+complete state remains `5487D77AF344946FE875398F8AE183E77AE11A11C6E0738BF1B444EFA3C86B79`.
+This is not a whole-game FPS claim. First normal-runtime, audio-enabled
+20-second scene pair was 183 -> 178 graphics tasks, so it did not show a win.
+
+A separate baseline-only runtime experiment was 140 graphics tasks with
+`DOTNET_TieredCompilation=0` versus 181 with normal tiering. Keep normal runtime
+settings: disabling tiering globally is not a speed fix. These scene runs were
+sequential; no user process was stopped or reconfigured.
+
+New `--check-flat-shade REFERENCE_DLL` compares 432 rendered cases: constant
+and individually varied derivatives, negative/oversaturated color and alpha,
+fractional Y origin, both edge orientations, alpha compare, and disabled shade.
+Other experiment artifacts remain local under `.build-tmp/sm64-20260919/`:
+`word-*`, `pinned-fetch-*`, `fetch-core-*`, `scalar-jit-*`, `tmem-*`,
+`flat-shade-*`, `optimized-jit-scene.log`, `default-jit-scene.log`.
+Reference core: `pre-word-load/` (accepted runtime at `dcea69ea`).
+
+The second scene pair, run in reverse order, was baseline 174 vs changed 181.
+Across the two pairs this is essentially flat within noise (357 vs 359 tasks).
+Final branch layout keeps gradient shading on its original one-branch path;
+its isolated tree replay median is 26.932 ms with the same full-state hash.
+All 432 synthetic shading cases pass against the reference, SHA
+`1CD0D6D04FCDCE178BFA91C664247E9F3B26F517319A58D26BE8CB8CACFBA4B5`.
+
+Final regression checks pass: 6845 render/interrupt cases, audio FIFO/snapshot/
+resampler checks, 1048576 filter cases and 65536 color expansions, the captured
+908-chunk logo replay, and the 794278-instruction graphics RSP task with exact
+CPU/memory/private-RSP end state. Checks overlapping the UI build are correctness
+evidence only, not performance measurements. Linux UI Release builds successfully
+(0 errors, 501 warnings); the rebuilt UI is ready for a restart with `--no-build`.

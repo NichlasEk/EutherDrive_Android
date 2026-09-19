@@ -2387,6 +2387,14 @@ namespace Ryu64.MIPS
             if (!TryReadRdpTextureCoefficients(command, commandAddress, xbusDmem, out RdpTriangleTextureCoefficients tex))
                 return false;
 
+            // Exact zero gradients, not an approximation. This scanline walker
+            // interpolates with d/de and d/dx; it does not use d/dy here.
+            bool constantShade = modulateShade
+                && (shade.DrDx | shade.DgDx | shade.DbDx | shade.DaDx
+                    | shade.DrDe | shade.DgDe | shade.DbDe | shade.DaDe) == 0;
+            uint constantShadeRgba = constantShade ? RdpShadeToRgba(shade.R, shade.G, shade.B, shade.A) : 0xFFFFFFFFu;
+            bool interpolateShade = modulateShade && !constantShade;
+
             uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
             if (maxRows == 0)
                 return false;
@@ -2439,19 +2447,19 @@ namespace Ryu64.MIPS
                 long rowT = tex.T + (long)Math.Round(yDelta * tex.DtDe);
                 long rowW = tex.W + (long)Math.Round(yDelta * tex.DwDe);
                 long rowZ = useDepth ? RdpDepthRowStart(depth, yDelta) : 0;
-                long rowR = modulateShade ? shade.R + (long)Math.Round(yDelta * shade.DrDe) : 0;
-                long rowG = modulateShade ? shade.G + (long)Math.Round(yDelta * shade.DgDe) : 0;
-                long rowB = modulateShade ? shade.B + (long)Math.Round(yDelta * shade.DbDe) : 0;
-                long rowA = modulateShade ? shade.A + (long)Math.Round(yDelta * shade.DaDe) : 0;
+                long rowR = interpolateShade ? shade.R + (long)Math.Round(yDelta * shade.DrDe) : 0;
+                long rowG = interpolateShade ? shade.G + (long)Math.Round(yDelta * shade.DgDe) : 0;
+                long rowB = interpolateShade ? shade.B + (long)Math.Round(yDelta * shade.DbDe) : 0;
+                long rowA = interpolateShade ? shade.A + (long)Math.Round(yDelta * shade.DaDe) : 0;
                 double xDelta = firstX + 0.5 - majorX;
                 long currentS = rowS + (long)Math.Round(xDelta * tex.DsDx);
                 long currentT = rowT + (long)Math.Round(xDelta * tex.DtDx);
                 long currentW = rowW + (long)Math.Round(xDelta * tex.DwDx);
                 long currentZ = useDepth ? rowZ + (long)Math.Round(xDelta * depthDx) : 0;
-                long currentR = modulateShade ? rowR + (long)Math.Round(xDelta * shade.DrDx) : 0;
-                long currentG = modulateShade ? rowG + (long)Math.Round(xDelta * shade.DgDx) : 0;
-                long currentB = modulateShade ? rowB + (long)Math.Round(xDelta * shade.DbDx) : 0;
-                long currentA = modulateShade ? rowA + (long)Math.Round(xDelta * shade.DaDx) : 0;
+                long currentR = interpolateShade ? rowR + (long)Math.Round(xDelta * shade.DrDx) : 0;
+                long currentG = interpolateShade ? rowG + (long)Math.Round(xDelta * shade.DgDx) : 0;
+                long currentB = interpolateShade ? rowB + (long)Math.Round(xDelta * shade.DbDx) : 0;
+                long currentA = interpolateShade ? rowA + (long)Math.Round(xDelta * shade.DaDx) : 0;
                 bool usePerspective = EnableRdpPerspectiveTexture && _rdpOtherModesPerspectiveTexture;
                 uint rowPixelIndex = (uint)y * _rdpColorImageWidth;
                 uint rowStart = _rdpColorImageAddress + ((rowPixelIndex + (uint)firstX) * bytesPerPixel);
@@ -2475,7 +2483,7 @@ namespace Ryu64.MIPS
                         currentW += tex.DwDx;
                         if (useDepth)
                             currentZ += depthDx;
-                        if (modulateShade)
+                        if (interpolateShade)
                         {
                             currentR += shade.DrDx;
                             currentG += shade.DgDx;
@@ -2485,7 +2493,7 @@ namespace Ryu64.MIPS
                         continue;
                     }
 
-                    if (modulateShade)
+                    if (interpolateShade)
                     {
                         uint shadeRgba = RdpShadeToRgba(
                             currentR,
@@ -2495,6 +2503,12 @@ namespace Ryu64.MIPS
                         rgba = _rdpCombineModeSet
                             ? ApplyRdpColorCombiner(rgba, shadeRgba)
                             : ModulateRdpRgba(rgba, shadeRgba);
+                    }
+                    else if (modulateShade)
+                    {
+                        rgba = _rdpCombineModeSet
+                            ? ApplyRdpColorCombiner(rgba, constantShadeRgba)
+                            : ModulateRdpRgba(rgba, constantShadeRgba);
                     }
                     else if (_rdpCombineModeSet)
                     {
@@ -2510,7 +2524,7 @@ namespace Ryu64.MIPS
                         currentW += tex.DwDx;
                         if (useDepth)
                             currentZ += depthDx;
-                        if (modulateShade)
+                        if (interpolateShade)
                         {
                             currentR += shade.DrDx;
                             currentG += shade.DgDx;
@@ -2537,7 +2551,7 @@ namespace Ryu64.MIPS
                         currentT += tex.DtDx;
                         currentW += tex.DwDx;
                             currentZ += depthDx;
-                        if (modulateShade)
+                        if (interpolateShade)
                         {
                             currentR += shade.DrDx;
                             currentG += shade.DgDx;
@@ -2560,7 +2574,7 @@ namespace Ryu64.MIPS
                     currentW += tex.DwDx;
                     if (useDepth)
                         currentZ += depthDx;
-                    if (modulateShade)
+                    if (interpolateShade)
                     {
                         currentR += shade.DrDx;
                         currentG += shade.DgDx;
