@@ -2229,8 +2229,7 @@ namespace Ryu64.MIPS
         private void ExecuteRdpTriangle(int command, uint commandAddress, bool xbusDmem)
         {
             uint bytesPerPixel = RdpBytesPerPixel(_rdpColorImageSize);
-            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
-                || _rdpColorImageAddress >= RDRAM.Length
+            if (_rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
                 || bytesPerPixel == 0)
                 return;
@@ -2665,7 +2664,7 @@ namespace Ryu64.MIPS
         {
             return EnableRdpDepth
                 && (command & 0x01) != 0
-                && _rdpMaskImageAddress >= PlausibleFramebufferOriginFloor
+                && _rdpMaskImageAddress < RDRAM.Length
                 && (_rdpOtherModesZCompare || _rdpOtherModesZUpdate);
         }
 
@@ -3452,6 +3451,8 @@ namespace Ryu64.MIPS
 
         private void ExecuteRdpSetOtherModes(uint w0, uint w1)
         {
+            if (TraceRdpCommands && _traceRdpSummaryCount < TraceRdpSummaryLimit)
+                Common.Logger.PrintWarningLine($"[N64RDP] other-modes raw={w0:x8}{w1:x8}");
             ulong mode = ((ulong)w0 << 32) | w1;
             _rdpOtherModesCycleType = (uint)((mode >> 52) & 0x3UL);
             _rdpOtherModesEnableTlut = ((mode >> 47) & 1UL) != 0;
@@ -3490,6 +3491,8 @@ namespace Ryu64.MIPS
 
         private void ExecuteRdpSetCombine(uint w0, uint w1)
         {
+            if (TraceRdpCommands && _traceRdpSummaryCount < TraceRdpSummaryLimit)
+                Common.Logger.PrintWarningLine($"[N64RDP] combine raw={w0:x8}{w1:x8}");
             ulong mode = ((ulong)w0 << 32) | w1;
             _rdpCombine.SubARgb0 = (int)((mode >> 52) & 0xFu);
             _rdpCombine.MulRgb0 = (int)((mode >> 47) & 0x1Fu);
@@ -3897,8 +3900,7 @@ namespace Ryu64.MIPS
         private void ExecuteRdpTextureRectangle(int command, uint w0, uint w1, uint w2, uint w3)
         {
             uint bytesPerPixel = RdpBytesPerPixel(_rdpColorImageSize);
-            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
-                || _rdpColorImageAddress >= RDRAM.Length
+            if (_rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
                 || bytesPerPixel == 0)
                 return;
@@ -3944,8 +3946,9 @@ namespace Ryu64.MIPS
         private void ExecuteRdpFillRectangle(uint w0, uint w1)
         {
             uint bytesPerPixel = RdpBytesPerPixel(_rdpColorImageSize);
-            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
-                || _rdpColorImageAddress >= RDRAM.Length
+            // Low RDRAM is a valid render target (SM64's Z buffer is at 0x400).
+            // Presentation heuristics must not suppress actual RDP memory writes.
+            if (_rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
                 || bytesPerPixel == 0)
                 return;

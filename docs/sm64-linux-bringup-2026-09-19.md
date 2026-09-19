@@ -218,3 +218,46 @@ more. This is workload throughput including startup and stop-boundary effects,
 not an exact-frame deterministic benchmark or a claim of playable speed.
 The scene still advances as each build runs, and the normal UI uses runtime
 tiering. Sampling evidence: `rsp-next.nettrace` / `.speedscope.json`.
+
+## Follow-up 3: the missing logo was a disabled low-memory Z buffer
+
+The command stream explicitly sets the depth image to physical `0x400`, then
+uses the same address as a color target to clear it with `fffcfffc`.
+`PlausibleFramebufferOriginFloor=0x1000` incorrectly suppressed both that
+clear and ALL depth testing against the buffer. Four far black shaded
+triangles (commands 705-708 in the captured frame) then erased the otherwise
+rendered SUPER MARIO logo, leaving only the later 64/text overlays.
+
+Rendering now accepts in-bounds low RDRAM addresses for triangles, rectangles,
+and depth. Presentation/snapshot heuristics remain separate, so the Z buffer
+does not become a candidate display image. Twelve new regression assertions
+exercise clear/update/near-far occlusion at bases 0, 0x400, and 0x1000.
+Render/interrupt total: 4433.
+
+Evidence:
+
+- `logo-tape/steps.png`: progression through one RDP command stream shows the
+  logo drawn, then erased. Before the fix, replaying all 908 recorded command
+  chunks reproduced the captured framebuffer byte-for-byte.
+- `logo-low-z/rdp-final.png`: replay of precisely the same stream after the
+  fix preserves the full logo. Geometry/interpolation is still imperfect.
+- `low-z-cold/vi-0010.png`: full logo from cold boot; `vi-0025.png` reaches
+  the Mario head. This is not merely a savestate/replay-only improvement.
+- `low-z-gameplay/vi-0025.png`: Mario jumping outside the castle; terrain
+  occlusion improves. Black tree-billboard backgrounds remain to investigate.
+
+The probe can capture one frame synchronously through its existing trace
+writer, without adding per-command callbacks to the production renderer:
+
+```sh
+N64_PROBE_CAPTURE_RDP=1 dotnet tools/N64Probe/bin/Release/net8.0/N64Probe.dll \
+  '/home/nichlas/roms/N64/Super_Mario_64_(USA)-.n64' OUTPUT_DIR 5 [state.bin]
+dotnet tools/N64Probe/bin/Release/net8.0/N64Probe.dll --replay-rdp OUTPUT_DIR REPLAY_DIR
+```
+
+Capture requires a leading SyncPipe and stops at FullSync. It saves initial
+memory, command bytes, intermediate images, and final RDRAM. Replay reports
+whether the final framebuffer matches. It does not capture arbitrary RSP
+writes to texture RAM between commands; validate that match before treating
+a new tape as an oracle. Incomplete captures are rejected. Artifacts contain
+game data and stay local/untracked; do not publish tapes, ROMs, or savestates.

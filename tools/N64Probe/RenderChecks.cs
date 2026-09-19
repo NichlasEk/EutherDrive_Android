@@ -133,6 +133,35 @@ internal static class RenderChecks
             }
         }
 
+        // SM64 uses low RDRAM for depth. A presentation-origin heuristic must
+        // neither suppress its clear nor silently disable Z compare/update.
+        foreach (uint zBase in new[] { 0u, 0x400u, 0x1000u })
+        {
+            Set("_rdpColorImageAddress", zBase);
+            Set("_rdpFillColor", 0xfffcfffcu);
+            Call("ExecuteRdpFillRectangle", 0xf603c03cu, 0u); // 16 x 16 clear
+            int sample = 5 * 320 + 5;
+            ushort WordAt(uint origin) => BinaryPrimitives.ReadUInt16BigEndian(memory.RDRAM.AsSpan((int)origin + sample * 2));
+            if (WordAt(zBase) != 0xfffc) throw new Exception($"Low Z clear suppressed at {zBase:x}");
+            checks++;
+            Set("_rdpMaskImageAddress", zBase);
+            Set("_rdpColorImageAddress", color);
+            Set("_rdpOtherModesCycleType", 0u);
+            Set("_rdpOtherModesZCompare", true);
+            Set("_rdpOtherModesZUpdate", true);
+            Set("_rdpPrimColor", 0xff0000ffu);
+            Word(96, 0x10000u << 13); // Constant near Z, shade + depth triangle.
+            Call("ExecuteRdpTriangle", 0x0d, command, false);
+            if (WordAt(color) != 0xf801) throw new Exception("Near triangle failed Z test");
+            if (WordAt(zBase) == 0xfffc) throw new Exception("Low Z update suppressed");
+            checks += 2;
+            Set("_rdpPrimColor", 0x000000ffu);
+            Word(96, 0x30000u << 13); // Opaque black background behind the red triangle.
+            Call("ExecuteRdpTriangle", 0x0d, command, false);
+            if (WordAt(color) != 0xf801) throw new Exception("Far black triangle erased foreground");
+            checks++;
+        }
+
         R4300.memory = memory;
         var refresh = typeof(R4300).GetMethod("RefreshRcpInterruptPending", flags)!.CreateDelegate<Func<ulong>>();
         for (int intr = 0; intr < 64; intr++)
