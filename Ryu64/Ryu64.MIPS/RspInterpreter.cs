@@ -21,6 +21,9 @@ namespace Ryu64.MIPS
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RSP_FLOW"), "1", StringComparison.Ordinal);
         private static readonly bool StrictHalfVectorShuffle =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_STRICT_HALF_SHUFFLE"), "0", StringComparison.Ordinal);
+        private static readonly bool ProfileVectorOps =
+            string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PROFILE_VECTOR_OPS"), "1", StringComparison.Ordinal);
+        private static readonly long[] _vectorOpCounts = new long[64];
         private static readonly ushort[] ReciprocalRom =
         {
             0xFFFF, 0xFF00, 0xFE01, 0xFD04, 0xFC07, 0xFB0C, 0xFA11, 0xF918, 0xF81F, 0xF727, 0xF631, 0xF53B, 0xF446, 0xF352, 0xF25F, 0xF16D,
@@ -601,6 +604,7 @@ namespace Ryu64.MIPS
         {
             stopReason = string.Empty;
             int op = (int)(instr & 0x3F);
+            if (ProfileVectorOps) _vectorOpCounts[op]++;
             int vd = (int)((instr >> 6) & 0x1F);
             int vs = (int)((instr >> 11) & 0x1F);
             int vt = (int)((instr >> 16) & 0x1F);
@@ -775,7 +779,7 @@ namespace Ryu64.MIPS
                         long prod = (long)(short)lhs[lane] * (ushort)rhs[lane];
                         acc += prod;
                         WriteAccumulator(lane, acc);
-                        result[lane] = unchecked((ushort)SaturateAccumulatorToSignedMd(lane));
+                        result[lane] = unchecked((ushort)ClampSigned16((int)(acc >> 16)));
                     }
                     StoreVector(vd, result);
                     return true;
@@ -785,8 +789,9 @@ namespace Ryu64.MIPS
                     {
                         long acc = ReadAccumulator(lane);
                         long term = (long)(((ulong)(ushort)lhs[lane] * (ushort)rhs[lane]) >> 16);
-                        WriteAccumulator(lane, acc + term);
-                        result[lane] = UnsignedClampAccumulator(_accLo[lane], _accMd[lane], _accHi[lane]);
+                        acc += term;
+                        WriteAccumulator(lane, acc);
+                        result[lane] = UnsignedClampAccumulator(acc);
                     }
                     StoreVector(vd, result);
                     return true;
@@ -796,8 +801,9 @@ namespace Ryu64.MIPS
                     {
                         long acc = ReadAccumulator(lane);
                         long prod = (long)(ushort)lhs[lane] * (short)rhs[lane];
-                        WriteAccumulator(lane, acc + prod);
-                        result[lane] = UnsignedClampAccumulator(_accLo[lane], _accMd[lane], _accHi[lane]);
+                        acc += prod;
+                        WriteAccumulator(lane, acc);
+                        result[lane] = UnsignedClampAccumulator(acc);
                     }
                     StoreVector(vd, result);
                     return true;
@@ -805,10 +811,13 @@ namespace Ryu64.MIPS
                 case 0x0f: // VMADH
                     for (int lane = 0; lane < 8; lane++)
                     {
-                        long acc = ReadAccumulator(lane);
-                        long prod = ((long)(short)lhs[lane] * (short)rhs[lane]) << 16;
-                        WriteAccumulator(lane, acc + prod);
-                        result[lane] = unchecked((ushort)SaturateAccumulatorToSignedMd(lane));
+                        // The product is added at bit 16: LO cannot change.
+                        // Wrapping this upper word is exactly a 48-bit wrap.
+                        int top = ((short)_accHi[lane] << 16) | _accMd[lane];
+                        top = unchecked(top + (short)lhs[lane] * (short)rhs[lane]);
+                        _accMd[lane] = unchecked((ushort)top);
+                        _accHi[lane] = unchecked((ushort)(top >> 16));
+                        result[lane] = unchecked((ushort)ClampSigned16(top));
                     }
                     StoreVector(vd, result);
                     return true;
@@ -1851,7 +1860,8 @@ namespace Ryu64.MIPS
 
         private void WriteAccumulator(int lane, long value)
         {
-            value = NormalizeAccumulator48(value);
+            // Each cast extracts only the low 48 bits. Masking/sign-extending
+            // the discarded upper bits first cannot change any stored lane.
             _accLo[lane] = unchecked((ushort)value);
             _accMd[lane] = unchecked((ushort)(value >> 16));
             _accHi[lane] = unchecked((ushort)(value >> 32));
@@ -1876,17 +1886,12 @@ namespace Ryu64.MIPS
             return value;
         }
 
-        private static ushort UnsignedClampAccumulator(ushort value, ushort accMd, ushort accHi)
+        private static ushort UnsignedClampAccumulator(long value)
         {
-            short hiSigned = unchecked((short)accHi);
-            short mdSigned = unchecked((short)accMd);
-            bool hiIsSignExtension = accHi == 0x0000 || accHi == 0xffff;
-            bool signMatches = (hiSigned < 0) == (mdSigned < 0);
-
-            if (hiIsSignExtension && signMatches)
-                return value;
-
-            return hiSigned < 0 ? (ushort)0x0000 : (ushort)0xffff;
+            int top = unchecked((int)(value >> 16));
+            if (unchecked((uint)(top - short.MinValue)) <= ushort.MaxValue)
+                return unchecked((ushort)value);
+            return top < 0 ? (ushort)0 : ushort.MaxValue;
         }
 
         private ushort ClampAccumulatorToVmacu(int lane)

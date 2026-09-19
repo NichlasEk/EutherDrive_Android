@@ -2,6 +2,12 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length >= 2 && args[0] == "--bench-rsp-task")
+{
+    RspTaskCapture.Benchmark(args[1], args.Length > 2 ? args[2] : null);
+    return;
+}
+
 if (args.Length == 1 && args[0] == "--check-audio")
 {
     AudioChecks.Run();
@@ -67,6 +73,8 @@ if (args.Length < 2) throw new ArgumentException("Usage: N64Probe ROM OUTPUT_DIR
 string output = Path.GetFullPath(args[1]);
 Directory.CreateDirectory(output);
 bool captureRdp = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_RDP") == "1";
+bool captureRsp = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_RSP") == "1";
+if (captureRsp) Environment.SetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RSP_TASK_DMEM", "1");
 if (captureRdp) Environment.SetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_RDP_COMMANDS", "1");
 byte[] rom = File.ReadAllBytes(args[0]);
 uint header = BinaryPrimitives.ReadUInt32BigEndian(rom);
@@ -81,6 +89,7 @@ var core = new Ryu64Core.Ryu64Core();
 core.LoadROM(normalized);
 if (args.Length > 3) core.LoadState(args[3]);
 using var rdpCapture = captureRdp ? new RdpCapture(output) : null;
+using var rspCapture = captureRsp ? new RspTaskCapture(output) : null;
 if (Environment.GetEnvironmentVariable("N64_PROBE_REPLAY_RDP") == "1")
 {
     var memory = R4300.memory;

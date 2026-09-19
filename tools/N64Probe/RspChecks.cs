@@ -155,6 +155,25 @@ internal static class RspChecks
             Record(step(0, 0xe8000000 | instruction, out _));
             count++;
         }
+        short[] edges = { short.MinValue, -32767, -1, 0, 1, 2, 32766, short.MaxValue };
+        foreach (uint op in new uint[] { 0, 1, 7, 8, 9, 12, 13, 14, 15 })
+        for (int pattern = 0; pattern < 8; pattern++)
+        for (uint element = 0; element < 16; element++)
+        {
+            Initialize();
+            var vectorBytes = (byte[])arrays[1];
+            for (int lane = 0; lane < 8; lane++)
+            {
+                BinaryPrimitives.WriteInt16BigEndian(vectorBytes.AsSpan(3 * 16 + lane * 2), edges[(lane + pattern) & 7]);
+                BinaryPrimitives.WriteInt16BigEndian(vectorBytes.AsSpan(7 * 16 + lane * 2), edges[(7 - lane + pattern) & 7]);
+                ((ushort[])arrays[4])[lane] = (ushort)edges[(lane + pattern) & 7];
+                ((ushort[])arrays[5])[lane] = (ushort)((lane & 1) == 0 ? 0xffff : 0);
+                ((ushort[])arrays[6])[lane] = 0xffff;
+            }
+            uint instruction = 0x4a000000 | element << 21 | 7u << 16 | 3u << 11 | 7u << 6 | op;
+            for (int repeat = 0; repeat < 3; repeat++) Record(step(0, instruction, out _));
+            count++;
+        }
         // LQV/SQV fast-copy boundaries, including descriptor tracing fallback,
         // DMEM wrapping and high address bits ignored by the RSP.
         foreach (uint address in new uint[] { 0, 0x3f0, 0x400, 0x410, 0x420, 0x430, 0xfe0, 0x12345000 })

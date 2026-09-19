@@ -603,3 +603,71 @@ functional audio-path coverage, not an audible-quality test. Artifacts:
 Next useful step is a fixed-work real RSP task capture/profile or a larger
 execution-engine improvement. Do not treat these small vector optimizations
 as a solution to the remaining interpreter/RDP cost or audio underruns.
+
+## Follow-up 14: real RSP task replay and accumulator arithmetic
+
+Added `N64_PROBE_CAPTURE_RSP=1` to N64Probe. It captures one graphics task
+through existing synchronous task logging, saving CPU/memory plus all private
+RSP registers before and after execution. `N64_PROBE_CAPTURE_RSP_TYPE=2`
+selects an audio task instead. Use a fresh output directory. This is a probe
+facility, not a change to the emulator's normal savestate format.
+
+`--bench-rsp-task CAPTURE_DIR [REFERENCE_MIPS_DLL]` restores and replays the
+exact task, checking every serialized CPU/memory byte and every RSP register
+against the actual captured ending on every iteration. Five warmups precede
+twelve timed iterations. A reference DLL is for correctness validation only:
+collectible AssemblyLoadContext loading changes JIT/static-field access costs
+and yielded misleading timing comparisons in the first experiment. Compare
+speed in separate processes using the same probe harness, with each core in
+the default load context. Tiered JIT warmup can also skew short task timings;
+`DOTNET_TieredCompilation=0` makes fixed-work comparisons more stable but is
+not the normal app configuration.
+
+Rejected an SSE2 multiply experiment: instruction and complete-task state
+checks passed, but whole-scene runs were 148/145/147 versus 151/154 graphics
+tasks in approximately 20 seconds. Its net8 multi-targeting and all SIMD paths
+were removed. `rejected-simd/` and `rsp-simd-*` artifacts are NOT accepted code.
+The initial apparent 10% task gain included the load-context measurement bias.
+
+The accepted change instead simplifies scalar 48-bit accumulator work:
+VMADH updates only the upper 32 bits with exact wrapping and preserves LO;
+VMADM/VMADN/VMADL clamp directly from their computed results; accumulator
+writes no longer mask/sign-extend upper bits that are immediately discarded.
+No instruction count, watchdog, DMA timing, renderer or audio-format changes.
+The core still targets netstandard2.0; no new hardware requirement.
+
+A sampling trace (`rsp-baseline-profile.nettrace`) identified vector compute
+and textured rendering as major hotspots. The sleeping probe-main thread must
+not be mistaken for emulation CPU cost. Optional
+setting `EUTHERDRIVE_N64_PROFILE_VECTOR_OPS=1` when running `--bench-rsp-task`
+reports opcode counts.
+The 794278-instruction graphics task executed VMADN 40320, VMADH 31547 and
+VMADM 21662 times, motivating the arithmetic changes.
+
+Accepted-source validation:
+
+- 10368 instruction cases, 32768 shuffle cases, 2048 register-copy cases,
+  finite tasks and watchdog tests match the previous core in both shuffle
+  modes. Additional multiplication/accumulator tests cover extrema, aliases,
+  carry/wrap and saturation (`rsp-acc-final-{check,legacy}.log`).
+- Real graphics and audio replays match their captured CPU/memory and RSP
+  state byte-for-byte: 794278 and 18824 instructions respectively.
+- Separate-process graphics replay with tiering disabled: median 110.029
+  to 106.684 ms. Audio timing was noisy and does not establish an audio-task
+  speedup (`acc-stable-*.log`).
+- Alternating normal-runtime, audio-enabled 20-second scene runs: 152 -> 157
+  and 151 -> 155 completed graphics tasks, approximately 3% more work on this
+  host (`acc-before-{1,2}.log`, `acc-after-{1,2}.log`). A user-owned emulator
+  remained running throughout; this is a modest local result, not a universal
+  FPS guarantee or a claim of real-time N64 speed.
+
+Reference core binaries remain in `pre-rsp-simd/`; only its N64Probe harness
+was updated to make the isolated-process tests use identical benchmark code.
+Keep cartridge/state/PCM/task captures and traces local under `.build-tmp`.
+
+Final Linux Release UI build passed (`acc-final-ui-build.log`, zero errors,
+501 existing warnings); probe rebuild also passed. Audio regression checks,
+6845 render/interrupt checks and 18 EEPROM checks pass. A fresh cold boot
+reached the Mario-head screen with nonzero audio (`acc-cold/`); this was a
+functional check overlapping build activity, not a performance measurement
+or listening test. No user-owned emulator was stopped or settings changed.
