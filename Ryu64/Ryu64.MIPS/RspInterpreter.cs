@@ -122,8 +122,9 @@ namespace Ryu64.MIPS
         private ulong _lastProgressSignature;
         private bool _progressRegistersDirty;
         private uint _stagnantInstructionCount;
-        private readonly uint[] _recentPcs = new uint[16];
-        private readonly uint[] _recentInstrs = new uint[16];
+        private const int RecentInstructionCount = 16;
+        private readonly uint[] _recentPcs = new uint[RecentInstructionCount];
+        private readonly uint[] _recentInstrs = new uint[RecentInstructionCount];
         private int _recentIndex;
 
         private static uint ReadUIntEnvironment(string name, uint fallback)
@@ -181,8 +182,9 @@ namespace Ryu64.MIPS
                 uint instr = _memory.ReadSpImemWord(pc);
                 _recentPcs[_recentIndex] = pc;
                 _recentInstrs[_recentIndex] = instr;
-                _recentIndex = (_recentIndex + 1) % _recentPcs.Length;
-                TraceRspWindow(pc, instr);
+                _recentIndex = (_recentIndex + 1) & (RecentInstructionCount - 1);
+                if (TraceRspFlow)
+                    TraceRspWindow(pc, instr);
                 if (pc == _lastPc && instr == _lastInstr)
                 {
                     _samePcRunLength++;
@@ -300,6 +302,11 @@ namespace Ryu64.MIPS
 
         private bool Step(uint pc, uint instr, out string stopReason)
         {
+            // Vector arithmetic has its own field layout. Dispatch it before
+            // decoding scalar fields and the intermediate COP2 transfer switch.
+            if ((instr >> 25) == 0x25)
+                return ExecuteVectorCompute(pc, instr, out stopReason);
+
             uint op = instr >> 26;
             uint rs = (instr >> 21) & 0x1F;
             uint rt = (instr >> 16) & 0x1F;

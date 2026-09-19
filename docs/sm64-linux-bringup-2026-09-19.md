@@ -764,3 +764,39 @@ Final checks passed: 1048576 filter cases, all 65536 color conversions,
 6845 render/interrupt cases, audio snapshot/resampler checks and 18 EEPROM
 cases. Logo and tree differential replays preserve complete state. Linux
 Release UI build succeeded with zero errors (501 existing warnings).
+
+## Follow-up 17: RSP dispatch/history overhead
+
+After publishing follow-up 16 as `b4ec32eb`, three small execution-loop changes:
+
+- Use an explicit power-of-two constant for the 16-entry instruction-history
+  ring and mask the index instead of dividing by the array's runtime length.
+  The complete diagnostic history, index and watchdog state remain unchanged.
+- Send vector arithmetic directly to its decoder before extracting scalar
+  fields and passing through the COP2 transfer decoder. The same opcode
+  predicate and vector implementation are used; scalar COP2 is unchanged.
+- Check the immutable trace flag at the call site, avoiding a call into the
+  large flow-logging method when tracing is disabled. Enabled tracing retains
+  the original path. Instruction counts, lifecycle ticks and watchdog checks
+  are unchanged.
+
+Reference binaries: `.build-tmp/sm64-20260919/pre-rsp-loop/`. Fixed-work graphics
+task replay, separate processes with tiering disabled, 794278 instructions:
+baseline/changed medians 93.047/87.010 ms, then reversed-order changed/baseline
+87.660/93.546 ms. This is about 6% less task time on top of follow-up 16.
+Earlier runs were noisier (91.118/88.439 before the trace guard, and a 104.180 ms
+baseline outlier); keep the raw logs instead of extrapolating to a promised FPS.
+All graphics replays match the captured CPU/memory/private-RSP end state.
+The 18824-instruction audio task also matches its complete captured end state.
+Evidence: `loop-{before,after}-task-{3,4}.log`, `loop-{before,after}-audio.log`.
+
+An audio-enabled 20-second whole-scene pair completed 176 -> 180 graphics
+tasks (about 2% more); this is only one noisy pair, not a stable FPS estimate.
+Logs: `loop-{before,after}-scene.log`. No user emulator was stopped.
+RSP instruction/task differential checks pass in both shuffle modes (10368
+instruction cases each), including branch/delay-slot, DMA and watchdog tasks;
+2048 vector-copy and 32768 shuffle checks also pass in each mode. Audio and
+6845 render/interrupt checks pass. These functional checks overlap the final
+UI build; their embedded benchmark timings are not performance evidence.
+Final Linux Release UI build passed with zero errors and 501 existing warnings
+(`loop-ui-build.log`).
