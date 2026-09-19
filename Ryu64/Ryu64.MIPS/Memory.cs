@@ -4219,7 +4219,9 @@ namespace Ryu64.MIPS
                         continue;
                     }
                     if (_rdpCombineModeSet)
-                        rgba = ApplyRdpColorCombiner(rgba, 0xFFFFFFFFu);
+                        // Texture rectangles have zero shade coefficients. Using white
+                        // turns (PRIMITIVE - SHADE) * TEXEL + SHADE into a solid box.
+                        rgba = ApplyRdpColorCombiner(rgba, 0u);
                     if (ShouldRejectRdpAlpha(rgba))
                     {
                         sampleHits++;
@@ -9263,6 +9265,17 @@ namespace Ryu64.MIPS
 
                 if (txLen <= 0 || rxIndex >= 64)
                     break;
+
+                // Only controller port 1 is wired to SetControllerState. Do not
+                // mirror its buttons or its pak onto three phantom controllers.
+                PIFRAM[i + 1] &= 0x3f;
+                if (channel != 0 && channel != 4)
+                {
+                    PIFRAM[i + 1] |= 0x80; // Joybus NoResponse; preserve RX bytes.
+                    i = rxIndex + rxLen;
+                    channel++;
+                    continue;
+                }
 
                 byte cmd = PIFRAM[cmdIndex];
                 switch (cmd)

@@ -2,6 +2,17 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-controller-ports")
+{
+    ControllerPortChecks.Run();
+    return;
+}
+if (args.Length == 1 && args[0] == "--check-rectangle-shade")
+{
+    RectangleShadeChecks.Run();
+    return;
+}
+
 if (args.Length == 1 && args[0] == "--check-cop1-usability")
 {
     Cop1UsabilityChecks.Run();
