@@ -4381,6 +4381,11 @@ namespace Ryu64.MIPS
 
             ref RdpTileState tile = ref sampler.Tile;
             bool upper = fracS + fracT >= 32;
+            if ((tile.Format & 7u) == 0 && (tile.Size & 3u) == 2 && !_rdpOtherModesEnableTlut)
+            {
+                rgba = FilterRdpRgba16(tile, s0, t0, s1, t1, fracS, fracT, upper);
+                return true;
+            }
             // Three-point filtering consumes three corners, never all four.
             if (!DecodeRdpTextureColor(tile, s1, t0, out uint c10)
                 || !DecodeRdpTextureColor(tile, s0, t1, out uint c01)
@@ -4406,6 +4411,11 @@ namespace Ryu64.MIPS
             ref RdpTileState tile = ref sampler.Tile;
             rgba = 0;
             bool upper = fracS + fracT >= 32;
+            if ((tile.Format & 7u) == 0 && (tile.Size & 3u) == 2 && !_rdpOtherModesEnableTlut)
+            {
+                rgba = FilterRdpRgba16(tile, s0, t0, s1, t1, fracS, fracT, upper);
+                return true;
+            }
             if (!DecodeRdpTextureColor(tile, s1, t0, out uint c10)
                 || !DecodeRdpTextureColor(tile, s0, t1, out uint c01)
                 || !DecodeRdpTextureColor(tile, upper ? s1 : s0, upper ? t1 : t0, out uint corner))
@@ -4429,6 +4439,11 @@ namespace Ryu64.MIPS
                 return false;
 
             bool upper = fracS + fracT >= 32;
+            if ((tile.Format & 7u) == 0 && (tile.Size & 3u) == 2 && !_rdpOtherModesEnableTlut)
+            {
+                rgba = FilterRdpRgba16(tile, s0, t0, s1, t1, fracS, fracT, upper);
+                return true;
+            }
             if (!DecodeRdpTextureColor(tile, s1, t0, out uint c10)
                 || !DecodeRdpTextureColor(tile, s0, t1, out uint c01)
                 || !DecodeRdpTextureColor(tile, upper ? s1 : s0, upper ? t1 : t0, out uint corner))
@@ -4440,6 +4455,32 @@ namespace Ryu64.MIPS
             if ((rgba & 0xFFu) < 0x80u)
                 rgba &= 0xFFFFFF00u;
             return true;
+        }
+
+        private uint FilterRdpRgba16(in RdpTileState tile, int s0, int t0, int s1, int t1, int fracS, int fracT, bool upper)
+        {
+            // Coordinates have already been transformed and checked nonnegative.
+            // Share row setup across the three samples, preserving TMEM wrap and
+            // odd-row word swaps. Palette-enabled textures use the generic path.
+            uint row0 = ((tile.Tmem + tile.Line * (uint)t0) & 0x1FFu) << 2;
+            uint row1 = ((tile.Tmem + tile.Line * (uint)t1) & 0x1FFu) << 2;
+            uint xor0 = RdpTmemWordRowXor((uint)t0);
+            uint xor1 = RdpTmemWordRowXor((uint)t1);
+            uint address10 = (((row0 + (uint)s1) ^ xor0) & 0x7FFu) << 1;
+            uint address01 = (((row1 + (uint)s0) ^ xor1) & 0x7FFu) << 1;
+            uint addressCorner = upper
+                ? (((row1 + (uint)s1) ^ xor1) & 0x7FFu) << 1
+                : (((row0 + (uint)s0) ^ xor0) & 0x7FFu) << 1;
+            // Masked even addresses are always in the fixed 4096-byte TMEM.
+            byte[] tmem = _rdpTmem;
+            uint[] colors = RdpRgba5551Colors;
+            uint c10 = colors[(tmem[address10] << 8) | tmem[address10 + 1]];
+            uint c01 = colors[(tmem[address01] << 8) | tmem[address01 + 1]];
+            uint corner = colors[(tmem[addressCorner] << 8) | tmem[addressCorner + 1]];
+            uint rgba = upper
+                ? BlendRdpTexelsTriangleUpper(c10, c01, corner, fracS, fracT)
+                : BlendRdpTexelsTriangleLower(corner, c10, c01, fracS, fracT);
+            return (rgba & 0xFFu) < 0x80u ? rgba & 0xFFFFFF00u : rgba;
         }
 
         private static uint BlendRdpTexelsTriangleLower(uint c00, uint c10, uint c01, int fracS, int fracT)

@@ -723,3 +723,44 @@ checked in `filter-cold/frame-0025.png`, and produced nonzero captured audio
 (570522 samples, 442604 nonzero). This verifies startup/audio output, not
 listening quality or real-time performance. Logs: `filter-final-ui-build.log`
 and `filter-cold.log`.
+
+## Follow-up 16: shared RGBA16 three-texel fetch
+
+The three-point filter now has a direct RGBA16/no-TLUT fetch, after normal
+coordinate transformation. It computes the two TMEM row bases and odd-row
+swaps once, reads the three selected texels directly from live TMEM and uses
+the same exact color expansion, interpolation and alpha cutoff. Even masked
+addresses stay within the fixed 4096-byte TMEM. Other formats and palette
+modes retain the generic decoder. There is no texture cache, timing change,
+frame skipping or reduced filtering quality.
+
+Sampler differential coverage adds 24576 RGBA16 cases, covering all three
+coordinate paths, random TMEM bases/strides, negative coordinates, and changes
+to TMEM contents and TLUT interpretation after sampler preparation.
+
+Evidence is local under `.build-tmp/sm64-20260919/`, with reference binaries
+in `pre-texel-fetch/` (commit `56eecfc5`) and new logs prefixed `fetch-`.
+
+Separate-process fixed-work measurements (`DOTNET_TieredCompilation=0`):
+
+- Tree RDP replay (2604 chunks, 12 measured runs): median 34.354 -> 28.968 ms,
+  about 16% less renderer time. Full state SHA remains
+  `5487D77AF344946FE875398F8AE183E77AE11A11C6E0738BF1B444EFA3C86B79`.
+- Complete graphics RSP task (794278 instructions): median 99.843 -> 92.576 ms,
+  about 7% less time. Full CPU/memory/private-RSP state remains identical,
+  SHA `BB124B1561F17BF41433FA6A9B0BF0DB97626A17CEB754844AD20C12FD296F75`.
+- Audio-enabled whole-scene 20-second pairs: 158 -> 156 and 148 -> 167 graphics
+  tasks. Combined throughput is about 6% higher, but individual pairs range
+  from slightly worse to 13% better. This is noisy supporting evidence, not
+  a reliable FPS promise. The user's active emulator was not stopped.
+
+The expanded sampler check passes all 106496 cases against the pre-change
+core, SHA `C2B10FE95B3599B8DF82E834D39FE126B3C9F29F2CE526BBC51A826D049A7BBB`.
+Performance logs: `fetch-{before,after}-{rdp,task}.log` and
+`fetch-{before,after}-{1,2}.log`. Final differential replay timings overlap
+the UI build and are correctness-only; do not use them as speed measurements.
+
+Final checks passed: 1048576 filter cases, all 65536 color conversions,
+6845 render/interrupt cases, audio snapshot/resampler checks and 18 EEPROM
+cases. Logo and tree differential replays preserve complete state. Linux
+Release UI build succeeded with zero errors (501 existing warnings).

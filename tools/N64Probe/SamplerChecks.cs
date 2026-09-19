@@ -70,6 +70,41 @@ internal static class SamplerChecks
                 count++;
             }
         }
+        // Stress the RGBA16 three-texel fetch at TMEM row/wrap boundaries.
+        // Change palette modes and TMEM after preparation as well: a prepared
+        // sampler must not retain stale texels or palette interpretation.
+        for (int iteration = 0; iteration < 8192; iteration++)
+        {
+            object tile = Activator.CreateInstance(tileType)!;
+            void Tile(string name, object value) => tileType.GetField(name)!.SetValue(tile, value);
+            void Mode(string name, bool value) => memoryType.GetField(name, flags)!.SetValue(memory, value);
+            Tile("Format", 0u); Tile("Size", 2u);
+            Tile("Tmem", (uint)random.Next(512)); Tile("Line", (uint)random.Next(512));
+            Tile("Uls", 20u); Tile("Ult", 28u);
+            Tile("Lrs", 144u); Tile("Lrt", 152u); Tile("TileSizeSet", true);
+            int coordinateMode = iteration % 3;
+            Tile("ClampS", coordinateMode == 0); Tile("ClampT", coordinateMode == 0);
+            Tile("MaskS", coordinateMode == 0 ? 0u : (uint)random.Next(1, 16));
+            Tile("MaskT", coordinateMode == 0 ? 0u : (uint)random.Next(1, 16));
+            Tile("MirrorS", coordinateMode == 2); Tile("MirrorT", coordinateMode == 2);
+            Tile("ShiftS", coordinateMode == 2 ? (uint)random.Next(16) : 0u);
+            Tile("ShiftT", coordinateMode == 2 ? (uint)random.Next(16) : 0u);
+            Mode("_rdpOtherModesSampleType", true); Mode("_rdpOtherModesBiLerp0", true);
+            object sampler = prepare.Invoke(memory, new[] { tile })!;
+            for (int mutation = 0; mutation < 3; mutation++)
+            {
+                Mode("_rdpOtherModesEnableTlut", mutation == 1);
+                Mode("_rdpOtherModesTlutType", (iteration & 1) != 0);
+                if (iteration % 16 == 0)
+                    random.NextBytes((byte[])memoryType.GetField("_rdpTmem", flags)!.GetValue(memory)!);
+                object[] args = { sampler, random.Next(-32768, 32768), random.Next(-32768, 32768),
+                    random.Next(32), random.Next(32), 0u };
+                bool valid = (bool)sample.Invoke(memory, args)!;
+                hash.AppendData(new[] { (byte)(valid ? 1 : 0) });
+                hash.AppendData(BitConverter.GetBytes((uint)args[5]));
+                count++;
+            }
+        }
         return Convert.ToHexString(hash.GetHashAndReset());
     }
 }
