@@ -90,3 +90,5 @@ Repeat with rsp-task-audio and reverse process order. Next optimization should
 target a substantial measured cost, especially textured triangle rasterization
 or vector operation bodies, with exact-state replays retained. Android and
 playable whole-game speed remain unverified.
+
+Follow-up: [rasterization checkpoint](n64-raster-performance-2026-09-19.md).

@@ -2480,19 +2480,7 @@ namespace Ryu64.MIPS
                     if (!SampleRdpTexture(ref sampler, sampleS, sampleT, sampleFracS, sampleFracT, out uint rgba))
                     {
                         sampleMisses++;
-                        currentS += tex.DsDx;
-                        currentT += tex.DtDx;
-                        currentW += tex.DwDx;
-                        if (useDepth)
-                            currentZ += depthDx;
-                        if (interpolateShade)
-                        {
-                            currentR += shade.DrDx;
-                            currentG += shade.DgDx;
-                            currentB += shade.DbDx;
-                            currentA += shade.DaDx;
-                        }
-                        continue;
+                        goto AdvancePixel;
                     }
 
                     if (interpolateShade)
@@ -2521,19 +2509,7 @@ namespace Ryu64.MIPS
                     if (ShouldRejectRdpAlpha(rgba))
                     {
                         zeroSampleHits++;
-                        currentS += tex.DsDx;
-                        currentT += tex.DtDx;
-                        currentW += tex.DwDx;
-                        if (useDepth)
-                            currentZ += depthDx;
-                        if (interpolateShade)
-                        {
-                            currentR += shade.DrDx;
-                            currentG += shade.DgDx;
-                            currentB += shade.DbDx;
-                            currentA += shade.DaDx;
-                        }
-                        continue;
+                        goto AdvancePixel;
                     }
 
                     if (!hasFirstSample)
@@ -2549,18 +2525,7 @@ namespace Ryu64.MIPS
                     if (useDepth && !PassRdpDepthTest(pixelIndex, currentZ, dzPix, dzPixEncoded))
                     {
                         depthRejects++;
-                        currentS += tex.DsDx;
-                        currentT += tex.DtDx;
-                        currentW += tex.DwDx;
-                            currentZ += depthDx;
-                        if (interpolateShade)
-                        {
-                            currentR += shade.DrDx;
-                            currentG += shade.DgDx;
-                            currentB += shade.DbDx;
-                            currentA += shade.DaDx;
-                        }
-                        continue;
+                        goto AdvancePixel;
                     }
 
                     if (bytesPerPixel == 2u && !_rdpOtherModesForceBlend)
@@ -2571,6 +2536,7 @@ namespace Ryu64.MIPS
                     else zeroSampleHits++;
                     rowWrote = true;
                     wroteAny = true;
+                AdvancePixel:
                     currentS += tex.DsDx;
                     currentT += tex.DtDx;
                     currentW += tex.DwDx;
@@ -2749,47 +2715,42 @@ namespace Ryu64.MIPS
             if (zAddress + 1u >= RDRAM.Length || zIndex >= _rdpHiddenBits.Length)
                 return true;
 
-            ushort zVal = (ushort)((RDRAM[zAddress] << 8) | RDRAM[zAddress + 1u]);
-            uint rawDzMem = (uint)(((zVal & 3) << 2) | (_rdpHiddenBits[zIndex] & 3));
-            uint oldZ = RdpZDecompressTable[(zVal >> 2) & 0x3FFFu];
-            uint dzMem = 1u << (int)Math.Min(rawDzMem, 31u);
-            if (dzMem == 0x8000u)
-                dzMem = 0xFFFFu;
-            else
+            bool pass = true;
+            if (_rdpOtherModesZCompare)
             {
-                int precisionFactor = (zVal >> 13) & 0xF;
-                if (precisionFactor < 3)
+                ushort zVal = (ushort)((RDRAM[zAddress] << 8) | RDRAM[zAddress + 1u]);
+                uint oldZ = RdpZDecompressTable[(zVal >> 2) & 0x3FFFu];
+                bool max = oldZ == 0x3FFFFu || zVal == 0u;
+                uint mode = _rdpOtherModesZMode & 3u;
+                if (mode == 2u)
+                    pass = sz < oldZ || max;
+                else if (max)
+                    pass = mode != 3u;
+                else
                 {
-                    uint modifier = 16u >> precisionFactor;
-                    dzMem <<= 1;
-                    if (dzMem < modifier)
-                        dzMem = modifier;
-                }
-            }
+                    // Only opaque/interpenetrating/decal comparisons need DZ.
+                    // Cleared depth and translucent mode can decide above.
+                    uint rawDzMem = (uint)(((zVal & 3) << 2) | (_rdpHiddenBits[zIndex] & 3));
+                    uint dzMem = 1u << (int)rawDzMem;
+                    if (dzMem == 0x8000u)
+                        dzMem = 0xFFFFu;
+                    else
+                    {
+                        int precisionFactor = (zVal >> 13) & 0xF;
+                        if (precisionFactor < 3)
+                        {
+                            uint modifier = 16u >> precisionFactor;
+                            dzMem <<= 1;
+                            if (dzMem < modifier)
+                                dzMem = modifier;
+                        }
+                    }
 
-            uint dzNew = Math.Max(dzMem, dzPix) << 3;
-            bool inFront = sz < oldZ;
-            bool farther = sz + dzNew >= oldZ;
-            int diff = unchecked((int)sz - (int)dzNew);
-            bool nearer = diff <= (int)oldZ;
-            bool max = oldZ == 0x3FFFFu || zVal == 0u;
-
-            bool pass;
-            if (!_rdpOtherModesZCompare)
-                pass = true;
-            else
-            {
-                switch (_rdpOtherModesZMode & 0x3u)
-                {
-                    case 2u:
-                        pass = inFront || max;
-                        break;
-                    case 3u:
-                        pass = farther && nearer && !max;
-                        break;
-                    default:
-                        pass = max || nearer;
-                        break;
+                    uint dzNew = Math.Max(dzMem, dzPix) << 3;
+                    int diff = unchecked((int)sz - (int)dzNew);
+                    pass = diff <= (int)oldZ;
+                    if (mode == 3u)
+                        pass &= sz + dzNew >= oldZ;
                 }
             }
 
@@ -3220,6 +3181,14 @@ namespace Ryu64.MIPS
             if (_rdpOtherModesCycleType == 2u) // Copy bypasses the combiner.
                 return texel0;
 
+            // Common texture modulation has already been recognized when the
+            // mux was set. Avoid passing all fourteen generic cycle operands
+            // for each pixel; two-cycle COMBINED still uses both cycle calls.
+            if (_rdpOtherModesCycleType != 1u && _rdpCombineFast1 >= 4)
+                return ModulateRdpTextureCombine(texel0,
+                    _rdpCombineFast1 == 6 ? _rdpEnvColor : shade,
+                    _rdpCombineFast1 != 4);
+
             // One-cycle rendering uses mux bank 1, not bank 0. Two-cycle
             // rendering feeds bank 0 into bank 1 via COMBINED.
             uint combined = 0u;
@@ -3272,6 +3241,9 @@ namespace Ryu64.MIPS
             uint texel1,
             uint shade)
         {
+            if (fastPath >= 4)
+                return ModulateRdpTextureCombine(texel0, fastPath == 6 ? _rdpEnvColor : shade, fastPath != 4);
+
             if (fastPath == 1)
                 return (RdpRgbAddInput(addRgb, combined, texel0, texel1, shade) & 0xFFFFFF00u)
                     | RdpAlphaInput(addAlpha, combined, texel0, texel1, shade);
@@ -3306,6 +3278,16 @@ namespace Ryu64.MIPS
                 RdpAlphaInput(addAlpha, combined, texel0, texel1, shade));
 
             return (r << 24) | (g << 16) | (bch << 8) | alpha;
+        }
+
+        private static uint ModulateRdpTextureCombine(uint texel, uint color, bool multiplyAlpha)
+        {
+            // Combiner rounding is +128 / 256, unlike the /255 fallback.
+            uint r = (((texel >> 24) * (color >> 24)) + 128u) >> 8;
+            uint g = ((((texel >> 16) & 255u) * ((color >> 16) & 255u)) + 128u) >> 8;
+            uint b = ((((texel >> 8) & 255u) * ((color >> 8) & 255u)) + 128u) >> 8;
+            uint a = multiplyAlpha ? (((texel & 255u) * (color & 255u)) + 128u) >> 8 : color & 255u;
+            return (r << 24) | (g << 16) | (b << 8) | a;
         }
 
         private uint RdpRgbSubAInput(int source, uint combined, uint texel0, uint texel1, uint shade)
@@ -3632,6 +3614,10 @@ namespace Ryu64.MIPS
                 return 1; // Independent RGB/alpha passthrough.
             if (b >= 6 && d == 7)
             {
+                if (a == 1 && c == 4 && alphaProductZero && ad == 4)
+                    return 4; // Texture * shade RGB, shade alpha.
+                if (a == 1 && (c == 4 || c == 5) && aa == a && ac == c && ab == 7 && ad == 7)
+                    return c == 4 ? 5 : 6; // Texture * shade/environment RGBA.
                 if (a <= 5 && c <= 5 && aa == a && ac == c && ab == 7 && ad == 7)
                     return 2; // Same RGBA sources, pure multiplication.
                 if (alphaProductZero)

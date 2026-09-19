@@ -2,6 +2,12 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 2 && args[0] == "--check-depth")
+{
+    DepthChecks.Run(args[1]);
+    return;
+}
+
 if (args.Length == 2 && args[0] == "--check-cpu-diagnostics")
 {
     CpuDiagnosticsChecks.Run(args[1]);
