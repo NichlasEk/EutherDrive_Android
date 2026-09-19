@@ -991,3 +991,77 @@ hash `69B439A3649E5A90B877134ACBF47263AC1590155A412A0DA365CFDC8EA83527`,
 legacy hash `BF08D6AA88461341FCB95562405032BF63DFEEE9FAD7E40A9C539230235B0A20`).
 Default-path 6845 render/interrupt cases and audio FIFO/snapshot/resampler checks
 pass. Probe and Linux UI Release builds pass; UI reports 0 errors, 501 warnings.
+
+## Follow-up 22: reducing block-JIT overhead and compiling branch/delay pairs
+
+Profiled the opt-in prototype before changing it (`block-next.nettrace` and
+`block-next.speedscope.json`). CPU-thread samples: 13.21% inclusively in
+`CompileBlock`, with 6.33% leaf time in dynamic delegate creation; 9.06% leaf in
+`TryExecuteBlock`. These overlap and include cold compilation, not just warm
+execution. The block builder constructed expression trees even for a compiled
+identity already in its dictionary.
+
+Changes retained for further opt-in testing:
+
+- Identify and look up the complete block before constructing expressions.
+- Batch history publication, trace-PC final state and repeated-PC bookkeeping at
+  block exit. Progress-signature updates remain at every tracked-register write;
+  runs of instructions that cannot change the signature only add their exact
+  instruction count. Conservative budget/watchdog guards still prevent crossing
+  a stopping boundary. No lifecycle event can occur inside compiled blocks.
+- Compare IMEM bytes in native 64-bit pairs (32-bit final odd word), with explicit
+  host-endian constants. Every byte is still checked before executing any code.
+- Compile terminal J/JAL/JR/BEQ/BNE/BLEZ/BGTZ plus a supported delay instruction.
+  Branch conditions and register targets are captured before the delay instruction;
+  link registers, retained branch target, next PC and instruction history match
+  the interpreter. Branch-likely, CP0, unsupported/double-branch delay slots and
+  wrapped delay slots still fall back. Blocks remain at most eight instructions.
+- Remove the unrolled VMADM/VMADN experiment: it did not demonstrate an advantage
+  over calling the existing vector helpers and increased generated code size.
+
+History batching reached roughly interpreter parity (65.568 vs 65.759 ms in one
+captured graphics-task pair). Native code guards plus branch support reached
+64.494 ms vs 68.761 ms interpreter in another pair (~6% less task time), with
+identical 794278-instruction end state. 186 block identities execute 8736419
+instructions over 17 replays, about 65% coverage. A bounded 32-block chaining
+experiment regressed to 73.782 vs 67.987 ms and was reverted.
+
+The short audio-enabled scene pair was still negative (178 JIT vs 186 interpreter
+graphics tasks). First longer pair, interpreter then JIT, completed 617 vs 647
+graphics tasks over approximately 61.4 seconds (~5% more). From the status samples
+near 20 seconds to the final sample, rates were about 10.60 vs 11.06 graphics
+tasks/second (~4% more with JIT). This is not a claim about UI polling FPS or all
+games. Keep the experiment opt-in while validating repeatability and startup cost.
+
+Expanded differential checks cover each compiled branch family, taken/not-taken
+paths, JAL links, an unaligned JR target overwritten by its delay instruction,
+and an instruction budget expiring after JAL but before the delay slot. The
+watchdog test now has a block-eligible loop and also stops before a delay slot.
+Reference interpreter binaries: `pre-block-jit/` at `9407d155`; previous prototype:
+`pre-block-next/` at `d1e68d0b`. Artifacts use `block-lookup-*`, `block-batch-*`,
+`block-compact-*`, `block-history-*`, `block-guard-*`, `block-branch-*`,
+`block-chain-*`, `block-next-*` and `block-warm-*` in the usual local directory.
+
+The reverse-order minute pair completed 654 JIT vs 617 interpreter graphics tasks
+(about 61.35 vs 61.14 seconds). Warm status-sample rates were 11.18 vs 10.55
+tasks/second. Across both minute pairs, 1301 vs 1234 completed tasks is about a
+5.4% gain; both orderings favored JIT. The earlier short-run regression still
+matters: do not claim eliminated cold-start cost or a universal speedup. No user
+process was stopped/reconfigured, and performance runs did not overlap builds
+or other probes. Keep the global default off; explicitly opt in for SM64 on Linux:
+
+```sh
+EUTHERDRIVE_N64_RSP_BLOCK_JIT=1 dotnet run --project EutherDrive.UI -c Release --no-build -- '/home/nichlas/roms/N64/Super_Mario_64_(USA)-.n64'
+```
+
+Unset the flag or use `=0` to retain the normal interpreter. Progress-register
+tracking now shares one mask constant between interpreter writes and compiled
+checkpoints, preventing the two paths from silently drifting apart.
+
+Final checks against the pre-JIT interpreter pass: 64 block programs in both
+half-shuffle modes, 10368 RSP instruction cases and synthetic task/DMA/watchdog
+cases, plus both captured graphics/audio tasks with identical complete end state.
+Strict block digest: `96ABAFA5E63E172F0D20EBF9C6A55FF512022F6AAC899C318B9631A9B829D181`;
+legacy-shuffle digest: `2B0989F1323EB77592042CB9F87C9BED89B3219A45B821223DC709DE8A3FF38E`.
+Default-path 6845 render/interrupt cases and audio FIFO/snapshot/resampler checks
+also pass. Probe and Linux UI Release builds pass (UI: 0 errors, 501 warnings).

@@ -76,16 +76,35 @@ internal static class RspBlockChecks
                     : form | fields | (uint)random.Next(65536);
                 Op(word);
             }
-            Op(0x10000001); // Taken branch with a meaningful delay slot.
-            Op(0x24210001);
+            uint target = (uint)((cursor + 16) & 0xfff);
+            Op(0x24050000 | target | 3); // JR must capture r5 before the delay slot.
+            uint branch = (iteration % 8) switch
+            {
+                0 => 0x10000002u, // BEQ taken
+                1 => 0x14000002u, // BNE not taken
+                2 => 0x18000002u, // BLEZ taken
+                3 => 0x1c000002u, // BGTZ not taken
+                4 => 0x08000000u | (target >> 2), // J
+                5 => 0x0c000000u | (target >> 2), // JAL
+                6 => 0x00a00008u, // JR r5 (unaligned target is masked at dispatch)
+                _ => 0x10220002u, // BEQ with data-dependent condition
+            };
+            Op(branch);
+            Op(0x24050000); // delay slot changes the JR source register
+            Op(0x24210100); // skipped only by taken branches
             Op(0x54000001); // Not-taken likely branch: annul its delay slot.
             Op(0x24210100);
             Op(0x24420001);
             Op(0x0000000d);
-            if (iteration == 63)
+            if (iteration >= 62)
             {
                 cursor = 0;
-                for (int i = 0; i < 96; i++) Op(0);
+                for (int i = 0; i < (iteration == 62 ? 60 : 96); i++) Op(0);
+                if (iteration == 62)
+                {
+                    Op(0x0c000000); // Budget ends after JAL, before its delay slot.
+                    Op(0);
+                }
                 Op(0x0000000d);
             }
             if (iteration % 8 == 3)
@@ -98,7 +117,7 @@ internal static class RspBlockChecks
             }
             writePc(start);
             bool completed = execute(out uint instructions, out string reason);
-            bool expected = iteration == 63
+            bool expected = iteration >= 62
                 ? !completed && instructions == 61 && reason.Contains("max-instructions executed=61")
                 : completed && reason == "break";
             if (!expected)

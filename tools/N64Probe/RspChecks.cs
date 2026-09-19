@@ -287,9 +287,14 @@ internal static class RspChecks
             }
             byte[] sp = (byte[])memoryType.GetField("SP_MEM_RW")!.GetValue(memory)!;
             // Untracked r2 keeps changing, but the watchdog signature must not.
-            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000), 0x24420001u);
-            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1004), 0x08000000u);
-            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1008), 0u);
+            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000), 0u);
+            // Two straight-line instructions also exercise the block JIT's
+            // batched no-progress accounting at the exact watchdog boundary.
+            // The initial NOP makes the watchdog stop before a branch delay slot.
+            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1004), 0x24420001u);
+            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1008), 0x24630001u);
+            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x100c), 0x08000001u);
+            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1010), 0u);
             bool completed = type.GetMethod("ExecuteTask")!.CreateDelegate<ExecuteTask>(rsp)(out uint instructions, out string reason);
             uint expected = validTask ? 4096u : 2_000_000u;
             if (completed || instructions != expected || !reason.Contains("no-progress stagnant="))

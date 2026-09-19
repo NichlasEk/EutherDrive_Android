@@ -6,6 +6,8 @@ namespace Ryu64.MIPS
     internal sealed partial class RspInterpreter
     {
         private const uint LoopReportThreshold = 2048;
+        // Keep interpreter dirty tracking and compiled progress checkpoints aligned.
+        private const uint ProgressGprMask = 0x87030002u;
         private const uint NoProgressInstructionLimitRaw = 2_000_000;
         private const uint AbsoluteMaxInstructionsRaw = 100_000_000;
         private const uint DefaultNoProgressInstructionLimitTask = 20_000_000;
@@ -1826,7 +1828,7 @@ namespace Ryu64.MIPS
                 if (TraceRspFlow)
                     TraceRspGprWrite(reg, value);
                 // These are exactly the GPRs included in ComputeProgressSignature.
-                if ((0x87030002u & (1u << (int)reg)) != 0 && _gpr[reg] != value)
+                if ((ProgressGprMask & (1u << (int)reg)) != 0 && _gpr[reg] != value)
                     _progressRegistersDirty = true;
                 _gpr[reg] = value;
             }
