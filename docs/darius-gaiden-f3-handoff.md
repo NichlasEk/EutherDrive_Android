@@ -1,5 +1,13 @@
 # Darius Gaiden / Taito F3 Handoff
 
+## Latest checkpoint: 2026-09-19
+
+The May bringup status below is historical. Current Linux builds reach
+visible gameplay. See [Linux performance verification](darius-gaiden-linux-performance-2026-09-19.md):
+diagnostic overhead reduced, 20.66% shorter measured gameplay frame time,
+with identical full video/audio sequences and saved state across four A/B pairs.
+Interactive gameplay and all stages are not yet certified by this scripted test.
+
 Date: 2026-05-16
 
 ## Current State

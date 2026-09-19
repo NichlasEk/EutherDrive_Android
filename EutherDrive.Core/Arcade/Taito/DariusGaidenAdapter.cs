@@ -9106,6 +9106,13 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 return;
 
             uint canonicalAddress = F3WorkRamBase + ((address - F3WorkRamBase) % (uint)_workRam.Length);
+            // Both recorded and live task stacks are restricted to
+            // [0x402000, F3SchedulerStackSlots - 4). A watched frame occupies
+            // stack+60 through stack+67, including unaligned stack values.
+            // Most RAM writes cannot touch any such frame; avoid all searches.
+            if (canonicalAddress < 0x00402000u + 60u ||
+                canonicalAddress >= F3SchedulerStackSlots - 4u + 67u)
+                return;
             for (int i = 0; i < _observedTaskStackCount; i++)
             {
                 uint stack = _observedTaskStacks[i];

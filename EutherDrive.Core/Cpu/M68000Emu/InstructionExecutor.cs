@@ -18,6 +18,11 @@ internal sealed partial class InstructionExecutor
     private Instruction? _instruction;
     private uint _tracePc;
 
+    // Match the other trace switches: configure once before CPU startup,
+    // not through process-environment lookups on every stack/jump operation.
+    private static readonly bool TraceStack = Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_STACK") == "1";
+    private static readonly bool TraceJump = Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_JUMP") == "1";
+
     private static readonly bool TraceExceptions =
         string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_EX"), "1", StringComparison.Ordinal);
     private static readonly string? TraceExceptionsFile =
@@ -1179,7 +1184,7 @@ internal sealed partial class InstructionExecutor
         ushort lo = (ushort)(value & 0xFFFF);
         uint sp = _registers.StackPointer() - 4;
         _registers.SetStackPointer(sp);
-        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_STACK") == "1")
+        if (TraceStack)
         {
             if ((value & 0x00FF_FFFF) < 0x000100 || (value & 0x00FF_FFFF) >= 0x00FF0000)
             {
@@ -1206,7 +1211,7 @@ internal sealed partial class InstructionExecutor
         var value = ReadBusLong(sp);
         if (!value.IsOk) return ExecuteResult<uint>.Err(value.Error!.Value);
         _registers.SetStackPointer(sp + 4);
-        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_STACK") == "1")
+        if (TraceStack)
         {
             if ((value.Value & 0x00FF_FFFF) < 0x000100 || (value.Value & 0x00FF_FFFF) >= 0x00FF0000)
             {
@@ -1219,7 +1224,7 @@ internal sealed partial class InstructionExecutor
     private ExecuteResult<object> JumpToAddress(uint address)
     {
         uint masked = address & 0x00FF_FFFF;
-        if (Environment.GetEnvironmentVariable("EUTHERDRIVE_M68K_TRACE_JUMP") == "1")
+        if (TraceJump)
         {
             if (masked < 0x000100 || masked >= 0x00FF0000 || (address & 0xFF00_0000) != 0)
             {
