@@ -2,6 +2,17 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-read64")
+{
+    MemoryRead64Checks.Run();
+    return;
+}
+if (args.Length == 3 && args[0] == "--bench-cpu-state")
+{
+    CpuStateBenchmark.Run(args[1], args[2]);
+    return;
+}
+
 if (args.Length == 1 && args[0] == "--check-controller-ports")
 {
     ControllerPortChecks.Run();

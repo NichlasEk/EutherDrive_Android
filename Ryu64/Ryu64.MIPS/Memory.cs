@@ -10643,6 +10643,21 @@ namespace Ryu64.MIPS
 
         public ulong ReadUInt64(uint index)
         {
+            // Direct-mapped RAM has no read events. Avoid eight map lookups and
+            // a temporary array, but keep the byte path for TLB and device reads.
+            if (index >= 0x80000000u && index < 0xC0000000u)
+            {
+                uint physical = index & 0x1FFFFFFFu;
+                if ((ulong)physical + 8u <= (ulong)RDRAM.Length)
+                    return ((ulong)RDRAM[physical] << 56)
+                        | ((ulong)RDRAM[physical + 1u] << 48)
+                        | ((ulong)RDRAM[physical + 2u] << 40)
+                        | ((ulong)RDRAM[physical + 3u] << 32)
+                        | ((ulong)RDRAM[physical + 4u] << 24)
+                        | ((ulong)RDRAM[physical + 5u] << 16)
+                        | ((ulong)RDRAM[physical + 6u] << 8)
+                        | RDRAM[physical + 7u];
+            }
             byte[] Res = this[index, 8];
             Array.Reverse(Res);
             unsafe
