@@ -2,6 +2,12 @@
 
 ## Latest checkpoint: 2026-09-19
 
+Latest performance follow-up: [task-table overhead reduction](darius-gaiden-task-table-performance-2026-09-19.md).
+Direct RAM reads for diagnostic scheduler-table scanning reduce mean frame
+time by 22.4% / 35.2% in the two user slots, with identical full video/audio
+and saved state. Slot 2 over-budget frames fall from 45 to 0 across 1,800
+frames per variant; slot 1 tail latency remains noisy. UI pacing is not certified.
+
 Follow-up: [HUD correction and user-slot stutter investigation](darius-gaiden-hud-stutter-2026-09-19.md).
 Corrected character/pivot pen bit significance, with 98,308 decoder checks and
 unchanged audio/state hashes across both new user slots. The scanline JIT

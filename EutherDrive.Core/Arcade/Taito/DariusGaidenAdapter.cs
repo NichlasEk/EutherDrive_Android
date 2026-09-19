@@ -1,5 +1,6 @@
 namespace EutherDrive.Core.Arcade.Taito;
 
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
@@ -9105,7 +9106,10 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
 
             for (uint slot = 0; slot < 32; slot++)
             {
-                uint stack = PeekLong(0x4066b8 + slot * 4u);
+                // This fixed scheduler table is ordinary work RAM, outside the
+                // FIO soft-status addresses. Avoid four full bus lookups per
+                // slot while preserving the live (including partial) value.
+                uint stack = BinaryPrimitives.ReadUInt32BigEndian(_workRam.AsSpan(0x66b8 + (int)slot * 4, 4));
                 if (stack < 0x00402000u || stack >= F3SchedulerStackSlots - 4u)
                     continue;
 

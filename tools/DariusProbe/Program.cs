@@ -37,6 +37,9 @@ using var audio = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 long ticks = 0, gameplayTicks = 0;
 int gameplayFrames = 0, overBudget = 0;
 var frameTimes = new List<double>();
+string? timingPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUS_PROBE_TIMING_CSV");
+// Buffer value types only; formatting and disk I/O happen after the replay.
+var timingRows = timingPath == null ? null : new List<(int Frame, long Total, long Cpu, long Render)>(frames);
 long budget = (long)(Stopwatch.Frequency / core.GetTargetFps());
 for (int frame = 0; frame < frames; frame++)
 {
@@ -46,6 +49,7 @@ for (int frame = 0; frame < frames; frame++)
     long start = Stopwatch.GetTimestamp();
     core.RunFrame();
     long elapsed = Stopwatch.GetTimestamp() - start;
+    timingRows?.Add((frame, elapsed, core.LastFrameCpuTicks, core.LastFrameRenderTicks));
     ticks += elapsed;
     if (loadedState || frame >= 900)
     {
@@ -56,6 +60,13 @@ for (int frame = 0; frame < frames; frame++)
     }
     video.AppendData(core.GetFrameBuffer(out _, out _, out _));
     audio.AppendData(MemoryMarshal.AsBytes(core.GetAudioBuffer(out _, out _)));
+}
+if (timingRows != null)
+{
+    double tickMs = 1000.0 / Stopwatch.Frequency;
+    File.WriteAllLines(timingPath!, timingRows.Select(row => FormattableString.Invariant(
+        $"{row.Frame},{row.Total * tickMs:F6},{row.Cpu * tickMs:F6},{row.Render * tickMs:F6}"))
+        .Prepend("frame,totalMs,cpuMs,renderMs"));
 }
 using var state = new MemoryStream();
 using (var writer = new BinaryWriter(state, System.Text.Encoding.UTF8, leaveOpen: true))

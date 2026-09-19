@@ -68,6 +68,9 @@ not a controlled multi-pair speedup claim.
 Phase tracing of no-input headless replay showed occasional 19–30 ms
 `BuildMameLineStates` phases without a GC event. JIT disassembly confirmed
 instrumented Tier0 followed by multiple large Tier1-OSR compilations.
+Important follow-up: phase/render tracing disables `WarmUpRuntimeFromCurrentState`.
+Those cold-path spikes therefore do not directly describe normal warmed-up UI
+playback. Use the probe's external frame timing for representative replay.
 Adding `AggressiveOptimization` produced a single optimized version and
 removed those large line-state phases in a diagnostic replay. However,
 balanced probe runs did **not** establish an end-to-end latency improvement.
