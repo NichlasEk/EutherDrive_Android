@@ -1327,7 +1327,6 @@ namespace Ryu64.MIPS
                 _lastVisibleRdpFramebufferEpoch = reader.ReadUInt32();
                 ResetVisibleRdpFramebufferSnapshotCacheLocked();
                 if (_lastVisibleRdpFramebufferSnapshot.Length != 0
-                    && _lastVisibleRdpFramebufferAddress != 0
                     && _lastVisibleRdpFramebufferEpoch != 0)
                 {
                     StoreVisibleRdpFramebufferSnapshotLocked(
@@ -4931,8 +4930,9 @@ namespace Ryu64.MIPS
 
         private void MarkRdpColorImageWritten(uint bytesPerPixel)
         {
-            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
-                || _rdpColorImageAddress >= RDRAM.Length
+            // RDP commands explicitly identify their target. The heuristic VI
+            // origin floor must not exclude legitimate low-RAM color images.
+            if (_rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
                 || bytesPerPixel == 0)
                 return;
@@ -4947,8 +4947,7 @@ namespace Ryu64.MIPS
         {
             uint address = _rdpColorImageAddress;
             uint width = _rdpColorImageWidth;
-            if (address < PlausibleFramebufferOriginFloor
-                || address >= RDRAM.Length
+            if (address >= RDRAM.Length
                 || width == 0
                 || bytesPerPixel == 0)
             {
@@ -5000,8 +4999,7 @@ namespace Ryu64.MIPS
             try
             {
             int snapshotLength = 0;
-            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
-                || _rdpColorImageAddress >= RDRAM.Length
+            if (_rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
                 || bytesPerPixel == 0)
                 return;
@@ -5066,8 +5064,7 @@ namespace Ryu64.MIPS
             ulong perfPixels = 0;
             try
             {
-            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
-                || _rdpColorImageAddress >= RDRAM.Length
+            if (_rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
                 || bytesPerPixel == 0
                 || height == 0)
@@ -5118,8 +5115,7 @@ namespace Ryu64.MIPS
             ulong perfPixels = 0;
             try
             {
-            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
-                || _rdpColorImageAddress >= RDRAM.Length
+            if (_rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
                 || bytesPerPixel == 0)
                 return false;
@@ -5173,8 +5169,7 @@ namespace Ryu64.MIPS
             ulong perfPixels = 0;
             try
             {
-            if (_rdpColorImageAddress < PlausibleFramebufferOriginFloor
-                || _rdpColorImageAddress >= RDRAM.Length
+            if (_rdpColorImageAddress >= RDRAM.Length
                 || _rdpColorImageWidth == 0
                 || bytesPerPixel == 0)
                 return false;

@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-low-vi")
+{
+    LowViFramebufferChecks.Run();
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-read64")
 {
     MemoryRead64Checks.Run();
@@ -251,16 +256,17 @@ try
             uint origin = R4300.memory.ReadUInt32(0x04400004) & 0xffffff;
             int viWidth = (int)(R4300.memory.ReadUInt32(0x04400008) & 0xfff);
             int viBpp = (R4300.memory.ReadUInt32(0x04400000) & 3) == 3 ? 4 : 2;
-            if (origin >= 0x1000 && viWidth > 0 && origin + viWidth * 240 * viBpp <= R4300.memory.RDRAM.Length)
+            if (viWidth > 0 && origin + viWidth * 240 * viBpp <= R4300.memory.RDRAM.Length)
             {
                 var vi = new byte[viWidth * 240 * viBpp];
                 Buffer.BlockCopy(R4300.memory.RDRAM, (int)origin, vi, 0, vi.Length);
                 WriteFrame(Path.Combine(output, $"vi-{second + 1:D4}.ppm"), vi, viWidth, 240, viBpp);
             }
-            if (origin >= 0x1000 && core.TryGetFramebuffer(out var pixels, out int width, out int height, out int bpp))
+            if (core.TryGetFramebuffer(out var pixels, out int width, out int height, out int bpp))
             {
                 WriteFrame(Path.Combine(output, $"frame-{second + 1:D4}.ppm"), pixels, width, height, bpp);
             }
+            Console.WriteLine(core.LastFramebufferStatus);
         }
     }
     core.Stop();

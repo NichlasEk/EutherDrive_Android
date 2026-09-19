@@ -291,24 +291,6 @@ namespace Ryu64Core
                 uint rawOrigin = R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF;
                 uint origin = rawOrigin;
                 bool suspiciousViOrigin = rawOrigin < 0x00001000u;
-                if (suspiciousViOrigin)
-                {
-                    for (int attempt = 0; attempt < 4; attempt++)
-                    {
-                        if (!Thread.Yield())
-                            Thread.Sleep(1);
-                        uint retryStatus = R4300.memory.ReadUInt32(ViStatusReg);
-                        uint retryOrigin = R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF;
-                        if ((retryStatus & 0x3u) < 2u || retryOrigin < 0x00001000u || retryOrigin >= RdramSizeBytes)
-                            continue;
-
-                        status = retryStatus;
-                        rawOrigin = retryOrigin;
-                        origin = rawOrigin;
-                        suspiciousViOrigin = false;
-                        break;
-                    }
-                }
 
                 width = (int)(R4300.memory.ReadUInt32(ViWidthReg) & 0x0FFF);
                 if (width <= 0)
@@ -336,6 +318,28 @@ namespace Ryu64Core
                 {
                     _lastFramebufferStatus = $"VI origin out of RDRAM (origin=0x{origin:x8})";
                     return false;
+                }
+
+                // A low address is valid when an RDP-produced snapshot covers
+                // the actual VI range (including its top-row offset). Duke uses
+                // a buffer at 0x400 with VI origin 0x680. Do not substitute the
+                // other buffer just because this one is below the heuristic floor.
+                if (suspiciousViOrigin && (long)rawOrigin + width * height * bytesPerPixel <= RdramSizeBytes)
+                {
+                    byte[] viScratch = GetFramebufferScratch(width * height * bytesPerPixel);
+                    if (R4300.memory.TryCopyLastVisibleRdpFramebufferSnapshot(
+                        rawOrigin, (uint)width, (uint)height, (uint)bytesPerPixel,
+                        viScratch, out uint viSnapshotOrigin, out uint viSnapshotEpoch)
+                        && viSnapshotOrigin == rawOrigin)
+                    {
+                        framebuffer = viScratch;
+                        ClearFramebufferCandidateCache();
+                        R4300.memory.NotifyFramebufferConsumerRead(rawOrigin, (uint)framebuffer.Length);
+                        FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
+                        _lastFramebufferStatus = $"RDP-backed low VI framebuffer used (vi=0x{rawOrigin:x8}, size={width}x{height} bpp={bytesPerPixel}, snapshotEpoch={viSnapshotEpoch})";
+                        RememberLastVisibleFramebuffer(rawOrigin, rawOrigin, width, height, bytesPerPixel, viType, framebuffer, width * height * bytesPerPixel);
+                        return true;
+                    }
                 }
 
                 bool producerBackedFramebufferSelected = false;
