@@ -2,6 +2,12 @@
 
 ## Latest checkpoint: 2026-09-19
 
+Follow-up: [HUD correction and user-slot stutter investigation](darius-gaiden-hud-stutter-2026-09-19.md).
+Corrected character/pivot pen bit significance, with 98,308 decoder checks and
+unchanged audio/state hashes across both new user slots. The scanline JIT
+experiment was rejected after inconsistent latency results; remaining stutter
+is not claimed fixed.
+
 The May bringup status below is historical. Current Linux builds reach
 visible gameplay. See [Linux performance verification](darius-gaiden-linux-performance-2026-09-19.md):
 diagnostic overhead reduced, 20.66% shorter measured gameplay frame time,

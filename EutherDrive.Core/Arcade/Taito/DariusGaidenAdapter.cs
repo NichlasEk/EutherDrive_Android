@@ -5442,18 +5442,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if ((uint)byteOffset >= 0x2000)
             return 0;
 
-        int pen = 0;
-        for (int plane = 0; plane < 4; plane++)
-        {
-            int planeBitOffset = bitOffset + plane;
-            int planeByteOffset = planeBitOffset >> 3;
-            if ((uint)planeByteOffset >= 0x2000)
-                continue;
-
-            int bit = 7 - (planeBitOffset & 7);
-            pen |= ((_bus.ReadCharGfxByte(planeByteOffset) >> bit) & 1) << plane;
-        }
-        return pen;
+        // Layout planes {0,1,2,3} carry weights {8,4,2,1}, not {1,2,4,8}.
+        // Each pixel is one aligned nibble; preserve the bus byte-lane mapping.
+        return (_bus.ReadCharGfxByte(byteOffset) >> (4 - (bitOffset & 7))) & 0x0f;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
@@ -5464,19 +5455,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         if ((uint)byteOffset >= 0x10000)
             return 0;
 
-        int pen = 0;
-        for (int plane = 0; plane < 4; plane++)
-        {
-            int planeBitOffset = bitOffset + plane;
-            int planeByteOffset = planeBitOffset >> 3;
-            if ((uint)planeByteOffset >= 0x10000)
-                continue;
-
-            int bit = 7 - (planeBitOffset & 7);
-            pen |= ((_bus.ReadPivotGfxByte(planeByteOffset) >> bit) & 1) << plane;
-        }
-
-        return pen;
+        return (_bus.ReadPivotGfxByte(byteOffset) >> (4 - (bitOffset & 7))) & 0x0f;
     }
 
     private static int GetF3CharXOffset(int x)
