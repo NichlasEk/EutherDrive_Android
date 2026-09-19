@@ -654,6 +654,22 @@ namespace Ryu64.MIPS
             return memory.ReadUInt32(fetchAddress);
         }
 
+        private static bool TryFastForwardBootLoops(uint pc)
+        {
+            // All fixed boot helpers are in low kseg0. The generic IPL3 cache
+            // recognizer also accepts arbitrary positions throughout SP DMEM.
+            // Keep both entire regions, then retain the original live checks.
+            if ((pc & 0xFFFFC000u) != 0x80000000u && (pc & 0xFFFFF000u) != 0xA4000000u)
+                return false;
+            return TryFastForwardBootChecksumLoop(pc)
+                || TryFastForwardBootClearLoop(pc)
+                || TryFastForwardBootAssetDecode(pc)
+                || TryFastForwardIpl3CacheLoop(pc)
+                || TryFastForwardIpl3CopyLoop(pc)
+                || TryFastForwardIpl3StoreDelayLoop(pc)
+                || TryFastForwardIpl3SpStoreFillLoop(pc);
+        }
+
         private static bool TryFastForwardBootChecksumLoop(uint pc)
         {
             if (!FastBootChecksumLoop || pc != 0x80000184u)
@@ -2381,19 +2397,7 @@ namespace Ryu64.MIPS
                         uint pc = Registers.R4300.PC;
                         if (ServiceInterrupts(pc))
                             continue;
-                        if (TryFastForwardBootChecksumLoop(pc))
-                            continue;
-                        if (TryFastForwardBootClearLoop(pc))
-                            continue;
-                        if (TryFastForwardBootAssetDecode(pc))
-                            continue;
-                        if (TryFastForwardIpl3CacheLoop(pc))
-                            continue;
-                        if (TryFastForwardIpl3CopyLoop(pc))
-                            continue;
-                        if (TryFastForwardIpl3StoreDelayLoop(pc))
-                            continue;
-                        if (TryFastForwardIpl3SpStoreFillLoop(pc))
+                        if (TryFastForwardBootLoops(pc))
                             continue;
                         if (TryFastForwardMemoryLoops(pc))
                             continue;

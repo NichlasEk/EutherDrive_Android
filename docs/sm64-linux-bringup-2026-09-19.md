@@ -415,3 +415,22 @@ replays match exactly against `pre-combiner/Ryu64.MIPS.dll`:
 
 Logs: `combiner-{check,render-check,tree-bench,logo-bench}.log`. Compare each
 paired run, not absolute timings from different host-load periods.
+
+## Follow-up 10: boot-helper region prefilter
+
+The normal CPU loop no longer calls seven boot recognizers separately for
+ordinary game-code PCs. A shared region check retains low kseg0 and the
+entire SP DMEM region, then runs the original helpers in their original
+order. The generic IPL3 cache-loop path is deliberately retained, not just
+the fixed IPL3 addresses. This changes dispatch overhead only.
+
+The combined CPU-gate suite now passes 648 full-state differential cases,
+149 accepting a loop. Added cases cover region boundaries, all fixed boot
+addresses, fixed and generic cache loops at every entry, and boot RAM clear.
+Paired 20-second runs completed 108/108 graphics tasks before and 111/115
+after (`boot-gate-{reference,current}-{1,2}.log`). This is a smaller gain
+than the earlier memory-loop prefilter; host/scene variation still applies.
+
+An actual .NET disassembly (`cpu-disasm.log`) confirmed that the large CPU
+loop was already compiled with FullOpts and disabled trace branches folded
+away. It was therefore not refactored speculatively to chase trace overhead.

@@ -14,7 +14,7 @@ internal static class CpuLoopChecks
         var bytes = Bind("TryFastForwardByteZeroUntilPointerLoop");
         var pairs = Bind("TryFastForwardPairStoreUntilPointerLoop");
         var gated = Bind("TryFastForwardMemoryLoops");
-        bool Original(uint pc) => zero(pc) || bytes(pc) || pairs(pc);
+        Func<uint, bool> original = pc => zero(pc) || bytes(pc) || pairs(pc);
         uint[][] patterns =
         [
             [0x2129fff8, 0xad000000, 0xad000004, 0x1520fffc, 0x21080008],
@@ -49,7 +49,7 @@ internal static class CpuLoopChecks
                 return (found, Convert.ToHexString(SHA256.HashData(result.GetBuffer().AsSpan(0, (int)result.Length))),
                     Ryu64.Common.Measure.InstructionCount);
             }
-            var reference = Execute(Original);
+            var reference = Execute(original);
             var actual = Execute(gated);
             if (reference != actual || expected.HasValue && actual.Item1 != expected.Value)
                 throw new Exception($"CPU loop gate mismatch pc={pc:x8} case={cases}: {reference} != {actual}");
@@ -94,6 +94,38 @@ internal static class CpuLoopChecks
         Setup(0x80000000);
         foreach (uint pc in new uint[] { 0, 0x1000, 0x80000000, 0x80000001, 0x807ffffc,
             0x80800000, 0x9ffffffc, 0xa0000000, 0xa07ffffc, 0xbffffffc, 0xc0001000, 0xffffffff }) Check(pc, false);
-        Console.WriteLine($"CPU loop gate: {cases} full-state differential cases passed ({accepted} accepted loops).");
+        var bootMethods = new[] { "BootChecksumLoop", "BootClearLoop", "BootAssetDecode", "Ipl3CacheLoop",
+            "Ipl3CopyLoop", "Ipl3StoreDelayLoop", "Ipl3SpStoreFillLoop" }.Select(n => Bind("TryFastForward" + n)).ToArray();
+        original = pc => bootMethods.Any(run => run(pc));
+        gated = Bind("TryFastForwardBootLoops");
+        Setup(0x80000000);
+        foreach (uint boundary in new uint[] { 0, 0x80000000, 0x80000184, 0x80000268, 0x8000026c,
+            0x80000280, 0x80000284, 0x800012c4, 0x80003074, 0x80004000, 0xa4000000,
+            0xa4000428, 0xa4000434, 0xa4000448, 0xa4000454, 0xa4000498, 0xa40004ac, 0xa4001000, 0xffffffff })
+        foreach (int delta in new[] { -4, -1, 0, 1, 4 }) Check(unchecked(boundary + (uint)delta), false);
+
+        // Both fixed cache windows and a generic IPL3 loop must survive the
+        // shared region prefilter, including all four entry positions.
+        foreach (uint address in new uint[] { 0x428, 0x448, 0x900 })
+        {
+            Setup(0x80000000);
+            uint stride = address == 0x428 ? 32u : 16u;
+            uint cache = address == 0x428 ? 0xbd080000u : address == 0x448 ? 0xbd010000u : 0xbd000000u;
+            uint[] code = { cache, 0x0109082b, 0x1420fffd, 0x25080000 | stride };
+            for (int i = 0; i < code.Length; i++)
+                BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.SP_MEM_RW.AsSpan((int)address + i * 4), code[i]);
+            Registers.R4300.Reg[8] = 0x80010000;
+            Registers.R4300.Reg[9] = 0x80010100;
+            for (uint offset = 0; offset < 16; offset += 4) Check(0xa4000000 + address + offset, true);
+        }
+        Setup(0x80000000);
+        uint[] clear = { 0x24840020, 0xac80ffe0, 0xac80ffe4, 0xac80ffe8, 0xac80ffec,
+            0xac80fff0, 0xac80fff4, 0xac80fff8, 0x1487fff7 };
+        for (int i = 0; i < clear.Length; i++)
+            BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x3074 + i * 4), clear[i]);
+        Registers.R4300.Reg[4] = 0x80002000;
+        Registers.R4300.Reg[7] = 0x80002040;
+        Check(0x80003074, true);
+        Console.WriteLine($"CPU loop gates: {cases} full-state differential cases passed ({accepted} accepted loops).");
     }
 }
