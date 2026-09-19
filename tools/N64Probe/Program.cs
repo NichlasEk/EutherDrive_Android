@@ -2,6 +2,12 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 2 && args[0] == "--check-rsp-blocks")
+{
+    RspBlockChecks.Run(args[1]);
+    return;
+}
+
 if (args.Length == 2 && args[0] == "--check-flat-shade")
 {
     FlatShadeChecks.Run(args[1]);

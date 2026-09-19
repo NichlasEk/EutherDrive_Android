@@ -929,3 +929,65 @@ resampler checks, 1048576 filter cases and 65536 color expansions, the captured
 CPU/memory/private-RSP end state. Checks overlapping the UI build are correctness
 evidence only, not performance measurements. Linux UI Release builds successfully
 (0 errors, 501 warnings); the rebuilt UI is ready for a restart with `--no-build`.
+
+## Follow-up 21: opt-in RSP block-JIT prototype, not a speed improvement
+
+Implemented the requested experiment, but **keep it disabled for normal play**.
+`EUTHERDRIVE_N64_RSP_BLOCK_JIT=1` enables the prototype; unset/0 keeps the existing
+interpreter. No pitch, audio rate, frame skipping or rendering-quality changes.
+The disabled path does not allocate compilation caches.
+
+`RspBlockJit.cs` compiles straight-line blocks of 2-8 instructions through .NET
+expression compilation, with scalar ALU/LW/SW emitted directly. Supported vector
+and vector-memory instructions call existing helpers; VMADM/VMADN additionally
+have emitted, unrolled lane arithmetic. Branches, delay slots of taken branches,
+CP0 operations, unsupported instructions, raw/non-task execution and flow tracing
+stay on the interpreter. All pending RSP lifecycle work also stays interpreted:
+only an idle lifecycle allows moving code validation to the block boundary.
+Every instruction word in a cached block is checked before any instruction runs.
+DMEM-only compiled operations cannot modify IMEM or start DMA, so validation stays
+valid throughout these synchronous blocks. Instruction budgets and watchdog
+limits fall back conservatively near their boundary. History, progress signatures,
+scratch vectors and registers remain part of exact differential comparisons.
+
+Caches are per interpreter, bounded to 2048 compiled block identities, and excluded
+from architectural-state comparisons using explicitly marked `NonSerialized`
+fields. They are derived code, not savestate contents. The task probe now reports
+compilation and executed-block-instruction counts when the experiment is enabled.
+
+Results are negative so far. Separate-process warm captured graphics-task medians:
+
+- Initial scalar blocks: interpreter 69.833 ms, block JIT 111.267 ms.
+- Cached mixed scalar/vector blocks with progress-signature work reduced: 72.769 ms
+  in one run; subsequent comparisons still favored the interpreter.
+- Idle-lifecycle, 8-instruction blocks: interpreter 66.580 ms, JIT 76.214 ms.
+- Emitted VMADM/VMADN variant: interpreter 74.218 ms, JIT 87.620 ms.
+
+The final graphics replay compiled 138 identities and ran 7429918 instructions in
+blocks across 17 replays, about 55% of executed instructions. Full CPU/memory and
+private-RSP end states match the 794278-instruction reference task. Captured audio
+task (18824 instructions) also matches exactly. The normal-tiering, audio-enabled
+20-second gameplay pair completed 183 graphics tasks with JIT off versus 141 on.
+These are completed graphics tasks, not UI frame counters. The user emulator
+remained running and untouched; timings are noisy, but there is no shipping win.
+
+Added `--check-rsp-blocks REFERENCE_MIPS_DLL`: 64 deterministic programs reuse the
+cache while changing interior instructions and exercise IMEM wraparound, actual
+DMA into IMEM, branch/likely-delay behavior, randomized vector/accumulator state,
+and an instruction budget of 61 (not a multiple of the block size). Requires the
+opt-in environment flag. Existing `--check-rsp` instruction/DMA/watchdog checks
+also pass with the prototype enabled. Reference binaries and all `block-*` logs
+are local under `.build-tmp/sm64-20260919/`; reference is `pre-block-jit/` at
+`9407d155`.
+
+This is a correctness-tested development checkpoint, not a faster default.
+Before expanding it, profile the generated path: block-entry validation, repeated
+register-array access/bookkeeping, code size and returning to the interpreter at
+every branch are candidates, not yet proven causes. A useful successor needs to
+reduce those costs and demonstrate a whole-game improvement before default-on.
+
+Final validation: the 64 block cases pass with both half-shuffle settings (strict
+hash `69B439A3649E5A90B877134ACBF47263AC1590155A412A0DA365CFDC8EA83527`,
+legacy hash `BF08D6AA88461341FCB95562405032BF63DFEEE9FAD7E40A9C539230235B0A20`).
+Default-path 6845 render/interrupt cases and audio FIFO/snapshot/resampler checks
+pass. Probe and Linux UI Release builds pass; UI reports 0 errors, 501 warnings.

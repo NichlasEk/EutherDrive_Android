@@ -41,11 +41,11 @@ internal sealed class RspTaskCapture : TextWriter
     }
     protected override void Dispose(bool disposing) { Console.SetOut(previous); base.Dispose(disposing); }
 
-    private static byte[] SaveRegisters(object rsp)
+    internal static byte[] SaveRegisters(object rsp)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
-        foreach (var field in rsp.GetType().GetFields(Private).Where(f => f.Name != "_memory").OrderBy(f => f.Name, StringComparer.Ordinal))
+        foreach (var field in rsp.GetType().GetFields(Private).Where(f => f.Name != "_memory" && !f.IsDefined(typeof(NonSerializedAttribute), false)).OrderBy(f => f.Name, StringComparer.Ordinal))
         {
             writer.Write(field.Name);
             object value = field.GetValue(rsp)!;
@@ -124,6 +124,8 @@ internal sealed class RspTaskCapture : TextWriter
                 if (iteration >= 0) times.Add(elapsed);
             }
             times.Sort();
+            if (Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT") == "1")
+                Console.WriteLine($"blockCompilations={rsp.GetType().GetField("_blockCompilations", Private)?.GetValue(rsp)} blockInstructions={rsp.GetType().GetField("_blockInstructions", Private)?.GetValue(rsp)}");
             // A collectible reference load context changes JIT/static-access
             // costs. Use it for correctness only; compare speed in separate
             // processes with the same harness and each core in the default ALC.

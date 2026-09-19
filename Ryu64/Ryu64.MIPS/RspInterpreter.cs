@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 
 namespace Ryu64.MIPS
 {
-    internal sealed class RspInterpreter
+    internal sealed partial class RspInterpreter
     {
         private const uint LoopReportThreshold = 2048;
         private const uint NoProgressInstructionLimitRaw = 2_000_000;
@@ -173,6 +173,15 @@ namespace Ryu64.MIPS
 
             for (executedInstructions = 0; executedInstructions < absoluteMaxInstructions; executedInstructions++)
             {
+                if (BlockJitEnabled && hasValidTask && !_branchPending && !_skipNextInstruction && !TraceRspFlow)
+                {
+                    int count = TryExecuteBlock(absoluteMaxInstructions - executedInstructions, noProgressInstructionLimit);
+                    if (count > 0)
+                    {
+                        executedInstructions += (uint)count - 1;
+                        continue;
+                    }
+                }
                 if (_stagnantInstructionCount >= noProgressInstructionLimit)
                 {
                     stopReason = $"no-progress stagnant={_stagnantInstructionCount}";
