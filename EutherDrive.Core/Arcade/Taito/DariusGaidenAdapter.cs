@@ -114,7 +114,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         nameof(InitializeMameLineBackgrounds),
         nameof(BuildSpriteList),
         nameof(BuildSpriteListFrom),
-        nameof(TryBuildSpriteListFromPointer),
         nameof(RenderSpriteReefToFrame),
         nameof(RenderSpriteReefRow),
         nameof(RenderSpriteReefRowGroup),
@@ -804,6 +803,12 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             }
             _adaptiveRenderSkipsSincePresent = 0;
         }
+        else if (_roms != null)
+        {
+            // Frame skipping only skips the final picture. Sprite RAM latching
+            // and framebuffer/trail history still advance at emulated vblank.
+            AdvanceSpriteFrame(_roms);
+        }
         long soundStartTicks = profileStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
         _sound.RunFrame(!_bus.SoundCpuResetAsserted, _bus.DualPortWriteSerial);
         if (soundStartTicks != 0)
@@ -1269,10 +1274,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             phaseStartTicks = now;
         }
 
-        if (!drewAny)
-            ClearWithPalette(0);
-        else
-            RenderMameMixBufferToFrame();
+        // Background-only frames (including scene clears/fades) are real output.
+        RenderMameMixBufferToFrame();
         if (phaseStartTicks != 0)
         {
             long now = Stopwatch.GetTimestamp();
@@ -1280,7 +1283,7 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             phaseStartTicks = now;
         }
 
-        LatchPresentFrameIfUseful(drewAny);
+        LatchPresentFrame();
         if (phaseStartTicks != 0)
         {
             long now = Stopwatch.GetTimestamp();
@@ -1315,7 +1318,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         for (int layer = 0; layer < 4; layer++)
             GetMamePlayfieldScroll(layer, out regSx[layer], out regFxY[layer]);
 
-        for (int skippedY = 0; skippedY < VisibleAreaMinY; skippedY++)
+        // The chip/reference suppresses the Y advance only after hardware
+        // scanline zero, not after the first line of the cropped visible area.
+        for (int skippedY = 1; skippedY < VisibleAreaMinY; skippedY++)
         {
             F3LineState skippedLine = _lineStates[skippedY & 0xff];
             for (int layer = 0; layer < 4; layer++)
@@ -1380,12 +1385,9 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                 drewAny |= layerDrew;
             }
 
-            if (screenY != 0)
-            {
-                F3LineState line = _lineStates[screenLine & 0xff];
-                for (int layer = 0; layer < 4; layer++)
-                    regFxY[layer] += line.PlayfieldYScale[layer];
-            }
+            F3LineState line = _lineStates[screenLine & 0xff];
+            for (int layer = 0; layer < 4; layer++)
+                regFxY[layer] += line.PlayfieldYScale[layer];
         }
 
         long advanceStartTicks = traceStartTicks != 0 ? Stopwatch.GetTimestamp() : 0;
@@ -1480,11 +1482,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         };
     }
 
-    private void LatchPresentFrameIfUseful(bool drewAny)
+    private void LatchPresentFrame()
     {
-        if (!drewAny && _hasPresentFrame)
-            return;
-
         Buffer.BlockCopy(_frameBuffer, 0, _presentFrameBuffer, 0, _frameBuffer.Length);
         _hasPresentFrame = true;
     }
@@ -5549,32 +5548,8 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
             _lastSpriteClosestDistance = int.MaxValue;
         }
         BuildSpriteListFrom(0, _spriteBank, updateSpriteBank: true);
-        if (_sprites.Count == 0)
-        {
-            if (!TryBuildSpriteListFromPointer(_bus.PeekLong(0x407360), skipHeader: true)
-                && !TryBuildSpriteListFromPointer(_bus.PeekLong(0x407364), skipHeader: true))
-                TryBuildSpriteListFromPointer(_bus.PeekLong(0x407368), skipHeader: true);
-        }
-    }
-
-    private bool TryBuildSpriteListFromPointer(uint pointer, bool skipHeader)
-    {
-        pointer &= 0x00ff_ffff;
-        if (pointer < 0x600000 || pointer >= 0x610000)
-            return false;
-
-        int wordOffset = (int)((pointer - 0x600000) >> 1);
-        if ((uint)wordOffset >= 0x8000)
-            return false;
-
-        bool pointerBank = (wordOffset & 0x4000) != 0;
-        int startEntry = (wordOffset & 0x3fff) / 8;
-        if (skipHeader)
-            startEntry++;
-
-        int previousCount = _sprites.Count;
-        BuildSpriteListFrom(startEntry, pointerBank, updateSpriteBank: false);
-        return _sprites.Count != previousCount;
+        // An empty hardware list is valid during intro scene transitions.
+        // Do not revive stale lists using the game's software work-RAM pointers.
     }
 
     private void BuildSpriteListFrom(int startEntry, bool initialBank, bool updateSpriteBank)

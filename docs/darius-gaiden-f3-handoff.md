@@ -2,10 +2,16 @@
 
 ## Latest checkpoint: 2026-09-19
 
+Latest intro follow-up: [stale sprites and video history](darius-gaiden-intro-2026-09-19.md).
+Removed the old software-list fallback that revived earlier-scene sprites,
+kept sprite history advancing through skipped pictures, published background-only
+frames and corrected scanline Y advancement. Three same-memory intro images
+match MAME pixel-for-pixel. The user confirmed the previous sound fix.
+
 Latest sound follow-up: [ES5505 bass, volume and interrupts](darius-gaiden-audio-2026-09-19.md).
 Corrected a highpass/lowpass mode error, logarithmic voice gains and lost voice
 interrupts. Four saved-scene replays no longer clip; bass and effects still
-need user listening confirmation. Intro graphics artifacts remain open.
+were subsequently confirmed fixed by the user. See the intro follow-up above.
 
 Latest UI follow-up: [presentation handoff](darius-gaiden-ui-presentation-2026-09-19.md).
 User testing exposed missing pictures despite faster core replay. Darius now

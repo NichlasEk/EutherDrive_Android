@@ -5,6 +5,11 @@ using EutherDrive.Core;
 using EutherDrive.Core.Arcade.Taito;
 using EutherDrive.Core.Savestates;
 
+if (args.Length == 4 && args[0] == "--render-video-memory")
+{
+    VideoMemoryReference.Run(args[1], args[2], args[3]);
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-gfx-planes")
 {
     GfxPlaneChecks.Run();
@@ -18,6 +23,11 @@ if (args.Length == 1 && args[0] == "--check-f3-mixer")
 if (args.Length == 1 && args[0] == "--check-es5505")
 {
     Es5505Checks.Run();
+    return;
+}
+if (args.Length == 1 && args[0] == "--check-video-history")
+{
+    VideoHistoryChecks.Run();
     return;
 }
 if (args.Length == 1 && args[0] == "--check-m68k-trace")
@@ -44,6 +54,8 @@ if (loadedState)
 }
 using var video = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
 using var audio = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+string? captureDir = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUS_PROBE_CAPTURE_DIR");
+using var capture = captureDir == null ? null : new IntroCapture(core, captureDir);
 long ticks = 0, gameplayTicks = 0;
 int gameplayFrames = 0, overBudget = 0;
 var frameTimes = new List<double>();
@@ -74,6 +86,7 @@ for (int frame = 0; frame < frames; frame++)
         frameTimes.Add(elapsed * 1000.0 / Stopwatch.Frequency);
     }
     video.AppendData(core.GetFrameBuffer(out _, out _, out _));
+    capture?.Capture(frame);
     var samples = core.GetAudioBuffer(out _, out _);
     audio.AppendData(MemoryMarshal.AsBytes(samples));
     if (audioStats)
