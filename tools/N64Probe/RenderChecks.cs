@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Buffers.Binary;
 using Ryu64.MIPS;
 
 internal static class RenderChecks
@@ -48,6 +49,7 @@ internal static class RenderChecks
         Set("_rdpColorImageSize", 2u);
         Set("_rdpScissorX1", 319);
         Set("_rdpScissorY1", 239);
+        Set("_rdpOtherModesAlphaCompare", true);
         Call("ExecuteRdpSetTile", 0xf5100200u, 0u);
         Call("ExecuteRdpSetTileSize", 0xf2000000u, 0x0001c01cu);
         void Word(uint offset, uint value) => System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(memory.RDRAM.AsSpan((int)(command + offset)), value);
@@ -79,6 +81,56 @@ internal static class RenderChecks
             uint expected = intensity * 0x01010100u | alpha;
             if ((uint)values[3] != expected) throw new Exception($"Cross-size TMEM texel {i}: {values[3]:x8} != {expected:x8}");
             checks++;
+        }
+
+        var combine = typeof(Memory).GetMethod("ApplyRdpColorCombiner", instance)!.CreateDelegate<Func<uint, uint, uint>>(memory);
+        void Mux(uint first, uint second)
+        {
+            ulong mux = 0xfc00000000000000UL | 15UL << 52 | 31UL << 47 | 7UL << 44 | 7UL << 41
+                | 15UL << 37 | 31UL << 32 | 15UL << 28 | 15UL << 24 | 7UL << 21 | 7UL << 18
+                | (ulong)first << 15 | 7UL << 12 | (ulong)first << 9 | (ulong)second << 6 | 7UL << 3 | second;
+            Call("ExecuteRdpSetCombine", (uint)(mux >> 32), (uint)mux);
+        }
+        Mux(4, 3); // Different values in the two banks: shade then primitive.
+        Set("_rdpPrimColor", 0x12345678u);
+        Set("_rdpOtherModesCycleType", 0u);
+        if (combine(0xffabcdef, 0xabcdef99) != 0x12345678) throw new Exception("One-cycle used mux bank zero");
+        checks++;
+        Mux(4, 0); // Feed SHADE through COMBINED in two-cycle mode.
+        Set("_rdpOtherModesCycleType", 1u);
+        if (combine(0xffabcdef, 0xabcdef99) != 0xabcdef99) throw new Exception("Two-cycle COMBINED failed");
+        checks++;
+        Mux(4, 3);
+        Set("_rdpOtherModesCycleType", 0u);
+        Set("_rdpPrimColor", 0x000000ffu);
+        if (combine(0xffabcdef, 0xffffffff) != 0x000000ff) throw new Exception("Black combiner output was replaced by texture");
+        checks++;
+        foreach (int triangle in new[] { 0x0c, 0x0e })
+        {
+            Array.Fill(memory.RDRAM, (byte)0x55, (int)color, 320 * 240 * 2);
+            Call("ExecuteRdpTriangle", triangle, command, false);
+            int pixel = (int)color + (5 * 320 + 5) * 2;
+            if (memory.RDRAM[pixel] != 0 || memory.RDRAM[pixel + 1] != 1)
+                throw new Exception($"Triangle {triangle:x} did not write opaque black primitive color");
+            checks++;
+        }
+        Set("_rdpOtherModesCycleType", 2u);
+        if (combine(0x87654321, 0xffffffff) != 0x87654321) throw new Exception("Copy did not bypass combiner");
+        checks++;
+        foreach (int direction in new[] { 1, 0, -1 })
+        {
+            uint start = direction < 0 ? 7u * 32u << 16 : 0u;
+            uint derivative = (uint)(ushort)(direction * 4096) << 16 | 0x400u;
+            Call("ExecuteRdpTextureRectangle", 0x24, 0xe401c000u, 0u, start, derivative);
+            for (int x = 0; x < 8; x++)
+            {
+                int source = direction < 0 ? 7 - x : direction * x;
+                uint c = (uint)(source * 17) >> 3;
+                ushort expected = (ushort)(c << 11 | c << 6 | c << 1 | 1);
+                ushort actual = BinaryPrimitives.ReadUInt16BigEndian(memory.RDRAM.AsSpan((int)color + 2 * x));
+                if (actual != expected) throw new Exception($"Copy step {direction}, pixel {x}: {actual:x4} != {expected:x4}");
+                checks++;
+            }
         }
 
         R4300.memory = memory;

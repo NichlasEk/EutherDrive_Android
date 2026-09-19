@@ -1,6 +1,6 @@
 # Super Mario 64: Linux bring-up, 2026-09-19
 
-Status: **boot and intro progress, not yet verified playable**. This is the
+Status: **controllable Mario, but still well below real-time and visually incorrect**. This is the
 existing Ryu64 interpreter/RSP/software-RDP path, not Android or a new JIT.
 
 ## Verified fixes
@@ -109,13 +109,80 @@ state. RSP output is chunked; **this is not a full-frame replay/oracle**.
 - Title logo is still mostly missing; 3D and texture/rendering accuracy need
   further work. Do not call the current intro picture a correct N64 renderer.
 - RSP interpreter remains far below real-time on these probes. Profile from
-  a fixed scene; next candidates are per-vector temporary allocations and
-  full framebuffer snapshots after individual streamed RDP commands.
-- Audit combiner cycle selection, shade/depth interpolation anchors, and
+  a fixed scene; vector temporary allocations and per-command framebuffer
+  snapshots have now been addressed (see follow-up below).
+- Audit shade/depth interpolation anchors and
   RSP output against a trusted reference. Avoid fake completion/solid-fill
   fallbacks or choosing arbitrary RAM as a framebuffer to disguise bugs.
-- Reach controllable Mario and verify analog input, collisions, audio,
-  saving, and sustained frame timing in the Linux UI before claiming playable.
+- Verify collisions, audio, saving, and sustained frame timing in the Linux UI
+  before claiming playable. Analog movement and jumps now work in the probe.
 - Other N64 games need regression testing; shared renderer changes are not
   a compatibility claim for Zelda/Mega Man/etc. Darius/Gauntlet core code was
   not changed by this milestone.
+
+## Follow-up: control, combiner, and RSP overhead
+
+Mario now exits the pipe; normal controller A presses dismiss the tutorial,
+analog Y moves him, and A makes him jump. `mario-input.log` records position
+changing from `(-1328,260,4354)` through `(-1248,735,850)` and beyond, with
+jump/landing transitions. This is controller input, not patched game RAM.
+`N64_PROBE_SM64_INPUT=1` enables the repeatable sequence and read-only USA
+MarioState telemetry. Its cartridge CRC guard rejects other revisions.
+Structure offsets were checked against the primary SM64 decompilation:
+<https://raw.githubusercontent.com/n64decomp/sm64/master/include/types.h>.
+
+Renderer fixes:
+
+- One-cycle mode selects combiner mux bank 1; two-cycle mode feeds bank 0
+  through COMBINED into bank 1. Copy mode bypasses the combiner.
+- Legitimate black is no longer replaced by texture color or skipped.
+  Shaded triangles also apply the programmed combiner and alpha rejection.
+- Copy-mode texture rectangles divide the horizontal derivative by four;
+  zero derivatives remain zero. This fixes the repeated tiny HUD strips.
+- `copy-input/vi-0005.png` visibly shows readable tutorial text, Mario, and
+  recognizable life/star counters. Geometry and some textures remain wrong.
+- Cold boot `new-cold/vi-0005.png` still shows a largely missing title logo.
+  Do not mistake the improved gameplay screenshot for renderer correctness.
+
+Local MAME `n64_v.cpp` one-cycle combiner and copy rectangle paths were
+consulted for these behaviors; no source was copied.
+
+Performance changes:
+
+- Flatten RSP vector registers and reuse per-instance operand/result scratch
+  arrays, preserving source/destination aliases. Byte DMEM access avoids
+  word read-modify-write overhead while retaining descriptor-write hooks;
+  flow tracing still uses the original path.
+- Publish framebuffer snapshots at FullSync, render-target changes, or task
+  completion, not after every streamed primitive. Direct RDP calls retain
+  their previous end-of-call publication behavior.
+- `rsp-byte-check.log`: one million mixed vector operations, tiering disabled,
+  reference 191.53 ms / 125000552 allocated bytes versus current 138.08 ms /
+  40 bytes. This is a microbenchmark, not a whole-game FPS claim.
+- `copy-input.log`: 80 graphics tasks / 80 snapshots / 12544000 copied bytes
+  in about 25 seconds. RSP graphics consumes about 17.1 seconds (including
+  its RDP work); RDP about 2.87 seconds. This is still only about 3 tasks/s,
+  not real-time, and is not a controlled before/after performance comparison.
+
+Regression commands, in addition to the EEPROM/render commands above:
+
+```sh
+EUTHERDRIVE_N64_PERF=1 dotnet tools/N64Probe/bin/Release/net8.0/N64Probe.dll --check-snapshots
+DOTNET_TieredCompilation=0 dotnet tools/N64Probe/bin/Release/net8.0/N64Probe.dll \
+  --check-rsp .build-tmp/sm64-20260919/rsp-reference/Ryu64.MIPS.dll
+```
+
+The local reference DLL was built from the preceding `b085e34c` milestone.
+Without a DLL argument, the RSP tool prints a deterministic digest and runs
+the current benchmark; that alone is not a differential check.
+7168 vector compute/load/store cases match the previous implementation,
+including register aliases, selectors, alignments, and DMEM wrapping. This
+preserves existing semantics; it does not establish hardware accuracy.
+Digest: `30D25383EB20DD2A0FF8A9606B1BF3BDC68CBBC2FD6AE24C34AD39E57126D9C8`.
+The snapshot test compares all RDRAM and final published pixels for 240
+scanline updates: identical hashes, snapshot copies reduced from 240 to 1.
+Render/interrupt coverage is now 4421 cases, plus 18 EEPROM cases.
+The differential suite also passes with
+`EUTHERDRIVE_N64_RSP_STRICT_HALF_SHUFFLE=0` (a different expected digest).
+The Linux UI Release build succeeds with zero errors. Automated controller
+telemetry is not a substitute for a listening/manual UI test.

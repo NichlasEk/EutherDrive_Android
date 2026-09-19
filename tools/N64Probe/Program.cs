@@ -2,6 +2,16 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-snapshots")
+{
+    SnapshotChecks.Run();
+    return;
+}
+if (args.Length >= 1 && args[0] == "--check-rsp")
+{
+    RspChecks.Run(args.Length > 1 ? args[1] : null);
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-eeprom")
 {
     EepromChecks.Run();
@@ -41,9 +51,13 @@ if (Environment.GetEnvironmentVariable("N64_PROBE_REPLAY_RDP") == "1")
     Console.WriteLine($"replay=0x{start:x8}-0x{end:x8} color=0x{color:x8}");
     return;
 }
+int seconds = args.Length > 2 ? int.Parse(args[2]) : 30;
+bool sm64Input = Environment.GetEnvironmentVariable("N64_PROBE_SM64_INPUT") == "1";
+bool sm64Us = BinaryPrimitives.ReadUInt32BigEndian(rom.AsSpan(0x10)) == 0x635a2bff
+    && BinaryPrimitives.ReadUInt32BigEndian(rom.AsSpan(0x14)) == 0x8b022326;
+if (sm64Input && !sm64Us) throw new ArgumentException("SM64 input/telemetry requires the original USA cartridge");
 core.Start();
 var timer = Stopwatch.StartNew();
-int seconds = args.Length > 2 ? int.Parse(args[2]) : 30;
 try
 {
     for (int second = 0; second < seconds; second++)
@@ -51,6 +65,19 @@ try
         Thread.Sleep(1000);
         if (Environment.GetEnvironmentVariable("N64_PROBE_AUTO_INPUT") == "1")
             core.SetInputState(new Ryu64Core.InputState { Start = second >= 15 && second % 10 < 2, A = second >= 35 && second % 10 is >= 5 and < 7 });
+        if (sm64Input)
+        {
+            core.SetInputState(new Ryu64Core.InputState { A = second % 4 == 0, StickY = second >= 20 ? (sbyte)80 : (sbyte)0 });
+            var ram = R4300.memory.RDRAM;
+            uint pointer = BinaryPrimitives.ReadUInt32BigEndian(ram.AsSpan(0x32d93c));
+            int mario = (int)(pointer & 0x1fffffff);
+            if (pointer >= 0x80000000 && mario <= ram.Length - 0xc0)
+            {
+                uint action = BinaryPrimitives.ReadUInt32BigEndian(ram.AsSpan(mario + 0xc));
+                float Float(int offset) => BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32BigEndian(ram.AsSpan(mario + offset)));
+                Console.WriteLine($"mario action={action:x8} pos={Float(0x3c):F2},{Float(0x40):F2},{Float(0x44):F2} velocity={Float(0x54):F2} inputY={(second >= 20 ? 80 : 0)} inputA={second % 4 == 0}");
+            }
+        }
         Console.WriteLine($"seconds={timer.Elapsed.TotalSeconds:F2} {core.LastExecutionStatus}");
         if (second % 5 == 4)
         {

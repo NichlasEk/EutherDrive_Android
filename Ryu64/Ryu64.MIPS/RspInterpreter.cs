@@ -90,7 +90,14 @@ namespace Ryu64.MIPS
         };
         private readonly Memory _memory;
         private readonly uint[] _gpr = new uint[32];
-        private readonly byte[,] _vr = new byte[32, 16];
+        private readonly byte[] _vr = new byte[32 * 16];
+        // One RSP executes synchronously; these operands are fully overwritten
+        // before use. Keep them separate so vd/vs/vt aliases remain safe.
+        private readonly ushort[] _vectorLhs = new ushort[8];
+        private readonly ushort[] _vectorRhs = new ushort[8];
+        private readonly ushort[] _vectorResult = new ushort[8];
+        private readonly ushort[] _vectorMemoryTemp = new ushort[8];
+        private readonly ushort[] _vectorReciprocalOperand = new ushort[8];
         private readonly ushort[] _vcc = new ushort[2];
         private readonly ushort[] _vco = new ushort[2];
         private readonly ushort[] _accHi = new ushort[8];
@@ -591,9 +598,9 @@ namespace Ryu64.MIPS
             int vt = (int)((instr >> 16) & 0x1F);
             int element = (int)((instr >> 21) & 0xF);
 
-            ushort[] lhs = new ushort[8];
-            ushort[] rhs = new ushort[8];
-            ushort[] result = new ushort[8];
+            ushort[] lhs = _vectorLhs;
+            ushort[] rhs = _vectorRhs;
+            ushort[] result = _vectorResult;
             LoadVectorUnshuffled(vs, lhs);
             LoadVectorShuffled(vt, element, rhs);
 
@@ -1274,9 +1281,9 @@ namespace Ryu64.MIPS
             {
                 uint addr = (address + (uint)(i - element)) & 0xFFFu;
                 if (isLoad)
-                    _vr[vt, i & 0xF] = ReadByte(addr);
+                    _vr[(vt) * 16 + (i & 0xF)] = ReadByte(addr);
                 else
-                    WriteByte(addr, _vr[vt, i & 0xF]);
+                    WriteByte(addr, _vr[(vt) * 16 + (i & 0xF)]);
             }
         }
 
@@ -1290,9 +1297,9 @@ namespace Ryu64.MIPS
             for (int i = element; i < end; i++)
             {
                 if (isLoad)
-                    _vr[vt, i & 0xF] = ReadByte(addr++ & 0xFFFu);
+                    _vr[(vt) * 16 + (i & 0xF)] = ReadByte(addr++ & 0xFFFu);
                 else
-                    WriteByte(addr++ & 0xFFFu, _vr[vt, i & 0xF]);
+                    WriteByte(addr++ & 0xFFFu, _vr[(vt) * 16 + (i & 0xF)]);
             }
         }
 
@@ -1304,7 +1311,7 @@ namespace Ryu64.MIPS
                 int start = 16 - (int)((addr & 0xFu) - (uint)element);
                 addr &= ~0xFu;
                 for (int i = start; i < 16; i++)
-                    _vr[vt, i & 0xF] = ReadByte(addr++ & 0xFFFu);
+                    _vr[(vt) * 16 + (i & 0xF)] = ReadByte(addr++ & 0xFFFu);
             }
             else
             {
@@ -1312,7 +1319,7 @@ namespace Ryu64.MIPS
                 uint baseIndex = 16u - (addr & 0xFu);
                 addr &= ~0xFu;
                 for (uint i = (uint)element; i < end; i++)
-                    WriteByte(addr++, _vr[vt, (int)((i + baseIndex) & 0xFu)]);
+                    WriteByte(addr++, _vr[(vt) * 16 + ((int)((i + baseIndex) & 0xFu))]);
             }
         }
 
@@ -1361,7 +1368,7 @@ namespace Ryu64.MIPS
                 for (int i = 0; i < 8; i++)
                 {
                     int b = element + (i << 1);
-                    byte packed = (byte)((_vr[vt, b & 0xF] << 1) | (_vr[vt, (b + 1) & 0xF] >> 7));
+                    byte packed = (byte)((_vr[(vt) * 16 + (b & 0xF)] << 1) | (_vr[(vt) * 16 + ((b + 1) & 0xF)] >> 7));
                     WriteByte(addr + ((baseIndex + (uint)(i * 2)) & 0xFu), packed);
                 }
             }
@@ -1374,7 +1381,7 @@ namespace Ryu64.MIPS
             int end = element > 8 ? 16 : element + 8;
             addr &= ~7u;
 
-            ushort[] temp = new ushort[8];
+            ushort[] temp = _vectorMemoryTemp;
             for (int i = 0; i < 4; i++)
             {
                 temp[i] = (ushort)(ReadByte((addr + (uint)((index + (i * 4)) & 0xF)) & 0xFFFu) << 7);
@@ -1382,7 +1389,7 @@ namespace Ryu64.MIPS
             }
 
             for (int i = element; i < end; i++)
-                _vr[vt, i & 0xF] = ReadHalfwordByte(temp, i);
+                _vr[(vt) * 16 + (i & 0xF)] = ReadHalfwordByte(temp, i);
         }
 
         private void StoreVectorFour(int vt, int element, uint address)
@@ -1439,7 +1446,7 @@ namespace Ryu64.MIPS
             {
                 for (int i = 16 - element; i < 16 + element; i++)
                 {
-                    _vr[vt, i & 0xF] = ReadByte(addr & 0xFFFu);
+                    _vr[(vt) * 16 + (i & 0xF)] = ReadByte(addr & 0xFFFu);
                     addr += 4;
                 }
             }
@@ -1449,7 +1456,7 @@ namespace Ryu64.MIPS
                 addr &= ~7u;
 
                 for (int i = element; i < element + 16; i++)
-                    WriteByte(addr + (baseIndex++ & 0xFu), _vr[vt, i & 0xF]);
+                    WriteByte(addr + (baseIndex++ & 0xFu), _vr[(vt) * 16 + (i & 0xF)]);
             }
         }
 
@@ -1466,10 +1473,10 @@ namespace Ryu64.MIPS
                 for (int i = 0; i < 16; regIndex++)
                 {
                     regIndex &= 7;
-                    _vr[baseVt + regIndex, i++] = ReadByte(addr++ & 0xFFFu);
+                    _vr[(baseVt + regIndex) * 16 + (i++)] = ReadByte(addr++ & 0xFFFu);
                     if (addr == start + 16)
                         addr = start;
-                    _vr[baseVt + regIndex, i++] = ReadByte(addr++ & 0xFFFu);
+                    _vr[(baseVt + regIndex) * 16 + (i++)] = ReadByte(addr++ & 0xFFFu);
                     if (addr == start + 16)
                         addr = start;
                 }
@@ -1485,8 +1492,8 @@ namespace Ryu64.MIPS
 
                 for (int i = baseVt; i < baseVt + 8; i++)
                 {
-                    WriteByte(addr + (baseIndex++ & 0xFu), _vr[i, outElement++ & 0xF]);
-                    WriteByte(addr + (baseIndex++ & 0xFu), _vr[i, outElement++ & 0xF]);
+                    WriteByte(addr + (baseIndex++ & 0xFu), _vr[(i) * 16 + (outElement++ & 0xF)]);
+                    WriteByte(addr + (baseIndex++ & 0xFu), _vr[(i) * 16 + (outElement++ & 0xF)]);
                 }
             }
         }
@@ -1502,30 +1509,30 @@ namespace Ryu64.MIPS
         private ushort ReadVectorElement(int vt, int element)
         {
             int lane = element & 0xF;
-            byte hi = _vr[vt, lane];
-            byte lo = _vr[vt, (lane + 1) & 0xF];
+            byte hi = _vr[(vt) * 16 + (lane)];
+            byte lo = _vr[(vt) * 16 + ((lane + 1) & 0xF)];
             return (ushort)((hi << 8) | lo);
         }
 
         private void WriteVectorElement(int vt, int element, ushort value)
         {
             int lane = element & 0xF;
-            _vr[vt, lane] = (byte)(value >> 8);
+            _vr[(vt) * 16 + (lane)] = (byte)(value >> 8);
             if (lane != 0xF)
-                _vr[vt, lane + 1] = (byte)value;
+                _vr[(vt) * 16 + (lane + 1)] = (byte)value;
         }
 
         private ushort ReadVectorLane16(int vt, int lane)
         {
             int byteIndex = (lane & 7) * 2;
-            return (ushort)((_vr[vt, byteIndex] << 8) | _vr[vt, byteIndex + 1]);
+            return (ushort)((_vr[(vt) * 16 + (byteIndex)] << 8) | _vr[(vt) * 16 + (byteIndex + 1)]);
         }
 
         private void WriteVectorLane16(int vt, int lane, ushort value)
         {
             int byteIndex = (lane & 7) * 2;
-            _vr[vt, byteIndex] = (byte)(value >> 8);
-            _vr[vt, byteIndex + 1] = (byte)value;
+            _vr[(vt) * 16 + (byteIndex)] = (byte)(value >> 8);
+            _vr[(vt) * 16 + (byteIndex + 1)] = (byte)value;
         }
 
         private void LoadVectorUnshuffled(int vt, ushort[] dest)
@@ -1574,7 +1581,7 @@ namespace Ryu64.MIPS
 
         private void ExecuteVectorRound(int vd, int vs, ushort[] rhs, bool positive)
         {
-            ushort[] result = new ushort[8];
+            ushort[] result = _vectorResult;
             for (int lane = 0; lane < 8; lane++)
             {
                 long acc = ReadAccumulator(lane);
@@ -1644,6 +1651,8 @@ namespace Ryu64.MIPS
 
         private byte ReadByte(uint address)
         {
+            if (!TraceRspFlow)
+                return _memory.SP_MEM_RW[address & 0x0FFFu];
             uint word = ReadWord(address & ~3u);
             int shift = (int)((3 - (address & 3u)) * 8);
             byte value = (byte)((word >> shift) & 0xFFu);
@@ -1700,6 +1709,11 @@ namespace Ryu64.MIPS
 
         private void WriteByte(uint address, byte value)
         {
+            if (!TraceRspFlow)
+            {
+                _memory.WriteSpDmemByte(address, value);
+                return;
+            }
             uint aligned = address & ~3u;
             uint word = ReadWord(aligned);
             int shift = (int)((3 - (address & 3u)) * 8);
@@ -1869,7 +1883,7 @@ namespace Ryu64.MIPS
 
         private void LoadVectorShuffledIntoAccumulatorLow(int vt, int element)
         {
-            ushort[] operand = new ushort[8];
+            ushort[] operand = _vectorReciprocalOperand;
             LoadVectorShuffled(vt, element, operand);
             for (int lane = 0; lane < 8; lane++)
                 _accLo[lane] = operand[lane];

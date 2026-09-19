@@ -2068,7 +2068,9 @@ namespace Ryu64.MIPS
                     case 0x26: // SyncLoad
                     case 0x27: // SyncPipe
                     case 0x28: // SyncTile
+                        break;
                     case 0x29: // SyncFull
+                        FlushVisibleRdpFramebufferSnapshot();
                         break;
                     case 0x2D: // SetScissor
                         ExecuteRdpSetScissor(w0, w1);
@@ -2178,7 +2180,11 @@ namespace Ryu64.MIPS
                 _traceRdpSummaryCount++;
             }
 
-            FlushVisibleRdpFramebufferSnapshot();
+            // Microcode often advances DPC_END for each primitive. Publish at
+            // SyncFull/target changes/task completion instead of copying the
+            // entire framebuffer after each of those tiny command chunks.
+            if (!_rspTaskDispatching)
+                FlushVisibleRdpFramebufferSnapshot();
             AddPerfTicks(ref _perfRdpDisplayListTicks, ref _perfRdpDisplayListCalls, perfStart);
             return current;
         }
@@ -2475,24 +2481,6 @@ namespace Ryu64.MIPS
                         hasFirstSample = true;
                     }
 
-                    if (!IsRgbaNonZero(rgba))
-                    {
-                        zeroSampleHits++;
-                        currentS += tex.DsDx;
-                        currentT += tex.DtDx;
-                        currentW += tex.DwDx;
-                        if (useDepth)
-                            currentZ += depth.DzDx;
-                        if (modulateShade)
-                        {
-                            currentR += shade.DrDx;
-                            currentG += shade.DgDx;
-                            currentB += shade.DbDx;
-                            currentA += shade.DaDx;
-                        }
-                        continue;
-                    }
-
                     uint pixelIndex = rowPixelIndex + (uint)x;
                     uint address = rowStart + ((uint)(x - firstX) * bytesPerPixel);
                     if (useDepth && !PassRdpDepthTest(pixelIndex, currentZ, depth.DzPix))
@@ -2516,7 +2504,8 @@ namespace Ryu64.MIPS
                         WriteRdpRgba5551PixelNoBlend(address, rgba);
                     else
                         WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
-                    nonZeroSampleHits++;
+                    if (IsRgbaNonZero(rgba)) nonZeroSampleHits++;
+                    else zeroSampleHits++;
                     rowWrote = true;
                     wroteAny = true;
                     currentS += tex.DsDx;
@@ -3038,6 +3027,10 @@ namespace Ryu64.MIPS
                         rowG + xStep * (long)shade.DgDx,
                         rowB + xStep * (long)shade.DbDx,
                         rowA + xStep * (long)shade.DaDx);
+                    if (_rdpCombineModeSet)
+                        rgba = ApplyRdpColorCombiner(0u, rgba);
+                    if (ShouldRejectRdpAlpha(rgba))
+                        continue;
                     uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
                     wroteAny = true;
@@ -3150,7 +3143,14 @@ namespace Ryu64.MIPS
 
         private uint ApplyRdpColorCombiner(uint texel0, uint shade)
         {
-            uint combined = EvaluateRdpCombineCycle(
+            if (_rdpOtherModesCycleType == 2u) // Copy bypasses the combiner.
+                return texel0;
+
+            // One-cycle rendering uses mux bank 1, not bank 0. Two-cycle
+            // rendering feeds bank 0 into bank 1 via COMBINED.
+            uint combined = 0u;
+            if (_rdpOtherModesCycleType == 1u)
+                combined = EvaluateRdpCombineCycle(
                 _rdpCombine.SubARgb0,
                 _rdpCombine.SubBRgb0,
                 _rdpCombine.MulRgb0,
@@ -3164,9 +3164,7 @@ namespace Ryu64.MIPS
                 0u,
                 shade);
 
-            if (_rdpOtherModesCycleType == 1u)
-            {
-                combined = EvaluateRdpCombineCycle(
+            combined = EvaluateRdpCombineCycle(
                     _rdpCombine.SubARgb1,
                     _rdpCombine.SubBRgb1,
                     _rdpCombine.MulRgb1,
@@ -3177,12 +3175,8 @@ namespace Ryu64.MIPS
                     _rdpCombine.AddA1,
                     combined,
                     texel0,
-                    0u,
+                    _rdpOtherModesCycleType == 0u ? texel0 : 0u,
                     shade);
-            }
-
-            if ((combined & 0xFFFFFF00u) == 0u && (texel0 & 0xFFFFFF00u) != 0u)
-                return shade == 0xFFFFFFFFu ? texel0 : ModulateRdpRgba(texel0, shade);
 
             return combined;
         }
@@ -4053,10 +4047,12 @@ namespace Ryu64.MIPS
             int tFixed = (short)w2;
             int dsdxFixed = (short)(w3 >> 16);
             int dtdyFixed = (short)w3;
+            if (_rdpOtherModesCycleType == 2u)
+                dsdxFixed /= 4; // Copy emits four horizontal pixels per step.
             double startS = sFixed / 32.0;
             double startT = tFixed / 32.0;
-            double stepS = dsdxFixed == 0 ? 1.0 : dsdxFixed / 1024.0;
-            double stepT = dtdyFixed == 0 ? 1.0 : dtdyFixed / 1024.0;
+            double stepS = dsdxFixed / 1024.0;
+            double stepT = dtdyFixed / 1024.0;
             bool wroteAny = false;
             uint sampleMisses = 0;
             uint sampleHits = 0;
@@ -7472,6 +7468,11 @@ namespace Ryu64.MIPS
                 TraceRspDescriptorDmemWrite(spAddress & 0x0FFFu, oldValue, value, "direct");
         }
 
+        internal void WriteSpDmemByte(uint address, byte value)
+        {
+            WriteSpMemoryByte(address & 0x0FFFu, value);
+        }
+
         public void SP_STATUS_WRITE_EVENT()
         {
             uint writeValue = ReadBigEndianWord(SP_STATUS_REG_W);
@@ -7772,6 +7773,7 @@ namespace Ryu64.MIPS
             finally
             {
                 _rspTaskDispatching = false;
+                FlushVisibleRdpFramebufferSnapshot();
                 if (hasTask && task.Type == 1)
                     AddPerfTicks(ref _perfRspGraphicsTicks, ref _perfRspGraphicsCalls, rspPerfStart);
                 else if (hasTask && task.Type == 2)
