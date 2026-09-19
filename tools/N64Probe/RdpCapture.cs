@@ -18,6 +18,10 @@ internal sealed class RdpCapture : TextWriter
 
     internal RdpCapture(string directory)
     {
+        if (File.Exists(Path.Combine(directory, "rdp-start.bin"))
+            || File.Exists(Path.Combine(directory, "rdp-tape.bin"))
+            || File.Exists(Path.Combine(directory, "rdp-final.ppm")))
+            throw new IOException("Use a fresh capture directory; existing tapes are not overwritten");
         _directory = directory;
         _previous = Console.Out;
         Console.SetOut(this);
@@ -63,6 +67,10 @@ internal sealed class RdpCapture : TextWriter
         _tape.Write(command);
         _tape.Flush();
         _commands++;
+        // A gameplay frame can exceed the normal diagnostic log budget. Re-arm
+        // it only while capturing, without changing normal renderer defaults.
+        if (_commands % 1024 == 0)
+            typeof(Memory).GetField("_traceRdpSummaryCount", BindingFlags.Static | BindingFlags.NonPublic)!.SetValue(null, 0);
         if (_commands % 64 == 0) SaveFrame(memory, Path.Combine(_directory, $"rdp-step-{_commands:D4}.ppm"));
         if (match.Groups[4].Value.Contains("29:"))
         {

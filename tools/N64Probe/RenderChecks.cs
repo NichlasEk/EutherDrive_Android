@@ -162,6 +162,29 @@ internal static class RenderChecks
             checks++;
         }
 
+        foreach (bool coverage in new[] { false, true })
+        foreach (int triangle in new[] { 0x0d, 0x0f })
+        {
+            // CVG_X_ALPHA must discard zero-coverage fragments BEFORE Z update.
+            Call("ExecuteRdpSetOtherModes", 0xef000000u, coverage ? 0x1030u : 0x30u);
+            Set("_rdpPrimColor", 0xff000000u); // Transparent red.
+            Set("_rdpColorImageAddress", 0x400u);
+            Set("_rdpFillColor", 0xfffcfffcu);
+            Call("ExecuteRdpFillRectangle", 0xf603c03cu, 0u);
+            Set("_rdpColorImageAddress", color);
+            Set("_rdpMaskImageAddress", 0x400u);
+            Array.Fill(memory.RDRAM, (byte)0x55, (int)color, 320 * 240 * 2);
+            Word(96, 0); Word(160, 0);
+            Word(triangle == 0x0d ? 96u : 160u, 0x10000u << 13);
+            Call("ExecuteRdpTriangle", triangle, command, false);
+            int pixel = (5 * 320 + 5) * 2;
+            ushort actual = BinaryPrimitives.ReadUInt16BigEndian(memory.RDRAM.AsSpan((int)color + pixel));
+            ushort z = BinaryPrimitives.ReadUInt16BigEndian(memory.RDRAM.AsSpan(0x400 + pixel));
+            if (coverage ? actual != 0x5555 || z != 0xfffc : actual == 0x5555 || z == 0xfffc)
+                throw new Exception($"Coverage/depth rejection failed: coverage={coverage} triangle={triangle:x}");
+            checks += 2;
+        }
+        checks += StateChecks.CheckCoverageRoundTrip();
         R4300.memory = memory;
         var refresh = typeof(R4300).GetMethod("RefreshRcpInterruptPending", flags)!.CreateDelegate<Func<ulong>>();
         for (int intr = 0; intr < 64; intr++)

@@ -165,6 +165,8 @@ internal static class RspChecks
             using var state = new MemoryStream();
             using var writer = new BinaryWriter(state);
             memoryType.GetMethod("SaveState")!.Invoke(memory, new object[] { writer });
+            writer.Flush();
+            StateChecks.NormalizeForLegacyComparison(state);
             foreach (string name in new[] { "_gpr", "_vr", "_vcc", "_vco", "_accHi", "_accMd", "_accLo", "_recentPcs", "_recentInstrs" })
             {
                 Array data = (Array)type.GetField(name, Private)!.GetValue(rsp)!;

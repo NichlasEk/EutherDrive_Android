@@ -261,3 +261,29 @@ whether the final framebuffer matches. It does not capture arbitrary RSP
 writes to texture RAM between commands; validate that match before treating
 a new tape as an oracle. Incomplete captures are rejected. Artifacts contain
 game data and stay local/untracked; do not publish tapes, ROMs, or savestates.
+
+## Follow-up 4: tree cutouts and transparent depth writes
+
+SM64 enables `CVG_X_ALPHA` (OtherModes bit 12) for tree billboards, without
+enabling alpha compare. The renderer previously ignored this bit and wrote
+opaque-looking black geometry for zero-alpha texels. Zero alpha now rejects
+the fragment in one-/two-cycle coverage-times-alpha modes, before both color
+and depth writes. Shade-only triangles now also reject alpha before updating
+depth. This fixes the black tree backgrounds; partial coverage/AA is still
+not modeled. Local primary reference: MAME `n64_v.cpp:get_alpha_cvg`.
+
+- `tree-tape-complete/`: 2604 command chunks, complete FullSync capture and
+  byte-identical baseline replay. The earlier `tree-tape/` and
+  `tree-tape-full/` attempts were incomplete and are not oracles.
+- `tree-coverage/rdp-final.png`: identical captured commands, now with the
+  black tree backgrounds removed.
+- Captures can now re-arm the trace budget while recording a long frame;
+  normal emulator trace limits remain unchanged.
+- Render/interrupt checks total 4445, including transparent color/depth
+  rejection with coverage enabled/disabled and memory-state round trips.
+- Memory savestate version is now 4 to preserve the new coverage flag.
+  Versions 1-3 still load; their missing flag resets to false and is supplied
+  by the next SetOtherModes command. Older emulator builds cannot load v4.
+  DMA/RSP reference checks normalize only this additive schema header/trailer
+  after asserting the new flag is false, retaining comparison of all prior
+  state. Both differential suites still pass against the prior DLL.

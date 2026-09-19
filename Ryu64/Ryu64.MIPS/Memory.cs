@@ -797,6 +797,7 @@ namespace Ryu64.MIPS
         private bool _rdpOtherModesZCompare;
         private bool _rdpOtherModesZSourceSel;
         private bool _rdpOtherModesAlphaCompare;
+        private bool _rdpOtherModesCvgTimesAlpha;
         private bool _rdpOtherModesForceBlend;
         private bool _rdpOtherModesImageRead;
         private uint _rdpOtherModesCvgDest;
@@ -999,7 +1000,7 @@ namespace Ryu64.MIPS
             if (writer == null)
                 throw new ArgumentNullException(nameof(writer));
 
-            const int version = 3;
+            const int version = 4;
             writer.Write(version);
 
             WriteByteArrays(writer);
@@ -1135,6 +1136,7 @@ namespace Ryu64.MIPS
             writer.Write(_controllerButtons);
             writer.Write(_controllerAnalogX);
             writer.Write(_controllerAnalogY);
+            writer.Write(_rdpOtherModesCvgTimesAlpha);
         }
 
         public void LoadState(BinaryReader reader)
@@ -1143,7 +1145,7 @@ namespace Ryu64.MIPS
                 throw new ArgumentNullException(nameof(reader));
 
             int version = reader.ReadInt32();
-            if (version < 1 || version > 3)
+            if (version < 1 || version > 4)
                 throw new InvalidDataException($"Unsupported N64 memory savestate version: {version}.");
 
             ReadByteArrays(reader);
@@ -1313,6 +1315,7 @@ namespace Ryu64.MIPS
                 _controllerAnalogY = reader.ReadSByte();
             }
 
+            _rdpOtherModesCvgTimesAlpha = version >= 4 && reader.ReadBoolean();
             RefreshCpuInterruptView();
         }
 
@@ -3018,9 +3021,6 @@ namespace Ryu64.MIPS
                 for (int x = firstX; x <= lastX; x++)
                 {
                     long xStep = (long)Math.Round(x + 0.5 - left);
-                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + xStep * (long)depth.DzDx, depth.DzPix))
-                        continue;
-
                     uint rgba = RdpShadeToRgba(
                         rowR + xStep * (long)shade.DrDx,
                         rowG + xStep * (long)shade.DgDx,
@@ -3029,6 +3029,8 @@ namespace Ryu64.MIPS
                     if (_rdpCombineModeSet)
                         rgba = ApplyRdpColorCombiner(0u, rgba);
                     if (ShouldRejectRdpAlpha(rgba))
+                        continue;
+                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + xStep * (long)depth.DzDx, depth.DzPix))
                         continue;
                     uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
@@ -3462,6 +3464,7 @@ namespace Ryu64.MIPS
             _rdpOtherModesBiLerp0 = ((mode >> 43) & 1UL) != 0;
             _rdpOtherModesBiLerp1 = ((mode >> 42) & 1UL) != 0;
             _rdpOtherModesForceBlend = ((mode >> 14) & 1UL) != 0;
+            _rdpOtherModesCvgTimesAlpha = ((mode >> 12) & 1UL) != 0;
             _rdpOtherModesZMode = (uint)((mode >> 10) & 0x3UL);
             _rdpOtherModesCvgDest = (uint)((mode >> 8) & 0x3UL);
             _rdpOtherModesImageRead = ((mode >> 6) & 1UL) != 0;
@@ -4709,7 +4712,11 @@ namespace Ryu64.MIPS
 
         private bool ShouldRejectRdpAlpha(uint rgba)
         {
-            return _rdpOtherModesAlphaCompare && (rgba & 0xFFu) == 0u;
+            // Zero alpha produces zero coverage in CVG_X_ALPHA mode even when
+            // alpha compare is disabled. Reject before any color OR depth write.
+            // Partial coverage/AA is not yet modeled by this pixel-center path.
+            return (_rdpOtherModesAlphaCompare || (_rdpOtherModesCycleType < 2u && _rdpOtherModesCvgTimesAlpha))
+                && (rgba & 0xFFu) == 0u;
         }
 
         private bool IsRdpFillColorRgbNonZero(uint bytesPerPixel)

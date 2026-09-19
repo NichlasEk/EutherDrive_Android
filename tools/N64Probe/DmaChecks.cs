@@ -75,6 +75,7 @@ internal static class DmaChecks
             state.Position = 0;
             save(writer);
             writer.Flush();
+            StateChecks.NormalizeForLegacyComparison(state);
             hash.AppendData(state.GetBuffer(), 0, (int)state.Length);
         }
     }
