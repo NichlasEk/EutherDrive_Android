@@ -13,6 +13,7 @@ namespace Ryu64Core
         private const uint ViOriginReg = 0xA4400004;
         private const uint ViWidthReg = 0xA4400008;
         private const uint ViVStartReg = 0xA4400028;
+        private const uint ViYScaleReg = 0xA4400034;
         private const int RdramSizeBytes = 8 * 1024 * 1024;
         private const uint HeuristicFramebufferOriginFloor = 0x00010000u;
         private const uint UntrackedFramebufferOriginFloor = 0x00020000u;
@@ -314,7 +315,7 @@ namespace Ryu64Core
                     width = 320;
 
                 uint vStart = R4300.memory.ReadUInt32(ViVStartReg);
-                height = InferVideoHeight(vStart);
+                height = (int)Memory.ComputeViFramebufferHeight(vStart, R4300.memory.ReadUInt32(ViYScaleReg));
                 if (height <= 0)
                     height = 240;
 
@@ -330,7 +331,7 @@ namespace Ryu64Core
                 }
 
                 if (width > 640) width = 640;
-                if (height > 480) height = 480;
+                if (height > 576) height = 576;
                 if (origin >= RdramSizeBytes)
                 {
                     _lastFramebufferStatus = $"VI origin out of RDRAM (origin=0x{origin:x8})";
@@ -624,10 +625,9 @@ namespace Ryu64Core
                 }
 
                 framebuffer = framebufferScratch;
-                for (int i = 0; i < bufferSize; i++)
-                {
-                    framebuffer[i] = R4300.memory.ReadUInt8PhysicalUncached(origin + (uint)i);
-                }
+                // The range above is wholly inside byte-ordered RDRAM.
+                // Presentation needs no bus translation or device reads.
+                Buffer.BlockCopy(R4300.memory.RDRAM, (int)origin, framebuffer, 0, bufferSize);
                 R4300.memory.NotifyFramebufferConsumerRead(origin, (uint)bufferSize);
                 RememberFramebufferCandidate(
                     origin,
@@ -974,10 +974,7 @@ namespace Ryu64Core
                 return true;
             }
 
-            for (int i = 0; i < bufferSize; i++)
-            {
-                framebufferScratch[i] = R4300.memory.ReadUInt8PhysicalUncached(_cachedFramebufferOrigin + (uint)i);
-            }
+            Buffer.BlockCopy(R4300.memory.RDRAM, (int)_cachedFramebufferOrigin, framebufferScratch, 0, bufferSize);
 
             int visiblePixels = CountVisibleFramebufferPixels(framebufferScratch, width, height, bytesPerPixel);
             if (!_cachedFramebufferProducerBacked
@@ -1015,21 +1012,6 @@ namespace Ryu64Core
                     bufferSize);
             }
             return true;
-        }
-
-        private static int InferVideoHeight(uint vStart)
-        {
-            int start = (int)((vStart >> 16) & 0x03FF);
-            int end = (int)(vStart & 0x03FF);
-            int delta = end - start;
-            if (delta <= 0)
-                delta += 0x400;
-
-            // VI V_START is encoded in half-lines on real hardware.
-            int height = delta / 2;
-            if (height < 120 || height > 576)
-                return 240;
-            return height;
         }
 
         private int ScoreFramebufferCandidate(uint origin, int width, int height, int bytesPerPixel)

@@ -1885,13 +1885,23 @@ namespace Ryu64.MIPS
 
         private uint GetFramebufferHeightHint()
         {
-            uint vStart = ReadBigEndianWord(VI_V_START_REG_RW);
-            uint start = (vStart >> 16) & 0x03FFu;
-            uint end = vStart & 0x03FFu;
-            uint height = (end > start) ? ((end - start) >> 1) : 0u;
-            if (height == 0 || height > 480)
-                height = 240;
-            return height;
+            return ComputeViFramebufferHeight(ReadBigEndianWord(VI_V_START_REG_RW),
+                ReadBigEndianWord(VI_Y_SCALE_REG_RW));
+        }
+
+        public static uint ComputeViFramebufferHeight(uint vStart, uint yScale)
+        {
+            uint start = (vStart >> 16) & 0x3FFu;
+            uint end = vStart & 0x3FFu;
+            uint halfLines = (end - start) & 0x3FFu;
+            if (halfLines == 0)
+                return 240;
+            uint scale = yScale & 0xFFFu;
+            // Preserve bring-up behavior until a scale has been programmed.
+            if (scale == 0)
+                scale = 1024;
+            uint height = ((halfLines >> 1) * scale) >> 10;
+            return height == 0 || height > 576 ? 240u : height;
         }
 
         private uint GetFramebufferBytesPerPixelHint()

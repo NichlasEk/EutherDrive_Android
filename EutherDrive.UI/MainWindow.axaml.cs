@@ -10552,6 +10552,13 @@ public partial class MainWindow : Window
             ApplyPresentationSize(targetWidth, targetHeight);
             return true;
         }
+        else if (core is N64Adapter)
+        {
+            // VI source pixels need not be square (e.g. 576x474 interlaced).
+            ApplyNoDownscaleAspectPresentation(width, height,
+                _tateRotation == TateRotation.Off ? 4.0 / 3.0 : 3.0 / 4.0);
+            return true;
+        }
         else if (core is ArkanoidAdapter)
         {
             ApplyNoDownscaleAspectPresentation(width, height, _tateRotation == TateRotation.Off ? 3.0 / 4.0 : 4.0 / 3.0);
