@@ -74,7 +74,11 @@ internal static class RdpBenchmark
                 if (iteration >= 0) elapsed.Add(milliseconds);
             }
             elapsed.Sort();
-            Console.WriteLine($"rdpBench={label} chunks={commands.Count} runs={elapsed.Count} minMs={elapsed[0]:F3} medianMs={(elapsed[5] + elapsed[6]) / 2:F3} maxMs={elapsed[^1]:F3} fullStateSha256={digest}");
+            // Reference ALC loading changes JIT/static-access costs. Validate
+            // there, but compare speed using separate default-context processes.
+            string timing = label == "reference" ? "validationOnly=True"
+                : $"minMs={elapsed[0]:F3} medianMs={(elapsed[5] + elapsed[6]) / 2:F3} maxMs={elapsed[^1]:F3}";
+            Console.WriteLine($"rdpBench={label} chunks={commands.Count} runs={elapsed.Count} {timing} fullStateSha256={digest}");
             return digest;
         }
 

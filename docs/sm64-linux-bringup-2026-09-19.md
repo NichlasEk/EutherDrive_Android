@@ -671,3 +671,55 @@ Final Linux Release UI build passed (`acc-final-ui-build.log`, zero errors,
 reached the Mario-head screen with nonzero audio (`acc-cold/`); this was a
 functional check overlapping build activity, not a performance measurement
 or listening test. No user-owned emulator was stopped or settings changed.
+
+## Follow-up 15: exact texture filtering/color expansion fast paths
+
+Three software-RDP changes, without changing filtering quality, depth,
+coverage, frame skipping or guest timing:
+
+- Three-point filtering evaluates R/B and G/A as packed 16-bit lanes.
+  The selected triangle's nonnegative weights sum to 32; the convex sum
+  plus rounding is algebraically identical to the old signed-difference
+  formula. Lane sums never exceed 8176, so neither cross-lane carry nor
+  channel saturation is needed.
+- RGBA5551 expansion uses a shared immutable 65536-entry table (256 KiB).
+  This caches only a color conversion, not texture contents or palette state;
+  texture and palette writes remain immediately visible.
+- Unshifted, non-mirrored wrapping tiles precompute their coordinate masks.
+  Adjacent filter samples use modulo-mask addition instead of four general
+  coordinate transforms. Other modes retain the existing paths.
+
+Validation: `--check-filter` passes 1048576 filter cases covering every 5-bit
+S/T fraction, triangle diagonal, channel extrema and mixed random RGBA, plus
+all 65536 color conversions. Expanded `--check-sampler REFERENCE_MIPS_DLL`
+passes 81920 differential cases, including forced wrapping, negative
+coordinates, nonzero origins, palettes and texture formats. Render/interrupt
+(6845), audio and EEPROM (18) checks pass. Logo and tree command replays,
+and the 794278-instruction captured graphics task, preserve full end state.
+
+Isolated-process fixed-work tree replay (2604 chunks): 40.617 ms baseline,
+39.435 ms packed filtering alone, 36.507 ms with color table, 34.202 ms with
+wrap specialization. Final versus baseline is about 16% less rendering time.
+The complete captured RSP graphics task also retains its exact state hash.
+RDP reference-ALC runs now label themselves validation-only, matching the
+RSP harness rule: compare speed using separate default-context processes.
+
+Alternating audio-enabled whole-scene runs completed 158 -> 168 and 156 ->
+167 graphics tasks in about 20 seconds: roughly 7% more work on this host.
+These are graphics tasks, not UI polls or guaranteed unique displayed frames.
+They do not establish real-time speed or smooth audio yet. User-owned emulator
+processes were left running and no user settings were changed.
+
+Evidence under `.build-tmp/sm64-20260919/`: `pre-packed-filter/` baseline,
+`filter-{before,after}-{1,2}.log`, `filter-{before,after}-rdp.log`,
+`filter-{table,wrap}-rdp.log`, `filter-check.log`, `filter-sampler-check.log`,
+`filter-logo-check.log`, `filter-final-task-check.log`. Do not use timings from
+the final functional task check or cold boot: those overlap validation/build
+activity. Cartridge, state, trace and PCM artifacts remain local.
+
+Final Linux Release UI build passed with zero errors (501 existing warnings).
+A 25-second cold-boot smoke test reached the Mario-head title screen, visually
+checked in `filter-cold/frame-0025.png`, and produced nonzero captured audio
+(570522 samples, 442604 nonzero). This verifies startup/audio output, not
+listening quality or real-time performance. Logs: `filter-final-ui-build.log`
+and `filter-cold.log`.

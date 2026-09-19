@@ -35,7 +35,7 @@ internal static class SamplerChecks
         count = 0;
         for (uint format = 0; format < 8; format++)
         for (uint size = 0; size < 4; size++)
-        for (int mode = 0; mode < 32; mode++)
+        for (int mode = 0; mode < 64; mode++)
         {
             void Mode(string name, bool value) => memoryType.GetField(name, flags)!.SetValue(memory, value);
             Mode("_rdpOtherModesEnableTlut", (mode & 1) != 0);
@@ -47,13 +47,14 @@ internal static class SamplerChecks
             Tile("Format", format); Tile("Size", size);
             Tile("Tmem", (uint)random.Next(512)); Tile("Line", (uint)random.Next(1, 64));
             Tile("Palette", (uint)random.Next(16));
-            bool fast = (mode & 16) != 0;
-            Tile("MaskS", fast ? 0u : (uint)random.Next(16));
-            Tile("MaskT", fast ? 0u : (uint)random.Next(16));
-            Tile("ShiftS", fast ? 0u : (uint)random.Next(16));
-            Tile("ShiftT", fast ? 0u : (uint)random.Next(16));
-            Tile("ClampS", fast || random.Next(2) == 0); Tile("ClampT", fast || random.Next(2) == 0);
-            Tile("MirrorS", random.Next(2) == 0); Tile("MirrorT", random.Next(2) == 0);
+            bool wrap = (mode & 32) != 0;
+            bool fast = (mode & 16) != 0 && !wrap;
+            Tile("MaskS", wrap ? (uint)random.Next(1, 16) : fast ? 0u : (uint)random.Next(16));
+            Tile("MaskT", wrap ? (uint)random.Next(1, 16) : fast ? 0u : (uint)random.Next(16));
+            Tile("ShiftS", fast || wrap ? 0u : (uint)random.Next(16));
+            Tile("ShiftT", fast || wrap ? 0u : (uint)random.Next(16));
+            Tile("ClampS", !wrap && (fast || random.Next(2) == 0)); Tile("ClampT", !wrap && (fast || random.Next(2) == 0));
+            Tile("MirrorS", !wrap && random.Next(2) == 0); Tile("MirrorT", !wrap && random.Next(2) == 0);
             uint originS = (uint)random.Next(8), originT = (uint)random.Next(8);
             Tile("Uls", originS * 4); Tile("Ult", originT * 4);
             Tile("Lrs", (originS + 31) * 4); Tile("Lrt", (originT + 15) * 4);

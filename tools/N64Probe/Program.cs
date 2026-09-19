@@ -2,6 +2,12 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-filter")
+{
+    TextureFilterChecks.Run();
+    return;
+}
+
 if (args.Length >= 2 && args[0] == "--bench-rsp-task")
 {
     RspTaskCapture.Benchmark(args[1], args.Length > 2 ? args[2] : null);

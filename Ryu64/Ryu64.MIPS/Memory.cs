@@ -164,6 +164,7 @@ namespace Ryu64.MIPS
             0xfb7, 0xfb8, 0xfb9, 0xfba, 0xfbc, 0xfbc, 0xfbe, 0xfbe
         };
         private static readonly int[] RdpTextureCoordinateDivideTable = BuildRdpTextureCoordinateDivideTable();
+        private static readonly uint[] RdpRgba5551Colors = BuildRdpRgba5551Colors();
         private const int TraceWatchRangeLogLimit = 512;
         private const int TraceExceptionVectorWriteLimit = 512;
         private const int TraceLowRamMutationWriteLimit = 1024;
@@ -938,6 +939,9 @@ namespace Ryu64.MIPS
             public uint OriginS;
             public uint OriginT;
             public bool FastClampCoordinates;
+            public bool FastWrapCoordinates;
+            public int WrapMaskS;
+            public int WrapMaskT;
             public bool Valid;
         }
 
@@ -4317,6 +4321,11 @@ namespace Ryu64.MIPS
                 FastClampCoordinates =
                     IsRdpLinearClampCoordinate(tile.MaskS, tile.ShiftS, tile.ClampS) &&
                     IsRdpLinearClampCoordinate(tile.MaskT, tile.ShiftT, tile.ClampT),
+                FastWrapCoordinates = tile.ShiftS == 0 && tile.ShiftT == 0
+                    && !tile.ClampS && !tile.ClampT && !tile.MirrorS && !tile.MirrorT
+                    && tile.MaskS > 0 && tile.MaskS < 31 && tile.MaskT > 0 && tile.MaskT < 31,
+                WrapMaskS = (1 << (int)tile.MaskS) - 1,
+                WrapMaskT = (1 << (int)tile.MaskT) - 1,
                 Valid = true
             };
         }
@@ -4334,6 +4343,8 @@ namespace Ryu64.MIPS
             {
                 if (sampler.FastClampCoordinates)
                     return DecodeRdpTextureColorLinearLerpFastClamp(ref sampler, s, t, fracS, fracT, out rgba);
+                if (sampler.FastWrapCoordinates)
+                    return DecodeRdpTextureColorLinearLerpFastWrap(ref sampler, s, t, fracS, fracT, out rgba);
                 return DecodeRdpTextureColorLinearLerp(ref sampler, s, t, fracS, fracT, out rgba);
             }
 
@@ -4384,6 +4395,28 @@ namespace Ryu64.MIPS
             return true;
         }
 
+        private bool DecodeRdpTextureColorLinearLerpFastWrap(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
+        {
+            // With no shift/clamp/mirror, adjacent coordinates differ by one
+            // modulo the tile mask, including negative S/T and nonzero origins.
+            int s0 = (s - (int)sampler.OriginS) & sampler.WrapMaskS;
+            int t0 = (t - (int)sampler.OriginT) & sampler.WrapMaskT;
+            int s1 = (s0 + 1) & sampler.WrapMaskS;
+            int t1 = (t0 + 1) & sampler.WrapMaskT;
+            ref RdpTileState tile = ref sampler.Tile;
+            rgba = 0;
+            bool upper = fracS + fracT >= 32;
+            if (!DecodeRdpTextureColor(tile, s1, t0, out uint c10)
+                || !DecodeRdpTextureColor(tile, s0, t1, out uint c01)
+                || !DecodeRdpTextureColor(tile, upper ? s1 : s0, upper ? t1 : t0, out uint corner))
+                return false;
+            rgba = upper
+                ? BlendRdpTexelsTriangleUpper(c10, c01, corner, fracS, fracT)
+                : BlendRdpTexelsTriangleLower(corner, c10, c01, fracS, fracT);
+            if ((rgba & 0xFFu) < 0x80u) rgba &= 0xFFFFFF00u;
+            return true;
+        }
+
         private bool DecodeRdpTextureColorLinearLerp(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
         {
             rgba = 0;
@@ -4411,32 +4444,28 @@ namespace Ryu64.MIPS
 
         private static uint BlendRdpTexelsTriangleLower(uint c00, uint c10, uint c01, int fracS, int fracT)
         {
-            int r = BlendRdpTexelTriangleChannel((int)((c00 >> 24) & 0xFFu), (int)((c10 >> 24) & 0xFFu), (int)((c01 >> 24) & 0xFFu), fracS, fracT);
-            int g = BlendRdpTexelTriangleChannel((int)((c00 >> 16) & 0xFFu), (int)((c10 >> 16) & 0xFFu), (int)((c01 >> 16) & 0xFFu), fracS, fracT);
-            int b = BlendRdpTexelTriangleChannel((int)((c00 >> 8) & 0xFFu), (int)((c10 >> 8) & 0xFFu), (int)((c01 >> 8) & 0xFFu), fracS, fracT);
-            int a = BlendRdpTexelTriangleChannel((int)(c00 & 0xFFu), (int)(c10 & 0xFFu), (int)(c01 & 0xFFu), fracS, fracT);
-            return ((uint)r << 24) | ((uint)g << 16) | ((uint)b << 8) | (uint)a;
+            return BlendRdpTexelsWeighted(c00, c10, c01, (uint)fracS, (uint)fracT);
         }
 
         private static uint BlendRdpTexelsTriangleUpper(uint c10, uint c01, uint c11, int fracS, int fracT)
         {
-            int invS = 32 - fracS;
-            int invT = 32 - fracT;
-            int r = BlendRdpTexelTriangleChannel((int)((c11 >> 24) & 0xFFu), (int)((c01 >> 24) & 0xFFu), (int)((c10 >> 24) & 0xFFu), invS, invT);
-            int g = BlendRdpTexelTriangleChannel((int)((c11 >> 16) & 0xFFu), (int)((c01 >> 16) & 0xFFu), (int)((c10 >> 16) & 0xFFu), invS, invT);
-            int b = BlendRdpTexelTriangleChannel((int)((c11 >> 8) & 0xFFu), (int)((c01 >> 8) & 0xFFu), (int)((c10 >> 8) & 0xFFu), invS, invT);
-            int a = BlendRdpTexelTriangleChannel((int)(c11 & 0xFFu), (int)(c01 & 0xFFu), (int)(c10 & 0xFFu), invS, invT);
-            return ((uint)r << 24) | ((uint)g << 16) | ((uint)b << 8) | (uint)a;
+            return BlendRdpTexelsWeighted(c11, c01, c10, (uint)(32 - fracS), (uint)(32 - fracT));
         }
 
-        private static int BlendRdpTexelTriangleChannel(int baseChannel, int sChannel, int tChannel, int fracS, int fracT)
+        private static uint BlendRdpTexelsWeighted(uint origin, uint alongS, uint alongT, uint weightS, uint weightT)
         {
-            int value = baseChannel + (((sChannel - baseChannel) * (fracS << 3) + (tChannel - baseChannel) * (fracT << 3) + 0x80) >> 8);
-            if (value < 0)
-                return 0;
-            if (value > 0xFF)
-                return 0xFF;
-            return value;
+            // Callers select the appropriate half of the texel square. All
+            // three weights are nonnegative and sum to 32. This is the same
+            // signed-difference interpolation and rounding, expressed as a
+            // convex sum. Each 16-bit lane is <= 255*32+16: no lane carry and
+            // no saturation needed. Process R/B and G/A in parallel.
+            const uint lanes = 0x00FF00FFu;
+            uint weightOrigin = 32u - weightS - weightT;
+            uint rb = ((origin >> 8) & lanes) * weightOrigin
+                + ((alongS >> 8) & lanes) * weightS + ((alongT >> 8) & lanes) * weightT + 0x00100010u;
+            uint ga = (origin & lanes) * weightOrigin
+                + (alongS & lanes) * weightS + (alongT & lanes) * weightT + 0x00100010u;
+            return (((rb >> 5) & lanes) << 8) | ((ga >> 5) & lanes);
         }
 
         private static int ApplyRdpTextureCoordinate(int value, uint origin, uint extent, uint mask, uint shift, bool clamp, bool mirror)
@@ -5696,15 +5725,23 @@ namespace Ryu64.MIPS
         }
 
         private static uint Rgba5551ToRgba8888(ushort color)
+            => RdpRgba5551Colors[color];
+
+        private static uint[] BuildRdpRgba5551Colors()
         {
-            uint r = (uint)((color >> 11) & 0x1F);
-            uint g = (uint)((color >> 6) & 0x1F);
-            uint b = (uint)((color >> 1) & 0x1F);
-            uint a = (color & 1u) != 0 ? 0xFFu : 0u;
-            r = (r << 3) | (r >> 2);
-            g = (g << 3) | (g >> 2);
-            b = (b << 3) | (b >> 2);
-            return (r << 24) | (g << 16) | (b << 8) | a;
+            var colors = new uint[65536];
+            for (uint color = 0; color < colors.Length; color++)
+            {
+                uint r = (color >> 11) & 0x1F;
+                uint g = (color >> 6) & 0x1F;
+                uint b = (color >> 1) & 0x1F;
+                uint a = (color & 1u) != 0 ? 0xFFu : 0u;
+                r = (r << 3) | (r >> 2);
+                g = (g << 3) | (g >> 2);
+                b = (b << 3) | (b >> 2);
+                colors[color] = (r << 24) | (g << 16) | (b << 8) | a;
+            }
+            return colors;
         }
 
         private void PostFramebufferWrite(uint address, uint length, uint epoch)
