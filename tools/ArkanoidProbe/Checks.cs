@@ -27,6 +27,15 @@ static class Checks
     public static void Run(string path)
     {
         CheckMcu();
+        for (int x = 0; x < 8; x++)
+            for (int pen = 0; pen < 8; pen++)
+            {
+                byte bit = (byte)(128 >> x);
+                if (ArkanoidAdapter.DecodeGraphicsPixel((pen & 1) != 0 ? bit : (byte)0,
+                    (pen & 2) != 0 ? bit : (byte)0, (pen & 4) != 0 ? bit : (byte)0, x) != pen)
+                    throw new Exception($"Graphics plane ordering: x={x}, pen={pen}");
+            }
+        Console.WriteLine("PASS graphics ROM bitplane significance and horizontal bit order (64 cases)");
         var c = new ArkanoidAdapter(); c.LoadRom(path);
         c.WriteMemory(0xc123, 0x5a);
         Require(c.ReadMemory(0xc923) == 0x5a, "work RAM mirror");

@@ -68,8 +68,8 @@ public sealed class ArkanoidAdapter : IEmulatorCore, IBusInterface, ISavestateCa
         for (int tile = 0; tile < 4096; tile++)
             for (int y = 0; y < 8; y++)
                 for (int x = 0; x < 8; x++)
-                    graphics[tile * 64 + y * 8 + x] = (byte)(((planes[0][tile * 8 + y] >> (7 - x)) & 1) << 2 |
-                        ((planes[1][tile * 8 + y] >> (7 - x)) & 1) << 1 | ((planes[2][tile * 8 + y] >> (7 - x)) & 1));
+                    graphics[tile * 64 + y * 8 + x] = DecodeGraphicsPixel(
+                        planes[0][tile * 8 + y], planes[1][tile * 8 + y], planes[2][tile * 8 + y], x);
         var red = Get(512, "a75-07.ic24"); var green = Get(512, "a75-08.ic23"); var blue = Get(512, "a75-09.ic22");
         for (int i = 0; i < 512; i++) palette[i] = 0xff000000u | (uint)((red[i] & 15) * 17 << 16 | (green[i] & 15) * 17 << 8 | (blue[i] & 15) * 17);
         using var identityData = new MemoryStream();
@@ -79,6 +79,11 @@ public sealed class ArkanoidAdapter : IEmulatorCore, IBusInterface, ISavestateCa
         RomIdentity = new RomIdentity(Path.GetFileNameWithoutExtension(path), RomIdentity.ComputeSha256(identityData.ToArray()));
         Reset();
     }
+    // MAME's layout { 0x10000, 0x8000, 0 } lists the MOST significant plane first.
+    // Therefore IC64 (region offset 0) supplies bit 0, not bit 2.
+    internal static byte DecodeGraphicsPixel(byte ic64, byte ic63, byte ic62, int x)
+        => (byte)(((ic64 >> (7 - x)) & 1) | (((ic63 >> (7 - x)) & 1) << 1)
+            | (((ic62 >> (7 - x)) & 1) << 2));
     public void Reset()
     {
         cpu = new Z80(); cpu.ApplyResetLine(); mcu?.Reset(); psg.Reset();

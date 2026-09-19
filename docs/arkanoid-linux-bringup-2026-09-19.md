@@ -80,3 +80,13 @@ Only one player and keyboard/gamepad digital paddle input are connected;
 mouse/relative spinner input would be the useful next UX improvement. No complete
 playthrough or final boss has been tested. Savestates require the same output
 sample rate. N64/SM64 behavior and unrelated Gauntlet work were not changed.
+
+## Follow-up: red ball shadow / incorrect brick colors
+
+The initial graphics decoder assigned IC64 to pen bit 2 and IC62 to bit 0.
+MAME's layout lists planes most-significant first: its offsets `{0x10000,
+0x8000, 0}` therefore require IC62 -> bit 2, IC63 -> bit 1, IC64 -> bit 0.
+Corrected this common tile/sprite decoder, rather than special-casing the ball
+or hiding a sprite. Added 64 bitplane/horizontal-position regression cases.
+Old savestates remain compatible: decoded graphics are rebuilt from ROM and
+are not part of the serialized state.
