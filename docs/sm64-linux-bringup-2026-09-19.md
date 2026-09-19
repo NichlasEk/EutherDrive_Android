@@ -287,3 +287,28 @@ not modeled. Local primary reference: MAME `n64_v.cpp:get_alpha_cvg`.
   DMA/RSP reference checks normalize only this additive schema header/trailer
   after asserting the new flag is false, retaining comparison of all prior
   state. Both differential suites still pass against the prior DLL.
+
+## Follow-up 5: attribute anchors and fractional interpolation
+
+The three software triangle paths now use `floor(YH)` for the initial XH/XM
+edge bases, as in the reference edge walker. Shaded color and depth are
+interpolated from the major edge, regardless of its left/right orientation.
+Fractional X/Y offsets are multiplied by their gradients before rounding;
+rounding the offsets to whole pixels first produced alternating bands and
+large seams. Primitive depth stays constant rather than accumulating the
+triangle's depth gradients. Depth clipping now saturates both overflowing
+19-bit ranges rather than wrapping the upper range.
+
+`TriangleInterpolationChecks` exercises 2400 color/depth pixel assertions
+across both edge orientations, sloped edges, fractional/negative YH, and
+primitive/gradient Z. The original code fails its planar-color assertion
+(`4081 != 3881` at pixel 3,2 in the initial test); the corrected code passes.
+Render/interrupt total is 6845. These tests validate this pixel-center
+renderer, not exact RDP subpixel coverage/antialiasing.
+
+Same-stream images: `logo-interpolated/rdp-final.png` and
+`tree-interpolated/rdp-final.png`. `interpolated-head/vi-0015.png` shows a
+substantially cleaner Mario head; the previous large triangular shading
+discontinuities are gone. Texture filtering, blending, coverage, and timing
+still need wider validation. Local reference: MAME `n64_v.cpp` edge setup,
+span attribute initialization, and `rgbaz_clip`.

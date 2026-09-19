@@ -23,7 +23,7 @@ internal static class RenderChecks
         var depth = typeof(Memory).GetMethod("RdpDepthFixedToComparator", flags)!.CreateDelegate<Func<long, uint>>();
         foreach (uint z in new uint[] { 0, 1, 0x10000, 0x20000, 0x3fffe, 0x3ffff, 0x40000, 0x5ffff, 0x60000, 0x7ffff })
         {
-            uint expected = (z & 0x60000) == 0x40000 ? 0x3ffff : z & 0x3ffff;
+            uint expected = (z & 0x40000) != 0 ? 0x3ffff : z & 0x3ffff;
             if (depth((long)z << 13) != expected) throw new Exception($"Depth conversion {z:x}");
             checks++;
         }
@@ -185,6 +185,7 @@ internal static class RenderChecks
             checks += 2;
         }
         checks += StateChecks.CheckCoverageRoundTrip();
+        checks += TriangleInterpolationChecks.Run();
         R4300.memory = memory;
         var refresh = typeof(R4300).GetMethod("RefreshRcpInterruptPending", flags)!.CreateDelegate<Func<ulong>>();
         for (int intr = 0; intr < 64; intr++)

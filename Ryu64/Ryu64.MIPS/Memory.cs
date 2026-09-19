@@ -2347,7 +2347,11 @@ namespace Ryu64.MIPS
             if (maxRows == 0)
                 return false;
 
-            int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)Math.Floor(yh));
+            // XH/XM and attribute bases are anchored at floor(YH); YH itself
+            // only gates coverage in the first fractional scanline.
+            double edgeY = Math.Floor(yh);
+            int depthDx = _rdpOtherModesZSourceSel ? 0 : depth.DzDx;
+            int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)edgeY);
             int lastY = Math.Min(Math.Min((int)maxRows - 1, _rdpScissorY1), (int)Math.Ceiling(yl) - 1);
             if (lastY < firstY)
                 return false;
@@ -2368,9 +2372,9 @@ namespace Ryu64.MIPS
                 if (sampleY < yh || sampleY >= yl)
                     continue;
 
-                double majorX = xh + (sampleY - yh) * dxhdy;
+                double majorX = xh + (sampleY - edgeY) * dxhdy;
                 double minorX = sampleY < ym
-                    ? xm + (sampleY - yh) * dxmdy
+                    ? xm + (sampleY - edgeY) * dxmdy
                     : xl + (sampleY - ym) * dxldy;
                 double left = flip ? majorX : minorX;
                 double right = flip ? minorX : majorX;
@@ -2386,23 +2390,20 @@ namespace Ryu64.MIPS
                 if (lastX < firstX)
                     continue;
 
-                double yDelta = sampleY - yh;
-                long yStep = (long)Math.Round(yDelta);
+                double yDelta = sampleY - edgeY;
                 long rowS = tex.S + (long)Math.Round(yDelta * tex.DsDe);
                 long rowT = tex.T + (long)Math.Round(yDelta * tex.DtDe);
                 long rowW = tex.W + (long)Math.Round(yDelta * tex.DwDe);
-                long rowZ = useDepth ? RdpDepthRowStart(depth, yStep) : 0;
+                long rowZ = useDepth ? RdpDepthRowStart(depth, yDelta) : 0;
                 long rowR = modulateShade ? shade.R + (long)Math.Round(yDelta * shade.DrDe) : 0;
                 long rowG = modulateShade ? shade.G + (long)Math.Round(yDelta * shade.DgDe) : 0;
                 long rowB = modulateShade ? shade.B + (long)Math.Round(yDelta * shade.DbDe) : 0;
                 long rowA = modulateShade ? shade.A + (long)Math.Round(yDelta * shade.DaDe) : 0;
-                double spanAnchorX = flip ? left : right;
-                double xDelta = firstX + 0.5 - spanAnchorX;
-                long firstXStep = (long)Math.Round(xDelta);
+                double xDelta = firstX + 0.5 - majorX;
                 long currentS = rowS + (long)Math.Round(xDelta * tex.DsDx);
                 long currentT = rowT + (long)Math.Round(xDelta * tex.DtDx);
                 long currentW = rowW + (long)Math.Round(xDelta * tex.DwDx);
-                long currentZ = useDepth ? rowZ + firstXStep * (long)depth.DzDx : 0;
+                long currentZ = useDepth ? rowZ + (long)Math.Round(xDelta * depthDx) : 0;
                 long currentR = modulateShade ? rowR + (long)Math.Round(xDelta * shade.DrDx) : 0;
                 long currentG = modulateShade ? rowG + (long)Math.Round(xDelta * shade.DgDx) : 0;
                 long currentB = modulateShade ? rowB + (long)Math.Round(xDelta * shade.DbDx) : 0;
@@ -2429,7 +2430,7 @@ namespace Ryu64.MIPS
                         currentT += tex.DtDx;
                         currentW += tex.DwDx;
                         if (useDepth)
-                            currentZ += depth.DzDx;
+                            currentZ += depthDx;
                         if (modulateShade)
                         {
                             currentR += shade.DrDx;
@@ -2464,7 +2465,7 @@ namespace Ryu64.MIPS
                         currentT += tex.DtDx;
                         currentW += tex.DwDx;
                         if (useDepth)
-                            currentZ += depth.DzDx;
+                            currentZ += depthDx;
                         if (modulateShade)
                         {
                             currentR += shade.DrDx;
@@ -2491,7 +2492,7 @@ namespace Ryu64.MIPS
                         currentS += tex.DsDx;
                         currentT += tex.DtDx;
                         currentW += tex.DwDx;
-                        currentZ += depth.DzDx;
+                            currentZ += depthDx;
                         if (modulateShade)
                         {
                             currentR += shade.DrDx;
@@ -2514,7 +2515,7 @@ namespace Ryu64.MIPS
                     currentT += tex.DtDx;
                     currentW += tex.DwDx;
                     if (useDepth)
-                        currentZ += depth.DzDx;
+                        currentZ += depthDx;
                     if (modulateShade)
                     {
                         currentR += shade.DrDx;
@@ -2671,12 +2672,12 @@ namespace Ryu64.MIPS
                 && (_rdpOtherModesZCompare || _rdpOtherModesZUpdate);
         }
 
-        private long RdpDepthRowStart(RdpTriangleDepthCoefficients depth, long yStep)
+        private long RdpDepthRowStart(RdpTriangleDepthCoefficients depth, double yDelta)
         {
             if (_rdpOtherModesZSourceSel)
                 return (long)_rdpPrimitiveDepth << 16;
 
-            return depth.Z + yStep * (long)depth.DzDe;
+            return depth.Z + (long)Math.Round(yDelta * depth.DzDe);
         }
 
         private bool PassRdpDepthTest(uint pixelIndex, long zFixed, uint dzPix)
@@ -2754,7 +2755,7 @@ namespace Ryu64.MIPS
             // Pixel-center equivalent of the RDP's >>10 span conversion,
             // then >>3 coverage correction and 19-bit depth clipping.
             uint sz = (uint)(zFixed >> 13) & 0x7FFFFu;
-            if ((sz & 0x60000u) == 0x40000u)
+            if ((sz & 0x40000u) != 0)
                 return 0x3FFFFu;
             return sz & 0x3FFFFu;
         }
@@ -2874,7 +2875,11 @@ namespace Ryu64.MIPS
             if (maxRows == 0)
                 return false;
 
-            int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)Math.Floor(yh));
+            // XH/XM and attribute bases are anchored at floor(YH); YH itself
+            // only gates coverage in the first fractional scanline.
+            double edgeY = Math.Floor(yh);
+            int depthDx = _rdpOtherModesZSourceSel ? 0 : depth.DzDx;
+            int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)edgeY);
             int lastY = Math.Min(Math.Min((int)maxRows - 1, _rdpScissorY1), (int)Math.Ceiling(yl) - 1);
             if (lastY < firstY)
                 return false;
@@ -2887,9 +2892,9 @@ namespace Ryu64.MIPS
                 if (sampleY < yh || sampleY >= yl)
                     continue;
 
-                double majorX = xh + (sampleY - yh) * dxhdy;
+                double majorX = xh + (sampleY - edgeY) * dxhdy;
                 double minorX = sampleY < ym
-                    ? xm + (sampleY - yh) * dxmdy
+                    ? xm + (sampleY - edgeY) * dxmdy
                     : xl + (sampleY - ym) * dxldy;
                 double left = flip ? majorX : minorX;
                 double right = flip ? minorX : majorX;
@@ -2905,15 +2910,14 @@ namespace Ryu64.MIPS
                 if (lastX < firstX)
                     continue;
 
-                long yStep = useDepth ? (long)Math.Round(sampleY - yh) : 0;
-                long rowZ = useDepth ? RdpDepthRowStart(depth, yStep) : 0;
+                long rowZ = useDepth ? RdpDepthRowStart(depth, sampleY - edgeY) : 0;
                 long rowWrittenPixels = 0;
                 for (int x = firstX; x <= lastX; x++)
                 {
                     if (useDepth)
                     {
-                        long xStep = (long)Math.Round(x + 0.5 - left);
-                        if (!PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + xStep * (long)depth.DzDx, depth.DzPix))
+                        long z = rowZ + (long)Math.Round((x + 0.5 - majorX) * depthDx);
+                        if (!PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, z, depth.DzPix))
                             continue;
                     }
 
@@ -2980,7 +2984,11 @@ namespace Ryu64.MIPS
             if (maxRows == 0)
                 return false;
 
-            int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)Math.Floor(yh));
+            // XH/XM and attribute bases are anchored at floor(YH); YH itself
+            // only gates coverage in the first fractional scanline.
+            double edgeY = Math.Floor(yh);
+            int depthDx = _rdpOtherModesZSourceSel ? 0 : depth.DzDx;
+            int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)edgeY);
             int lastY = Math.Min(Math.Min((int)maxRows - 1, _rdpScissorY1), (int)Math.Ceiling(yl) - 1);
             if (lastY < firstY)
                 return false;
@@ -2993,9 +3001,9 @@ namespace Ryu64.MIPS
                 if (sampleY < yh || sampleY >= yl)
                     continue;
 
-                double majorX = xh + (sampleY - yh) * dxhdy;
+                double majorX = xh + (sampleY - edgeY) * dxhdy;
                 double minorX = sampleY < ym
-                    ? xm + (sampleY - yh) * dxmdy
+                    ? xm + (sampleY - edgeY) * dxmdy
                     : xl + (sampleY - ym) * dxldy;
                 double left = flip ? majorX : minorX;
                 double right = flip ? minorX : majorX;
@@ -3011,26 +3019,26 @@ namespace Ryu64.MIPS
                 if (lastX < firstX)
                     continue;
 
-                long yStep = (long)Math.Round(sampleY - yh);
-                long rowR = shade.R + yStep * (long)shade.DrDe;
-                long rowG = shade.G + yStep * (long)shade.DgDe;
-                long rowB = shade.B + yStep * (long)shade.DbDe;
-                long rowA = shade.A + yStep * (long)shade.DaDe;
-                long rowZ = useDepth ? RdpDepthRowStart(depth, yStep) : 0;
+                double yDelta = sampleY - edgeY;
+                long rowR = shade.R + (long)Math.Round(yDelta * shade.DrDe);
+                long rowG = shade.G + (long)Math.Round(yDelta * shade.DgDe);
+                long rowB = shade.B + (long)Math.Round(yDelta * shade.DbDe);
+                long rowA = shade.A + (long)Math.Round(yDelta * shade.DaDe);
+                long rowZ = useDepth ? RdpDepthRowStart(depth, yDelta) : 0;
                 long rowWrittenPixels = 0;
                 for (int x = firstX; x <= lastX; x++)
                 {
-                    long xStep = (long)Math.Round(x + 0.5 - left);
+                    double xDelta = x + 0.5 - majorX;
                     uint rgba = RdpShadeToRgba(
-                        rowR + xStep * (long)shade.DrDx,
-                        rowG + xStep * (long)shade.DgDx,
-                        rowB + xStep * (long)shade.DbDx,
-                        rowA + xStep * (long)shade.DaDx);
+                        rowR + (long)Math.Round(xDelta * shade.DrDx),
+                        rowG + (long)Math.Round(xDelta * shade.DgDx),
+                        rowB + (long)Math.Round(xDelta * shade.DbDx),
+                        rowA + (long)Math.Round(xDelta * shade.DaDx));
                     if (_rdpCombineModeSet)
                         rgba = ApplyRdpColorCombiner(0u, rgba);
                     if (ShouldRejectRdpAlpha(rgba))
                         continue;
-                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + xStep * (long)depth.DzDx, depth.DzPix))
+                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + (long)Math.Round(xDelta * depthDx), depth.DzPix))
                         continue;
                     uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
