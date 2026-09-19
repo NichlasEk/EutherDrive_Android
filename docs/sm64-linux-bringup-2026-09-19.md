@@ -340,3 +340,26 @@ disabled and no input, completed 86/86 graphics tasks before and 106/104
 after (`cpu-gate-{reference,current}-{1,2}.log`): about 22% more tasks.
 This is wall-clock throughput through an advancing scene, not exact
 frame-for-frame timing or a claim of full-speed playability.
+
+## Follow-up 7: RSP vector operand transfers
+
+The RSP's eight-halfword register copies now transfer two packed 64-bit
+words, swapping bytes within each lane on little-endian hosts. Explicit
+register/scratch bounds checks precede the pinned copies. Register layout,
+lane order, alias handling, and arithmetic are unchanged. VSAR, reciprocal,
+VMOV, and VNOP also avoid operand loads they do not consume.
+
+- 2048 randomized direct-copy cases cover all 32 registers, lane order,
+  scratch guards, and neighboring-register preservation.
+- All 7168 vector cases and full-task/watchdog differential checks match
+  `pre-vector-copy/Ryu64.MIPS.dll` in both half-shuffle modes.
+- The vector microbenchmark improved from 155 to 107 ms in the first run;
+  the alternate-mode run was 130 to 101 ms, with no new allocations.
+- Whole-scene runs completed 93/101 tasks before and 94/105 after. Other
+  Rust builds were active on the machine during these runs; this is too
+  noisy to assign a dependable whole-game percentage. Logs are under
+  `vector-copy-{reference,current}-{1,2}.log`.
+
+The post-CPU-gate profile puts about 65% of sampled thread time inside RSP
+tasks (including the software RDP renderer), versus 35% outside. Full-speed
+playability still requires substantially more work.

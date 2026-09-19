@@ -16,6 +16,7 @@ internal static class RspChecks
         // Keep watchdog-stop regression cases short; normal emulator runs do not
         // set this diagnostic override. Finite synthetic tasks stay below it.
         Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_TASK_NO_PROGRESS_LIMIT", "4096");
+        CheckVectorCopies();
         string current = Check(typeof(Memory).Assembly, out int count);
         string tasks = CheckTasks(typeof(Memory).Assembly);
         Console.WriteLine($"rspCases={count} sha256={current}");
@@ -34,6 +35,41 @@ internal static class RspChecks
             context.Unload();
         }
         Benchmark(typeof(Memory).Assembly, "current");
+    }
+
+    private static void CheckVectorCopies()
+    {
+        var (_, rsp, type) = Create(typeof(Memory).Assembly);
+        var registers = (byte[])type.GetField("_vr", Private)!.GetValue(rsp)!;
+        var load = type.GetMethod("LoadVectorUnshuffled", Private)!.CreateDelegate<Action<int, ushort[]>>(rsp);
+        var store = type.GetMethod("StoreVector", Private)!.CreateDelegate<Action<int, ushort[]>>(rsp);
+        ushort[] lanes = new ushort[10];
+        byte[] before = new byte[registers.Length];
+        var random = new Random(642);
+        int cases = 0;
+        for (int iteration = 0; iteration < 64; iteration++)
+        for (int reg = 0; reg < 32; reg++)
+        {
+            random.NextBytes(registers);
+            registers.CopyTo(before, 0);
+            Array.Fill(lanes, (ushort)0xabcd);
+            load(reg, lanes);
+            for (int lane = 0; lane < 8; lane++)
+                if (lanes[lane] != BinaryPrimitives.ReadUInt16BigEndian(before.AsSpan(reg * 16 + lane * 2)))
+                    throw new Exception($"RSP vector load lane order changed: reg={reg} lane={lane}");
+            if (lanes[8] != 0xabcd || lanes[9] != 0xabcd || !registers.SequenceEqual(before))
+                throw new Exception("RSP vector load overran scratch or modified registers");
+            for (int lane = 0; lane < 8; lane++)
+            {
+                lanes[lane] = (ushort)random.Next(65536);
+                BinaryPrimitives.WriteUInt16BigEndian(before.AsSpan(reg * 16 + lane * 2), lanes[lane]);
+            }
+            store(reg, lanes);
+            if (!registers.SequenceEqual(before))
+                throw new Exception($"RSP vector store changed neighboring registers: reg={reg}");
+            cases++;
+        }
+        Console.WriteLine($"rspVectorCopyCases={cases} passed");
     }
 
     private static (object memory, object rsp, Type type) Create(Assembly assembly)

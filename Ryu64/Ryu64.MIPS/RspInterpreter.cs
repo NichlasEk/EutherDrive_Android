@@ -609,8 +609,12 @@ namespace Ryu64.MIPS
             ushort[] lhs = _vectorLhs;
             ushort[] rhs = _vectorRhs;
             ushort[] result = _vectorResult;
-            LoadVectorUnshuffled(vs, lhs);
-            LoadVectorShuffled(vt, element, rhs);
+            // VSAR reads only the accumulator. Reciprocal instructions load
+            // their own operands, VMOV only needs vt, and VNOP needs neither.
+            if (op != 0x1D && op < 0x30)
+                LoadVectorUnshuffled(vs, lhs);
+            if (op != 0x1D && (op < 0x30 || op == 0x33))
+                LoadVectorShuffled(vt, element, rhs);
 
             switch (op)
             {
@@ -1543,10 +1547,29 @@ namespace Ryu64.MIPS
             _vr[(vt) * 16 + (byteIndex + 1)] = (byte)value;
         }
 
-        private void LoadVectorUnshuffled(int vt, ushort[] dest)
+        private unsafe void LoadVectorUnshuffled(int vt, ushort[] dest)
         {
-            for (int lane = 0; lane < 8; lane++)
-                dest[lane] = ReadVectorLane16(vt, lane);
+            // All callers use a decoded five-bit register and eight-lane
+            // scratch storage. Keep explicit bounds checks before raw copies.
+            if ((uint)vt >= 32u || dest.Length < 8)
+                throw new ArgumentOutOfRangeException();
+            fixed (byte* registers = _vr)
+            fixed (ushort* lanes = dest)
+            {
+                ulong* source = (ulong*)(registers + vt * 16);
+                ulong* target = (ulong*)lanes;
+                target[0] = NativeVectorLaneOrder(source[0]);
+                target[1] = NativeVectorLaneOrder(source[1]);
+            }
+        }
+
+        private static ulong NativeVectorLaneOrder(ulong value)
+        {
+            // Register bytes are big-endian; swap bytes within each halfword,
+            // not the order of the eight lanes. The transform is its own inverse.
+            return BitConverter.IsLittleEndian
+                ? ((value & 0x00FF00FF00FF00FFul) << 8) | ((value & 0xFF00FF00FF00FF00ul) >> 8)
+                : value;
         }
 
         private void LoadVectorShuffled(int vt, int element, ushort[] dest)
@@ -1578,10 +1601,18 @@ namespace Ryu64.MIPS
                 dest[lane] = (lane & halfMask) == 0 ? low : high;
         }
 
-        private void StoreVector(int vt, ushort[] src)
+        private unsafe void StoreVector(int vt, ushort[] src)
         {
-            for (int lane = 0; lane < 8; lane++)
-                WriteVectorLane16(vt, lane, src[lane]);
+            if ((uint)vt >= 32u || src.Length < 8)
+                throw new ArgumentOutOfRangeException();
+            fixed (byte* registers = _vr)
+            fixed (ushort* lanes = src)
+            {
+                ulong* target = (ulong*)(registers + vt * 16);
+                ulong* source = (ulong*)lanes;
+                target[0] = NativeVectorLaneOrder(source[0]);
+                target[1] = NativeVectorLaneOrder(source[1]);
+            }
         }
 
         private void ExecuteVectorRound(int vd, int vs, ushort[] rhs, bool positive)
