@@ -857,6 +857,8 @@ public partial class MainWindow : Window
             return new EutherDrive.Core.Arcade.Konami.TmntAdapter();
         if (!string.IsNullOrWhiteSpace(path) && TaitoF2ThunderFoxAdapter.IsSupportedArchive(path))
             return new TaitoF2ThunderFoxAdapter();
+        if (!string.IsNullOrWhiteSpace(path) && ArkanoidAdapter.IsSupportedArchive(path))
+            return new ArkanoidAdapter();
         if (!string.IsNullOrWhiteSpace(path) && DariusGaidenAdapter.IsSupportedArchive(path))
             return new DariusGaidenAdapter();
         if (!string.IsNullOrWhiteSpace(path) && BatsugunAdapter.IsSupportedArchive(path))
@@ -1099,6 +1101,8 @@ public partial class MainWindow : Window
             target = batsugun.GetTargetFps();
         else if (_core is DariusGaidenAdapter dariusg)
             target = dariusg.GetTargetFps();
+        else if (_core is ArkanoidAdapter arkanoid)
+            target = arkanoid.GetTargetFps();
         Volatile.Write(ref _emuTargetFps, target);
     }
 
@@ -1915,6 +1919,7 @@ public partial class MainWindow : Window
             Pgm2Adapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             KovPgmAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             TaitoF2ThunderFoxAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
+            ArkanoidAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             BatsugunAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             McsArcadeAdapter => new AutoFireProfile("arcade", _inputMappings.Arcade, s_autoFireArcadeButtons),
             PceCdAdapter => CreatePceAutoFireProfile(useSixButtonPad),
@@ -4152,6 +4157,8 @@ public partial class MainWindow : Window
             thundfox.SetMasterVolumePercent(effectiveVolumePercent);
         else if (_core is DariusGaidenAdapter dariusg)
             dariusg.SetMasterVolumePercent(effectiveVolumePercent);
+        else if (_core is ArkanoidAdapter arkanoid)
+            arkanoid.SetMasterVolumePercent(effectiveVolumePercent);
     }
 
     private int GetEffectiveMasterVolumePercent()
@@ -4604,6 +4611,7 @@ public partial class MainWindow : Window
             Pgm2Adapter => "IGS PGM2",
             KovPgmAdapter => "IGS PGM",
             TaitoF2ThunderFoxAdapter => "Taito F2",
+            ArkanoidAdapter => "Taito Arkanoid",
             EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter => "Arcade CPS2",
             MdTracerAdapter => "Mega Drive / Genesis",
             _ => _core.GetType().Name
@@ -8817,6 +8825,7 @@ public partial class MainWindow : Window
             or EutherDrive.Core.Arcade.Konami.TmntAdapter
             or TaitoF2ThunderFoxAdapter
             or BatsugunAdapter
+            or ArkanoidAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             or HshavocAdapter;
     }
@@ -9574,6 +9583,7 @@ public partial class MainWindow : Window
             or BatsugunAdapter
             or DariusGaidenAdapter
             or TaitoF2ThunderFoxAdapter
+            or ArkanoidAdapter
             or BoogwingAdapter
             or EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             or EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
@@ -9932,6 +9942,7 @@ public partial class MainWindow : Window
             || core is DariusGaidenAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is BoogwingAdapter
+            || core is ArkanoidAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
             || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter;
         bool forceSharpPixels = core is EutherDrive.Core.Arcade.System32.System32Adapter
@@ -10541,6 +10552,11 @@ public partial class MainWindow : Window
             ApplyPresentationSize(targetWidth, targetHeight);
             return true;
         }
+        else if (core is ArkanoidAdapter)
+        {
+            ApplyNoDownscaleAspectPresentation(width, height, _tateRotation == TateRotation.Off ? 3.0 / 4.0 : 4.0 / 3.0);
+            return true;
+        }
         else if (core is BatsugunAdapter)
         {
             ApplyPresentationSize(Math.Round(height * BatsugunPresentationAspect), height);
@@ -10612,6 +10628,7 @@ public partial class MainWindow : Window
 
     private bool ShouldUsePostedFramePresenter(IEmulatorCore? core)
         => core is Pgm2Adapter
+            || core is ArkanoidAdapter
             || core is DariusGaidenAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter
@@ -10619,6 +10636,7 @@ public partial class MainWindow : Window
 
     private static bool ShouldSnapshotFrameBufferForPresentation(IEmulatorCore core)
         => core is Pgm2Adapter
+            || core is ArkanoidAdapter
             || core is TaitoF2ThunderFoxAdapter
             || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter;
 
@@ -10942,7 +10960,7 @@ public partial class MainWindow : Window
                         TopUpMdAudioIfLow(mdAudioAdapter);
                     else if (core is SmsGgAdapter smsAudioAdapter)
                         TopUpSmsGgAudioIfLow(smsAudioAdapter);
-                    if (core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is BatsugunAdapter || core is DariusGaidenAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is OutZoneAdapter || core is TaitoF2ThunderFoxAdapter || core is BoogwingAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
+                    if (core is ArkanoidAdapter || core is SnesAdapter || core is PceCdAdapter || core is GbaAdapter || core is GbAdapter || core is NesAdapter || core is PsxAdapter || core is N64Adapter || core is SegaCdAdapter || core is McsArcadeAdapter || core is BatsugunAdapter || core is DariusGaidenAdapter || core is Pgm2Adapter || core is KovPgmAdapter || core is NeoGeoAdapter || core is OutZoneAdapter || core is TaitoF2ThunderFoxAdapter || core is BoogwingAdapter || core is EutherDrive.Core.Arcade.Vegas.GauntletDarkLegacyAdapter || core is EutherDrive.Core.Arcade.Technos.XainSleenaAdapter || core is Cps1DinoAdapter || core is EutherDrive.Core.Arcade.Cps2.Cps2DdsomAdapter || core is EutherDrive.Core.Arcade.System32.System32Adapter || core is Deco32Adapter || core is EutherDrive.Core.Arcade.Konami.TmntAdapter)
                     {
                         var audio = core.GetAudioBuffer(out int rate, out int channels);
                         if (!audio.IsEmpty && rate == AudioSampleRate && channels == AudioChannels)
@@ -10950,6 +10968,7 @@ public partial class MainWindow : Window
                             if (_audioEngine != null && !_audioPullMode)
                             {
                                 if (core is EutherDrive.Core.Arcade.System32.System32Adapter
+                                    || core is ArkanoidAdapter
                                     || core is McsArcadeAdapter
                                     || core is BatsugunAdapter
                                     || core is DariusGaidenAdapter
@@ -11318,6 +11337,7 @@ public partial class MainWindow : Window
             }
         }
         if (_core is SnesAdapter
+            || _core is ArkanoidAdapter
             || _core is PceCdAdapter
             || _core is GbaAdapter
             || _core is GbAdapter
