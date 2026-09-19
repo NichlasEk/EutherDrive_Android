@@ -1508,6 +1508,37 @@ namespace Ryu64.MIPS
             return true;
         }
 
+        private static bool TryFastForwardMemoryLoops(uint pc)
+        {
+            if (!FastIdleLoop)
+                return false;
+            uint segment = pc & 0xE0000000u;
+            if ((segment != 0x80000000u && segment != 0xA0000000u)
+                || !memory.TryReadRdramUInt32PhysicalFast(pc & 0x1FFFFFFFu, out uint opcode))
+                return false;
+
+            // Every entry position of each recognized loop is represented here.
+            // This only rejects impossible candidates; the full live instruction
+            // sequence is still checked below, including self-modifying code.
+            switch (opcode)
+            {
+                case 0x2129FFF8u: case 0x2529FFF8u:
+                case 0xAD000000u: case 0xAD000004u:
+                case 0x1520FFFCu: case 0x21080008u:
+                case 0x1520FFFBu: case 0x00000000u:
+                    return TryFastForwardInitialZeroLoop(pc);
+                case 0x8C8B0004u: case 0x24A50001u: case 0x00AB082Bu:
+                case 0x5420FFFCu: case 0xA0A00000u:
+                    return TryFastForwardByteZeroUntilPointerLoop(pc);
+                case 0x24420008u: case 0x0043082Bu:
+                case 0x24080000u: case 0x24090000u:
+                case 0xAC49FFFCu: case 0x1420FFFAu: case 0xAC48FFF8u:
+                    return TryFastForwardPairStoreUntilPointerLoop(pc);
+                default:
+                    return false;
+            }
+        }
+
         private static bool TryFastForwardInitialZeroLoop(uint pc)
         {
             if (!FastIdleLoop)
@@ -2364,11 +2395,7 @@ namespace Ryu64.MIPS
                             continue;
                         if (TryFastForwardIpl3SpStoreFillLoop(pc))
                             continue;
-                        if (TryFastForwardInitialZeroLoop(pc))
-                            continue;
-                        if (TryFastForwardByteZeroUntilPointerLoop(pc))
-                            continue;
-                        if (TryFastForwardPairStoreUntilPointerLoop(pc))
+                        if (TryFastForwardMemoryLoops(pc))
                             continue;
                         if (TryFastForwardCompareLoadPollingLoop(pc))
                             continue;

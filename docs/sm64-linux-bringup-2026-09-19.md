@@ -312,3 +312,31 @@ substantially cleaner Mario head; the previous large triangular shading
 discontinuities are gone. Texture filtering, blending, coverage, and timing
 still need wider validation. Local reference: MAME `n64_v.cpp` edge setup,
 span attribute initialization, and `rgbaz_clip`.
+
+## Follow-up 6: Linux smoke and CPU loop-recognition overhead
+
+The rebuilt Linux UI boots the original US cartridge in an isolated Xvfb
+desktop (`ui-smoke-F47Sdj/ui.png`, `ui.log`). It reaches the animated title
+transition without unknown CPU opcodes. This checks the Bitmap UI path, not
+interactive Wayland input or audible playback; audio output was disabled.
+
+`post-gfx.speedscope.json` showed about 17.5% of sampled CPU-thread time in
+three memory-loop recognizers, scanning backwards on every CPU instruction.
+`TryFastForwardMemoryLoops` now reads the current opcode once and dispatches
+only to the matching recognizer. Every possible entry opcode is included;
+the existing complete live-code checks and loop semantics remain unchanged.
+There is no PC-only cache and no stale-code assumption.
+
+`--check-cpu-loops` passes 540 full serialized CPU/memory differential cases
+against the old recognizer chain, including all entries in both direct-mapped
+segments, every instruction mutated/restored, and segment/RDRAM boundaries.
+136 cases accept a loop. Instruction counts are compared separately too.
+The profiler summary tool is `tools/N64Probe/summarize-profile.py`; it reports
+sampled thread-time, not hardware CPU counters, and marks overlapping
+inclusive stacks explicitly.
+
+Serial alternating 20-second runs from `mario-input/state.bin`, with tiering
+disabled and no input, completed 86/86 graphics tasks before and 106/104
+after (`cpu-gate-{reference,current}-{1,2}.log`): about 22% more tasks.
+This is wall-clock throughput through an advancing scene, not exact
+frame-for-frame timing or a claim of full-speed playability.

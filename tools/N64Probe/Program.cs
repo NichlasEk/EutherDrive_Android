@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-cpu-loops")
+{
+    CpuLoopChecks.Run();
+    return;
+}
 if (args.Length >= 2 && args[0] == "--replay-rdp")
 {
     RdpCapture.Replay(args[1], args.Length > 2 ? args[2] : Path.Combine(args[1], "replay"));
