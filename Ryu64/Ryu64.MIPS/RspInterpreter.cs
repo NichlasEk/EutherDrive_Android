@@ -792,15 +792,7 @@ namespace Ryu64.MIPS
                     return true;
 
                 case 0x0d: // VMADM
-                    for (int lane = 0; lane < 8; lane++)
-                    {
-                        long acc = ReadAccumulator(lane);
-                        long prod = (long)(short)lhs[lane] * (ushort)rhs[lane];
-                        acc += prod;
-                        WriteAccumulator(lane, acc);
-                        result[lane] = unchecked((ushort)ClampSigned16((int)(acc >> 16)));
-                    }
-                    StoreVector(vd, result);
+                    ComputeVectorAccumulate(op, vd);
                     return true;
 
                 case 0x0c: // VMADL
@@ -816,29 +808,11 @@ namespace Ryu64.MIPS
                     return true;
 
                 case 0x0e: // VMADN
-                    for (int lane = 0; lane < 8; lane++)
-                    {
-                        long acc = ReadAccumulator(lane);
-                        long prod = (long)(ushort)lhs[lane] * (short)rhs[lane];
-                        acc += prod;
-                        WriteAccumulator(lane, acc);
-                        result[lane] = UnsignedClampAccumulator(acc);
-                    }
-                    StoreVector(vd, result);
+                    ComputeVectorAccumulate(op, vd);
                     return true;
 
                 case 0x0f: // VMADH
-                    for (int lane = 0; lane < 8; lane++)
-                    {
-                        // The product is added at bit 16: LO cannot change.
-                        // Wrapping this upper word is exactly a 48-bit wrap.
-                        int top = ((short)_accHi[lane] << 16) | _accMd[lane];
-                        top = unchecked(top + (short)lhs[lane] * (short)rhs[lane]);
-                        _accMd[lane] = unchecked((ushort)top);
-                        _accHi[lane] = unchecked((ushort)(top >> 16));
-                        result[lane] = unchecked((ushort)ClampSigned16(top));
-                    }
-                    StoreVector(vd, result);
+                    ComputeVectorAccumulate(op, vd);
                     return true;
 
                 case 0x10: // VADD
@@ -1255,6 +1229,52 @@ namespace Ryu64.MIPS
                     stopReason = $"unsupported-vector-op pc=0x{pc:x3} op=0x{instr:x8}";
                     return false;
             }
+        }
+
+        private void ExecuteBlockVectorAccumulate(int op, int vd, int vs, int vt, int element)
+        {
+            if (ProfileVectorOps) _vectorOpCounts[op]++;
+            LoadVectorUnshuffled(vs, _vectorLhs);
+            LoadVectorShuffled(vt, element, _vectorRhs);
+            ComputeVectorAccumulate(op, vd);
+        }
+
+        private void ComputeVectorAccumulate(int op, int vd)
+        {
+            ushort[] lhs = _vectorLhs, rhs = _vectorRhs, result = _vectorResult;
+            if (op == 0x0d)
+            {
+                for (int lane = 0; lane < 8; lane++)
+                {
+                    long acc = ReadAccumulator(lane);
+                    acc += (long)(short)lhs[lane] * (ushort)rhs[lane];
+                    WriteAccumulator(lane, acc);
+                    result[lane] = unchecked((ushort)ClampSigned16((int)(acc >> 16)));
+                }
+            }
+            else if (op == 0x0e)
+            {
+                for (int lane = 0; lane < 8; lane++)
+                {
+                    long acc = ReadAccumulator(lane);
+                    acc += (long)(ushort)lhs[lane] * (short)rhs[lane];
+                    WriteAccumulator(lane, acc);
+                    result[lane] = UnsignedClampAccumulator(acc);
+                }
+            }
+            else
+            {
+                for (int lane = 0; lane < 8; lane++)
+                {
+                    // The product is added at bit 16; preserve LO and wrap the upper 32 bits.
+                    int top = ((short)_accHi[lane] << 16) | _accMd[lane];
+                    top = unchecked(top + (short)lhs[lane] * (short)rhs[lane]);
+                    _accMd[lane] = unchecked((ushort)top);
+                    _accHi[lane] = unchecked((ushort)(top >> 16));
+                    result[lane] = unchecked((ushort)ClampSigned16(top));
+                }
+            }
+            StoreVector(vd, result);
         }
 
         private bool ExecuteVectorMemory(uint pc, bool isLoad, uint rs, uint vt, uint instr, out string stopReason)

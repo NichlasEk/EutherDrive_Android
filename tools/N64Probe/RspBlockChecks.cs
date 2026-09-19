@@ -19,7 +19,7 @@ internal static class RspBlockChecks
         string expected = Check(context.LoadFromAssemblyPath(Path.GetFullPath(reference)), false);
         if (actual != expected) throw new Exception($"Block execution differs: {actual}/{expected}");
         context.Unload();
-        Console.WriteLine($"rspBlockCases=64 sha256={actual} differential=passed");
+        Console.WriteLine($"rspBlockCases=96 sha256={actual} differential=passed");
     }
 
     private static string Check(Assembly assembly, bool requireBlocks)
@@ -53,10 +53,14 @@ internal static class RspBlockChecks
             0xc8002000, 0xe8002000, 0x20000000, 0x28000000, 0x2c000000,
             0x80000000, 0x84000000, 0x90000000, 0x94000000, 0xa0000000, 0xa4000000,
             0x00000004, 0x00000006, 0x00000007, 0x00000020, 0x00000022 };
+        // Exercise every vector load/store helper, including negative offsets,
+        // arbitrary elements and register aliasing in randomized surroundings.
+        forms = forms.Concat(Enumerable.Range(0, 24).Select(i =>
+            (i < 12 ? 0xc8000000u : 0xe8000000u) | (uint)(i % 12) << 11)).ToArray();
         using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
-        for (int iteration = 0; iteration < 64; iteration++)
+        for (int iteration = 0; iteration < 96; iteration++)
         {
             // Reuse the interpreter/cache, keep the first word fixed, and change
             // interior words. Every eighth program also tests IMEM wraparound.

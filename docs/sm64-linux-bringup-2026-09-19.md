@@ -1124,3 +1124,52 @@ state, 6845 rendering/interrupt cases and audio FIFO/snapshot/resampler checks.
 The explicit `=0` fallback also replays the graphics task with identical state
 and no compiled-block execution. Probe and Linux UI Release builds succeed
 (UI: 0 errors, 501 warnings). The user can restart normally with `--no-build`.
+
+## Follow-up 24: resume after Arkanoid; predecoded RSP vector helpers
+
+Resumed from default-on 16-instruction JIT. Compiled vector memory instructions
+now call the existing transfer helpers directly with decoded constant fields;
+the base GPR is still read at execution time. DMEM wrap, partial transfers,
+unaligned accesses and vector-register aliasing remain in the shared helpers.
+VMADM/VMADN/VMADH use a small shared arithmetic helper from both interpreter and
+compiled code. The compiled path skips the large vector opcode decoder while
+preserving operand scratch vectors, accumulator state and profiling counters.
+No graphics-quality, audio-speed, frame-skip or machine-clock changes.
+
+Expanded block differential programs from 64 to 96, explicitly including all
+12 vector load and 12 store subops. Strict-shuffle digest against pre-JIT
+interpreter: `F62152CAB43E14D66342CA94D6A5977AAE6C0949EAE203AB1A473410912B4A68`.
+Captured graphics (794278 instructions) and audio (18824 instructions) replay
+with identical complete CPU/memory/private-RSP state. Instruction checks pass.
+
+Vector-memory predecode alone produced noisy task timings; a 32-instruction
+block trial showed no convincing benefit and was reverted. Combined predecode
+and smaller accumulate dispatch measured 59.877 vs 63.244 ms and 59.393 vs
+61.137 ms in serial graphics-task process pairs (opposite orderings), about
+3-5% less task time. Do not interpret that as a whole-game FPS percentage.
+
+Baseline probe binaries: `/tmp/n64-before-vector-memory.FNBSAr/` (code before
+this follow-up). Validation logs: `/tmp/n64-acc-block-check.log`,
+`/tmp/n64-acc-rsp-check.log`; scene logs use `/tmp/n64-scene-{before,after}-acc*`.
+Performance comparisons do not overlap our builds/checks/other probes; existing
+user applications remain running and were not stopped or reconfigured.
+
+Two serial audio-enabled 40-second scene pairs from `mario-input/state.bin`,
+opposite process orders, measured between first and final status samples:
+
+- Before 421 graphics tasks / 40.08 s = 10.504 tasks/s; after 438 / 40.19 s =
+  10.898 tasks/s (~3.8%).
+- After 435 / 39.97 s = 10.883 tasks/s; before 435 / 40.07 s = 10.856 tasks/s
+  (~0.25%).
+
+Combined normalized throughput is about 2% higher, with substantial run-to-run
+variation. This is a small checkpoint, not a full-speed/playability claim, nor
+a claim of 3-5% whole-game FPS improvement. The 32-instruction block limit remains
+reverted; normal launches still use 16 and default-on JIT.
+
+Final checks pass: 96 block programs in both shuffle modes, 10368 instruction
+cases plus vector-copy/shuffle and task checks, captured audio/graphics full-state
+replay, explicit `RSP_BLOCK_JIT=0` graphics fallback, 6845 rendering/interrupt
+cases, audio FIFO/snapshot/resampler checks. Linux UI Release build succeeds.
+Final fallback timings overlapped the UI build and are correctness-only.
+Restart the normal Linux UI with `--no-build` to pick up this checkpoint.

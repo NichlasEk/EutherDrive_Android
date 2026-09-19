@@ -102,15 +102,15 @@ namespace Ryu64.MIPS
                     var reason = Expression.Variable(typeof(string));
                     operation = Expression.Block(new[] { reason }, Call("ExecuteVectorCompute",
                         Expression.Constant(pc), Expression.Constant(word), reason));
+                    if (vectorOp >= 0x0d && vectorOp <= 0x0f)
+                        operation = Call(nameof(ExecuteBlockVectorAccumulate), Expression.Constant(vectorOp),
+                            Expression.Constant((int)((word >> 6) & 31)),
+                            Expression.Constant((int)((word >> 11) & 31)),
+                            Expression.Constant((int)((word >> 16) & 31)),
+                            Expression.Constant((int)((word >> 21) & 15)));
                 }
                 if ((word >> 26 == 0x32 || word >> 26 == 0x3a) && ((word >> 11) & 31) <= 11)
-                {
-                    var reason = Expression.Variable(typeof(string));
-                    operation = Expression.Block(new[] { reason }, Call("ExecuteVectorMemory",
-                        Expression.Constant(pc), Expression.Constant(word >> 26 == 0x32),
-                        Expression.Constant((word >> 21) & 31), Expression.Constant((word >> 16) & 31),
-                        Expression.Constant(word), reason));
-                }
+                    operation = CompileVectorMemoryExpression(self, word);
                 if (operation == null) throw new InvalidOperationException("Block decoder and compiler disagree.");
                 // Compare adjacent instruction bytes together. BitConverter's
                 // unaligned native reads avoid decoding every word just to test
@@ -176,6 +176,36 @@ namespace Ryu64.MIPS
         }
 
         private static bool IsScalarStore(int op) => op == 0x28 || op == 0x29 || op == 0x2b;
+
+        private static Expression CompileVectorMemoryExpression(ParameterExpression self, uint word)
+        {
+            // Decode immutable instruction fields once, but read the base GPR
+            // at execution time. Keep all alignment/wrapping/aliasing semantics
+            // in the same transfer helpers used by the reference interpreter.
+            int subop = (int)((word >> 11) & 31);
+            bool load = word >> 26 == 0x32;
+            int shift = subop <= 3 ? subop : subop == 6 || subop == 7 ? 3 : 4;
+            int offset = SignExtend7((int)(word & 127)) << shift;
+            var address = Expression.Add(Expression.ArrayIndex(Expression.Field(self, "_gpr"),
+                Expression.Constant((int)((word >> 21) & 31))), Expression.Constant(unchecked((uint)offset)));
+            var vt = Expression.Constant((int)((word >> 16) & 31));
+            var element = Expression.Constant((int)((word >> 7) & 15));
+            Expression Call(string name, params Expression[] args) => Expression.Call(self,
+                typeof(RspInterpreter).GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic), args);
+            if (subop <= 3)
+                return Call(nameof(TransferVectorBytes), Expression.Constant(load), vt, element, address,
+                    Expression.Constant(1 << subop), Expression.Constant(subop != 0));
+            if (subop == 6 || subop == 7)
+                return Call(nameof(TransferVectorPacked), Expression.Constant(load), vt, element, address,
+                    Expression.Constant(subop == 7));
+            if (subop == 9)
+                return Call(load ? nameof(LoadVectorFour) : nameof(StoreVectorFour), vt, element, address);
+            string helper = subop == 4 ? nameof(TransferVectorQuad)
+                : subop == 5 ? nameof(TransferVectorReverse)
+                : subop == 8 ? nameof(TransferVectorHalfPacked)
+                : subop == 10 ? nameof(TransferVectorWrapped) : nameof(TransferVectorTable);
+            return Call(helper, Expression.Constant(load), vt, element, address);
+        }
 
         private static bool IsScalarBlockInstruction(uint word)
         {
