@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length >= 1 && args[0] == "--check-dma")
+{
+    DmaChecks.Run(args.Length > 1 ? args[1] : null);
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-snapshots")
 {
     SnapshotChecks.Run();

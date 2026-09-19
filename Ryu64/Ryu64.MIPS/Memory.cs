@@ -7395,30 +7395,35 @@ namespace Ryu64.MIPS
 
             for (int block = 0; block < count; block++)
             {
-                for (int i = 0; i < transferLength; i++)
+                // Both ends are byte-addressed RAM, with independent bank wraps.
+                // Keep the original per-byte path whenever diagnostic hooks are on.
+                if (!TryCopySpDmaBlock(isReadFromDram, memBank, memAddr, dramAddr, transferLength))
                 {
-                    uint spAddress = memBank | ((memAddr + (uint)i) & 0x0FFFu);
-                    uint rawRdAddress = dramAddr + (uint)i;
-                    uint rdAddress = rawRdAddress & 0x007FFFFFu;
+                    for (int i = 0; i < transferLength; i++)
+                    {
+                        uint spAddress = memBank | ((memAddr + (uint)i) & 0x0FFFu);
+                        uint rawRdAddress = dramAddr + (uint)i;
+                        uint rdAddress = rawRdAddress & 0x007FFFFFu;
 
-                    if (isReadFromDram)
-                    {
-                        byte value = ReadUInt8(PhysicalToKseg1(rdAddress));
-                        WriteSpMemoryByte(spAddress, value);
-                    }
-                    else
-                    {
-                        byte value = ReadSpMemoryByte(spAddress);
-                        if (traceDetailedSpWriteDma && (block == 0 || rdAddress < 0x400u))
+                        if (isReadFromDram)
                         {
-                            Common.Logger.PrintWarningLine(
-                                $"[N64SPDMA] write block={block} i=0x{i:x} spAddr=0x{spAddress:x4} rdAddr=0x{rdAddress:x8} value=0x{value:x2} " +
-                                $"pc=0x{Registers.R4300.PC:x8}");
+                            byte value = ReadUInt8(PhysicalToKseg1(rdAddress));
+                            WriteSpMemoryByte(spAddress, value);
                         }
-                        WithWriteUInt8Origin("sp-dma-write", () =>
+                        else
                         {
-                            WriteUInt8(PhysicalToKseg1(rdAddress), value);
-                        });
+                            byte value = ReadSpMemoryByte(spAddress);
+                            if (traceDetailedSpWriteDma && (block == 0 || rdAddress < 0x400u))
+                            {
+                                Common.Logger.PrintWarningLine(
+                                    $"[N64SPDMA] write block={block} i=0x{i:x} spAddr=0x{spAddress:x4} rdAddr=0x{rdAddress:x8} value=0x{value:x2} " +
+                                    $"pc=0x{Registers.R4300.PC:x8}");
+                            }
+                            WithWriteUInt8Origin("sp-dma-write", () =>
+                            {
+                                WriteUInt8(PhysicalToKseg1(rdAddress), value);
+                            });
+                        }
                     }
                 }
 
@@ -7452,6 +7457,35 @@ namespace Ryu64.MIPS
 
             _spDmaDelayArmed = true;
             _spDmaDelayRemaining = Math.Max(1u, (uint)((count * transferLength) / 8));
+        }
+
+        private bool TryCopySpDmaBlock(bool isReadFromDram, uint memBank, uint memAddr, uint dramAddr, int length)
+        {
+            if (IsTraceN64SpDmaEnabled() || TraceN64Io || TraceRspTaskDmem
+                || TraceWatchAddress.HasValue || TraceWatchRangeStart.HasValue
+                || TraceExceptionVectorWrites || TraceLowRamMutationWrites || TracePiDma)
+                return false;
+
+            int remaining = length;
+            while (remaining > 0)
+            {
+                uint rdAddress = dramAddr & 0x007FFFFFu;
+                int chunk = Math.Min(remaining, Math.Min(0x1000 - (int)memAddr, 0x800000 - (int)rdAddress));
+                if (isReadFromDram)
+                    Buffer.BlockCopy(RDRAM, (int)rdAddress, SP_MEM_RW, (int)(memBank | memAddr), chunk);
+                else
+                {
+                    Buffer.BlockCopy(SP_MEM_RW, (int)(memBank | memAddr), RDRAM, (int)rdAddress, chunk);
+                    // Preserve the existing per-byte write epochs as well as dirty
+                    // framebuffer pages; consumers use these for buffer selection.
+                    for (uint i = 0; i < (uint)chunk; i++)
+                        NoteRdramWriteRange(rdAddress + i, 1);
+                }
+                remaining -= chunk;
+                memAddr = (memAddr + (uint)chunk) & 0x0FFFu;
+                dramAddr += (uint)chunk;
+            }
+            return true;
         }
 
         private byte ReadSpMemoryByte(uint spAddress)
@@ -8104,6 +8138,9 @@ namespace Ryu64.MIPS
 
             AdvanceRspDpLifecycle(rspCycles);
         }
+
+        internal bool RspLifecyclePending => _spDmaDelayArmed || _rspTaskActive
+            || _rspInterruptDelayArmed || _dpInterruptDelayArmed;
 
         internal bool IsRspDmaDelayArmed()
         {

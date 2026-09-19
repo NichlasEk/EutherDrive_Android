@@ -117,6 +117,7 @@ namespace Ryu64.MIPS
         private uint _lastInstr;
         private uint _samePcRunLength;
         private ulong _lastProgressSignature;
+        private bool _progressRegistersDirty;
         private uint _stagnantInstructionCount;
         private readonly uint[] _recentPcs = new uint[16];
         private readonly uint[] _recentInstrs = new uint[16];
@@ -158,6 +159,7 @@ namespace Ryu64.MIPS
             _lastInstr = 0;
             _samePcRunLength = 0;
             _lastProgressSignature = ComputeProgressSignature(hasValidTask);
+            _progressRegistersDirty = false;
             _stagnantInstructionCount = 0;
             _recentIndex = 0;
             Array.Clear(_recentPcs, 0, _recentPcs.Length);
@@ -201,6 +203,9 @@ namespace Ryu64.MIPS
                 _branchPending = false;
                 _memory.SetActiveRspTracePc(pc);
                 bool dmaBusyPollDelaySlot = IsRspDmaBusyPollDelaySlot(pc, instr, branchDue, dueTarget);
+                // Only CP0 operations and pending lifecycle events can change
+                // the memory-side watchdog inputs during this synchronous task.
+                bool progressMemoryDirty = (instr >> 26) == 0x10 || _memory.RspLifecyclePending;
 
                 if (!Step(pc, instr, out stopReason))
                 {
@@ -228,7 +233,10 @@ namespace Ryu64.MIPS
                     }
                 }
 
-                ulong progressSignature = ComputeProgressSignature(hasValidTask);
+                ulong progressSignature = progressMemoryDirty || _progressRegistersDirty
+                    ? ComputeProgressSignature(hasValidTask)
+                    : _lastProgressSignature;
+                _progressRegistersDirty = false;
                 if (progressSignature != _lastProgressSignature)
                 {
                     _lastProgressSignature = progressSignature;
@@ -1543,34 +1551,31 @@ namespace Ryu64.MIPS
 
         private void LoadVectorShuffled(int vt, int element, ushort[] dest)
         {
-            for (int lane = 0; lane < 8; lane++)
+            element &= 0xF;
+            if (element >= 8)
             {
-                int sourceLane;
-                switch (element & 0xF)
-                {
-                    case 0:
-                    case 1:
-                        sourceLane = lane;
-                        break;
-                    case 2:
-                        sourceLane = (lane & ~1) & 7;
-                        break;
-                    case 3:
-                        sourceLane = ((lane & ~1) | 1) & 7;
-                        break;
-                    case 4:
-                    case 5:
-                    case 6:
-                    case 7:
-                        sourceLane = ((lane & (StrictHalfVectorShuffle ? 4 : 2)) != 0 ? element : element - 4) & 7;
-                        break;
-                    default:
-                        sourceLane = (element - 8) & 7;
-                        break;
-                }
-
-                dest[lane] = ReadVectorLane16(vt, sourceLane);
+                ushort value = ReadVectorLane16(vt, element - 8);
+                for (int lane = 0; lane < 8; lane++) dest[lane] = value;
+                return;
             }
+            if (element < 2)
+            {
+                LoadVectorUnshuffled(vt, dest);
+                return;
+            }
+            if (element < 4)
+            {
+                int odd = element & 1;
+                for (int lane = 0; lane < 8; lane += 2)
+                    dest[lane] = dest[lane + 1] = ReadVectorLane16(vt, lane + odd);
+                return;
+            }
+
+            ushort low = ReadVectorLane16(vt, element - 4);
+            ushort high = ReadVectorLane16(vt, element);
+            int halfMask = StrictHalfVectorShuffle ? 4 : 2;
+            for (int lane = 0; lane < 8; lane++)
+                dest[lane] = (lane & halfMask) == 0 ? low : high;
         }
 
         private void StoreVector(int vt, ushort[] src)
@@ -1732,6 +1737,9 @@ namespace Ryu64.MIPS
                         $"t3=0x{_gpr[11]:x8} t4=0x{_gpr[12]:x8} s3=0x{_gpr[19]:x8} s4=0x{_gpr[20]:x8} " +
                         $"r24=0x{_gpr[24]:x8} ra=0x{_gpr[31]:x8} r25=0x{_gpr[25]:x8} r26=0x{_gpr[26]:x8} r27=0x{_gpr[27]:x8} r28=0x{_gpr[28]:x8} r29=0x{_gpr[29]:x8}");
                 }
+                // These are exactly the GPRs included in ComputeProgressSignature.
+                if ((0x87030002u & (1u << (int)reg)) != 0 && _gpr[reg] != value)
+                    _progressRegistersDirty = true;
                 _gpr[reg] = value;
             }
         }
