@@ -837,3 +837,43 @@ build; their timing output is not used as performance evidence. Logs use the
 `gpr-` prefix, including `gpr-scalar-final{,-trace}-check.log`.
 Linux Release UI build passed with zero errors and 501 existing warnings
 (`gpr-ui-build.log`).
+
+## Follow-up 19: profile refresh and rejected speed experiments
+
+User explicitly prefers real emulation speed over stretching the audio. Audio
+tempo and playback behavior remain unchanged. This round did not establish a
+new whole-game speed improvement; all three runtime experiments were reverted:
+
+- Pointer-based VMADM/VMADN lane loops: complete-task median 85.893 -> 85.346 ms,
+  too small a gain to justify the added unsafe code. Exact end state matched.
+- Cache the memory prefix of the RSP watchdog signature: correct in captured
+  task and instruction/task differential tests, but slower in both comparisons
+  (85.061 vs 88.536 ms, 86.285 vs 88.781 ms). Reverted.
+- A 4096-entry R4300 instruction-word decode cache: passed 2450578 comparisons
+  against ordered opcode lookup, including cache hits, eviction and malformed
+  encodings. Hot-decode microbenchmark improved (30.287 -> 25.180 ms), but the
+  audio-enabled scene regressed: baseline 187 vs cached 178 graphics tasks in
+  20 seconds; inlined variant 183 vs a following baseline 190. Reverted rather
+  than publishing a microbenchmark-only win.
+
+Fresh 12-second CPU-thread sampling of accepted core `1a04b7f4`:
+62.9% inside synchronous RSP tasks, including 21.4% in the RDP command renderer;
+37.1% outside RSP tasks. Leaf samples: textured triangles 17.8%, vector compute
+16.9%, main-CPU InterpretOpcode 14.3%, CPU loop 11.1%, RSP task loop 7.1%,
+RSP scalar Step 6.9%. Inclusive rows overlap; do not add renderer time again.
+Trace artifacts are local: `speed-next.nettrace`, `speed-next.speedscope.json`.
+
+Added `N64Probe --bench-cpu-dispatch`: one million fixed arithmetic/load/store
+instructions per run, preserving normal memory ticks and CPU timing, two warmup
+runs and eight measured runs. Restores full initial state outside timing and
+requires identical full end-state hashes on every replay. Compare separate
+processes, not reference-ALC timings. This synthetic hot loop is diagnostic,
+not an estimate of game FPS. Baseline median 60.264 ms, full state SHA
+`B82A314935EAF5676A4C106BBE5173FBD9D84AA61F875103DB6C203FD02AF2A9`.
+The same harness with the saved reference core also produced that hash
+(58.782 ms median); the small timing spread is baseline noise, not a gain.
+
+All experiment logs remain in `.build-tmp/sm64-20260919/`, prefixed `mac-`,
+`progress-prefix-`, `decode-`, or `cpu-dispatch-`. `pre-mac-lanes/` contains the
+accepted reference binaries. Probe rebuilt successfully after reverting all
+runtime changes; the existing Linux UI remains on the accepted implementation.

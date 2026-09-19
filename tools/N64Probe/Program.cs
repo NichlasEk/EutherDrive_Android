@@ -2,6 +2,12 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--bench-cpu-dispatch")
+{
+    CpuDispatchBenchmark.Run();
+    return;
+}
+
 if (args.Length >= 1 && args[0] == "--check-rsp-scalar")
 {
     RspScalarChecks.Run(args.Length > 1 ? args[1] : null);
