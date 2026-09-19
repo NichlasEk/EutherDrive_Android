@@ -9,6 +9,40 @@ namespace Ryu64.MIPS
 {
     public class Memory
     {
+        // Host playback owns snapshots, never the live AI countdown registers.
+        // Bounded even when a headless frontend does not consume audio.
+        private readonly object _audioQueueLock = new object();
+        private readonly Queue<Tuple<short[], uint>> _audioQueue = new Queue<Tuple<short[], uint>>();
+
+        public short[] DequeueAudio(out uint sampleRate)
+        {
+            lock (_audioQueueLock)
+            {
+                sampleRate = 44100;
+                if (_audioQueue.Count == 0) return Array.Empty<short>();
+                var block = _audioQueue.Dequeue();
+                sampleRate = block.Item2;
+                return block.Item1;
+            }
+        }
+
+        private void CaptureAiAudio()
+        {
+            int length = (int)(_aiFifo0Length & 0x3FFF8u);
+            var pcm = new short[length / 2];
+            for (int i = 0; i < pcm.Length; i++)
+            {
+                uint address = (_aiFifo0Address + (uint)(i * 2)) & 0x00FFFFFFu;
+                // Unpopulated RDRAM contributes silence, not MMIO reads.
+                if (address + 1 < RDRAM.Length)
+                    pcm[i] = (short)((RDRAM[address] << 8) | RDRAM[address + 1]);
+            }
+            lock (_audioQueueLock)
+            {
+                if (_audioQueue.Count == 16) _audioQueue.Dequeue();
+                _audioQueue.Enqueue(Tuple.Create(pcm, GetAiSampleRate()));
+            }
+        }
         private delegate void MemoryEvent();
         private static readonly bool StrictDataTlb =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_LOOSE_DATA_TLB"), "1", StringComparison.Ordinal);
@@ -1150,6 +1184,8 @@ namespace Ryu64.MIPS
             int version = reader.ReadInt32();
             if (version < 1 || version > 4)
                 throw new InvalidDataException($"Unsupported N64 memory savestate version: {version}.");
+
+            lock (_audioQueueLock) _audioQueue.Clear();
 
             ReadByteArrays(reader);
             if (version >= 2)
@@ -6798,6 +6834,8 @@ namespace Ryu64.MIPS
         {
             if (_aiFifo0Length == 0)
                 return;
+
+            CaptureAiAudio();
 
             uint status = ReadBigEndianWord(AI_STATUS_REG_R) | AiStatusBusy;
             WriteBigEndianWord(AI_STATUS_REG_R, status);

@@ -2,6 +2,12 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-audio")
+{
+    AudioChecks.Run();
+    return;
+}
+
 if (args.Length >= 1 && args[0] == "--check-opcodes")
 {
     OpcodeChecks.Run(args.Length > 1 ? args[1] : null);
@@ -96,11 +102,30 @@ bool sm64Us = BinaryPrimitives.ReadUInt32BigEndian(rom.AsSpan(0x10)) == 0x635a2b
 if (sm64Input && !sm64Us) throw new ArgumentException("SM64 input/telemetry requires the original USA cartridge");
 core.Start();
 var timer = Stopwatch.StartNew();
+bool captureAudio = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_AUDIO") == "1";
+using var audioFile = captureAudio ? new BinaryWriter(File.Create(Path.Combine(output, "audio-44100-stereo-s16le.pcm"))) : null;
+var audioResampler = new Ryu64Core.StereoResampler();
+long audioSamples = 0, audioNonzero = 0;
+int audioPeak = 0;
 try
 {
     for (int second = 0; second < seconds; second++)
     {
-        Thread.Sleep(1000);
+        if (!captureAudio) Thread.Sleep(1000);
+        else for (int poll = 0; poll < 50; poll++)
+        {
+            Thread.Sleep(20);
+            short[] pcm = core.GetAudioSamples(out uint rate, out _);
+            pcm = audioResampler.Convert(pcm, rate, 44100);
+            foreach (short sample in pcm)
+            {
+                audioFile!.Write(sample);
+                audioSamples++;
+                if (sample != 0) audioNonzero++;
+                audioPeak = Math.Max(audioPeak, Math.Abs((int)sample));
+            }
+        }
+        if (captureAudio) Console.WriteLine($"audio samples={audioSamples} nonzero={audioNonzero} peak={audioPeak} duration={audioSamples / 88200.0:F3}s");
         if (Environment.GetEnvironmentVariable("N64_PROBE_AUTO_INPUT") == "1")
             core.SetInputState(new Ryu64Core.InputState { Start = second >= 15 && second % 10 < 2, A = second >= 35 && second % 10 is >= 5 and < 7 });
         if (sm64Input)

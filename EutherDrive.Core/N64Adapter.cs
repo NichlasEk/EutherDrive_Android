@@ -17,6 +17,9 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
     private const int DefaultStride = DefaultWidth * 4;
 
     private readonly Ryu64Core.Ryu64Core _core = new();
+    private readonly Ryu64Core.StereoResampler _audioResampler = new();
+    private readonly int _outputSampleRate = ReadIntEnv("EUTHERDRIVE_AUDIO_OUTPUT_HZ", 44100) is >= 22050 and <= 192000
+        ? ReadIntEnv("EUTHERDRIVE_AUDIO_OUTPUT_HZ", 44100) : 44100;
     private byte[] _frameBuffer = new byte[DefaultHeight * DefaultStride];
     private short[] _audioBuffer = Array.Empty<short>();
     private int _frameWidth = DefaultWidth;
@@ -60,6 +63,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
 
         _resolvedRomPath = PrepareRomPathForCore(path);
         _core.LoadROM(_resolvedRomPath);
+        _audioResampler.Reset();
         Interlocked.Increment(ref _statisticsGeneration);
         _romPath = path;
         _romIdentity = CreateRomIdentity(path);
@@ -84,6 +88,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         if (string.IsNullOrWhiteSpace(_resolvedRomPath) || !File.Exists(_resolvedRomPath))
             _resolvedRomPath = PrepareRomPathForCore(_romPath);
         _core.LoadROM(_resolvedRomPath);
+        _audioResampler.Reset();
         Interlocked.Increment(ref _statisticsGeneration);
         _started = false;
         _audioBuffer = Array.Empty<short>();
@@ -234,6 +239,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
             throw new EndOfStreamException();
         _audioBuffer = Array.Empty<short>();
         _core.LoadState(reader);
+        _audioResampler.Reset();
         Interlocked.Increment(ref _statisticsGeneration);
         _started = _core.IsRunning;
         _hasSeenFramebuffer = framebufferLength > 0 && !IsBgraFramebufferBlank(_frameBuffer);
@@ -403,7 +409,9 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
 
     private void PullAudio()
     {
-        short[] samples = _core.GetAudioSamples(out _sampleRate, out _channels);
+        short[] samples = _core.GetAudioSamples(out uint sourceRate, out _channels);
+        samples = _audioResampler.Convert(samples, sourceRate, _outputSampleRate);
+        _sampleRate = (uint)_outputSampleRate;
         if (samples.Length == 0)
         {
             _noAudioCount++;

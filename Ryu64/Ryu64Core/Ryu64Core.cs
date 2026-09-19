@@ -45,6 +45,7 @@ namespace Ryu64Core
         private bool isRunning = false;
         private bool _resumeLoadedState;
 
+        // Retained only for version-1 savestate layout compatibility.
         private uint _lastAudioAddress;
         private uint _lastAudioLength;
         private uint _lastAudioDacrate;
@@ -701,53 +702,11 @@ namespace Ryu64Core
         {
             sampleRate = 44100;
             channels = 2;
-
-            if (!isRunning || R4300.memory == null)
-                return Array.Empty<short>();
-
-            try
-            {
-                uint len = R4300.memory.ReadUInt32(AiLenReg) & 0x3FFF8;
-                uint addr = R4300.memory.ReadUInt32(AiDramAddrReg) & 0x00FFFFFF;
-                uint dacRate = R4300.memory.ReadUInt32(AiDacRateReg) & 0x3FFF;
-
-                if (dacRate != 0)
-                {
-                    const double N64NtscClock = 48681812.0;
-                    int rate = (int)Math.Round(N64NtscClock / (dacRate + 1.0));
-                    if (rate < 4000) rate = 4000;
-                    if (rate > 96000) rate = 96000;
-                    sampleRate = (uint)rate;
-                }
-
-                if (len < 4 || addr == 0)
-                    return Array.Empty<short>();
-
-                if (addr == _lastAudioAddress && len == _lastAudioLength && dacRate == _lastAudioDacrate)
-                    return Array.Empty<short>();
-
-                _lastAudioAddress = addr;
-                _lastAudioLength = len;
-                _lastAudioDacrate = dacRate;
-
-                int sampleCount = (int)(len / 2);
-                short[] pcm = new short[sampleCount];
-
-                uint readPtr = addr;
-                for (int i = 0; i < sampleCount; i++)
-                {
-                    byte hi = R4300.memory.ReadUInt8PhysicalUncached(readPtr++);
-                    byte lo = R4300.memory.ReadUInt8PhysicalUncached(readPtr++);
-                    pcm[i] = (short)((hi << 8) | lo);
-                }
-
+            if (!isRunning || R4300.memory == null) return Array.Empty<short>();
+            short[] pcm = R4300.memory.DequeueAudio(out sampleRate);
+            if (pcm.Length != 0)
                 AudioBufferReady?.Invoke(this, new AudioBufferEventArgs(ShortToByteArray(pcm), sampleRate, channels));
-                return pcm;
-            }
-            catch
-            {
-                return Array.Empty<short>();
-            }
+            return pcm;
         }
 
         public void SetInputState(InputState input)

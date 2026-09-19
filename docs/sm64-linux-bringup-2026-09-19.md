@@ -525,3 +525,38 @@ emulator was stopped after capture, and no user settings were modified.
 This pass improves instruction lookup but does not achieve 60 actual game
 frames per second. The next major performance work remains RSP execution
 and software RDP rendering, not increasing UI polling frequency.
+
+## Follow-up 12: Linux audio output
+
+Replaced host polling of AI DRAM/LEN registers with a bounded, locked queue
+of immutable stereo PCM snapshots taken when an AI FIFO entry starts.
+Polling the remaining DMA length previously replayed buffer prefixes and
+could discard reused buffers with identical addresses and lengths. AI timing,
+interrupts and savestate layout are unchanged; loading a state clears host
+audio rather than replaying old queued samples. An already active restored
+DMA is not replayed; playback resumes at the next FIFO activation.
+
+The adapter now continuously resamples the cartridge DAC rate to the UI
+output rate (44100 Hz by default, respecting EUTHERDRIVE_AUDIO_OUTPUT_HZ).
+Previously the shared UI engine rejected N64 buffers at other rates.
+Integer phase preserves interpolation continuity across DMA blocks; reset,
+ROM load and savestate load clear resampler history.
+
+Validation: `N64Probe --check-audio` covers snapshots, endian/stereo ordering,
+FIFO activation, identical buffer reuse, DAC rate, unpopulated RAM, bounded
+queue, savestate flush and 24 source/output-rate streaming combinations.
+Existing 6845 render/interrupt, 648 CPU-loop differential and 18 EEPROM
+checks pass; Linux Release UI builds cleanly
+(existing warnings remain).
+
+`N64_PROBE_CAPTURE_AUDIO=1` now captures normalized stereo s16le PCM locally.
+Gameplay capture produced 424572 samples (4.814 seconds) in a 20-second run,
+424453 nonzero, peak 20778. Cold boot produced 595892 samples (6.756 seconds)
+in 25 seconds, 466503 nonzero, peak 29481. Artifacts are under
+`.build-tmp/sm64-20260919/audio-gameplay` and `audio-cold`.
+A separate Xvfb Linux UI run with SDL's dummy audio device confirmed 44100 Hz
+stereo accepted by AudioEngine, nonzero production and no format rejection.
+This validates the output path, not listening quality or physical speakers.
+Underruns remain: emulation produces substantially less than one second of
+audio per wall-clock second. This is not yet smooth real-time audio and does
+not establish correct music/instrument/effect emulation by listening.
