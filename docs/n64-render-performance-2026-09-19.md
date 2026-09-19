@@ -79,3 +79,5 @@ dotnet tools/N64Probe/bin/Release/net8.0/N64Probe.dll --check-flat-shade .build-
 Repeat the timing pair with `logo-tape` and reverse process order. Clear inherited
 N64 trace/performance overrides first. Next profiling should use the final build
 after adequate JIT warm-up, with these two tapes as correctness references.
+
+Follow-up: [RSP profiling and dispatch checkpoint](n64-rsp-performance-2026-09-19.md).

@@ -62,8 +62,8 @@ internal static class RspBlockChecks
         using var writer = new BinaryWriter(stream);
         for (int iteration = 0; iteration < 96; iteration++)
         {
-            // Reuse the interpreter/cache, keep the first word fixed, and change
-            // interior words. Every eighth program also tests IMEM wraparound.
+            // Reuse the interpreter/cache while changing first and interior
+            // words. Every eighth program also tests IMEM wraparound.
             uint start = iteration % 8 == 0 ? 0xfe0u : 0u;
             int cursor = (int)start;
             void Op(uint word)
@@ -71,7 +71,19 @@ internal static class RspBlockChecks
                 BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + cursor), word);
                 cursor = (cursor + 4) & 0xfff;
             }
-            Op(0x24010fff); // Force first memory-form accesses across DMEM's edge.
+            // Both encodings set r1 to the same value; alternating them also
+            // checks invalidation when the first cached instruction changes.
+            Op(iteration % 4 == 1 ? 0x34010fffu : 0x24010fffu);
+            // Exercise each predecoded accumulate with all element selectors
+            // and both aliased and distinct destination/source registers.
+            for (uint accumulate = 13; accumulate <= 15; accumulate++)
+            {
+                uint source = (uint)(iteration % 32);
+                uint destination = iteration % 2 == 0 ? source : (source + 1) & 31;
+                Op(0x4a000000u | (uint)(iteration % 16) << 21
+                    | source << 16 | ((source + 2) & 31) << 11
+                    | destination << 6 | accumulate);
+            }
             for (int i = 0; i < 24; i++)
             {
                 // Every form is selected explicitly at least once, in addition

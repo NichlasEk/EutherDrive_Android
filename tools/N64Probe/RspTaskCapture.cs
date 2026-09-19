@@ -102,7 +102,8 @@ internal sealed class RspTaskCapture : TextWriter
             using var writer = new BinaryWriter(output);
             var times = new List<double>();
             uint count = 0;
-            const int warmupIterations = 5, measuredIterations = 12;
+            // Allow tiered JIT to settle before measuring short audio tasks too.
+            const int warmupIterations = 20, measuredIterations = 20;
             for (int iteration = -warmupIterations; iteration < measuredIterations; iteration++)
             {
                 reader.BaseStream.Position = 0;
@@ -130,7 +131,7 @@ internal sealed class RspTaskCapture : TextWriter
             // costs. Use it for correctness only; compare speed in separate
             // processes with the same harness and each core in the default ALC.
             string timing = label == "reference" ? "validationOnly=True"
-                : $"medianMs={(times[5] + times[6]) / 2:F3} minMs={times[0]:F3} maxMs={times[^1]:F3}";
+                : $"medianMs={(times[measuredIterations / 2 - 1] + times[measuredIterations / 2]) / 2:F3} minMs={times[0]:F3} maxMs={times[^1]:F3}";
             Console.WriteLine($"rspTaskBench={label} instructions={count} {timing} fullState=identical sha256={Convert.ToHexString(SHA256.HashData(expectedEnd))}");
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_PROFILE_VECTOR_OPS") == "1"
                 && rsp.GetType().GetField("_vectorOpCounts", BindingFlags.Static | BindingFlags.NonPublic)?.GetValue(null) is long[] counts)

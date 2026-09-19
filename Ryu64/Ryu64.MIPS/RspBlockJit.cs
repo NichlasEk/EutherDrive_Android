@@ -28,19 +28,31 @@ namespace Ryu64.MIPS
             uint pc = _pc & 0xffc;
             int slot = (int)(pc >> 2);
             uint word = _memory.ReadSpImemWord(pc);
-            if (_blocks[slot] == null || _blockFirstWords[slot] != word)
+            var block = _blocks[slot];
+            if (block == null || _blockFirstWords[slot] != word)
             {
-                try { _blocks[slot] = CompileBlock(pc); }
-                catch (PlatformNotSupportedException) { _blockJitUnavailable = true; return 0; }
-                _blockFirstWords[slot] = word;
+                block = GetOrCompileBlock(pc, slot, word);
+                if (block == null) return 0;
             }
-            int count = _blocks[slot](this, budget, stagnantLimit);
+            int count = block(this, budget, stagnantLimit);
             _blockInstructions += count;
             // The complete block is checked before executing anything. A changed
             // interior word invalidates this entry; the interpreter takes over.
-            if (count == 0 && _blocks[slot] != NoBlock && budget > 0 && _stagnantInstructionCount < stagnantLimit)
+            if (count == 0 && block != NoBlock && budget > 0 && _stagnantInstructionCount < stagnantLimit)
                 _blocks[slot] = null;
             return count;
+        }
+
+        // Compilation and its platform fallback are cold. Keeping the exception
+        // region here leaves the normal cached-block dispatch free of EH state.
+        private Func<RspInterpreter, uint, uint, int> GetOrCompileBlock(uint pc, int slot, uint word)
+        {
+            Func<RspInterpreter, uint, uint, int> block;
+            try { block = CompileBlock(pc); }
+            catch (PlatformNotSupportedException) { _blockJitUnavailable = true; return null; }
+            _blocks[slot] = block;
+            _blockFirstWords[slot] = word;
+            return block;
         }
 
         private static readonly Func<RspInterpreter, uint, uint, int> NoBlock = (r, b, s) => 0;
