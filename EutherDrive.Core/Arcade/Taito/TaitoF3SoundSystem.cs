@@ -782,6 +782,14 @@ internal sealed class TaitoF3SoundSystem
         public ushort ReadWord(uint address)
         {
             address &= 0x00ff_ffff;
+            // One 16-bit device transaction, especially for read-to-clear IRQV.
+            // Two ReadByte calls would acknowledge it before returning its low byte.
+            if ((address & 1) == 0 && address >= 0x200000 && address <= 0x20001e)
+            {
+                Es5505Reads++;
+                CurrentOpcode = _otis?.Read((int)((address - 0x200000) >> 1)) ?? (ushort)0;
+                return CurrentOpcode;
+            }
             if (TryMapRam(address, out int ramOffset) && ramOffset <= 0xfffe)
             {
                 CurrentOpcode = (ushort)((_ram[ramOffset] << 8) | _ram[ramOffset + 1]);
@@ -1387,6 +1395,7 @@ internal sealed class TaitoF3SoundSystem
         private const ushort ControlLpe = 0x0008;
         private const ushort ControlStopMask = 0x0003;
         private const int AddressFracBits = 9;
+        private static readonly int[] VolumeGains = BuildVolumeGains();
         private readonly Voice[] _voices = new Voice[32];
         private readonly int[] _banks = new int[0x20];
         private byte[] _samples = Array.Empty<byte>();
@@ -1504,11 +1513,16 @@ internal sealed class TaitoF3SoundSystem
                 int right = 0;
                 int maxVoice = Math.Min(_activeVoices, (byte)31);
                 for (int i = 0; i <= maxVoice; i++)
+                {
                     RenderVoice(_voices[i], sampleFrames, ref left, ref right);
+                    ServiceVoiceIrq(_voices[i]);
+                }
 
                 int outOffset = frame * 2;
-                destination[outOffset] = Clamp16(left);
-                destination[outOffset + 1] = Clamp16(right);
+                // Keep the chip's 20-bit accumulation until all voices have
+                // mixed, then convert to the frontend's signed PCM16 range.
+                destination[outOffset] = Clamp16(left >> 4);
+                destination[outOffset + 1] = Clamp16(right >> 4);
             }
         }
 
@@ -1725,8 +1739,8 @@ internal sealed class TaitoF3SoundSystem
             int sample = ((s0 * ((1 << AddressFracBits) - frac)) + (s1 * frac)) >> AddressFracBits;
             ApplyFilters(voice, ref sample);
 
-            left += (sample * voice.LeftVolume) >> 8;
-            right += (sample * voice.RightVolume) >> 8;
+            left += ScaleVoiceSample(sample, voice.LeftVolume);
+            right += ScaleVoiceSample(sample, voice.RightVolume);
 
             double advance = voice.AdvanceRemainder + voice.Freq * (_chipSampleRate / OutputSampleRate);
             uint step = (uint)advance;
@@ -1749,13 +1763,6 @@ internal sealed class TaitoF3SoundSystem
 
             if ((voice.Control & ControlIrqe) != 0)
                 voice.Control |= ControlIrq;
-            if ((voice.Control & ControlIrq) != 0 && (_irqv & 0x80) != 0)
-            {
-                _irqv = (byte)(voice.Index & 0x1f);
-                voice.Control = (ushort)(voice.Control & ~ControlIrq);
-                _irqCallback?.Invoke(true);
-            }
-
             switch (voice.Control & (ControlLpe | ControlBle))
             {
                 case 0:
@@ -1773,6 +1780,18 @@ internal sealed class TaitoF3SoundSystem
                         : voice.End - (voice.Accum - voice.End);
                     voice.Control ^= ControlDir;
                     break;
+            }
+        }
+
+        private void ServiceVoiceIrq(Voice voice)
+        {
+            // Stopped voices can still have an IRQ pending behind another
+            // voice. Service them every sample, not only on a new loop end.
+            if ((voice.Control & ControlIrq) != 0 && (_irqv & 0x80) != 0)
+            {
+                _irqv = (byte)(voice.Index & 0x1f);
+                voice.Control = (ushort)(voice.Control & ~ControlIrq);
+                _irqCallback?.Invoke(true);
             }
         }
 
@@ -1797,6 +1816,8 @@ internal sealed class TaitoF3SoundSystem
             int lp = (voice.Control >> 10) & 3;
             if ((lp & 1) != 0)
                 sample = ApplyLowpass(sample, voice.K1, voice.O3);
+            else if ((lp & 2) != 0)
+                sample = ApplyLowpass(sample, voice.K2, voice.O3);
             else
                 sample = ApplyHighpass(sample, voice.K2, voice.O3, voice.O2Prev);
             voice.O3Prev = voice.O3;
@@ -1810,10 +1831,23 @@ internal sealed class TaitoF3SoundSystem
         }
 
         private static int ApplyLowpass(int output, ushort cutoff, int input)
-            => (((cutoff >> 4) * (output - input)) >> 12) + input;
+            => ((cutoff >> 4) * (output - input) / 4096) + input;
 
         private static int ApplyHighpass(int output, ushort cutoff, int input, int previous)
-            => output - previous + (((cutoff >> 4) * input) >> 13) + input / 2;
+            => output - previous + ((cutoff >> 4) * input) / 8192 + input / 2;
+
+        private static int[] BuildVolumeGains()
+        {
+            var gains = new int[256];
+            for (int volume = 0; volume < gains.Length; volume++)
+                gains[volume] = (((volume & 15) | 16) << 11) >> (16 - (volume >> 4));
+            return gains;
+        }
+
+        // ES5505 volume is a 4-bit exponent plus 4-bit mantissa, not linear.
+        // The chip's mixer has 20-bit precision (11 fractional product bits).
+        private static int ScaleVoiceSample(int sample, byte volume)
+            => (int)(((long)sample * VolumeGains[volume]) >> 11);
 
         private static void WriteAddressHigh(ref uint target, ushort data, bool hi, bool lo)
         {

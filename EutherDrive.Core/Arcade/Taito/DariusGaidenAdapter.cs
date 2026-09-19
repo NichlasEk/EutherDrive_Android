@@ -6496,7 +6496,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         }
 
         Span<uint> framePixels = MemoryMarshal.Cast<byte, uint>(_frameBuffer);
-        byte[] srcBlendMode = _mixSrcBlendMode;
         ushort[] srcPalette = _mixSrcPalette;
         ushort[] dstPalette = _mixDstPalette;
         byte[] srcBlend = _mixSrcBlend;
@@ -6506,11 +6505,11 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         for (int offset = 0; offset < pixelCount; offset++)
         {
             uint color;
-            if (srcBlendMode[offset] == 0xff || srcBlend[offset] == 0)
+            if (srcBlend[offset] == 0 && dstBlend[offset] == 8)
             {
                 color = ReadCachedPaletteColor(dstPalette[offset], cacheFrame);
             }
-            else if (dstBlend[offset] == 0)
+            else if (dstBlend[offset] == 0 && srcBlend[offset] == 8)
             {
                 color = ReadCachedPaletteColor(srcPalette[offset], cacheFrame);
             }
@@ -6527,7 +6526,6 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
     [MethodImpl(MethodImplOptions.AggressiveOptimization)]
     private void RenderMameMixBufferToFrameBytes(int cacheFrame)
     {
-        byte[] srcBlendMode = _mixSrcBlendMode;
         ushort[] srcPalette = _mixSrcPalette;
         ushort[] dstPalette = _mixDstPalette;
         byte[] srcBlend = _mixSrcBlend;
@@ -6537,11 +6535,11 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
         for (int offset = 0; offset < pixelCount; offset++)
         {
             uint color;
-            if (srcBlendMode[offset] == 0xff || srcBlend[offset] == 0)
+            if (srcBlend[offset] == 0 && dstBlend[offset] == 8)
             {
                 color = ReadCachedPaletteColor(dstPalette[offset], cacheFrame);
             }
-            else if (dstBlend[offset] == 0)
+            else if (dstBlend[offset] == 0 && srcBlend[offset] == 8)
             {
                 color = ReadCachedPaletteColor(srcPalette[offset], cacheFrame);
             }
@@ -6590,11 +6588,11 @@ public sealed class DariusGaidenAdapter : IEmulatorCore, ISavestateCapable, IDis
                     destOnlyPixels++;
                 }
                 uint color;
-                if (_mixSrcBlendMode[offset] == 0xff || _mixSrcBlend[offset] == 0)
+                if (_mixSrcBlend[offset] == 0 && _mixDstBlend[offset] == 8)
                 {
                     color = ReadCachedPaletteColor(_mixDstPalette[offset], cacheFrame);
                 }
-                else if (_mixDstBlend[offset] == 0)
+                else if (_mixDstBlend[offset] == 0 && _mixSrcBlend[offset] == 8)
                 {
                     color = ReadCachedPaletteColor(_mixSrcPalette[offset], cacheFrame);
                 }

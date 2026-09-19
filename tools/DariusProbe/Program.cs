@@ -10,6 +10,16 @@ if (args.Length == 1 && args[0] == "--check-gfx-planes")
     GfxPlaneChecks.Run();
     return;
 }
+if (args.Length == 1 && args[0] == "--check-f3-mixer")
+{
+    F3MixerChecks.Run();
+    return;
+}
+if (args.Length == 1 && args[0] == "--check-es5505")
+{
+    Es5505Checks.Run();
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-m68k-trace")
 {
     TraceSwitchChecks.Run();
@@ -41,9 +51,14 @@ string? timingPath = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUS_PROB
 // Buffer value types only; formatting and disk I/O happen after the replay.
 var timingRows = timingPath == null ? null : new List<(int Frame, long Total, long Cpu, long Render)>(frames);
 long budget = (long)(Stopwatch.Frequency / core.GetTargetFps());
+bool fire = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUS_PROBE_FIRE") != "0";
+bool audioStats = Environment.GetEnvironmentVariable("EUTHERDRIVE_DARIUS_PROBE_AUDIO_STATS") == "1";
+long audioSamples = 0, clippedSamples = 0;
+double audioSquares = 0;
+int audioPeak = 0;
 for (int frame = 0; frame < frames; frame++)
 {
-    core.SetInputState(false, false, false, false, loadedState || frame >= 700, false, false,
+    core.SetInputState(false, false, false, false, fire && (loadedState || frame >= 700), false, false,
         !loadedState && frame is >= 650 and <= 654, false, false, false,
         !loadedState && frame is >= 600 and <= 604, PadType.SixButton);
     long start = Stopwatch.GetTimestamp();
@@ -59,7 +74,16 @@ for (int frame = 0; frame < frames; frame++)
         frameTimes.Add(elapsed * 1000.0 / Stopwatch.Frequency);
     }
     video.AppendData(core.GetFrameBuffer(out _, out _, out _));
-    audio.AppendData(MemoryMarshal.AsBytes(core.GetAudioBuffer(out _, out _)));
+    var samples = core.GetAudioBuffer(out _, out _);
+    audio.AppendData(MemoryMarshal.AsBytes(samples));
+    if (audioStats)
+        foreach (short sample in samples)
+        {
+            audioSamples++;
+            if (sample is short.MinValue or short.MaxValue) clippedSamples++;
+            audioPeak = Math.Max(audioPeak, Math.Abs((int)sample));
+            audioSquares += (double)sample * sample;
+        }
 }
 if (timingRows != null)
 {
@@ -79,5 +103,6 @@ if (frameTimes.Count != 0)
 }
 Console.WriteLine($"videoSHA256={Convert.ToHexString(video.GetHashAndReset())}");
 Console.WriteLine($"audioSHA256={Convert.ToHexString(audio.GetHashAndReset())}");
+if (audioStats) Console.WriteLine($"audioSamples={audioSamples} clipped={clippedSamples} peak={audioPeak} rms={Math.Sqrt(audioSquares / Math.Max(1, audioSamples)):F3}");
 Console.WriteLine($"stateSHA256={Convert.ToHexString(SHA256.HashData(state.GetBuffer().AsSpan(0, (int)state.Length)))}");
 Console.WriteLine(core.DebugSummary);

@@ -2,11 +2,16 @@
 
 ## Latest checkpoint: 2026-09-19
 
+Latest sound follow-up: [ES5505 bass, volume and interrupts](darius-gaiden-audio-2026-09-19.md).
+Corrected a highpass/lowpass mode error, logarithmic voice gains and lost voice
+interrupts. Four saved-scene replays no longer clip; bass and effects still
+need user listening confirmation. Intro graphics artifacts remain open.
+
 Latest UI follow-up: [presentation handoff](darius-gaiden-ui-presentation-2026-09-19.md).
 User testing exposed missing pictures despite faster core replay. Darius now
 publishes completed frame copies without UI/core-lock contention, and posted
 callbacks coalesce without the extra delayed Darius presentation clock.
-Concurrency tests pass; the user's real OpenGL playback still needs a retest.
+Concurrency tests pass; the user subsequently confirmed playable presentation.
 
 Latest performance follow-up: [task-table overhead reduction](darius-gaiden-task-table-performance-2026-09-19.md).
 Direct RAM reads for diagnostic scheduler-table scanning reduce mean frame
