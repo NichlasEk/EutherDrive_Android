@@ -2403,6 +2403,8 @@ namespace Ryu64.MIPS
             // only gates coverage in the first fractional scanline.
             double edgeY = Math.Floor(yh);
             int depthDx = _rdpOtherModesZSourceSel ? 0 : depth.DzDx;
+            uint dzPix = depth.DzPix == 0 ? 1u : depth.DzPix;
+            uint dzPixEncoded = CompressRdpDz(dzPix);
             int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)edgeY);
             int lastY = Math.Min(Math.Min((int)maxRows - 1, _rdpScissorY1), (int)Math.Ceiling(yl) - 1);
             if (lastY < firstY)
@@ -2544,7 +2546,7 @@ namespace Ryu64.MIPS
 
                     uint pixelIndex = rowPixelIndex + (uint)x;
                     uint address = rowStart + ((uint)(x - firstX) * bytesPerPixel);
-                    if (useDepth && !PassRdpDepthTest(pixelIndex, currentZ, depth.DzPix))
+                    if (useDepth && !PassRdpDepthTest(pixelIndex, currentZ, dzPix, dzPixEncoded))
                     {
                         depthRejects++;
                         currentS += tex.DsDx;
@@ -2738,7 +2740,8 @@ namespace Ryu64.MIPS
             return depth.Z + (long)Math.Round(yDelta * depth.DzDe);
         }
 
-        private bool PassRdpDepthTest(uint pixelIndex, long zFixed, uint dzPix)
+        // dzPix is normalized and encoded once per triangle, not per pixel.
+        private bool PassRdpDepthTest(uint pixelIndex, long zFixed, uint dzPix, uint dzPixEncoded)
         {
             uint sz = RdpDepthFixedToComparator(zFixed);
             uint zIndex = (_rdpMaskImageAddress >> 1) + pixelIndex;
@@ -2764,7 +2767,7 @@ namespace Ryu64.MIPS
                 }
             }
 
-            uint dzNew = Math.Max(dzMem, dzPix == 0 ? 1u : dzPix) << 3;
+            uint dzNew = Math.Max(dzMem, dzPix) << 3;
             bool inFront = sz < oldZ;
             bool farther = sz + dzNew >= oldZ;
             int diff = unchecked((int)sz - (int)dzNew);
@@ -2791,7 +2794,7 @@ namespace Ryu64.MIPS
             }
 
             if (pass && _rdpOtherModesZUpdate)
-                StoreRdpDepth(zIndex, sz, CompressRdpDz(dzPix == 0 ? 1u : dzPix));
+                StoreRdpDepth(zIndex, sz, dzPixEncoded);
 
             return pass;
         }
@@ -2937,6 +2940,8 @@ namespace Ryu64.MIPS
             // only gates coverage in the first fractional scanline.
             double edgeY = Math.Floor(yh);
             int depthDx = _rdpOtherModesZSourceSel ? 0 : depth.DzDx;
+            uint dzPix = depth.DzPix == 0 ? 1u : depth.DzPix;
+            uint dzPixEncoded = CompressRdpDz(dzPix);
             int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)edgeY);
             int lastY = Math.Min(Math.Min((int)maxRows - 1, _rdpScissorY1), (int)Math.Ceiling(yl) - 1);
             if (lastY < firstY)
@@ -2975,7 +2980,7 @@ namespace Ryu64.MIPS
                     if (useDepth)
                     {
                         long z = rowZ + (long)Math.Round((x + 0.5 - majorX) * depthDx);
-                        if (!PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, z, depth.DzPix))
+                        if (!PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, z, dzPix, dzPixEncoded))
                             continue;
                     }
 
@@ -3046,6 +3051,8 @@ namespace Ryu64.MIPS
             // only gates coverage in the first fractional scanline.
             double edgeY = Math.Floor(yh);
             int depthDx = _rdpOtherModesZSourceSel ? 0 : depth.DzDx;
+            uint dzPix = depth.DzPix == 0 ? 1u : depth.DzPix;
+            uint dzPixEncoded = CompressRdpDz(dzPix);
             int firstY = Math.Max(Math.Max(0, _rdpScissorY0), (int)edgeY);
             int lastY = Math.Min(Math.Min((int)maxRows - 1, _rdpScissorY1), (int)Math.Ceiling(yl) - 1);
             if (lastY < firstY)
@@ -3096,7 +3103,7 @@ namespace Ryu64.MIPS
                         rgba = ApplyRdpColorCombiner(0u, rgba);
                     if (ShouldRejectRdpAlpha(rgba))
                         continue;
-                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + (long)Math.Round(xDelta * depthDx), depth.DzPix))
+                    if (useDepth && !PassRdpDepthTest((uint)y * _rdpColorImageWidth + (uint)x, rowZ + (long)Math.Round(xDelta * depthDx), dzPix, dzPixEncoded))
                         continue;
                     uint address = _rdpColorImageAddress + (((uint)y * _rdpColorImageWidth + (uint)x) * bytesPerPixel);
                     WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
@@ -4369,6 +4376,11 @@ namespace Ryu64.MIPS
             {
                 u = ClampRdpTextureCoordinate(s - (int)sampler.OriginS, sampler.Width);
                 v = ClampRdpTextureCoordinate(t - (int)sampler.OriginT, sampler.Height);
+            }
+            else if (sampler.FastWrapCoordinates)
+            {
+                u = (s - (int)sampler.OriginS) & sampler.WrapMaskS;
+                v = (t - (int)sampler.OriginT) & sampler.WrapMaskT;
             }
             else
             {

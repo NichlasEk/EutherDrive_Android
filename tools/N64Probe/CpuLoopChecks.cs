@@ -13,8 +13,12 @@ internal static class CpuLoopChecks
         var zero = Bind("TryFastForwardInitialZeroLoop");
         var bytes = Bind("TryFastForwardByteZeroUntilPointerLoop");
         var pairs = Bind("TryFastForwardPairStoreUntilPointerLoop");
-        var gated = Bind("TryFastForwardMemoryLoops");
-        Func<uint, bool> original = pc => zero(pc) || bytes(pc) || pairs(pc);
+        var pollingMethods = new[] { "CompareLoadPollingLoop", "BranchLinkIdleLoop", "IdleLoop" }
+            .Select(n => Bind("TryFastForward" + n)).ToArray();
+        Func<uint, bool> originalRuntime = pc => zero(pc) || bytes(pc) || pairs(pc)
+            || pollingMethods.Any(run => run(pc));
+        var gated = Bind("TryFastForwardRuntimeLoops");
+        Func<uint, bool> original = originalRuntime;
         uint[][] patterns =
         [
             [0x2129fff8, 0xad000000, 0xad000004, 0x1520fffc, 0x21080008],
@@ -126,6 +130,51 @@ internal static class CpuLoopChecks
         Registers.R4300.Reg[4] = 0x80002000;
         Registers.R4300.Reg[7] = 0x80002040;
         Check(0x80003074, true);
+
+        original = originalRuntime;
+        gated = Bind("TryFastForwardRuntimeLoops");
+        foreach (uint segment in new uint[] { 0x80000000, 0xa0000000 })
+        foreach (uint[] code in new uint[][] {
+            [0x01e4082a, 0x5420fffe, 0x8c4f0000],
+            [0x0411ffff, 0], [0x1000ffff, 0] })
+        {
+            Setup(segment);
+            Registers.R4300.Reg[4] = 10;
+            BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x2000), 5);
+            void Write(int i, uint word) => BinaryPrimitives.WriteUInt32BigEndian(
+                R4300.memory.RDRAM.AsSpan(0x1000 + i * 4), word);
+            for (int i = 0; i < code.Length; i++) Write(i, code[i]);
+            Check(segment + 0x1000, true);
+            for (int i = 0; i < code.Length; i++)
+            {
+                Write(i, code[i] ^ 1u);
+                Check(segment + 0x1000, false);
+                Write(i, code[i]);
+                Check(segment + 0x1000, true);
+            }
+            if (code.Length == 3)
+            {
+                foreach (uint value in new uint[] { 9, 10, 11, 0xffffffff })
+                {
+                    BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x2000), value);
+                    Check(segment + 0x1000, unchecked((int)value) < 10);
+                }
+                Registers.R4300.Reg[2] = 0x1000;
+                Check(segment + 0x1000, false);
+            }
+        }
+        Setup(0x80000000);
+        BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x810), 0x1000ffff);
+        BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x814), 0);
+        Check(0x80000810, true);
+        Check(0x80000814, true);
+        Check(0xa0000810, true);
+        Check(0xa0000814, false);
+        BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x810), 0);
+        Check(0x80000814, false);
+        foreach (uint pc in new uint[] { 0, 0x1000, 0x80000001, 0x807ffffc, 0x807ffffd,
+            0x80800000, 0xa07ffffc, 0xa4000000, 0xb0000000, 0xbfc00000, 0xc0001000, 0xffffffff })
+            Check(pc, false);
         Console.WriteLine($"CPU loop gates: {cases} full-state differential cases passed ({accepted} accepted loops).");
     }
 }

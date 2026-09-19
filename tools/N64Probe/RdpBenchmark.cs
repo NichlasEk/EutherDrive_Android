@@ -45,7 +45,9 @@ internal static class RdpBenchmark
             using var writer = new BinaryWriter(output, System.Text.Encoding.UTF8, true);
             var elapsed = new List<double>();
             string digest = "";
-            for (int iteration = -2; iteration < 12; iteration++)
+            // Give tiered JIT time to settle before measuring small renderer
+            // changes; the command tape and restored state stay identical.
+            for (int iteration = -20; iteration < 20; iteration++)
             {
                 input.BaseStream.Position = 0;
                 load(input);
@@ -77,7 +79,7 @@ internal static class RdpBenchmark
             // Reference ALC loading changes JIT/static-access costs. Validate
             // there, but compare speed using separate default-context processes.
             string timing = label == "reference" ? "validationOnly=True"
-                : $"minMs={elapsed[0]:F3} medianMs={(elapsed[5] + elapsed[6]) / 2:F3} maxMs={elapsed[^1]:F3}";
+                : $"minMs={elapsed[0]:F3} medianMs={(elapsed[9] + elapsed[10]) / 2:F3} maxMs={elapsed[^1]:F3}";
             Console.WriteLine($"rdpBench={label} chunks={commands.Count} runs={elapsed.Count} {timing} fullStateSha256={digest}");
             return digest;
         }
