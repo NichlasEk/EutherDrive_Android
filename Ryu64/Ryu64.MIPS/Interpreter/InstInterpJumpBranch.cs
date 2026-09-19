@@ -7,6 +7,8 @@ namespace Ryu64.MIPS
         private static readonly bool TraceBranchWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_BRANCH_WINDOW"), "1", StringComparison.Ordinal);
 
+        internal static bool BranchTracingEnabled => TraceBranchWindow;
+
         private static ulong SignExtendPcToReg(uint pc)
         {
             return unchecked((ulong)(long)(int)pc);

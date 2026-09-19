@@ -6259,6 +6259,34 @@ namespace Ryu64.MIPS
             WriteUInt32Physical(0x4000101C, 0x3C0BB000);
         }
 
+        // A conservative interval with no device completion, VI line change or
+        // interrupt. Within it Tick only subtracts counters/adds line cycles, so
+        // one aggregate tick is identical to individual one-cycle ticks.
+        internal uint GetQuietCpuCycles(uint maximum)
+        {
+            uint sync = ReadBigEndianWord(VI_V_SYNC_REG_RW) & 0x3ffu;
+            if (sync == 0)
+                return 0;
+            uint lineCycles = GetCpuCyclesPerViLine(sync + 1);
+            if (_viFrameDelayCycles != lineCycles * (sync + 1)
+                || _viLineCycleAccum >= lineCycles)
+                return 0;
+            uint limit = Math.Min(maximum, lineCycles - _viLineCycleAccum - 1);
+            if ((ReadBigEndianWord(VI_INTR_REG_RW) & 0x3ffu) < sync)
+                limit = BeforeEvent(limit, _viInterruptCyclesRemaining);
+            if (_spDmaDelayArmed) limit = BeforeEvent(limit, _spDmaDelayRemaining);
+            if (_rspTaskActive) limit = BeforeEvent(limit, _rspTaskCyclesRemaining);
+            if (_rspInterruptDelayArmed) limit = BeforeEvent(limit, _rspInterruptDelayRemaining);
+            if (_dpInterruptDelayArmed) limit = BeforeEvent(limit, _dpInterruptDelayRemaining);
+            if (_piInterruptDelayArmed) limit = BeforeEvent(limit, _piInterruptDelayRemaining);
+            if (_siInterruptDelayArmed) limit = BeforeEvent(limit, _siInterruptDelayRemaining);
+            if (_aiInterruptDelayArmed) limit = BeforeEvent(limit, _aiInterruptDelayRemaining);
+            return limit;
+        }
+
+        private static uint BeforeEvent(uint limit, uint remaining)
+            => remaining == 0 ? 0 : Math.Min(limit, remaining - 1);
+
         public void Tick(uint cpuCycles)
         {
             AdvanceRspDpLifecycle(cpuCycles);

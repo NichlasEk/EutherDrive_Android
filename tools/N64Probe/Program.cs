@@ -2,6 +2,12 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 2 && (args[0] == "--check-idle-events" || args[0] == "--bench-idle-events"))
+{
+    CpuIdleEventChecks.Run(args[1], args[0] == "--bench-idle-events");
+    return;
+}
+
 if (args.Length >= 2 && args[0] == "--bench-cpu-idle")
 {
     CpuIdleBenchmark.Run(args[1], args.Length > 2 ? args[2] : null);

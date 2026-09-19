@@ -1906,6 +1906,60 @@ namespace Ryu64.MIPS
             return pc == 0x80000814u && TryFastForwardIdleLoop(pc);
         }
 
+        private static uint TryAdvanceMappedIdleLoop(uint pc, uint maximumCycles)
+        {
+            uint segment = pc & 0xe0000000u;
+            if (!FastIdleLoop || Common.Variables.Debug || Common.Settings.STEP_MODE || CpuWindowTracingEnabled
+                || TraceSm64DispatchWindow || TraceHotPcSamples || InstInterp.BranchTracingEnabled
+                || _executingDelaySlot || _delaySlotExceptionPending
+                || segment == 0x80000000u || segment == 0xa0000000u
+                || (pc & 3) != 0 || (pc & 0xfff) > 0xff8
+                || memory.HasPendingRcpInterrupt
+                || (Registers.COP0.Reg[Registers.COP0.CAUSE_REG] & CauseIpMask) != 0)
+                return 0;
+
+            ulong count = Registers.COP0.Reg[Registers.COP0.COUNT_REG];
+            if (count >= uint.MaxValue || (Count >> 1) != count)
+                return 0;
+            uint cycles = memory.GetQuietCpuCycles(Math.Min(maximumCycles, 65536u));
+            // Leave the matching/wrapping instruction to the normal interpreter.
+            ulong untilWrap = ((uint.MaxValue - count) << 1) - (Count & 1);
+            cycles = (uint)Math.Min(cycles, untilWrap - 1);
+            uint compare = (uint)Registers.COP0.Reg[Registers.COP0.COMPARE_REG];
+            if (compare > count)
+                cycles = (uint)Math.Min(cycles, (((ulong)compare - count) << 1) - (Count & 1) - 1);
+            cycles &= ~1u; // Whole BEQ + NOP pairs only.
+            if (cycles < 4)
+                return 0;
+
+            // Validate live mapped RAM each time. No translation cache; misses
+            // and non-NOP delay slots go through normal exception handling.
+            try
+            {
+                uint physical = TLB.TranslateAddress(pc, throwOnMiss: true) & 0x1fffffffu;
+                uint delayPhysical = TLB.TranslateAddress(pc + 4, throwOnMiss: true) & 0x1fffffffu;
+                if (!memory.TryReadRdramUInt32PhysicalFast(physical, out uint branch) || branch != 0x1000ffffu
+                    || !memory.TryReadRdramUInt32PhysicalFast(delayPhysical, out uint delay) || delay != 0)
+                    return 0;
+            }
+            catch (Common.Exceptions.TLBMissException) { return 0; }
+
+            Registers.R4300.Reg[0] = 0;
+            CycleCounter += cycles;
+            Count += cycles;
+            memory.Tick(cycles);
+            Registers.COP0.Reg[Registers.COP0.COUNT_REG] = (uint)(Count >> 1);
+            uint random = (uint)Registers.COP0.Reg[Registers.COP0.RANDOM_REG] & 31;
+            uint wired = (uint)Registers.COP0.Reg[Registers.COP0.WIRED_REG] & 31;
+            uint firstRun = random > wired ? random - wired : 0;
+            random = cycles <= firstRun ? random - cycles
+                : 31 - ((cycles - firstRun - 1) % (32 - wired));
+            Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = random;
+            Common.Measure.InstructionCount += cycles;
+            Common.Measure.CycleCounter = CycleCounter;
+            return cycles;
+        }
+
         private static bool TryFastForwardIdleLoop(uint pc)
         {
             if (!FastIdleLoop)
@@ -3552,6 +3606,21 @@ namespace Ryu64.MIPS
                             if (CpuWindowTracingEnabled)
                                 TraceCpuInstructionWindows(pc, Opcode);
 
+                            if (Opcode == 0x1000ffffu)
+                            {
+                                uint idleCycles = TryAdvanceMappedIdleLoop(pc, 65536);
+                                if (idleCycles != 0)
+                                {
+                                    // The first branch is already in the history.
+                                    uint extra = idleCycles / 2 - 1;
+                                    int entries = (int)Math.Min(extra, RecentInstHistorySize);
+                                    for (int i = 0; i < entries; i++)
+                                        _recentInst[(_recentInstPos + i) & RecentInstHistoryMask] = new RecentInst { Pc = pc, Op = Opcode };
+                                    _recentInstPos = (int)((_recentInstPos + extra) & RecentInstHistoryMask);
+                                    samePcIterations += extra;
+                                    continue;
+                                }
+                            }
                             InterpretOpcode(Opcode);
                         }
                         catch (NotImplementedException ex)
