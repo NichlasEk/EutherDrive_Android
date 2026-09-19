@@ -4246,7 +4246,7 @@ namespace Ryu64.MIPS
                 return DecodeRdpTextureColorLinearLerp(ref sampler, s, t, fracS, fracT, out rgba);
             }
 
-            RdpTileState tile = sampler.Tile;
+            ref RdpTileState tile = ref sampler.Tile;
             int u;
             int v;
             if (sampler.FastClampCoordinates)
@@ -4277,16 +4277,17 @@ namespace Ryu64.MIPS
             if (s0 < 0 || t0 < 0 || s1 < 0 || t1 < 0)
                 return false;
 
-            RdpTileState tile = sampler.Tile;
-            if (!DecodeRdpTextureColor(tile, s0, t0, out uint c00)
-                || !DecodeRdpTextureColor(tile, s1, t0, out uint c10)
+            ref RdpTileState tile = ref sampler.Tile;
+            bool upper = fracS + fracT >= 32;
+            // Three-point filtering consumes three corners, never all four.
+            if (!DecodeRdpTextureColor(tile, s1, t0, out uint c10)
                 || !DecodeRdpTextureColor(tile, s0, t1, out uint c01)
-                || !DecodeRdpTextureColor(tile, s1, t1, out uint c11))
+                || !DecodeRdpTextureColor(tile, upper ? s1 : s0, upper ? t1 : t0, out uint corner))
                 return false;
 
-            rgba = (fracS + fracT) >= 32
-                ? BlendRdpTexelsTriangleUpper(c10, c01, c11, fracS, fracT)
-                : BlendRdpTexelsTriangleLower(c00, c10, c01, fracS, fracT);
+            rgba = upper
+                ? BlendRdpTexelsTriangleUpper(c10, c01, corner, fracS, fracT)
+                : BlendRdpTexelsTriangleLower(corner, c10, c01, fracS, fracT);
             if ((rgba & 0xFFu) < 0x80u)
                 rgba &= 0xFFFFFF00u;
             return true;
@@ -4295,7 +4296,7 @@ namespace Ryu64.MIPS
         private bool DecodeRdpTextureColorLinearLerp(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
         {
             rgba = 0;
-            RdpTileState tile = sampler.Tile;
+            ref RdpTileState tile = ref sampler.Tile;
             int s0 = ApplyRdpTextureCoordinate(s, sampler.OriginS, sampler.Width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
             int t0 = ApplyRdpTextureCoordinate(t, sampler.OriginT, sampler.Height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
             int s1 = ApplyRdpTextureCoordinate(s + 1, sampler.OriginS, sampler.Width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
@@ -4303,15 +4304,15 @@ namespace Ryu64.MIPS
             if (s0 < 0 || t0 < 0 || s1 < 0 || t1 < 0)
                 return false;
 
-            if (!DecodeRdpTextureColor(tile, s0, t0, out uint c00)
-                || !DecodeRdpTextureColor(tile, s1, t0, out uint c10)
+            bool upper = fracS + fracT >= 32;
+            if (!DecodeRdpTextureColor(tile, s1, t0, out uint c10)
                 || !DecodeRdpTextureColor(tile, s0, t1, out uint c01)
-                || !DecodeRdpTextureColor(tile, s1, t1, out uint c11))
+                || !DecodeRdpTextureColor(tile, upper ? s1 : s0, upper ? t1 : t0, out uint corner))
                 return false;
 
-            rgba = (fracS + fracT) >= 32
-                ? BlendRdpTexelsTriangleUpper(c10, c01, c11, fracS, fracT)
-                : BlendRdpTexelsTriangleLower(c00, c10, c01, fracS, fracT);
+            rgba = upper
+                ? BlendRdpTexelsTriangleUpper(c10, c01, corner, fracS, fracT)
+                : BlendRdpTexelsTriangleLower(corner, c10, c01, fracS, fracT);
             if ((rgba & 0xFFu) < 0x80u)
                 rgba &= 0xFFFFFF00u;
             return true;
@@ -4484,7 +4485,7 @@ namespace Ryu64.MIPS
             return word << 1;
         }
 
-        private bool DecodeRdpTextureColor(RdpTileState tile, int s, int t, out uint rgba)
+        private bool DecodeRdpTextureColor(in RdpTileState tile, int s, int t, out uint rgba)
         {
             rgba = 0;
             uint sUnsigned = (uint)Math.Max(0, s);

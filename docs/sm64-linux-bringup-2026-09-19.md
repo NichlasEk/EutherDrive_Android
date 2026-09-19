@@ -363,3 +363,34 @@ VMOV, and VNOP also avoid operand loads they do not consume.
 The post-CPU-gate profile puts about 65% of sampled thread time inside RSP
 tasks (including the software RDP renderer), versus 35% outside. Full-speed
 playability still requires substantially more work.
+
+## Follow-up 8: avoid texture-state copies and unused fourth sample
+
+Texture decoding takes the tile descriptor by readonly reference instead
+of copying its 60-byte state for every texel. Three-point filtering decodes
+only the three corners used by its selected triangle, not a fourth unused
+corner. Texture formats, coordinate rules, palette lookup, and blending
+arithmetic are unchanged.
+
+`--check-sampler REFERENCE_DLL` compares 40960 deterministic samples across
+all format/size combinations, TLUT modes, filtered/unfiltered sampling,
+fast-clamp/general coordinates, negative/wrapped coordinates, and both
+filter triangles. SHA256 matches before/after:
+`F4C973F44AE32F1F8A124C9FDC1A659E54BE533507395FA7A87273837AD05CD3`.
+All 6845 render/interrupt assertions also pass.
+
+`--bench-rdp CAPTURE_DIR [REFERENCE_DLL]` restores the same captured memory
+before every frame, warms twice, and measures 12 identical replays. Loading
+and hashing are excluded from timing. Complete serialized memory state is
+compared on every repetition and between builds, not just visible pixels.
+
+- Tree scene, 2604 chunks: median 56.557 ms before, 45.978 ms after (~19% less
+  rendering time), full-state hash
+  `5487D77AF344946FE875398F8AE183E77AE11A11C6E0738BF1B444EFA3C86B79`.
+- Logo, 908 chunks: median 17.332 ms before, 14.452 ms after (~17% less), hash
+  `7424CB6134D22E0D860323BD2010DAC37477F9BC23410C6EC54D8D414659A303`.
+- Logs: `sampler-tree-bench.log`, `sampler-logo-bench.log`, reference binary
+  `pre-sampler/Ryu64.MIPS.dll`.
+
+These are software-RDP costs only; CPU/RSP work is additional, so these
+numbers must not be presented as whole-game frame rates.

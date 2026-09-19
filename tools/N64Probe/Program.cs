@@ -2,6 +2,16 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length >= 2 && args[0] == "--bench-rdp")
+{
+    RdpBenchmark.Run(args[1], args.Length > 2 ? args[2] : null);
+    return;
+}
+if (args.Length >= 1 && args[0] == "--check-sampler")
+{
+    SamplerChecks.Run(args.Length > 1 ? args[1] : null);
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-cpu-loops")
 {
     CpuLoopChecks.Run();
