@@ -266,6 +266,10 @@ try
         if (captureAudio) Console.WriteLine($"audio samples={audioSamples} nonzero={audioNonzero} peak={audioPeak} duration={audioSamples / 88200.0:F3}s");
         if (Environment.GetEnvironmentVariable("N64_PROBE_AUTO_INPUT") == "1")
             core.SetInputState(new Ryu64Core.InputState { Start = second >= 15 && second % 10 < 2, A = second >= 35 && second % 10 is >= 5 and < 7 });
+        if (Environment.GetEnvironmentVariable("N64_PROBE_MOVE_INPUT") == "1")
+            core.SetInputState(new Ryu64Core.InputState {
+                StickY = second >= 10 && second < 45 ? (sbyte)80 : (sbyte)0,
+                StickX = second >= 45 && second < 60 ? (sbyte)60 : (sbyte)0 });
         if (sm64Input)
         {
             core.SetInputState(new Ryu64Core.InputState { A = second % 4 == 0, StickY = second >= 20 ? (sbyte)80 : (sbyte)0 });

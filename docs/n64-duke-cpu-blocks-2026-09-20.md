@@ -171,3 +171,58 @@ Final NOP-refined UI build: zero errors, 383 existing warnings. The UI and
 `nop/` probe core both have SHA-256
 `993f23788b385b7f6dd91baa043c257e8b9a8d341e30eb3e1247b8430ff7e3a4`.
 The final thread fixture again matches both state/history hashes above.
+
+## End-of-session profile and final build
+
+The follow-up RAM-word change is recorded in
+`n64-ram-word-access-2026-09-20.md` (`e4b307a1`). A managed compiled-block attempt
+was measured and removed; see `n64-compiled-block-experiment-2026-09-20.md`.
+
+A fresh 20-second profile of the restored final interpreter found 68.65% of
+CPU-thread time outside RSP tasks and 31.35% inside RSP tasks (including RDP
+rendering called from them). Leading leaf samples were the outer CPU loop
+27.22%, CPU blocks 16.47%, multiply batches 5.44%, textured triangles 5.34%,
+and word writes 4.95%. Inlining still attributes work to its visible caller.
+Profile and final control-run artifacts: `.build-tmp/duke-final-2026-09-20/`.
+
+The final rebuilt UI and probe share core SHA-256
+`3cc33cbc953b2f55d61812977927b49886606a4d6e3abe5e2bfbf7bf01c98e60`.
+Its assembly version stamp is `e4b307a1`; the different digest from the first
+RAM build also reflects that rebuilt version metadata. No experimental compiled
+block methods are present in this final binary.
+
+The probe now supports `N64_PROBE_MOVE_INPUT=1` for a gameplay smoke run: move
+forward at wall seconds 10–44, turn at 45–59, then release the controls. This is
+headless test input and does not modify the application's input mappings or the
+user's source savestate.
+
+### Final combined control run
+
+Four fresh 60-second runs used order `224cc5a9`, current, current, `224cc5a9`,
+pinned CPU 6, with the first ten seconds of each excluded. No profiling or build
+ran alongside them. Both versions started from the identical saved scene.
+
+| Build | Individual graphics tasks/s | Combined graphics tasks/s | Combined cycles/s |
+| --- | --- | ---: | ---: |
+| Start of session (`224cc5a9`) | 3.941, 4.143 | 4.042 | 12,814,617 |
+| Final (`e4b307a1`) | 5.703, 5.511 | 5.607 | 17,705,348 |
+
+Weighted by each measured interval, the final result is **38.7% higher graphics
+throughput and 38.2% higher emulated cycles/s**. All four runs reported zero
+unknown opcodes. These are headless graphics-task rates, not displayed FPS, and
+the game remains well below full speed. This combined comparison supersedes
+adding together gains from the individual experiments. Raw samples and the
+calculation are in `results.json` and `summarize.py` in the final artifact folder.
+
+Final validation on the rebuilt binary:
+
+- All 609 CPU-block cases passed, plus one million decoder samples (345,208
+  accepted), including state, rejection, event boundaries and self-modification.
+- Duke ran for 90 seconds with forward movement and camera turning. Captured
+  images show movement toward the fence with the level, weapon and HUD intact.
+  The run completed with zero unknown opcodes.
+- Perfect Dark completed a 45-second smoke run with zero unknown opcodes; its
+  final image shows the "Choose Your Reality" menu. This is a smoke check, not
+  a claim of complete menu correctness or improved Perfect Dark speed.
+- The user's Duke slot 1 remains unchanged, SHA-256
+  `1c18b38b54947268807704d028f281c9c889ce295bac12640a84248677d2730a`.
