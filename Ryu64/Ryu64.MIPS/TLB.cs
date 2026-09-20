@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading;
 
 namespace Ryu64.MIPS
 {
@@ -30,11 +31,27 @@ namespace Ryu64.MIPS
 
         private const int TlbEntryCount = 32;
         private readonly static TLBEntry[] TLBEntries = new TLBEntry[TlbEntryCount];
+        // Derived lookup state only; every entry mutation invalidates it. Cache
+        // 4 KiB subpages so large/overlapping mappings keep the scan's priority.
+        private struct Translation
+        {
+            public bool Valid;
+            public uint Tag;
+            public uint PhysicalPage;
+        }
+        // UI diagnostics can translate addresses too. Never let those readers
+        // publish into the CPU thread's cache or retain a mapping after a write.
+        [ThreadStatic] private static Translation[] Translations;
+        [ThreadStatic] private static int CachedTranslationVersion;
+        private static int TranslationVersion;
+
+        private static void InvalidateTranslations() => Interlocked.Increment(ref TranslationVersion);
 
         public static void Reset()
         {
             for (int i = 0; i < TLBEntries.Length; i++)
                 TLBEntries[i] = default;
+            InvalidateTranslations();
         }
 
         public static void SaveState(BinaryWriter writer)
@@ -66,26 +83,30 @@ namespace Ryu64.MIPS
             if (count != TlbEntryCount)
                 throw new InvalidDataException($"Unsupported N64 TLB entry count: {count}.");
 
-            for (int i = 0; i < TLBEntries.Length; i++)
+            try
             {
-                TLBEntries[i] = new TLBEntry
+                for (int i = 0; i < TLBEntries.Length; i++)
                 {
-                    Written = reader.ReadBoolean(),
-                    PFN0 = reader.ReadUInt32(),
-                    PageCoherency0 = reader.ReadByte(),
-                    Dirty0 = reader.ReadByte(),
-                    Valid0 = reader.ReadByte(),
-                    Global0 = reader.ReadByte(),
-                    PFN1 = reader.ReadUInt32(),
-                    PageCoherency1 = reader.ReadByte(),
-                    Dirty1 = reader.ReadByte(),
-                    Valid1 = reader.ReadByte(),
-                    Global1 = reader.ReadByte(),
-                    VPN2 = reader.ReadUInt32(),
-                    ASID = reader.ReadByte(),
-                    PageMask = reader.ReadUInt16()
-                };
+                    TLBEntries[i] = new TLBEntry
+                    {
+                        Written = reader.ReadBoolean(),
+                        PFN0 = reader.ReadUInt32(),
+                        PageCoherency0 = reader.ReadByte(),
+                        Dirty0 = reader.ReadByte(),
+                        Valid0 = reader.ReadByte(),
+                        Global0 = reader.ReadByte(),
+                        PFN1 = reader.ReadUInt32(),
+                        PageCoherency1 = reader.ReadByte(),
+                        Dirty1 = reader.ReadByte(),
+                        Valid1 = reader.ReadByte(),
+                        Global1 = reader.ReadByte(),
+                        VPN2 = reader.ReadUInt32(),
+                        ASID = reader.ReadByte(),
+                        PageMask = reader.ReadUInt16()
+                    };
+                }
             }
+            finally { InvalidateTranslations(); }
         }
 
         public static uint TranslateAddress(uint Address)
@@ -99,6 +120,19 @@ namespace Ryu64.MIPS
                 return Address;
 
             uint currentAsid = (uint)Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG] & 0xFF;
+            uint page = Address >> 12;
+            uint tag = (page << 8) | currentAsid;
+            int version = Volatile.Read(ref TranslationVersion);
+            Translation[] translations = Translations;
+            if (translations == null || CachedTranslationVersion != version)
+            {
+                if (translations == null) Translations = translations = new Translation[256];
+                else Array.Clear(translations, 0, translations.Length);
+                CachedTranslationVersion = version;
+            }
+            ref Translation cached = ref translations[page & 255u];
+            if (cached.Valid && cached.Tag == tag)
+                return cached.PhysicalPage | (Address & 0xfffu);
 
             foreach (TLBEntry Entry in TLBEntries)
             {
@@ -128,7 +162,9 @@ namespace Ryu64.MIPS
                     continue;
 
                 uint pfn = oddPage ? Entry.PFN1 : Entry.PFN0;
-                return (pfn << 12) | (Address & pageOffsetMask);
+                uint physical = (pfn << 12) | (Address & pageOffsetMask);
+                cached = new Translation { Valid = true, Tag = tag, PhysicalPage = physical & ~0xfffu };
+                return physical;
             }
 
             if (throwOnMiss)
@@ -186,6 +222,7 @@ namespace Ryu64.MIPS
                                      & ((byte)Registers.COP0.Reg[Registers.COP0.ENTRYLO1_REG] & 0x1)),
                 ASID = (byte)(Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG] & 0xFF)
             };
+            InvalidateTranslations();
         }
 
         public static void ProbeTLB()

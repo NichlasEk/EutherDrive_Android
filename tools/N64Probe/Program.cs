@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 2 && args[0] == "--check-tlb-cache")
+{
+    TlbCacheChecks.Run(args[1]);
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-rsp-scheduling")
 {
     RspSchedulingChecks.Run();
