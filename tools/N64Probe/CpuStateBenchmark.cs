@@ -27,6 +27,7 @@ internal static class CpuStateBenchmark
         string expected = "";
         var fallbackCounts = new Dictionary<string, long>();
         var blockLengths = new Dictionary<uint, long>();
+        var blockStops = new Dictionary<uint, long>();
         for (int run = profile ? 0 : -3; run < (profile ? 1 : 5); run++)
         {
             source.BaseStream.Position = 0;
@@ -46,6 +47,19 @@ internal static class CpuStateBenchmark
                     {
                         uint length = block(pc, opcode, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount), false);
                         if (profile) blockLengths[length] = blockLengths.GetValueOrDefault(length) + 1;
+                        if (profile && length != 0)
+                        {
+                            uint nextPc = Registers.R4300.PC;
+                            uint physical = nextPc & 0x1fffffffu;
+                            byte[] ram = R4300.memory.RDRAM;
+                            // Observe RAM directly: a diagnostic fetch must not
+                            // perform an extra device read or TLB translation.
+                            if (nextPc >= 0x80000000u && nextPc < 0xc0000000u && physical + 4 <= ram.Length)
+                            {
+                                uint next = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(ram.AsSpan((int)physical,4));
+                                blockStops[next] = blockStops.GetValueOrDefault(next) + 1;
+                            }
+                        }
                         if (length != 0) continue;
                     }
                     if (profile)
@@ -73,6 +87,7 @@ internal static class CpuStateBenchmark
         {
             Console.WriteLine("fallbackCounts=" + string.Join(",", fallbackCounts.OrderByDescending(x => x.Value).Select(x => $"{x.Key}:{x.Value}")));
             Console.WriteLine("blockLengths=" + string.Join(",", blockLengths.OrderBy(x => x.Key).Select(x => $"{x.Key}:{x.Value}")));
+            Console.WriteLine("blockStopOpcodes=" + string.Join(",", blockStops.OrderByDescending(x => x.Value).Take(40).Select(x => $"{x.Key:x8}:{x.Value}")));
         }
         string measurement = profile ? "gameProfile instrumentedMs" : "gameReplay medianMs";
         Console.WriteLine($"{measurement}={timings[timings.Count / 2]:F3} instructions={Ryu64.Common.Measure.InstructionCount} sha256={expected}");

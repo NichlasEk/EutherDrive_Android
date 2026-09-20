@@ -9,7 +9,7 @@ using Ryu64.MIPS;
 // instruction boundary; the production core needs no benchmark hooks.
 internal static class CpuThreadBenchmark
 {
-    internal static void Run(bool multiplyRoutine = false, bool cpuBlock = false)
+    internal static void Run(bool multiplyRoutine = false, bool cpuBlock = false, bool cop1Block = false)
     {
         int iterations = multiplyRoutine ? 250_000 : 1_000_000;
         ulong instructionTotal = (ulong)iterations * (multiplyRoutine ? 17UL : 10UL) + 1;
@@ -37,6 +37,15 @@ internal static class CpuThreadBenchmark
             code = new uint[] { 0x24420001,0x00431826,0x34645678,0x00042880,
                 0x3c078000,0x8ce80000,0xace80004,0x400b0800,0x2529ffff,0x1520fff6,0x400a4800,15 };
             instructionTotal = (ulong)iterations * 11 + 1;
+        }
+        if (cop1Block)
+        {
+            code = new uint[] { 0x24420001,0x00431826,0x34645678,0x00042880,
+                0x3c078000,0x8ce80000,0xace80004,0x44881000,0x46021100,0x440c2000,
+                0x400b0800,0x2529ffff,0x1520fff3,0x400a4800,15 };
+            Registers.COP0.Reg[12] = 0x24000000;
+            R4300.memory.WriteUInt32(0x80000000,0x3f800000);
+            instructionTotal = (ulong)iterations * 14 + 1;
         }
         if (multiplyRoutine)
         {
@@ -82,10 +91,12 @@ internal static class CpuThreadBenchmark
                 var thread = (Thread)threadField.GetValue(null)!;
                 if (!thread.Join(TimeSpan.FromSeconds(30))) throw new TimeoutException("CPU benchmark did not stop");
                 double elapsed = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-                if (Registers.R4300.PC != (0x80000000u + (uint)codeBase + (multiplyRoutine ? 0x18u : cpuBlock ? 0x30u : 0x2cu)) || (!multiplyRoutine && Registers.R4300.Reg[2] != (ulong)iterations)
+                if (Registers.R4300.PC != (0x80000000u + (uint)codeBase + (multiplyRoutine ? 0x18u : cop1Block ? 0x3cu : cpuBlock ? 0x30u : 0x2cu)) || (!multiplyRoutine && Registers.R4300.Reg[2] != (ulong)iterations)
                     || Registers.R4300.Reg[9] != 0 || R4300.GetUnknownOpcodeCount() != 0
                     || Ryu64.Common.Measure.InstructionCount != instructionTotal)
                     throw new Exception("CPU benchmark did not complete the expected instruction sequence");
+                if (cop1Block && Registers.R4300.Reg[12] != 0x40000000)
+                    throw new Exception("COP1 thread fixture did not produce 2.0f");
                 result.SetLength(0);
                 R4300.SaveState(resultWriter);
                 resultWriter.Flush();

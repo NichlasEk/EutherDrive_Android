@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--bench-cop1-block-thread")
+{
+    CpuThreadBenchmark.Run(cpuBlock: true, cop1Block: true);
+    return;
+}
 if (args.Length == 2 && (args[0] == "--check-word-access" || args[0] == "--check-opcode-fetch"))
 {
     MemoryWordAccessChecks.Run(args[1], instructionFetch: args[0] == "--check-opcode-fetch");
