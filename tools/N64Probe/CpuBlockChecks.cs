@@ -103,6 +103,23 @@ internal static class CpuBlockChecks
         foreach (uint primary in new uint[] { 9,10,11,12,13,14,15,25,32,33,35,36,37,39,40,41,43,55,63 })
         foreach (uint immediate in new uint[] { 0,8,0xfff8 })
         { Reset(); Code(0, primary << 26 | (primary == 15 ? 0 : 4u << 21) | 5u << 16 | immediate); Check(32); }
+        // Signed payloads, cached/uncached aliases, last valid RAM access,
+        // destination/base aliasing and r0 writes, also in branch delay slots.
+        foreach (uint primary in new uint[] { 32,33,35,36,37,39,55 })
+        foreach (uint target in new uint[] { 0,4,5 })
+        foreach (bool delaySlot in new[] { false,true })
+        foreach (uint segment in new uint[] { 0x80000000,0xa0000000 })
+        {
+            Reset();
+            int width = primary == 55 ? 8 : primary == 35 || primary == 39 ? 4 : primary == 33 || primary == 37 ? 2 : 1;
+            int address = R4300.memory.RDRAM.Length - width;
+            for (int b = 0; b < width; b++) R4300.memory.RDRAM[address + b] = (byte)(0x81 + b * 13);
+            Registers.R4300.Reg[4] = segment + (uint)address + 8;
+            uint load = primary << 26 | 4u << 21 | target << 16 | 0xfff8u;
+            if (delaySlot) { Code(0,0x08004004); Code(1,load); }
+            else Code(0,load);
+            Check(2,2);
+        }
         foreach (uint branch in new uint[] { 0x08004000,0x0c004000,0x10850002,0x1485fffc,0x00800008,0x0080f809,0x00800009 })
         foreach (uint delay in new uint[] { 0,0x24420001,0x3404abcd,0x03e01825,0x24000042,0x8c850000,0xac850000,0xdc850000 })
         foreach (bool equal in new[] { false,true })

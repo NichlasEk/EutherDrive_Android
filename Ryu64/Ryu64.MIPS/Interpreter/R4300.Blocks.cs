@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 
 namespace Ryu64.MIPS
 {
@@ -110,9 +111,15 @@ namespace Ryu64.MIPS
                 case 41: InstInterp.SH(desc); break;
                 case 63: InstInterp.SD(desc); break;
                 case 144: InstInterp.MTC0(desc); break;
-                case 35: InstInterp.LW(desc); break;
+                case 35:
+                    Registers.R4300.Reg[desc.op2] = unchecked((ulong)(long)BinaryPrimitives.ReadInt32BigEndian(memory.RDRAM.AsSpan(CpuBlockLoadAddress(desc), 4)));
+                    Registers.R4300.PC += 4;
+                    break;
                 case 43: InstInterp.SW(desc); break;
-                case 55: InstInterp.LD(desc); break;
+                case 55:
+                    Registers.R4300.Reg[desc.op2] = BinaryPrimitives.ReadUInt64BigEndian(memory.RDRAM.AsSpan(CpuBlockLoadAddress(desc), 8));
+                    Registers.R4300.PC += 4;
+                    break;
                 case 64: InstInterp.SLL(desc); break;
                 case 66: InstInterp.SRL(desc); break;
                 case 67: InstInterp.SRA(desc); break;
@@ -139,6 +146,16 @@ namespace Ryu64.MIPS
                 case 126: InstInterp.DSRL32(desc); break;
                 case 127: InstInterp.DSRA32(desc); break;
             }
+        }
+
+        // CanAccessCpuBlockOperand has checked direct RAM, alignment and the
+        // entire access width. Resolve the address after branch link writes and
+        // r0 normalization, just as the ordinary load handlers do.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static int CpuBlockLoadAddress(OpcodeTable.OpcodeDesc desc)
+        {
+            return (int)(unchecked((uint)(Registers.R4300.Reg[desc.op1]
+                + (ulong)(long)(short)desc.Imm)) & 0x1fffffffu);
         }
 
         // The delay instruction is validated before any branch/link state changes.
@@ -187,7 +204,7 @@ namespace Ryu64.MIPS
 
         // A bounded interpreter for quiet intervals: no code cache and no
         // synthetic cycles. Fetch after every preceding store/branch, execute
-        // the usual handlers, and aggregate only event-free clock boundaries.
+        // validated loads or usual handlers, aggregating event-free clock boundaries.
         // MFC0 observes its precise intermediate Count/RANDOM, including the
         // delay-before-branch accounting order used by InterpretOpcode.
         // The caller has already recorded the first history entry.
