@@ -3550,7 +3550,11 @@ namespace Ryu64.MIPS
             _rdpOtherModesSampleType = ((mode >> 45) & 1UL) != 0;
             _rdpOtherModesBiLerp0 = ((mode >> 43) & 1UL) != 0;
             _rdpOtherModesBiLerp1 = ((mode >> 42) & 1UL) != 0;
-            _rdpOtherModesForceBlend = ((mode >> 14) & 1UL) != 0;
+            // Both blender banks can explicitly pass the pixel through:
+            // PIXEL * ZERO + PIXEL * ONE. FORCE_BL must not turn that into
+            // source-over alpha blending (e.g. Duke's intensity-textured sky).
+            bool pixelPassthrough = ((mode >> 16) & 0xFFFFUL) == 0x0F0AUL;
+            _rdpOtherModesForceBlend = ((mode >> 14) & 1UL) != 0 && !pixelPassthrough;
             _rdpOtherModesCvgTimesAlpha = ((mode >> 12) & 1UL) != 0;
             _rdpOtherModesZMode = (uint)((mode >> 10) & 0x3UL);
             _rdpOtherModesCvgDest = (uint)((mode >> 8) & 0x3UL);
@@ -4179,6 +4183,14 @@ namespace Ryu64.MIPS
             double startT = tFixed / 32.0;
             double stepS = dsdxFixed / 1024.0;
             double stepT = dtdyFixed / 1024.0;
+            // Rectangles have no interpolated Z coefficients. In primitive-Z
+            // mode they still compare/update depth, just like billboard sprites.
+            bool useDepth = EnableRdpDepth && _rdpOtherModesCycleType < 2u
+                && _rdpOtherModesZSourceSel && _rdpMaskImageAddress < RDRAM.Length
+                && (_rdpOtherModesZCompare || _rdpOtherModesZUpdate);
+            long primitiveZ = (long)_rdpPrimitiveDepth << 16;
+            uint primitiveDz = Math.Max(1u, _rdpPrimitiveDeltaZ);
+            uint primitiveDzEncoded = CompressRdpDz(primitiveDz);
             bool wroteAny = false;
             uint sampleMisses = 0;
             uint sampleHits = 0;
@@ -4228,7 +4240,13 @@ namespace Ryu64.MIPS
                         continue;
                     }
 
-                    uint address = _rdpColorImageAddress + ((y * _rdpColorImageWidth + screenX) * bytesPerPixel);
+                    uint pixelIndex = y * _rdpColorImageWidth + screenX;
+                    if (useDepth && !PassRdpDepthTest(pixelIndex, primitiveZ, primitiveDz, primitiveDzEncoded))
+                    {
+                        sampleHits++;
+                        continue;
+                    }
+                    uint address = _rdpColorImageAddress + pixelIndex * bytesPerPixel;
                     if (!wroteAny)
                     {
                         firstAddress = address;
@@ -4853,7 +4871,8 @@ namespace Ryu64.MIPS
                 }
             }
 
-            rgba = (intensity << 24) | (intensity << 16) | (intensity << 8) | 0xFFu;
+            // I4/I8 replicate intensity into alpha as well as RGB.
+            rgba = (intensity << 24) | (intensity << 16) | (intensity << 8) | intensity;
             return true;
         }
 

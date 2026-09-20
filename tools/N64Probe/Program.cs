@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-sprites")
+{
+    SpriteRenderChecks.Run();
+    return;
+}
 if (args.Length == 1 && args[0] == "--bench-cop1-block-thread")
 {
     CpuThreadBenchmark.Run(cpuBlock: true, cop1Block: true);
@@ -245,6 +250,8 @@ bool sm64Us = BinaryPrimitives.ReadUInt32BigEndian(rom.AsSpan(0x10)) == 0x635a2b
 if (sm64Input && !sm64Us) throw new ArgumentException("SM64 input/telemetry requires the original USA cartridge");
 using var probeProcess = Process.GetCurrentProcess();
 TimeSpan cpuStart = probeProcess.TotalProcessorTime;
+bool fireInput = Environment.GetEnvironmentVariable("N64_PROBE_FIRE_INPUT") == "1";
+if (fireInput) core.SetInputState(new Ryu64Core.InputState { Z = true });
 core.Start();
 var timer = Stopwatch.StartNew();
 bool captureAudio = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_AUDIO") == "1";
@@ -291,7 +298,7 @@ try
             }
         }
         Console.WriteLine($"seconds={timer.Elapsed.TotalSeconds:F2} cpuSeconds={(probeProcess.TotalProcessorTime - cpuStart).TotalSeconds:F3} {core.LastExecutionStatus}");
-        if (second % 5 == 4)
+        if (second % 5 == 4 || fireInput)
         {
             Console.WriteLine(core.LastPerformanceStatus);
             uint origin = R4300.memory.ReadUInt32(0x04400004) & 0xffffff;
