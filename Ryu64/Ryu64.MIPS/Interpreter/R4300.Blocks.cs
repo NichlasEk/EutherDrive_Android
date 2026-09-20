@@ -235,7 +235,7 @@ namespace Ryu64.MIPS
             uint physical = pc & 0x1fffffffu;
             if (physical < 0x4000 || (ulong)physical + 8 > (ulong)memory.RDRAM.Length)
                 return 0;
-            uint limit = memory.GetQuietCpuCycles(Math.Min(maximumInstructions, CpuJitEnabled ? 128u : 32u));
+            uint limit = memory.GetQuietCpuCycles(Math.Min(maximumInstructions, CpuJitEnabled ? CpuJitMaximumInstructions : 32u));
             ulong count = Registers.COP0.Reg[Registers.COP0.COUNT_REG];
             if (limit < 2 || count >= uint.MaxValue || (Count >> 1) != count
                 || ((Count + limit) >> 1) >= uint.MaxValue

@@ -3758,7 +3758,7 @@ namespace Ryu64.MIPS
                             }
                             int historyBeforeBlock = _recentInstPos;
                             uint blockInstructions = pc >= 0x80004000u && pc < 0xc0000000u
-                                ? TryAdvanceCpuBlock(pc, Opcode, 128, true) : 0;
+                                ? TryAdvanceCpuBlock(pc, Opcode, CpuJitMaximumInstructions, true) : 0;
                             if (blockInstructions != 0)
                             {
                                 uint lastBlockPc = _recentInst[(_recentInstPos - 1) & RecentInstHistoryMask].Pc;

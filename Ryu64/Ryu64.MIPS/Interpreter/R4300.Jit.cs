@@ -11,6 +11,7 @@ namespace Ryu64.MIPS
         // Compile only hot, event-free direct-RAM blocks. Validate complete code
         // bytes on every entry; a store always ends the compiled region.
         private static readonly bool CpuJitEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CPU_JIT") != "0";
+        private const uint CpuJitMaximumInstructions = 512;
         private sealed class CpuJitEntry
         {
             internal uint Pc, First;
@@ -94,29 +95,30 @@ namespace Ryu64.MIPS
             return result;
         }
 
-        private static void RecordCpuJitHistory(uint start, uint[] words, uint executed, uint elapsed, bool branch)
+        private static void RecordCpuJitHistory(RecentInst[] pattern, int period, uint entries, uint elapsed)
         {
-            // A native backedge can repeat the same block many times within a
-            // quiet window. Record that whole region once, including any safe
-            // prefix before a load guard failed. Keep the interpreter's exact
-            // history convention: the caller recorded the first instruction,
-            // and branch delay slots are not separate history entries.
+            // Compilation expands the repeating PC/opcode pattern. Copy its
+            // surviving suffix into the ring instead of rebuilding every entry
+            // on every native backedge. The caller recorded the first entry;
+            // delay slots have already been excluded from the supplied count.
+            uint first = elapsed == 0 ? 1u : 0u;
+            if (entries <= first) return;
+            entries -= first;
             var recent = _recentInst;
             int position = _recentInstPos;
-            int first = elapsed == 0 ? 1 : 0;
-            while (executed != 0)
+            if (entries > recent.Length)
             {
-                int count = (int)Math.Min(executed, (uint)words.Length);
-                int end = count - (branch && count == words.Length ? 1 : 0);
-                for (int i = first; i < end; i++)
-                {
-                    recent[position] = new RecentInst { Pc = start + (uint)i * 4, Op = words[i] };
-                    position = (position + 1) & RecentInstHistoryMask;
-                }
-                executed -= (uint)count;
-                first = 0;
+                uint skipped = entries - (uint)recent.Length;
+                position = (int)((position + skipped) & RecentInstHistoryMask);
+                first = (first + skipped) % (uint)period;
+                entries = (uint)recent.Length;
             }
-            _recentInstPos = position;
+            int count = (int)entries;
+            int tail = Math.Min(count, recent.Length - position);
+            pattern.AsSpan((int)first, tail).CopyTo(recent.AsSpan(position));
+            if (tail != count)
+                pattern.AsSpan((int)first + tail, count - tail).CopyTo(recent);
+            _recentInstPos = (position + count) & RecentInstHistoryMask;
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -133,6 +135,84 @@ namespace Ryu64.MIPS
 
         private static bool CpuJitBranch(int kind) => (kind >= 2 && kind <= 7) || kind == 72 || kind == 73 || kind == 128 || kind == 129;
         private static bool CpuJitStore(int kind) => kind == 40 || kind == 41 || kind == 43 || kind == 63;
+
+        private static bool IsInvariantCpuJitLoop(List<uint> words)
+        {
+            // A register read before its first write is an input to the loop.
+            // If none of those inputs is written, repeating a taken iteration
+            // cannot change any result. RAM is stable inside the quiet window;
+            // reject stores, CP0 and anything outside the pure ALU/load subset.
+            uint inputs = 0, written = 0;
+            foreach (uint word in words)
+            {
+                var d = new OpcodeTable.OpcodeDesc(word);
+                int kind = GetCpuBlockOpcodeKind(word);
+                uint reads, writes;
+                if (kind == 4 || kind == 5)
+                {
+                    reads = (1u << d.op1) | (1u << d.op2); writes = 0;
+                }
+                else if (kind == 6 || kind == 7 || kind == 128 || kind == 129)
+                {
+                    reads = 1u << d.op1; writes = 0;
+                }
+                else if ((kind >= 9 && kind <= 15) || kind == 25
+                    || kind == 32 || kind == 33 || kind == 35 || kind == 36
+                    || kind == 37 || kind == 39 || kind == 55)
+                {
+                    reads = kind == 15 ? 0 : 1u << d.op1;
+                    writes = 1u << d.op2;
+                }
+                else if (kind >= 64 && kind < 128 && kind != 72 && kind != 73)
+                {
+                    reads = 1u << d.op2;
+                    if (kind != 64 && kind != 66 && kind != 67 && kind < 120)
+                        reads |= 1u << d.op1;
+                    writes = 1u << d.op3;
+                }
+                else return false;
+                // r0 is normalized before every instruction, including delay
+                // slots. A discarded write to it is never a loop dependency.
+                inputs |= reads & ~written & ~1u;
+                written |= writes & ~1u;
+            }
+            return (inputs & written) == 0;
+        }
+
+        private static bool IsCpuJitBackedge(uint start, uint pc, uint word)
+        {
+            int kind = GetCpuBlockOpcodeKind(word);
+            return ((kind >= 4 && kind <= 7) || kind == 128 || kind == 129)
+                && unchecked(pc + 4u + (uint)((int)(short)word << 2)) == start;
+        }
+
+        private static void ExtendInvariantCpuJitLoop(uint start, List<uint> words)
+        {
+            int length = words.Count;
+            if (length < 3 || !IsCpuJitBackedge(start, start + (uint)(length - 2) * 4, words[length - 2])
+                || !IsInvariantCpuJitLoop(words)) return;
+            // A poll may check several independent RAM flags before repeating.
+            // Extend only through pure instructions to another backedge to the
+            // same entry, proving every possible taken prefix independently.
+            var candidate = new List<uint>(words);
+            for (int i = length; i < 16; i++)
+            {
+                uint pc = start + (uint)i * 4;
+                if (!memory.TryReadRdramUInt32PhysicalFast(pc & 0x1fffffffu, out uint word)
+                    || IsExistingLoopEntry(pc, word)) break;
+                int kind = GetCpuBlockOpcodeKind(word);
+                if (kind < 0 || CpuJitStore(kind) || kind == 16 || kind == 144) break;
+                if (!CpuJitBranch(kind)) { candidate.Add(word); continue; }
+                if (i == 15 || !IsCpuJitBackedge(start, pc, word)
+                    || !memory.TryReadRdramUInt32PhysicalFast((pc + 4) & 0x1fffffffu, out uint delay)) break;
+                int dk = GetCpuBlockOpcodeKind(delay);
+                if (dk < 0 || CpuJitBranch(dk) || CpuJitStore(dk) || dk == 16 || dk == 144) break;
+                candidate.Add(word); candidate.Add(delay);
+                if (!IsInvariantCpuJitLoop(candidate)) break;
+                words.AddRange(candidate.GetRange(words.Count, candidate.Count - words.Count));
+                i++;
+            }
+        }
 
         private static Func<uint, uint, bool, uint> CompileCpuJit(uint start)
         {
@@ -155,6 +235,7 @@ namespace Ryu64.MIPS
                 if (CpuJitStore(kind)) break;
             }
             if (words.Count < 2) return null;
+            ExtendInvariantCpuJitLoop(start, words);
             var key = new System.Text.StringBuilder(start.ToString("x8"));
             foreach (uint word in words) key.Append(':').Append(word.ToString("x8"));
             string identity = key.ToString();
@@ -202,9 +283,12 @@ namespace Ryu64.MIPS
         private static readonly MethodInfo JitCode64 = typeof(BitConverter).GetMethod(nameof(BitConverter.ToUInt64), new[] { typeof(byte[]), typeof(int) });
 
         // Build from copied instruction words only. The worker never reads or
-        // writes live emulated state. The word array is the closed first argument.
+        // writes live emulated state. The history pattern is the closed first argument.
         private static Func<uint, uint, bool, uint> BuildCpuJit(uint start, List<uint> words)
         {
+            for (int i = 0; i < words.Count - 2; i++)
+                if (CpuJitBranch(GetCpuBlockOpcodeKind(words[i])))
+                    return BuildCpuJitPollingChain(start, words);
             int terminalKind = GetCpuBlockOpcodeKind(words[words.Count - 2]);
             uint branchPc = start + (uint)(words.Count - 2) * 4;
             uint branchWord = words[words.Count - 2];
@@ -217,8 +301,9 @@ namespace Ryu64.MIPS
                 // native backedge. Hardware cannot run within the quiet budget.
                 if (CpuJitStore(kind) || kind == 16 || kind == 144) loop = false;
             }
+            bool invariantLoop = loop && IsInvariantCpuJitLoop(words);
             var method = new DynamicMethod("N64_" + start.ToString("x8"), typeof(uint),
-                new[] { typeof(uint[]), typeof(uint), typeof(uint), typeof(bool) }, typeof(R4300).Module, true);
+                new[] { typeof(RecentInst[]), typeof(uint), typeof(uint), typeof(bool) }, typeof(R4300).Module, true);
             var il = method.GetILGenerator();
             var regs = il.DeclareLocal(typeof(ulong[]));
             var ram = il.DeclareLocal(typeof(byte[]));
@@ -334,8 +419,21 @@ namespace Ryu64.MIPS
                         il.Emit(OpCodes.Ldloc, completed); U((uint)words.Count); il.Emit(OpCodes.Add); il.Emit(OpCodes.Stloc, completed);
                         var leave = il.DefineLabel();
                         il.Emit(OpCodes.Ldloc, target); U(start); il.Emit(OpCodes.Bne_Un, leave);
-                        il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Sub);
-                        U((uint)words.Count); il.Emit(OpCodes.Bge_Un, body);
+                        if (invariantLoop)
+                        {
+                            // The first iteration performed every code/address
+                            // guard and established the final register values.
+                            // Account for all complete identical iterations up
+                            // to the existing device/COUNT boundary.
+                            il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldarg_1);
+                            U((uint)words.Count); il.Emit(OpCodes.Rem_Un); il.Emit(OpCodes.Sub);
+                            il.Emit(OpCodes.Stloc, completed);
+                        }
+                        else
+                        {
+                            il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Sub);
+                            U((uint)words.Count); il.Emit(OpCodes.Bge_Un, body);
+                        }
                         il.MarkLabel(leave); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Stloc, result); il.Emit(OpCodes.Br, finish);
                     }
                     else Exit((uint)words.Count);
@@ -378,16 +476,88 @@ namespace Ryu64.MIPS
             il.MarkLabel(finish);
             il.Emit(OpCodes.Ldarg_3); il.Emit(OpCodes.Brfalse, ret);
             il.Emit(OpCodes.Ldloc, result); il.Emit(OpCodes.Brfalse, ret);
-            U(start); il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldloc, result);
+            bool terminalBranch = CpuJitBranch(terminalKind);
+            int period = words.Count - (terminalBranch ? 1 : 0);
+            il.Emit(OpCodes.Ldarg_0); U((uint)period); il.Emit(OpCodes.Ldloc, result);
+            if (terminalBranch)
+            {
+                // One unrecorded delay slot per complete iteration, including
+                // a non-looping branch or a prefix before a failed load guard.
+                il.Emit(OpCodes.Ldloc, result); U((uint)words.Count); il.Emit(OpCodes.Div_Un); il.Emit(OpCodes.Sub);
+            }
             il.Emit(OpCodes.Ldarg_2);
-            U(CpuJitBranch(GetCpuBlockOpcodeKind(words[words.Count - 2])) ? 1u : 0u);
             il.Emit(OpCodes.Call, JitHistory);
             il.MarkLabel(ret); il.Emit(OpCodes.Ldloc, result); il.Emit(OpCodes.Ret);
             il.MarkLabel(zero); U(0); il.Emit(OpCodes.Ret);
             il.MarkLabel(invalid); U(uint.MaxValue); il.Emit(OpCodes.Ret);
-            var compiled = (Func<uint, uint, bool, uint>)method.CreateDelegate(typeof(Func<uint, uint, bool, uint>), words.ToArray());
+            var history = new RecentInst[loop ? RecentInstHistorySize + period - 1 : period];
+            for (int i = 0; i < history.Length; i++)
+                history[i] = new RecentInst { Pc = start + (uint)(i % period) * 4, Op = words[i % period] };
+            var compiled = (Func<uint, uint, bool, uint>)method.CreateDelegate(typeof(Func<uint, uint, bool, uint>), history);
             System.Runtime.CompilerServices.RuntimeHelpers.PrepareDelegate(compiled);
             return compiled;
+        }
+
+        private static Func<uint, uint, bool, uint> BuildCpuJitPollingChain(uint start, List<uint> words)
+        {
+            var runs = new List<Func<uint, uint, bool, uint>>();
+            var lengths = new List<uint>();
+            var patterns = new List<RecentInst[]>();
+            var entries = new List<RecentInst>();
+            var prefixEntries = new uint[words.Count + 1];
+            byte[] code = new byte[words.Count * 4];
+            for (int i = 0; i < words.Count; i++)
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(code.AsSpan(i * 4), words[i]);
+            int begin = 0;
+            for (int i = 0; i < words.Count; i++)
+            {
+                entries.Add(new RecentInst { Pc = start + (uint)i * 4, Op = words[i] });
+                prefixEntries[i + 1] = (uint)entries.Count;
+                if (!CpuJitBranch(GetCpuBlockOpcodeKind(words[i]))) continue;
+                i++; // Branch delay slots are executed but not recorded.
+                prefixEntries[i + 1] = (uint)entries.Count;
+                int length = i + 1 - begin;
+                runs.Add(BuildCpuJit(start + (uint)begin * 4, words.GetRange(begin, length)));
+                lengths.Add((uint)length);
+                var pattern = new RecentInst[RecentInstHistorySize + entries.Count - 1];
+                for (int h = 0; h < pattern.Length; h++) pattern[h] = entries[h % entries.Count];
+                patterns.Add(pattern);
+                begin = i + 1;
+            }
+            var native = runs.ToArray();
+            var sizes = lengths.ToArray();
+            var history = patterns.ToArray();
+            int physical = (int)(start & 0x1fffffffu);
+            Func<uint, uint, bool, uint> run = (budget, elapsed, record) =>
+            {
+                // Short windows retain the ordinary first-block behavior.
+                if (budget < words.Count) return native[0](budget, elapsed, record);
+                var ram = memory.RDRAM;
+                if ((ulong)physical + (uint)code.Length > (ulong)ram.Length
+                    || !ram.AsSpan(physical, code.Length).SequenceEqual(code)) return uint.MaxValue;
+                uint done = 0;
+                for (int i = 0; i < native.Length; i++)
+                {
+                    uint n = native[i](sizes[i], elapsed + done, false);
+                    if (n == uint.MaxValue)
+                    {
+                        if (done == 0) return n;
+                        break;
+                    }
+                    done += n;
+                    if (n != sizes[i]) break; // A load guard left a safe prefix.
+                    if (Registers.R4300.PC != start) continue;
+                    uint repetitions = budget / done;
+                    if (record)
+                        RecordCpuJitHistory(history[i], (int)prefixEntries[done], repetitions * prefixEntries[done], elapsed);
+                    return repetitions * done;
+                }
+                if (record && done != 0)
+                    RecordCpuJitHistory(history[history.Length - 1], entries.Count, prefixEntries[done], elapsed);
+                return done;
+            };
+            System.Runtime.CompilerServices.RuntimeHelpers.PrepareDelegate(run);
+            return run;
         }
 
         private static bool EmitCpuJitAlu(ILGenerator il, LocalBuilder regs, OpcodeTable.OpcodeDesc d, int kind)

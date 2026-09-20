@@ -28,7 +28,7 @@ internal static class CpuBlockChecks
             uint expected = initialRandom | 0x12340000u;
             Registers.COP0.Reg[1] = expected;
             Registers.COP0.Reg[6] = wired | 0x56780000u;
-            for (uint done = 0; done <= 128; done++)
+            for (uint done = 0; done <= 512; done++)
             {
                 if (randomAfter(done) != expected)
                     throw new Exception($"RANDOM batch wired={wired}, initial={initialRandom}, count={done}");
@@ -92,19 +92,9 @@ internal static class CpuBlockChecks
             historyPosition.SetValue(null, historyStart);
             var previousHistory = (Array)entries.Clone();
             uint n = batch(Registers.R4300.PC, op, budget, jit);
-            var recorded = new List<(uint, uint)>();
-            if (jit)
-            {
-                int historyEnd = (int)historyPosition.GetValue(null)!;
-                for (int h = historyStart; h != historyEnd; h = (h + 1) % entries.Length)
-                {
-                    object entry = entries.GetValue(h)!;
-                    recorded.Add(((uint)entry.GetType().GetField("Pc")!.GetValue(entry)!, (uint)entry.GetType().GetField("Op")!.GetValue(entry)!));
-                }
-                for (int h = historyEnd; h != historyStart; h = (h + 1) % entries.Length)
-                    if (!entries.GetValue(h)!.Equals(previousHistory.GetValue(h)))
-                        throw new Exception($"CPU JIT case {cases}: unrelated history entry overwritten");
-            }
+            int historyEnd = (int)historyPosition.GetValue(null)!;
+            var recorded = (Array)entries.Clone();
+            var expectedHistory = new List<(uint, uint)>();
             if (n != expected || Ryu64.Common.Measure.InstructionCount != n)
                 throw new Exception($"CPU block case {cases}: accepted {n}, expected {expected}");
             if (jit && (long)typeof(R4300).GetField("CpuJitInstructions", cpuFlags)!.GetValue(null)! > 0) compiledCases++;
@@ -112,19 +102,35 @@ internal static class CpuBlockChecks
             if (n != 0)
             {
                 before.Position = 0; R4300.LoadState(br); Ryu64.Common.Measure.InstructionCount = 0;
-                var expectedHistory = new List<(uint, uint)>();
                 while (Ryu64.Common.Measure.InstructionCount < n)
                 {
                     uint stepPc = Registers.R4300.PC, stepWord = fetch(stepPc);
                     if (Ryu64.Common.Measure.InstructionCount != 0) expectedHistory.Add((stepPc, stepWord));
                     R4300.InterpretOpcode(stepWord);
                 }
-                if (jit && !recorded.SequenceEqual(expectedHistory))
-                    throw new Exception($"CPU JIT case {cases}: instruction history differs");
                 if (Hash() != actual || Ryu64.Common.Measure.InstructionCount != n)
                     throw new Exception($"CPU block case {cases}: state differs");
             }
             else if (actual != original) throw new Exception($"CPU block case {cases}: rejected block mutated state");
+            if (jit)
+            {
+                if (historyEnd != (historyStart + expectedHistory.Count) % entries.Length)
+                    throw new Exception($"CPU JIT case {cases}: history position differs");
+                int first = Math.Max(0, expectedHistory.Count - entries.Length);
+                for (int h = first; h < expectedHistory.Count; h++)
+                {
+                    object entry = recorded.GetValue((historyStart + h) % entries.Length)!;
+                    var actualEntry = ((uint)entry.GetType().GetField("Pc")!.GetValue(entry)!, (uint)entry.GetType().GetField("Op")!.GetValue(entry)!);
+                    if (actualEntry != expectedHistory[h])
+                        throw new Exception($"CPU JIT case {cases}: instruction history differs");
+                }
+                for (int h = expectedHistory.Count; h < entries.Length; h++)
+                {
+                    int index = (historyStart + h) % entries.Length;
+                    if (!recorded.GetValue(index)!.Equals(previousHistory.GetValue(index)))
+                        throw new Exception($"CPU JIT case {cases}: unrelated history entry overwritten");
+                }
+            }
             cases++;
         }
         if (Environment.GetEnvironmentVariable("N64_PROBE_EXPECT_BATCH_DISABLED") == "1")
@@ -234,7 +240,7 @@ internal static class CpuBlockChecks
         Reset(); Code(0, 0x3c250001); Check(0); // Invalid LUI rs.
         foreach (uint op in new uint[] { 0x40824800, 0x42000018, 0x46000000, 0x0000000c, 0xffffffff })
         { Reset(); Code(0, op); Check(0); Reset(); Code(3, op); Check(3); }
-        foreach (uint budget in new uint[] { 0,1,2,7,31,32,33 }) { Reset(); Check(budget < 2 ? 0 : Math.Min(budget,jit ? 128u : 32u), budget); }
+        foreach (uint budget in new uint[] { 0,1,2,7,31,32,33,127,128,511,512,1023,1024,2047,2048 }) { Reset(); Check(budget < 2 ? 0 : Math.Min(budget,jit ? 512u : 32u), budget); }
         foreach (uint wired in new uint[] { 0,1,30,31 })
         foreach (uint r in new uint[] { 0,1,15,30,31 })
         { Reset(); Registers.COP0.Reg[6] = wired; Registers.COP0.Reg[1] = r; Check(32); }
@@ -300,8 +306,99 @@ internal static class CpuBlockChecks
         Reset(); Ryu64.Common.Settings.STEP_MODE = true; Check(0); Ryu64.Common.Settings.STEP_MODE = false;
         if (jit)
         {
+            var invariant = typeof(R4300).GetMethod("IsInvariantCpuJitLoop", cpuFlags)!
+                .CreateDelegate<Func<List<uint>, bool>>();
+            // Exercise the actual polling-loop optimization and its rejection
+            // boundaries. In particular, a source changed in the delay slot is
+            // an input dependency even if it was unchanged before the branch.
+            (uint[] body, uint delay, bool stable)[] polling = {
+                (new uint[] { 0x3c028002,0x8c420000 },0,true),
+                (new uint[] { 0x8c820000 },0,true),
+                (new uint[] { 0x80820000 },0,true),
+                (new uint[] { 0x84820000 },0,true),
+                (new uint[] { 0x90820000 },0,true),
+                (new uint[] { 0x94820000 },0,true),
+                (new uint[] { 0x9c820000 },0,true),
+                (new uint[] { 0xdc820000 },0,true),
+                (new uint[] { 0x3c028002,0x3c038002 },0x8c630000,true),
+                (new uint[] { 0x24020007,0x00421821,0x00621826 },0x000310c0,true),
+                (new uint[] { 0x24020003,0x00431804 },0,false),
+                (new uint[] { 0x24020003,0x00821804 },0,true),
+                (new uint[] { 0x34020001,0x0044182b },0x24000001,true),
+                (new uint[] { 0x24420001 },0,false),
+                (new uint[] { 0x8c820000 },0x24840004,false),
+                (new uint[] { 0x24430001 },0x24020000,false),
+                (new uint[] { 0x40024800 },0,false),
+                (new uint[] { 0x24020000 },0x40020800,false),
+                (new uint[] { 0x24020001,0xac820000 },0,false)
+            };
+            foreach (var item in polling)
+            foreach (uint budget in new uint[] { 7,32,127,128,511,512 })
+            {
+                Reset();
+                var words = item.body.Concat(new uint[] {
+                    0x10000000u | (ushort)(-(item.body.Length + 1)), item.delay }).ToList();
+                if (invariant(words) != item.stable)
+                    throw new Exception("CPU JIT invariant-loop dependency analysis differs");
+                for (int i = 0; i < words.Count; i++) Code(i,words[i]);
+                uint length = (uint)words.Count;
+                Check(budget % length == length - 1 ? budget - 1 : budget,budget);
+            }
+            // The proof does not replace runtime guards or the branch test.
+            foreach (uint value in new uint[] { 0,1,0x7fffffff,0x80000000,0xffffffff })
+            {
+                Reset(); BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x20000),value);
+                Code(0,0x3c028002); Code(1,0x8c420000); Code(2,0x0441fffd); Code(3,0);
+                Check(128,128);
+            }
+            foreach (uint operand in new uint[] { 0x80020001,0xa4400000,0x80800000,0xc0020000 })
+            {
+                Reset(); Registers.R4300.Reg[4] = operand;
+                Code(0,0x24020001); Code(1,0x8c830000); Code(2,0x1000fffd); Code(3,0);
+                Check(1,128);
+            }
+            void PollingChain(uint first, uint second)
+            {
+                BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x20000),first);
+                BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x20004),second);
+                Code(0,0x3c028002); Code(1,0x8c420000); Code(2,0x0441fffd); Code(3,0);
+                Code(4,0x3c028002); Code(5,0x8c420004); Code(6,0x0441fff9); Code(7,0);
+            }
+            var extend = typeof(R4300).GetMethod("ExtendInvariantCpuJitLoop",cpuFlags)!;
+            foreach (uint first in new uint[] { 0,0xffffffff })
+            foreach (uint second in new uint[] { 1,0x80000000 })
+            foreach (uint budget in new uint[] { 3,4,7,8,15,31,127,128,511,512 })
+            {
+                Reset(); PollingChain(first,second);
+                var chain = new List<uint> { 0x3c028002,0x8c420000,0x0441fffd,0 };
+                extend.Invoke(null,new object[] { 0x80010000u,chain });
+                if (chain.Count != 8) throw new Exception("CPU polling chain was not compiled together");
+                bool repeats = (int)first >= 0 || (int)second >= 0;
+                Check((repeats || budget < 8) && budget % 4 == 3 ? budget - 1 : budget,budget);
+            }
+            foreach (uint operand in new uint[] { 0x80020001,0xa4400000,0x80800000,0xc0020000 })
+            {
+                Reset(); PollingChain(0xffffffff,1); Registers.R4300.Reg[4] = operand;
+                Code(5,0x8c820000); Check(5,128);
+            }
+            foreach (var timer in timers)
+            foreach (uint distance in new uint[] { 32,65,100 })
+            {
+                Reset(); PollingChain(0xffffffff,1);
+                Set(timer.active,true); Set(timer.remaining,distance);
+                uint budget = distance - 1;
+                Check(budget % 4 == 3 ? budget - 1 : budget,128);
+            }
+            Reset(); PollingChain(0xffffffff,1); Check(32);
+            Reset(); PollingChain(0xffffffff,1); Code(5,0x24020000); Check(32,clearJit:false);
+            Reset(); PollingChain(0xffffffff,1); Code(5,0x24420001);
+            var dependent = new List<uint> { 0x3c028002,0x8c420000,0x0441fffd,0 };
+            // A value read before a later write is variant across full cycles.
+            Code(4,0x24840001); Code(5,0x8c820000);
+            extend.Invoke(null,new object[] { 0x80010000u,dependent });
+            if (dependent.Count != 4) throw new Exception("Variant polling chain was incorrectly extended");
             foreach (uint iterations in new uint[] { 1,2,7,32,100 })
-            foreach (uint budget in new uint[] { 3,4,7,16,31,32,63,128 })
+            foreach (uint budget in new uint[] { 3,4,7,16,31,32,63,128,511,512 })
             {
                 Reset(); Registers.R4300.Reg[2] = 0; Registers.R4300.Reg[3] = iterations;
                 Code(0, 0x24420001); Code(1, 0x24630000); Code(2, 0x1443fffd); Code(3, 0);
@@ -311,12 +408,13 @@ internal static class CpuBlockChecks
                 Check(expected, budget);
             }
             foreach (uint branch in new uint[] { 0x0440fffd,0x0441fffd,0x1840fffd,0x1c40fffd })
-            foreach (uint budget in new uint[] { 3,4,7,16,31,32,63,128 })
+            foreach (uint budget in new uint[] { 3,4,7,16,31,32,63,128,511,512 })
             {
                 bool increasing = branch == 0x0440fffd || branch == 0x1840fffd;
                 Reset(); Registers.R4300.Reg[2] = increasing ? unchecked((ulong)-100L) : 100;
                 Code(0,increasing ? 0x24420001u : 0x2442ffffu); Code(1,0); Code(2,branch); Code(3,0);
-                Check(budget % 4 == 3 ? budget - 1 : budget,budget);
+                uint loopInstructions = branch == 0x0441fffdu || branch == 0x1840fffdu ? 404u : 400u;
+                Check(budget < loopInstructions && budget % 4 == 3 ? budget - 1 : budget,budget);
             }
             Reset(); Registers.R4300.Reg[4] = 0x807ffff8;
             Code(0, 0x8c850000); Code(1, 0x24840004); Code(2, 0x1480fffd); Code(3, 0);
