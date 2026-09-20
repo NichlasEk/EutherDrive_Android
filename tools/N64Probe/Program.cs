@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-rdp-streaming")
+{
+    RdpStreamingChecks.Run();
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-cpu-jit")
 {
     CpuBlockChecks.Run(jit: true);

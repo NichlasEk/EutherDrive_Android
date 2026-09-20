@@ -1050,7 +1050,7 @@ namespace Ryu64.MIPS
             if (writer == null)
                 throw new ArgumentNullException(nameof(writer));
 
-            const int version = 5;
+            const int version = 6;
             writer.Write(version);
 
             WriteByteArrays(writer);
@@ -1189,6 +1189,10 @@ namespace Ryu64.MIPS
             writer.Write(_rdpOtherModesCvgTimesAlpha);
             writer.Write(_rspSlicePending);
             _rspInterpreter.SaveExecutionState(writer);
+            writer.Write(_rdpPendingWordCount);
+            writer.Write(_rdpPendingCommandAddress);
+            for (int i = 0; i < _rdpPendingCommand.Length; i++)
+                writer.Write(i < _rdpPendingWordCount ? _rdpPendingCommand[i] : 0u);
         }
 
         public void LoadState(BinaryReader reader)
@@ -1197,7 +1201,7 @@ namespace Ryu64.MIPS
                 throw new ArgumentNullException(nameof(reader));
 
             int version = reader.ReadInt32();
-            if (version < 1 || version > 5)
+            if (version < 1 || version > 6)
                 throw new InvalidDataException($"Unsupported N64 memory savestate version: {version}.");
 
             lock (_audioQueueLock) _audioQueue.Clear();
@@ -1372,6 +1376,20 @@ namespace Ryu64.MIPS
             _rdpOtherModesCvgTimesAlpha = version >= 4 && reader.ReadBoolean();
             _rspSlicePending = version >= 5 && reader.ReadBoolean();
             if (version >= 5) _rspInterpreter.LoadExecutionState(reader);
+            _rdpPendingWordCount = 0;
+            _rdpPendingCommandAddress = 0;
+            _rdpReadingPendingCommand = false;
+            Array.Clear(_rdpPendingCommand, 0, _rdpPendingCommand.Length);
+            if (version >= 6)
+            {
+                _rdpPendingWordCount = reader.ReadInt32();
+                _rdpPendingCommandAddress = reader.ReadUInt32();
+                for (int i = 0; i < _rdpPendingCommand.Length; i++) _rdpPendingCommand[i] = reader.ReadUInt32();
+                if (_rdpPendingWordCount < 0 || _rdpPendingWordCount >= _rdpPendingCommand.Length
+                    || (_rdpPendingWordCount & 1) != 0
+                    || (_rdpPendingWordCount != 0 && _rdpPendingWordCount >= GetRdpCommandWordLength((int)(_rdpPendingCommand[0] >> 24 & 63))))
+                    throw new InvalidDataException("Invalid partial RDP command in savestate");
+            }
             RefreshCpuInterruptView();
         }
 
@@ -2107,6 +2125,13 @@ namespace Ryu64.MIPS
             }
         }
 
+        // DMA submissions can split a command or change source buffers between
+        // its words. DPC_CURRENT tracks bytes fetched, not commands completed.
+        private readonly uint[] _rdpPendingCommand = new uint[44];
+        private int _rdpPendingWordCount;
+        private uint _rdpPendingCommandAddress;
+        private bool _rdpReadingPendingCommand;
+
         private uint ExecuteRdpDisplayList(uint start, uint end)
         {
             uint current = start & 0x00FFFFF8u;
@@ -2126,125 +2151,145 @@ namespace Ryu64.MIPS
             int handledCount = 0;
             while (current + 8u <= maxEnd)
             {
-                uint w0 = ReadRdpCommandWord(current, xbusDmem);
-                uint w1 = ReadRdpCommandWord(current + 4u, xbusDmem);
+                bool buffered = _rdpPendingWordCount != 0;
+                uint commandAddress = buffered ? _rdpPendingCommandAddress : current;
+                uint w0 = buffered ? _rdpPendingCommand[0] : ReadRdpCommandWord(current, xbusDmem);
                 int command = (int)((w0 >> 24) & 0x3Fu);
                 int words = GetRdpCommandWordLength(command);
-                if (words < 2 || current + (uint)(words * 4) > maxEnd)
-                    break;
+                if (buffered || current + (uint)(words * 4) > maxEnd)
+                {
+                    if (!buffered) _rdpPendingCommandAddress = current;
+                    int count = Math.Min(words - _rdpPendingWordCount, (int)((maxEnd - current) / 4));
+                    for (int i = 0; i < count; i++)
+                        _rdpPendingCommand[_rdpPendingWordCount++] = ReadRdpCommandWord(current + (uint)i * 4, xbusDmem);
+                    current += (uint)count * 4;
+                    if (_rdpPendingWordCount != words) break;
+                    buffered = true;
+                }
+                uint w1 = buffered ? _rdpPendingCommand[1] : ReadRdpCommandWord(current + 4u, xbusDmem);
 
                 commandCount++;
                 if (commandCounts != null)
                     commandCounts[command]++;
 
                 bool handled = true;
-                switch (command)
+                _rdpReadingPendingCommand = buffered;
+                try
                 {
-                    case 0x08: // Triangle
-                    case 0x09: // TriangleZ
-                    case 0x0A: // TriangleTexture
-                    case 0x0B: // TriangleTextureZ
-                    case 0x0C: // TriangleShade
-                    case 0x0D: // TriangleShadeZ
-                    case 0x0E: // TriangleShadeTexture
-                    case 0x0F: // TriangleShadeTextureZ
-                        Interlocked.Increment(ref _rdpTriangleCommandCount);
-                        ExecuteRdpTriangle(command, current, xbusDmem);
-                        break;
-                    case 0x24: // TextureRectangle
-                    case 0x25: // TextureRectangleFlip
-                        Interlocked.Increment(ref _rdpTextureRectangleCommandCount);
-                        ExecuteRdpTextureRectangle(command, w0, w1, ReadRdpCommandWord(current + 8u, xbusDmem), ReadRdpCommandWord(current + 12u, xbusDmem));
-                        break;
-                    case 0x26: // SyncLoad
-                    case 0x27: // SyncPipe
-                    case 0x28: // SyncTile
-                        break;
-                    case 0x29: // SyncFull
-                        // Buffer submission is not completion; only FULL_SYNC raises DP.
-                        if (!SuppressDpInterrupt) SetMiDpInterrupt();
-                        FlushVisibleRdpFramebufferSnapshot();
-                        break;
-                    case 0x2D: // SetScissor
-                        ExecuteRdpSetScissor(w0, w1);
-                        break;
-                    case 0x2E: // SetPrimDepth
-                        _rdpPrimitiveDepth = (w1 >> 16) & 0x7FFFu;
-                        _rdpPrimitiveDeltaZ = w1 & 0xFFFFu;
-                        break;
-                    case 0x2F: // SetOtherModes
-                        ExecuteRdpSetOtherModes(w0, w1);
-                        break;
-                    case 0x3C: // SetCombineMode
-                        ExecuteRdpSetCombine(w0, w1);
-                        break;
-                    case 0x30: // LoadTLut
-                        ExecuteRdpLoadTlut(w0, w1);
-                        break;
-                    case 0x32: // SetTileSize
-                        ExecuteRdpSetTileSize(w0, w1);
-                        break;
-                    case 0x33: // LoadBlock
-                        ExecuteRdpLoadBlock(w0, w1);
-                        break;
-                    case 0x34: // LoadTile
-                        ExecuteRdpLoadTile(w0, w1);
-                        break;
-                    case 0x35: // SetTile
-                        ExecuteRdpSetTile(w0, w1);
-                        break;
-                    case 0x36: // FillRectangle
-                        Interlocked.Increment(ref _rdpFillRectangleCommandCount);
-                        ExecuteRdpFillRectangle(w0, w1);
-                        break;
-                    case 0x37: // SetFillColor
-                        _rdpFillColor = w1;
-                        break;
-                    case 0x38: // SetFogColor
-                        _rdpFogColor = w1;
-                        break;
-                    case 0x39: // SetBlendColor
-                        _rdpBlendColor = w1;
-                        break;
-                    case 0x3A: // SetPrimColor
-                        _rdpPrimColor = w1;
-                        break;
-                    case 0x3B: // SetEnvColor
-                        _rdpEnvColor = w1;
-                        break;
-                    case 0x3D: // SetTextureImage
-                        _rdpTextureImageFormat = (w0 >> 21) & 0x7u;
-                        _rdpTextureImageSize = (w0 >> 19) & 0x3u;
-                        _rdpTextureImageWidth = (w0 & 0x03FFu) + 1u;
-                        _rdpTextureImageAddress = w1 & 0x00FFFFFFu;
-                        break;
-                    case 0x3E: // SetMaskImage
-                        _rdpMaskImageAddress = w1 & 0x00FFFFFFu;
-                        break;
-                    case 0x3F: // SetColorImage
-                        Interlocked.Increment(ref _rdpSetColorImageCommandCount);
-                        FlushVisibleRdpFramebufferSnapshot();
-                        _rdpColorImageSize = (w0 >> 19) & 0x3u;
-                        _rdpColorImageWidth = (w0 & 0x03FFu) + 1u;
-                        _rdpColorImageAddress = w1 & 0x00FFFFFFu;
-                        RegisterFramebufferInfo(_rdpColorImageAddress, RdpBytesPerPixel(_rdpColorImageSize), _rdpColorImageWidth, GetFramebufferHeightHint());
-                        break;
-                    default:
-                        handled = false;
-                        if (firstUnhandledCommand < 0)
-                        {
-                            firstUnhandledCommand = command;
-                            firstUnhandledAddress = current;
-                            firstUnhandledW0 = w0;
-                            firstUnhandledW1 = w1;
-                        }
-                        break;
+                    switch (command)
+                    {
+                        case 0x08: // Triangle
+                        case 0x09: // TriangleZ
+                        case 0x0A: // TriangleTexture
+                        case 0x0B: // TriangleTextureZ
+                        case 0x0C: // TriangleShade
+                        case 0x0D: // TriangleShadeZ
+                        case 0x0E: // TriangleShadeTexture
+                        case 0x0F: // TriangleShadeTextureZ
+                            Interlocked.Increment(ref _rdpTriangleCommandCount);
+                            ExecuteRdpTriangle(command, commandAddress, xbusDmem);
+                            break;
+                        case 0x24: // TextureRectangle
+                        case 0x25: // TextureRectangleFlip
+                            Interlocked.Increment(ref _rdpTextureRectangleCommandCount);
+                            ExecuteRdpTextureRectangle(command, w0, w1, ReadRdpCommandWord(commandAddress + 8u, xbusDmem), ReadRdpCommandWord(commandAddress + 12u, xbusDmem));
+                            break;
+                        case 0x26: // SyncLoad
+                        case 0x27: // SyncPipe
+                        case 0x28: // SyncTile
+                            break;
+                        case 0x29: // SyncFull
+                            // Buffer submission is not completion; only FULL_SYNC raises DP.
+                            if (!SuppressDpInterrupt) SetMiDpInterrupt();
+                            FlushVisibleRdpFramebufferSnapshot();
+                            break;
+                        case 0x2D: // SetScissor
+                            ExecuteRdpSetScissor(w0, w1);
+                            break;
+                        case 0x2E: // SetPrimDepth
+                            _rdpPrimitiveDepth = (w1 >> 16) & 0x7FFFu;
+                            _rdpPrimitiveDeltaZ = w1 & 0xFFFFu;
+                            break;
+                        case 0x2F: // SetOtherModes
+                            ExecuteRdpSetOtherModes(w0, w1);
+                            break;
+                        case 0x3C: // SetCombineMode
+                            ExecuteRdpSetCombine(w0, w1);
+                            break;
+                        case 0x30: // LoadTLut
+                            ExecuteRdpLoadTlut(w0, w1);
+                            break;
+                        case 0x32: // SetTileSize
+                            ExecuteRdpSetTileSize(w0, w1);
+                            break;
+                        case 0x33: // LoadBlock
+                            ExecuteRdpLoadBlock(w0, w1);
+                            break;
+                        case 0x34: // LoadTile
+                            ExecuteRdpLoadTile(w0, w1);
+                            break;
+                        case 0x35: // SetTile
+                            ExecuteRdpSetTile(w0, w1);
+                            break;
+                        case 0x36: // FillRectangle
+                            Interlocked.Increment(ref _rdpFillRectangleCommandCount);
+                            ExecuteRdpFillRectangle(w0, w1);
+                            break;
+                        case 0x37: // SetFillColor
+                            _rdpFillColor = w1;
+                            break;
+                        case 0x38: // SetFogColor
+                            _rdpFogColor = w1;
+                            break;
+                        case 0x39: // SetBlendColor
+                            _rdpBlendColor = w1;
+                            break;
+                        case 0x3A: // SetPrimColor
+                            _rdpPrimColor = w1;
+                            break;
+                        case 0x3B: // SetEnvColor
+                            _rdpEnvColor = w1;
+                            break;
+                        case 0x3D: // SetTextureImage
+                            _rdpTextureImageFormat = (w0 >> 21) & 0x7u;
+                            _rdpTextureImageSize = (w0 >> 19) & 0x3u;
+                            _rdpTextureImageWidth = (w0 & 0x03FFu) + 1u;
+                            _rdpTextureImageAddress = w1 & 0x00FFFFFFu;
+                            break;
+                        case 0x3E: // SetMaskImage
+                            _rdpMaskImageAddress = w1 & 0x00FFFFFFu;
+                            break;
+                        case 0x3F: // SetColorImage
+                            Interlocked.Increment(ref _rdpSetColorImageCommandCount);
+                            FlushVisibleRdpFramebufferSnapshot();
+                            _rdpColorImageSize = (w0 >> 19) & 0x3u;
+                            _rdpColorImageWidth = (w0 & 0x03FFu) + 1u;
+                            _rdpColorImageAddress = w1 & 0x00FFFFFFu;
+                            RegisterFramebufferInfo(_rdpColorImageAddress, RdpBytesPerPixel(_rdpColorImageSize), _rdpColorImageWidth, GetFramebufferHeightHint());
+                            break;
+                        default:
+                            handled = false;
+                            if (firstUnhandledCommand < 0)
+                            {
+                                firstUnhandledCommand = command;
+                                firstUnhandledAddress = commandAddress;
+                                firstUnhandledW0 = w0;
+                                firstUnhandledW1 = w1;
+                            }
+                            break;
+                    }
+                }
+                finally { _rdpReadingPendingCommand = false; }
+                if (buffered)
+                {
+                    _rdpPendingWordCount = 0;
+                    _rdpPendingCommandAddress = 0;
                 }
 
                 if (handled)
                     handledCount++;
 
-                current += (uint)(words * 4);
+                if (!buffered) current += (uint)(words * 4);
             }
 
             if (commandCount > 0)
@@ -2284,6 +2329,8 @@ namespace Ryu64.MIPS
 
         private uint ReadRdpCommandWord(uint address, bool xbusDmem)
         {
+            if (_rdpReadingPendingCommand)
+                return _rdpPendingCommand[(int)((address - _rdpPendingCommandAddress) / 4)];
             if (xbusDmem)
                 return ReadSpDmemWord(address & 0x0FFFu);
 

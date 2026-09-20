@@ -11,6 +11,7 @@ internal static class SnapshotChecks
         (string ram, string snapshot, long calls) Render(bool streamed)
         {
             var memory = new Memory(new byte[4096]);
+            R4300.memory = memory; // FULL_SYNC refreshes the CPU's interrupt view.
             var execute = typeof(Memory).GetMethod("ExecuteRdpDisplayList", flags)!.CreateDelegate<Func<uint, uint, uint>>(memory);
             typeof(Memory).GetField("_rspTaskDispatching", flags)!.SetValue(memory, streamed);
             uint p = 0x100000;
