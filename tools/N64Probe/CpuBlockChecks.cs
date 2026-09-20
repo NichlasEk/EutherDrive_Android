@@ -120,6 +120,21 @@ internal static class CpuBlockChecks
             else Code(0,load);
             Check(2,2);
         }
+        // Validated stores retain page epochs and overlapping framebuffer dirtiness.
+        foreach (uint address in new uint[] { 0x80020ffc,0xa0021000,0x807ffffc })
+        foreach (uint epoch in new uint[] { 17,uint.MaxValue })
+        foreach (bool delaySlot in new[] { false,true })
+        {
+            Reset();
+            uint physical = address & 0x1fffffffu;
+            typeof(Memory).GetMethod("RegisterFramebufferInfo", memoryFlags)!
+                .Invoke(R4300.memory, new object[] { physical - 4,2u,4u,1u });
+            Set("_rdramWriteEpoch", epoch);
+            Registers.R4300.Reg[4] = address; Registers.R4300.Reg[5] = 0xabcdef1234567890;
+            if (delaySlot) { Code(0,0x08004004); Code(1,0xac850000); }
+            else { Code(0,0xac850000); Code(1,0xac850000); }
+            Check(2,2);
+        }
         foreach (uint branch in new uint[] { 0x08004000,0x0c004000,0x10850002,0x1485fffc,0x00800008,0x0080f809,0x00800009 })
         foreach (uint delay in new uint[] { 0,0x24420001,0x3404abcd,0x03e01825,0x24000042,0x8c850000,0xac850000,0xdc850000 })
         foreach (bool equal in new[] { false,true })

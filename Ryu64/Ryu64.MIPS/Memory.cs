@@ -985,6 +985,9 @@ namespace Ryu64.MIPS
         private MemEntry[]     MemoryMap;
         private readonly byte[] _fbDirtyPage = new byte[RdramPageCount];
         private readonly TrackedFramebufferInfo[] _fbInfos = new TrackedFramebufferInfo[FbInfosCount];
+        // Derived from the tracked framebuffer bounds, not serialized state.
+        private readonly bool[] _fbTrackedPages = new bool[RdramPageCount];
+        private bool _fbPageCoverageValid = true;
         private readonly uint[] _rdramPageLastWriteEpoch = new uint[RdramPageCount];
 
         public uint LastViOriginWriteValue => _lastViOriginWriteValue;
@@ -1687,6 +1690,7 @@ namespace Ryu64.MIPS
                     LastReadEpoch = reader.ReadUInt32()
                 };
             }
+            RebuildFramebufferPageCoverage();
         }
 
         private static void WriteSpDmaRequest(BinaryWriter writer, SpDmaRequest request)
@@ -1884,6 +1888,23 @@ namespace Ryu64.MIPS
             return bufferSize > uint.MaxValue ? 0u : (uint)bufferSize;
         }
 
+        private void RebuildFramebufferPageCoverage()
+        {
+            Array.Clear(_fbTrackedPages, 0, _fbTrackedPages.Length);
+            _fbPageCoverageValid = true;
+            foreach (TrackedFramebufferInfo info in _fbInfos)
+            {
+                uint size = GetFramebufferBufferSize(info);
+                if (size == 0 || info.Addr >= RDRAM.Length) continue;
+                uint end = unchecked(info.Addr + size - 1);
+                // Retain the original slow behavior for malformed saved bounds.
+                if (end < info.Addr) { _fbPageCoverageValid = false; return; }
+                end = Math.Min(end, (uint)RDRAM.Length - 1);
+                for (uint page = info.Addr / RdramPageSize; page <= end / RdramPageSize; page++)
+                    _fbTrackedPages[page] = true;
+            }
+        }
+
         private uint GetFramebufferHeightHint()
         {
             return ComputeViFramebufferHeight(ReadBigEndianWord(VI_V_START_REG_RW),
@@ -2002,6 +2023,8 @@ namespace Ryu64.MIPS
             if (slot < 0)
                 slot = oldestSlot;
 
+            bool boundsChanged = _fbInfos[slot].Addr != address || _fbInfos[slot].Size != bytesPerPixel
+                || _fbInfos[slot].Width != width || _fbInfos[slot].Height != height;
             _fbInfos[slot] = new TrackedFramebufferInfo
             {
                 Addr = address,
@@ -2012,6 +2035,8 @@ namespace Ryu64.MIPS
                 WriteEpoch = epoch,
                 LastReadEpoch = 0
             };
+
+            if (boundsChanged) RebuildFramebufferPageCoverage();
 
             MarkFramebufferPagesDirty(address, (uint)requested);
 
@@ -5834,6 +5859,13 @@ namespace Ryu64.MIPS
             uint end = begin + length - 1u;
             if (end >= RDRAM.Length)
                 end = (uint)RDRAM.Length - 1u;
+
+            // A write wholly outside all tracked framebuffer pages cannot
+            // affect any framebuffer. Multi-page ranges retain the full scan.
+            uint page = begin / RdramPageSize;
+            if (_fbPageCoverageValid && page == end / RdramPageSize
+                && page < _fbTrackedPages.Length && !_fbTrackedPages[page])
+                return;
 
             for (int i = 0; i < _fbInfos.Length; i++)
             {
@@ -10508,6 +10540,18 @@ namespace Ryu64.MIPS
                 return;
             }
             WriteUInt32Slow(index, value);
+        }
+
+        // CPU batches have already validated alignment and the complete RAM
+        // range, and are disabled during tracing. An aligned word cannot cross
+        // a 4 KiB page. Preserve one epoch increment and framebuffer notification
+        // per store, including repeated stores to the same page.
+        internal void WriteValidatedRdramUInt32(uint physical, uint value)
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(RDRAM.AsSpan((int)physical, 4), value);
+            uint epoch = ++_rdramWriteEpoch;
+            _rdramPageLastWriteEpoch[physical / RdramPageSize] = epoch;
+            PostFramebufferWrite(physical, 4, epoch);
         }
 
         private void WriteUInt32Slow(uint index, uint value)

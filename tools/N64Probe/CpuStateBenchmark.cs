@@ -9,6 +9,11 @@ internal static class CpuStateBenchmark
 {
     internal static void Run(string path, string romPath, bool profile = false)
     {
+        uint instructionLimit = 20_000_000;
+        string? requestedWork = Environment.GetEnvironmentVariable("N64_PROBE_REPLAY_INSTRUCTIONS");
+        if (requestedWork != null && (!uint.TryParse(requestedWork, out instructionLimit)
+            || instructionLimit < 32 || instructionLimit > 1_000_000_000))
+            throw new ArgumentException("N64_PROBE_REPLAY_INSTRUCTIONS must be between 32 and 1000000000");
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
         var fetch = typeof(R4300).GetMethod("ReadOpcode", flags)!.CreateDelegate<Func<uint, uint>>();
         var service = typeof(R4300).GetMethod("ServiceInterrupts", flags)!.CreateDelegate<Func<uint, bool>>();
@@ -36,7 +41,7 @@ internal static class CpuStateBenchmark
             Ryu64.Common.Measure.InstructionCount = 0;
             hostCounters?.Start();
             long start = Stopwatch.GetTimestamp();
-            while (Ryu64.Common.Measure.InstructionCount < 20_000_000)
+            while (Ryu64.Common.Measure.InstructionCount < instructionLimit)
             {
                 uint pc = Registers.R4300.PC;
                 if (service(pc)) continue;
@@ -44,10 +49,10 @@ internal static class CpuStateBenchmark
                 {
                     uint opcode = fetch(pc);
                     if (opcode == 0xafa40000u && multiply != null
-                        && multiply(pc, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount)) != 0) continue;
+                        && multiply(pc, (uint)(instructionLimit - Ryu64.Common.Measure.InstructionCount)) != 0) continue;
                     if (block != null && pc >= 0x80004000u && pc < 0xc0000000u)
                     {
-                        uint length = block(pc, opcode, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount), false);
+                        uint length = block(pc, opcode, (uint)(instructionLimit - Ryu64.Common.Measure.InstructionCount), false);
                         if (profile) blockLengths[length] = blockLengths.GetValueOrDefault(length) + 1;
                         if (profile && length != 0)
                         {

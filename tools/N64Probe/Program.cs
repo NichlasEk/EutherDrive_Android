@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 2 && args[0] == "--check-framebuffer-writes")
+{
+    FramebufferWriteChecks.Run(args[1]);
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-sprites")
 {
     SpriteRenderChecks.Run();

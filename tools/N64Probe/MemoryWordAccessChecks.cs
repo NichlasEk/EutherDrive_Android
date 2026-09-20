@@ -5,6 +5,7 @@ using Ryu64.MIPS;
 
 internal static class MemoryWordAccessChecks
 {
+    private delegate bool ReadPhysical(uint physical, out uint value);
     internal static void Run(string reference, bool instructionFetch = false)
     {
         var context = new AssemblyLoadContext("word-access-reference", true);
@@ -62,6 +63,24 @@ internal static class MemoryWordAccessChecks
         foreach (uint address in new uint[] { 0xb0000000,0xb0000001,0xb0000ffc,0xa4400010,0xa404001c,0xa404001c }) Read(address);
         if (instructionFetch)
             foreach (uint address in new uint[] { 0x10000,0x70020000,0xc0020000 }) Read(address);
+        if (instructionFetch)
+        {
+            var fast = memoryType.GetMethod("TryReadRdramUInt32PhysicalFast", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .CreateDelegate<ReadPhysical>(memory);
+            void Physical(uint address)
+            {
+                writer.Write(address); writer.Write(fast(address, out uint word)); writer.Write(word); operations++;
+            }
+            foreach (uint segment in new uint[] { 0,0x80000000,0xa0000000,0xe0000000 })
+            foreach (uint offset in new uint[] { 0,1,2,3,4,0x7ffff8,0x7ffffb,0x7ffffc,0x7ffffd,0x7ffffe,0x7fffff,0x800000,0x1fffffff })
+                Physical(segment | offset);
+            uint sample = 6400930;
+            for (int i = 0; i < 65536; i++)
+            {
+                sample = unchecked(sample * 1664525 + 1013904223);
+                Physical(sample); Physical(sample & 0x7fffff);
+            }
+        }
         writer.Flush();
         string values = Convert.ToHexString(SHA256.HashData(result.ToArray()));
         result.SetLength(0); save(writer); writer.Flush();

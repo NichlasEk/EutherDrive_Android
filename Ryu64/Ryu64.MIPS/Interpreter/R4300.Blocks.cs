@@ -112,12 +112,15 @@ namespace Ryu64.MIPS
                 case 63: InstInterp.SD(desc); break;
                 case 144: InstInterp.MTC0(desc); break;
                 case 35:
-                    Registers.R4300.Reg[desc.op2] = unchecked((ulong)(long)BinaryPrimitives.ReadInt32BigEndian(memory.RDRAM.AsSpan(CpuBlockLoadAddress(desc), 4)));
+                    Registers.R4300.Reg[desc.op2] = unchecked((ulong)(long)BinaryPrimitives.ReadInt32BigEndian(memory.RDRAM.AsSpan(CpuBlockRamAddress(desc), 4)));
                     Registers.R4300.PC += 4;
                     break;
-                case 43: InstInterp.SW(desc); break;
+                case 43:
+                    memory.WriteValidatedRdramUInt32((uint)CpuBlockRamAddress(desc), (uint)Registers.R4300.Reg[desc.op2]);
+                    Registers.R4300.PC += 4;
+                    break;
                 case 55:
-                    Registers.R4300.Reg[desc.op2] = BinaryPrimitives.ReadUInt64BigEndian(memory.RDRAM.AsSpan(CpuBlockLoadAddress(desc), 8));
+                    Registers.R4300.Reg[desc.op2] = BinaryPrimitives.ReadUInt64BigEndian(memory.RDRAM.AsSpan(CpuBlockRamAddress(desc), 8));
                     Registers.R4300.PC += 4;
                     break;
                 case 64: InstInterp.SLL(desc); break;
@@ -152,7 +155,7 @@ namespace Ryu64.MIPS
         // entire access width. Resolve the address after branch link writes and
         // r0 normalization, just as the ordinary load handlers do.
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
-        private static int CpuBlockLoadAddress(OpcodeTable.OpcodeDesc desc)
+        private static int CpuBlockRamAddress(OpcodeTable.OpcodeDesc desc)
         {
             return (int)(unchecked((uint)(Registers.R4300.Reg[desc.op1]
                 + (ulong)(long)(short)desc.Imm)) & 0x1fffffffu);
@@ -204,7 +207,7 @@ namespace Ryu64.MIPS
 
         // A bounded interpreter for quiet intervals: no code cache and no
         // synthetic cycles. Fetch after every preceding store/branch, execute
-        // validated loads or usual handlers, aggregating event-free clock boundaries.
+        // validated RAM accesses or usual handlers, aggregating event-free clock boundaries.
         // MFC0 observes its precise intermediate Count/RANDOM, including the
         // delay-before-branch accounting order used by InterpretOpcode.
         // The caller has already recorded the first history entry.
@@ -232,7 +235,9 @@ namespace Ryu64.MIPS
             while (done < limit)
             {
                 var desc = new OpcodeTable.OpcodeDesc(opcode);
-                if (!CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
+                // Only load/store primary opcodes can access memory. Avoid a
+                // validator call for arithmetic, CP0 and branch instructions.
+                if ((uint)(kind - 32) < 32 && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
                 bool branch = (kind >= 2 && kind <= 5) || kind == 72 || kind == 73;
                 uint delayOpcode = 0;
                 int delayKind = -1;

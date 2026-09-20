@@ -85,6 +85,14 @@ internal static class CpuMultiplyBatchChecks
             bytes.CopyTo(R4300.memory.RDRAM, (int)(pc & 0x1fffffff));
             Registers.R4300.PC = pc; Check(true);
         }
+        foreach (uint stack in new uint[] { 0x80020ff8,0xa0020ff8,0x807ffff0 })
+        foreach (uint epoch in new uint[] { 17,uint.MaxValue - 1 })
+        {
+            Reset(); Registers.R4300.Reg[29] = stack;
+            typeof(Memory).GetMethod("RegisterFramebufferInfo", memoryFlags)!
+                .Invoke(R4300.memory, new object[] { stack & 0x1fffffffu,2u,8u,1u });
+            Set("_rdramWriteEpoch",epoch); Check(true);
+        }
         foreach (ulong sp in new ulong[] { 0x80020001, 0x80010000, 0x80010028, 0x8000fff8, 0x807ffff8, 0xa4040000, 0x70020000 })
         { Reset(); Registers.R4300.Reg[29] = sp; Check(false); }
         foreach (uint budget in new uint[] { 0, 1, 11, 12, 100 }) { Reset(); Check(budget >= 12, budget); }

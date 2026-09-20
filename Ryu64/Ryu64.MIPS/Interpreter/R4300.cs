@@ -1974,10 +1974,10 @@ namespace Ryu64.MIPS
                     return 0;
 
             Registers.R4300.Reg[0] = 0;
-            memory.WriteUInt32(stack, (uint)Registers.R4300.Reg[4]);
-            memory.WriteUInt32(stack + 4, (uint)Registers.R4300.Reg[5]);
-            memory.WriteUInt32(stack + 8, (uint)Registers.R4300.Reg[6]);
-            memory.WriteUInt32(stack + 12, (uint)Registers.R4300.Reg[7]);
+            memory.WriteValidatedRdramUInt32(stackPhysical, (uint)Registers.R4300.Reg[4]);
+            memory.WriteValidatedRdramUInt32(stackPhysical + 4, (uint)Registers.R4300.Reg[5]);
+            memory.WriteValidatedRdramUInt32(stackPhysical + 8, (uint)Registers.R4300.Reg[6]);
+            memory.WriteValidatedRdramUInt32(stackPhysical + 12, (uint)Registers.R4300.Reg[7]);
             // The four validated RAM stores above pack the low argument words
             // into two big-endian operands. Their reads have no device effects.
             ulong left = ((ulong)(uint)Registers.R4300.Reg[4] << 32) | (uint)Registers.R4300.Reg[5];
@@ -1994,11 +1994,7 @@ namespace Ryu64.MIPS
             Count += cycles;
             memory.Tick(cycles);
             Registers.COP0.Reg[Registers.COP0.COUNT_REG] = nextCount;
-            uint random = (uint)Registers.COP0.Reg[Registers.COP0.RANDOM_REG] & 31;
-            uint wired = (uint)Registers.COP0.Reg[Registers.COP0.WIRED_REG] & 31;
-            uint firstRun = random > wired ? random - wired : 0;
-            Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = instructions <= firstRun ? random - instructions
-                : 31 - ((instructions - firstRun - 1) % (32 - wired));
+            Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = GetRandomAfterInstructions(instructions);
             Common.Measure.InstructionCount += instructions;
             Common.Measure.CycleCounter = CycleCounter;
             return instructions;
