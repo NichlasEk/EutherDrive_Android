@@ -10396,7 +10396,30 @@ namespace Ryu64.MIPS
             WriteUInt16(index, (ushort)value);
         }
 
+        private static readonly bool WordAccessTracingEnabled = HasWordAccessTracing();
+
+        private static bool HasWordAccessTracing()
+        {
+            // A watch address of zero is meaningful. Keep every diagnostic
+            // environment setting on the established access path.
+            foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+                if (((string)entry.Key).StartsWith("EUTHERDRIVE_TRACE_", StringComparison.Ordinal)
+                    && !string.IsNullOrEmpty(entry.Value as string))
+                    return true;
+            return false;
+        }
+
         public uint ReadUInt32(uint index)
+        {
+            uint physical = index & 0x1fffffffu;
+            if (!WordAccessTracingEnabled && index >= 0x80000000u && index < 0xc0000000u
+                && physical + 3u < RDRAM.Length)
+                return ((uint)RDRAM[physical] << 24) | ((uint)RDRAM[physical + 1] << 16)
+                    | ((uint)RDRAM[physical + 2] << 8) | RDRAM[physical + 3];
+            return ReadUInt32Slow(index);
+        }
+
+        private uint ReadUInt32Slow(uint index)
         {
             uint physical = 0;
             bool havePhysical = false;
@@ -10468,6 +10491,22 @@ namespace Ryu64.MIPS
         }
 
         public void WriteUInt32(uint index, uint value)
+        {
+            uint physical = index & 0x1fffffffu;
+            if (!WordAccessTracingEnabled && index >= 0x80000000u && index < 0xc0000000u
+                && physical + 3u < RDRAM.Length)
+            {
+                RDRAM[physical] = (byte)(value >> 24);
+                RDRAM[physical + 1] = (byte)(value >> 16);
+                RDRAM[physical + 2] = (byte)(value >> 8);
+                RDRAM[physical + 3] = (byte)value;
+                NoteRdramWriteRange(physical, 4);
+                return;
+            }
+            WriteUInt32Slow(index, value);
+        }
+
+        private void WriteUInt32Slow(uint index, uint value)
         {
             uint physical = 0;
             bool havePhysical = false;
