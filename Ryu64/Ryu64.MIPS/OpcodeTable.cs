@@ -25,27 +25,21 @@ namespace Ryu64.MIPS
             }
         }
 
-        public struct OpcodeDesc
+        // Pass one instruction word through dispatch. Decode only operands used
+        // by the handler instead of constructing/copying all six fields first.
+        public readonly struct OpcodeDesc
         {
-            public uint Opcode;
-
-            public byte   op1;
-            public byte   op2;
-            public byte   op3;
-            public byte   op4;
-            public ushort Imm;
-            public uint   Target;
+            public readonly uint Opcode;
+            public byte op1 => (byte)((Opcode >> 21) & 31);
+            public byte op2 => (byte)((Opcode >> 16) & 31);
+            public byte op3 => (byte)((Opcode >> 11) & 31);
+            public byte op4 => (byte)((Opcode >> 6) & 31);
+            public ushort Imm => (ushort)Opcode;
+            public uint Target => Opcode & 0x03FFFFFFu;
 
             public OpcodeDesc(uint Opcode)
             {
                 this.Opcode = Opcode;
-
-                op1                = (byte)  ((Opcode & 0b00000011111000000000000000000000) >> 21);
-                op2                = (byte)  ((Opcode & 0b00000000000111110000000000000000) >> 16);
-                op3                = (byte)  ((Opcode & 0b00000000000000001111100000000000) >> 11);
-                op4                = (byte)  ((Opcode & 0b00000000000000000000011111000000) >> 6);
-                Imm                = (ushort)((Opcode & 0b00000000000000001111111111111111));
-                Target             =         ((Opcode & 0b00000011111111111111111111111111));
             }
         }
 
