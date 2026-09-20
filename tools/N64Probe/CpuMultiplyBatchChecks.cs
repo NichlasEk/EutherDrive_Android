@@ -63,6 +63,19 @@ internal static class CpuMultiplyBatchChecks
             Registers.COP0.Reg[Registers.COP0.WIRED_REG] = (uint)(i / 2);
             Check(true);
         }
+        // Cover carries across both halves and truncation of high argument bits.
+        ulong[] operands = { 0, 1, 0xffffffff, 0x100000000, 0x7fffffffffffffff,
+            0x8000000000000000, 0xffffffff00000000, ulong.MaxValue };
+        foreach (ulong left in operands)
+        foreach (ulong right in operands)
+        {
+            Reset();
+            Registers.R4300.Reg[4] = 0xdeadbeef00000000 | (left >> 32);
+            Registers.R4300.Reg[5] = 0xabcdef1200000000 | (uint)left;
+            Registers.R4300.Reg[6] = 0xfedcba9800000000 | (right >> 32);
+            Registers.R4300.Reg[7] = 0x1234567800000000UL | (uint)right;
+            Check(true);
+        }
         for (int i = 0; i < code.Length * 4; i++)
         { Reset(); R4300.memory.RDRAM[0x10000 + i] ^= 1; Check(false); }
         foreach (uint pc in new uint[] { 0x80010004, 0xa0010004, 0x807fffd0, 0xa07fffd0 })

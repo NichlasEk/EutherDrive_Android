@@ -1974,18 +1974,21 @@ namespace Ryu64.MIPS
                     return 0;
 
             Registers.R4300.Reg[0] = 0;
-            InstInterp.SW(new OpcodeTable.OpcodeDesc(0xafa40000));
-            InstInterp.SW(new OpcodeTable.OpcodeDesc(0xafa50004));
-            InstInterp.SW(new OpcodeTable.OpcodeDesc(0xafa60008));
-            InstInterp.SW(new OpcodeTable.OpcodeDesc(0xafa7000c));
-            InstInterp.LD(new OpcodeTable.OpcodeDesc(0xdfaf0008));
-            InstInterp.LD(new OpcodeTable.OpcodeDesc(0xdfae0000));
-            InstInterp.DMULTU(new OpcodeTable.OpcodeDesc(0x01cf001d));
-            InstInterp.MFLO(new OpcodeTable.OpcodeDesc(0x00001012));
-            InstInterp.DSLL32(new OpcodeTable.OpcodeDesc(0x0002183c));
-            InstInterp.DSRA32(new OpcodeTable.OpcodeDesc(0x0003183f));
-            Registers.R4300.PC += 4; // JR, followed by its non-faulting delay instruction.
-            InstInterp.DSRA32(new OpcodeTable.OpcodeDesc(0x0002103f));
+            memory.WriteUInt32(stack, (uint)Registers.R4300.Reg[4]);
+            memory.WriteUInt32(stack + 4, (uint)Registers.R4300.Reg[5]);
+            memory.WriteUInt32(stack + 8, (uint)Registers.R4300.Reg[6]);
+            memory.WriteUInt32(stack + 12, (uint)Registers.R4300.Reg[7]);
+            // The four validated RAM stores above pack the low argument words
+            // into two big-endian operands. Their reads have no device effects.
+            ulong left = ((ulong)(uint)Registers.R4300.Reg[4] << 32) | (uint)Registers.R4300.Reg[5];
+            ulong right = ((ulong)(uint)Registers.R4300.Reg[6] << 32) | (uint)Registers.R4300.Reg[7];
+            Registers.R4300.Reg[14] = left;
+            Registers.R4300.Reg[15] = right;
+            InstInterp.MultiplyUnsigned64(left, right, out ulong high, out ulong low);
+            Registers.R4300.HI = high;
+            Registers.R4300.LO = low;
+            Registers.R4300.Reg[3] = unchecked((ulong)(long)(int)(uint)low);
+            Registers.R4300.Reg[2] = unchecked((ulong)((long)low >> 32));
             Registers.R4300.PC = (uint)Registers.R4300.Reg[31];
             CycleCounter += cycles;
             Count += cycles;

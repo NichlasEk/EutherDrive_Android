@@ -23,7 +23,7 @@
             Registers.R4300.HI = SignExtend32(hi);
         }
 
-        private static void MultiplyUnsigned64(ulong a, ulong b, out ulong hi, out ulong lo)
+        internal static void MultiplyUnsigned64(ulong a, ulong b, out ulong hi, out ulong lo)
         {
             ulong aLo = (uint)a;
             ulong aHi = a >> 32;

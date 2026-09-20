@@ -243,6 +243,8 @@ bool sm64Input = Environment.GetEnvironmentVariable("N64_PROBE_SM64_INPUT") == "
 bool sm64Us = BinaryPrimitives.ReadUInt32BigEndian(rom.AsSpan(0x10)) == 0x635a2bff
     && BinaryPrimitives.ReadUInt32BigEndian(rom.AsSpan(0x14)) == 0x8b022326;
 if (sm64Input && !sm64Us) throw new ArgumentException("SM64 input/telemetry requires the original USA cartridge");
+using var probeProcess = Process.GetCurrentProcess();
+TimeSpan cpuStart = probeProcess.TotalProcessorTime;
 core.Start();
 var timer = Stopwatch.StartNew();
 bool captureAudio = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_AUDIO") == "1";
@@ -288,7 +290,7 @@ try
                 Console.WriteLine($"mario action={action:x8} pos={Float(0x3c):F2},{Float(0x40):F2},{Float(0x44):F2} velocity={Float(0x54):F2} inputY={(second >= 20 ? 80 : 0)} inputA={second % 4 == 0}");
             }
         }
-        Console.WriteLine($"seconds={timer.Elapsed.TotalSeconds:F2} {core.LastExecutionStatus}");
+        Console.WriteLine($"seconds={timer.Elapsed.TotalSeconds:F2} cpuSeconds={(probeProcess.TotalProcessorTime - cpuStart).TotalSeconds:F3} {core.LastExecutionStatus}");
         if (second % 5 == 4)
         {
             Console.WriteLine(core.LastPerformanceStatus);
