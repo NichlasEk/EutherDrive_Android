@@ -320,11 +320,11 @@ namespace Ryu64Core
                     return false;
                 }
 
-                // A low address is valid when an RDP-produced snapshot covers
-                // the actual VI range (including its top-row offset). Duke uses
-                // a buffer at 0x400 with VI origin 0x680. Do not substitute the
-                // other buffer just because this one is below the heuristic floor.
-                if (suspiciousViOrigin && (long)rawOrigin + width * height * bytesPerPixel <= RdramSizeBytes)
+                // Match the actual VI buffer before considering live RDRAM or
+                // another producer. Rendering may already be overwriting RAM,
+                // including on the very first presentation after a buffer swap.
+                // This also proves valid low buffers (Duke: 0x400 + row offset).
+                if ((long)rawOrigin + width * height * bytesPerPixel <= RdramSizeBytes)
                 {
                     byte[] viScratch = GetFramebufferScratch(width * height * bytesPerPixel);
                     if (R4300.memory.TryCopyLastVisibleRdpFramebufferSnapshot(
@@ -336,7 +336,7 @@ namespace Ryu64Core
                         ClearFramebufferCandidateCache();
                         R4300.memory.NotifyFramebufferConsumerRead(rawOrigin, (uint)framebuffer.Length);
                         FramebufferUpdated?.Invoke(this, new FramebufferUpdatedEventArgs(framebuffer, (uint)width, (uint)height, (uint)bytesPerPixel));
-                        _lastFramebufferStatus = $"RDP-backed low VI framebuffer used (vi=0x{rawOrigin:x8}, size={width}x{height} bpp={bytesPerPixel}, snapshotEpoch={viSnapshotEpoch})";
+                        _lastFramebufferStatus = $"RDP-backed VI framebuffer used (vi=0x{rawOrigin:x8}, size={width}x{height} bpp={bytesPerPixel}, snapshotEpoch={viSnapshotEpoch})";
                         RememberLastVisibleFramebuffer(rawOrigin, rawOrigin, width, height, bytesPerPixel, viType, framebuffer, width * height * bytesPerPixel);
                         return true;
                     }

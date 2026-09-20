@@ -853,6 +853,7 @@ namespace Ryu64.MIPS
         private readonly RdpTileState[] _rdpTiles = new RdpTileState[8];
         private readonly byte[] _rdpTmem = new byte[4096];
         private readonly ushort[] _rdpTlut = new ushort[256];
+        private readonly uint[] _rdpRectanglePalette = new uint[256];
         private readonly byte[] _rdpHiddenBits = new byte[8388608 / 2];
         // TMEM halfwords are stored as big-endian byte pairs. The word-index
         // XOR of 1 therefore corresponds to byte-index XOR 2, not the native
@@ -1050,7 +1051,7 @@ namespace Ryu64.MIPS
             if (writer == null)
                 throw new ArgumentNullException(nameof(writer));
 
-            const int version = 6;
+            const int version = 7;
             writer.Write(version);
 
             WriteByteArrays(writer);
@@ -1193,6 +1194,11 @@ namespace Ryu64.MIPS
             writer.Write(_rdpPendingCommandAddress);
             for (int i = 0; i < _rdpPendingCommand.Length; i++)
                 writer.Write(i < _rdpPendingWordCount ? _rdpPendingCommand[i] : 0u);
+            writer.Write(_pendingVisibleRdpFramebufferSnapshot);
+            writer.Write(_pendingVisibleRdpFramebufferAddress);
+            writer.Write(_pendingVisibleRdpFramebufferWidth);
+            writer.Write(_pendingVisibleRdpFramebufferBytesPerPixel);
+            writer.Write(_pendingVisibleRdpFramebufferKnownPixels);
         }
 
         public void LoadState(BinaryReader reader)
@@ -1201,7 +1207,7 @@ namespace Ryu64.MIPS
                 throw new ArgumentNullException(nameof(reader));
 
             int version = reader.ReadInt32();
-            if (version < 1 || version > 6)
+            if (version < 1 || version > 7)
                 throw new InvalidDataException($"Unsupported N64 memory savestate version: {version}.");
 
             lock (_audioQueueLock) _audioQueue.Clear();
@@ -1390,6 +1396,18 @@ namespace Ryu64.MIPS
                     || (_rdpPendingWordCount != 0 && _rdpPendingWordCount >= GetRdpCommandWordLength((int)(_rdpPendingCommand[0] >> 24 & 63))))
                     throw new InvalidDataException("Invalid partial RDP command in savestate");
             }
+            // Pending drawing is private until SyncFull/target change/task end.
+            // Restore it without publishing the partially drawn RDRAM image.
+            _pendingVisibleRdpFramebufferSnapshot = version >= 7 && reader.ReadBoolean();
+            _pendingVisibleRdpFramebufferAddress = version >= 7 ? reader.ReadUInt32() : 0;
+            _pendingVisibleRdpFramebufferWidth = version >= 7 ? reader.ReadUInt32() : 0;
+            _pendingVisibleRdpFramebufferBytesPerPixel = version >= 7 ? reader.ReadUInt32() : 0;
+            _pendingVisibleRdpFramebufferKnownPixels = version >= 7 ? reader.ReadInt64() : 0;
+            if (_pendingVisibleRdpFramebufferSnapshot
+                && (_pendingVisibleRdpFramebufferAddress != _rdpColorImageAddress
+                    || _pendingVisibleRdpFramebufferWidth != _rdpColorImageWidth
+                    || _pendingVisibleRdpFramebufferBytesPerPixel != RdpBytesPerPixel(_rdpColorImageSize)))
+                throw new InvalidDataException("Invalid pending framebuffer in savestate");
             RefreshCpuInterruptView();
         }
 
@@ -2261,7 +2279,10 @@ namespace Ryu64.MIPS
                             break;
                         case 0x3F: // SetColorImage
                             Interlocked.Increment(ref _rdpSetColorImageCommandCount);
-                            FlushVisibleRdpFramebufferSnapshot();
+                            if (_rdpColorImageSize != ((w0 >> 19) & 0x3u)
+                                || _rdpColorImageWidth != (w0 & 0x03FFu) + 1u
+                                || _rdpColorImageAddress != (w1 & 0x00FFFFFFu))
+                                FlushVisibleRdpFramebufferSnapshot();
                             _rdpColorImageSize = (w0 >> 19) & 0x3u;
                             _rdpColorImageWidth = (w0 & 0x03FFu) + 1u;
                             _rdpColorImageAddress = w1 & 0x00FFFFFFu;
@@ -2299,7 +2320,9 @@ namespace Ryu64.MIPS
                 Interlocked.Add(ref _rdpHandledCommandCount, handledCount);
             }
 
-            if (commandCounts != null && commandCount > 0)
+            // Include consumed prefixes so diagnostic command tapes preserve
+            // commands split over multiple DMA submissions.
+            if (commandCounts != null && (commandCount > 0 || current > start))
             {
                 string summary = "";
                 for (int i = 0; i < commandCounts.Length; i++)
@@ -4262,10 +4285,29 @@ namespace Ryu64.MIPS
             int dtdyFixed = (short)w3;
             if (_rdpOtherModesCycleType == 2u)
                 dsdxFixed /= 4; // Copy emits four horizontal pixels per step.
-            double startS = sFixed / 32.0;
-            double startT = tFixed / 32.0;
-            double stepS = dsdxFixed / 1024.0;
-            double stepT = dtdyFixed / 1024.0;
+            // Coordinates and slopes are binary fixed point. Walk the row with
+            // integer additions; arithmetic shifts retain floor for negatives.
+            bool flipCoordinates = flip && UseReferenceTexRectFlip;
+            long firstS = (long)sFixed * 32 + (long)(x0 - textureOriginX) * dsdxFixed;
+            long firstT = (long)tFixed * 32 + (long)(x0 - textureOriginX) * dsdxFixed;
+            long stepS = flipCoordinates ? 0 : dsdxFixed;
+            long stepT = flipCoordinates ? dsdxFixed : 0;
+            // Rectangles use constant zero shade. For indexed textures the
+            // complete combiner result depends only on the palette index.
+            // Rebuild per draw so TLUT/TMEM, color and mux changes need no cache
+            // invalidation, including after a savestate load.
+            bool paletteRectangle = tile.Format == 2u && tile.Size <= 1u && _rdpOtherModesEnableTlut
+                && (ulong)(x1 - x0 + 1u) * (y1 - y0 + 1u) >= (tile.Size == 0 ? 16u : 256u);
+            if (paletteRectangle)
+            {
+                uint first = tile.Size == 0 ? tile.Palette * 16u : 0;
+                uint end = first + (tile.Size == 0 ? 16u : 256u);
+                for (uint index = first; index < end; index++)
+                {
+                    uint texel = RdpTlutColorToRgba(LookupRdpTlut(index));
+                    _rdpRectanglePalette[index] = _rdpCombineModeSet ? ApplyRdpColorCombiner(texel, 0u) : texel;
+                }
+            }
             // Rectangles have no interpolated Z coefficients. In primitive-Z
             // mode they still compare/update depth, just like billboard sprites.
             bool useDepth = EnableRdpDepth && _rdpOtherModesCycleType < 2u
@@ -4288,32 +4330,26 @@ namespace Ryu64.MIPS
                 uint rowStart = _rdpColorImageAddress + ((y * _rdpColorImageWidth + x0) * bytesPerPixel);
                 uint rowPixels = x1 - x0 + 1u;
                 bool rowWrote = false;
+                long sampleS1024 = flipCoordinates ? (long)sFixed * 32 + (long)(y - textureOriginY) * dtdyFixed : firstS;
+                long sampleT1024 = flipCoordinates ? firstT : (long)tFixed * 32 + (long)(y - textureOriginY) * dtdyFixed;
                 for (uint x = 0; x < rowPixels; x++)
                 {
                     uint screenX = x0 + x;
-                    uint dx = screenX - textureOriginX;
-                    uint dy = y - textureOriginY;
-                    int sampleS;
-                    int sampleT;
-                    if (flip && UseReferenceTexRectFlip)
-                    {
-                        long s1024 = (long)sFixed * 32L + (long)dy * dtdyFixed;
-                        long t1024 = (long)tFixed * 32L + (long)dx * dsdxFixed;
-                        sampleS = RdpTexRectFixedToTexel(s1024);
-                        sampleT = RdpTexRectFixedToTexel(t1024);
-                    }
-                    else
-                    {
-                        sampleS = (int)Math.Floor(startS + dx * stepS);
-                        sampleT = (int)Math.Floor(startT + dy * stepT);
-                    }
+                    int sampleS = (int)(sampleS1024 >> 10);
+                    int sampleT = (int)(sampleT1024 >> 10);
+                    sampleS1024 += stepS;
+                    sampleT1024 += stepT;
 
-                    if (!SampleRdpTexture(ref sampler, sampleS, sampleT, out uint rgba))
+                    uint rgba;
+                    bool sampled = paletteRectangle
+                        ? SampleRdpRectanglePalette(ref sampler, sampleS, sampleT, out rgba)
+                        : SampleRdpTexture(ref sampler, sampleS, sampleT, out rgba);
+                    if (!sampled)
                     {
                         sampleMisses++;
                         continue;
                     }
-                    if (_rdpCombineModeSet)
+                    if (_rdpCombineModeSet && !paletteRectangle)
                         // Texture rectangles have zero shade coefficients. Using white
                         // turns (PRIMITIVE - SHADE) * TEXEL + SHADE into a solid box.
                         rgba = ApplyRdpColorCombiner(rgba, 0u);
@@ -4411,14 +4447,6 @@ namespace Ryu64.MIPS
             return x1 >= x0 && y1 >= y0;
         }
 
-        private static int RdpTexRectFixedToTexel(long value1024)
-        {
-            if (value1024 >= 0)
-                return (int)(value1024 >> 10);
-
-            return -(int)((-value1024 + 1023L) >> 10);
-        }
-
         private RdpPreparedTextureSampler PrepareRdpTextureSampler(RdpTileState tile)
         {
             uint width = GetTileWidth(tile);
@@ -4468,9 +4496,30 @@ namespace Ryu64.MIPS
                 return DecodeRdpTextureColorLinearLerp(ref sampler, s, t, fracS, fracT, out rgba);
             }
 
+            if (!ResolveRdpTextureCoordinates(ref sampler, s, t, out int u, out int v))
+                return false;
+            return DecodeRdpTextureColor(sampler.Tile, u, v, out rgba);
+        }
+
+        private bool SampleRdpRectanglePalette(ref RdpPreparedTextureSampler sampler, int s, int t, out uint rgba)
+        {
+            rgba = 0;
+            if (!ResolveRdpTextureCoordinates(ref sampler, s, t, out int u, out int v))
+                return false;
             ref RdpTileState tile = ref sampler.Tile;
-            int u;
-            int v;
+            uint tbase = (tile.Tmem + ((tile.Line * (uint)v) & 0x1FFu)) & 0x1FFu;
+            bool fourBit = tile.Size == 0;
+            uint address = RdpTmem8Address(tbase, (uint)u, (uint)v, fourBit, tlut: true);
+            uint index = _rdpTmem[address];
+            if (fourBit) index = ((u & 1) == 0 ? index >> 4 : index & 15u) + tile.Palette * 16u;
+            rgba = _rdpRectanglePalette[index];
+            return true;
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static bool ResolveRdpTextureCoordinates(ref RdpPreparedTextureSampler sampler, int s, int t, out int u, out int v)
+        {
+            ref RdpTileState tile = ref sampler.Tile;
             if (sampler.FastClampCoordinates)
             {
                 u = ClampRdpTextureCoordinate(s - (int)sampler.OriginS, sampler.Width);
@@ -4486,10 +4535,7 @@ namespace Ryu64.MIPS
                 u = ApplyRdpTextureCoordinate(s, sampler.OriginS, sampler.Width, tile.MaskS, tile.ShiftS, tile.ClampS, tile.MirrorS);
                 v = ApplyRdpTextureCoordinate(t, sampler.OriginT, sampler.Height, tile.MaskT, tile.ShiftT, tile.ClampT, tile.MirrorT);
             }
-            if (u < 0 || v < 0)
-                return false;
-
-            return DecodeRdpTextureColor(tile, u, v, out rgba);
+            return u >= 0 && v >= 0;
         }
 
         private bool DecodeRdpTextureColorLinearLerpFastClamp(ref RdpPreparedTextureSampler sampler, int s, int t, int fracS, int fracT, out uint rgba)
@@ -8188,7 +8234,6 @@ namespace Ryu64.MIPS
             finally
             {
                 _rspTaskDispatching = false;
-                FlushVisibleRdpFramebufferSnapshot();
                 if (hasTask && task.Type == 1)
                     AddPerfTicks(ref _perfRspGraphicsTicks, ref _perfRspGraphicsCalls, rspPerfStart);
                 else if (hasTask && task.Type == 2)
@@ -8203,6 +8248,10 @@ namespace Ryu64.MIPS
                 status = ReadBigEndianWord(SP_STATUS_REG_R);
                 return;
             }
+
+            // A cooperative slice is not the end of a frame. Keep the previous
+            // completed snapshot visible while this task finishes drawing.
+            if (completed) FlushVisibleRdpFramebufferSnapshot();
 
             if (!completed && string.IsNullOrEmpty(stopReason))
                 stopReason = $"unknown-incomplete executed={executedInstructions} rspPc=0x{ReadRspPc():x3}";

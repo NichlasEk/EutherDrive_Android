@@ -63,6 +63,7 @@ internal static class LowViFramebufferChecks
             byte[] highImage = Render(0x300000, true); // Newer, unrelated producer must not override VI.
             // Rendering can have begun overwriting RAM; display the completed snapshot.
             memory.RDRAM.AsSpan((int)low, lowImage.Length).Fill(0xff);
+            memory.RDRAM.AsSpan(0x300000, highImage.Length).Fill(0xff);
             foreach (int row in new[] { 0, 1, 7 })
             foreach (bool useLow in new[] { false, true, false, true })
             {

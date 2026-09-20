@@ -87,17 +87,23 @@ internal static class CpuBlockChecks
             Ryu64.Common.Measure.InstructionCount = 0;
             uint op = fetch(Registers.R4300.PC);
             var historyPosition = typeof(R4300).GetField("_recentInstPos", cpuFlags)!;
-            historyPosition.SetValue(null, 0);
+            var entries = (Array)typeof(R4300).GetField("_recentInst", cpuFlags)!.GetValue(null)!;
+            int historyStart = cases % 2 == 0 ? 0 : entries.Length - 3;
+            historyPosition.SetValue(null, historyStart);
+            var previousHistory = (Array)entries.Clone();
             uint n = batch(Registers.R4300.PC, op, budget, jit);
             var recorded = new List<(uint, uint)>();
             if (jit)
             {
-                var entries = (Array)typeof(R4300).GetField("_recentInst", cpuFlags)!.GetValue(null)!;
-                for (int h = 0; h < (int)historyPosition.GetValue(null)!; h++)
+                int historyEnd = (int)historyPosition.GetValue(null)!;
+                for (int h = historyStart; h != historyEnd; h = (h + 1) % entries.Length)
                 {
                     object entry = entries.GetValue(h)!;
                     recorded.Add(((uint)entry.GetType().GetField("Pc")!.GetValue(entry)!, (uint)entry.GetType().GetField("Op")!.GetValue(entry)!));
                 }
+                for (int h = historyEnd; h != historyStart; h = (h + 1) % entries.Length)
+                    if (!entries.GetValue(h)!.Equals(previousHistory.GetValue(h)))
+                        throw new Exception($"CPU JIT case {cases}: unrelated history entry overwritten");
             }
             if (n != expected || Ryu64.Common.Measure.InstructionCount != n)
                 throw new Exception($"CPU block case {cases}: accepted {n}, expected {expected}");

@@ -84,7 +84,7 @@ internal static class RdpStreamingChecks
             throw new Exception("Rampage ring wrap lost rectangle or FULL_SYNC");
         cases++;
         // Loading a pre-FIFO save over an in-progress command clears the queue.
-        var clean=New(); byte[] legacy=Save(clean)[..^StateChecks.RdpCommandTrailerBytes];
+        var clean=New(); byte[] legacy=Save(clean)[..^(StateChecks.FramebufferPublicationTrailerBytes + StateChecks.RdpCommandTrailerBytes)];
         BinaryPrimitives.WriteInt32LittleEndian(legacy,5);
         Submit(clean,new uint[]{0xe4000000,0},0,2,false,0x1000);
         using (var reader=new BinaryReader(new MemoryStream(legacy))) clean.LoadState(reader);

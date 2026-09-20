@@ -96,12 +96,27 @@ namespace Ryu64.MIPS
 
         private static void RecordCpuJitHistory(uint start, uint[] words, uint executed, uint elapsed, bool branch)
         {
-            int end = (int)executed - (branch && executed == words.Length ? 1 : 0);
-            for (int i = elapsed == 0 ? 1 : 0; i < end; i++)
+            // A native backedge can repeat the same block many times within a
+            // quiet window. Record that whole region once, including any safe
+            // prefix before a load guard failed. Keep the interpreter's exact
+            // history convention: the caller recorded the first instruction,
+            // and branch delay slots are not separate history entries.
+            var recent = _recentInst;
+            int position = _recentInstPos;
+            int first = elapsed == 0 ? 1 : 0;
+            while (executed != 0)
             {
-                _recentInst[_recentInstPos] = new RecentInst { Pc = start + (uint)i * 4, Op = words[i] };
-                _recentInstPos = (_recentInstPos + 1) & RecentInstHistoryMask;
+                int count = (int)Math.Min(executed, (uint)words.Length);
+                int end = count - (branch && count == words.Length ? 1 : 0);
+                for (int i = first; i < end; i++)
+                {
+                    recent[position] = new RecentInst { Pc = start + (uint)i * 4, Op = words[i] };
+                    position = (position + 1) & RecentInstHistoryMask;
+                }
+                executed -= (uint)count;
+                first = 0;
             }
+            _recentInstPos = position;
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
@@ -264,7 +279,9 @@ namespace Ryu64.MIPS
                     il.MarkLabel(badAddress); Pc(pc); Exit((uint)i);
                     il.MarkLabel(validAddress);
                 }
-                else if ((uint)(kind - 32) < 32 || branch)
+                // ALU/NOP delay slots were validated at compilation and cannot
+                // touch memory. Only emit an operand guard for a load/store.
+                else if ((uint)((branch ? dk : kind) - 32) < 32)
                 {
                     var valid = il.DefineLabel();
                     Desc(branch ? delay : word); U((uint)(branch ? dk : kind));
@@ -314,18 +331,12 @@ namespace Ryu64.MIPS
                     il.Emit(OpCodes.Ldloc, target); il.Emit(OpCodes.Stsfld, JitPcField);
                     if (loop)
                     {
-                        var noHistory = il.DefineLabel();
-                        il.Emit(OpCodes.Ldarg_3); il.Emit(OpCodes.Brfalse, noHistory);
-                        U(start); il.Emit(OpCodes.Ldarg_0); U((uint)words.Count);
-                        il.Emit(OpCodes.Ldarg_2); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Add); U(1);
-                        il.Emit(OpCodes.Call, JitHistory);
-                        il.MarkLabel(noHistory);
                         il.Emit(OpCodes.Ldloc, completed); U((uint)words.Count); il.Emit(OpCodes.Add); il.Emit(OpCodes.Stloc, completed);
                         var leave = il.DefineLabel();
                         il.Emit(OpCodes.Ldloc, target); U(start); il.Emit(OpCodes.Bne_Un, leave);
                         il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Sub);
                         U((uint)words.Count); il.Emit(OpCodes.Bge_Un, body);
-                        il.MarkLabel(leave); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Stloc, result); il.Emit(OpCodes.Br, ret);
+                        il.MarkLabel(leave); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Stloc, result); il.Emit(OpCodes.Br, finish);
                     }
                     else Exit((uint)words.Count);
                     break;
@@ -368,9 +379,7 @@ namespace Ryu64.MIPS
             il.Emit(OpCodes.Ldarg_3); il.Emit(OpCodes.Brfalse, ret);
             il.Emit(OpCodes.Ldloc, result); il.Emit(OpCodes.Brfalse, ret);
             U(start); il.Emit(OpCodes.Ldarg_0); il.Emit(OpCodes.Ldloc, result);
-            if (loop) { il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Sub); }
             il.Emit(OpCodes.Ldarg_2);
-            if (loop) { il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Add); }
             U(CpuJitBranch(GetCpuBlockOpcodeKind(words[words.Count - 2])) ? 1u : 0u);
             il.Emit(OpCodes.Call, JitHistory);
             il.MarkLabel(ret); il.Emit(OpCodes.Ldloc, result); il.Emit(OpCodes.Ret);

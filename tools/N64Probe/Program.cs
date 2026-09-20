@@ -7,6 +7,11 @@ if (args.Length == 1 && args[0] == "--check-rdp-streaming")
     RdpStreamingChecks.Run();
     return;
 }
+if (args.Length == 2 && args[0] == "--check-rectangles")
+{
+    RectangleChecks.Run(args[1]);
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-cpu-jit")
 {
     CpuBlockChecks.Run(jit: true);
@@ -285,6 +290,7 @@ if (fireInput) core.SetInputState(new Ryu64Core.InputState { Z = true });
 core.Start();
 var timer = Stopwatch.StartNew();
 bool captureAudio = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_AUDIO") == "1";
+using var frameCapture = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_FRAMES") == "1" ? new FrameCapture(output) : null;
 using var audioFile = captureAudio ? new BinaryWriter(File.Create(Path.Combine(output, "audio-44100-stereo-s16le.pcm"))) : null;
 var audioResampler = new Ryu64Core.StereoResampler();
 long audioSamples = 0, audioNonzero = 0;
@@ -293,10 +299,12 @@ try
 {
     for (int second = 0; second < seconds; second++)
     {
-        if (!captureAudio) Thread.Sleep(1000);
+        if (!captureAudio && frameCapture == null) Thread.Sleep(1000);
         else for (int poll = 0; poll < 50; poll++)
         {
             Thread.Sleep(20);
+            frameCapture?.Poll(core, timer.Elapsed.TotalSeconds);
+            if (!captureAudio) continue;
             short[] pcm = core.GetAudioSamples(out uint rate, out _);
             pcm = audioResampler.Convert(pcm, rate, 44100);
             foreach (short sample in pcm)

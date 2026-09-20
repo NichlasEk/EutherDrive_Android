@@ -7,6 +7,7 @@ internal static class StateChecks
     // v5 appends a pending-slice flag and 720 bytes of architectural RSP state.
     internal const int RspSchedulingTrailerBytes = 721;
     internal const int RdpCommandTrailerBytes = 184;
+    internal const int FramebufferPublicationTrailerBytes = 21;
 
     // DMA/RSP-only cases never set coverage mode. Normalize the additive v4
     // schema header/trailer to compare their FULL remaining state against v3.
@@ -14,6 +15,13 @@ internal static class StateChecks
     {
         byte[] bytes = state.GetBuffer();
         int version = BinaryPrimitives.ReadInt32LittleEndian(bytes);
+        if (version == 7)
+        {
+            if (bytes[state.Length - FramebufferPublicationTrailerBytes] != 0)
+                throw new InvalidDataException("Cannot compare pending drawing against a legacy DLL");
+            state.SetLength(state.Length - FramebufferPublicationTrailerBytes);
+            version = 6;
+        }
         if (version == 6)
         {
             if (BinaryPrimitives.ReadInt32LittleEndian(bytes.AsSpan((int)state.Length - RdpCommandTrailerBytes)) != 0)
@@ -53,14 +61,24 @@ internal static class StateChecks
         restored.LoadState(reader);
         if (!(bool)mode.GetValue(restored)!) throw new Exception("Coverage mode lost across v4 savestate");
         if (state.Position != state.Length) throw new Exception("Savestate not completely consumed");
+        var pending = typeof(Memory).GetField("_pendingVisibleRdpFramebufferSnapshot", flags)!;
+        pending.SetValue(restored, true);
+        byte[] version6 = state.ToArray()[..^FramebufferPublicationTrailerBytes];
+        BinaryPrimitives.WriteInt32LittleEndian(version6, 6);
+        using (var version6Reader = new BinaryReader(new MemoryStream(version6)))
+        {
+            restored.LoadState(version6Reader);
+            if ((bool)pending.GetValue(restored)!) throw new Exception("Legacy savestate retained pending drawing");
+            if (version6Reader.BaseStream.Position != version6.Length) throw new Exception("v6 savestate alignment changed");
+        }
         // Old snapshots have no coverage field. Loading one over a live core
         // must reset the missing field, not retain the previous game's mode.
-        byte[] legacy = state.ToArray()[..^(RdpCommandTrailerBytes + RspSchedulingTrailerBytes + 1)];
+        byte[] legacy = state.ToArray()[..^(FramebufferPublicationTrailerBytes + RdpCommandTrailerBytes + RspSchedulingTrailerBytes + 1)];
         BinaryPrimitives.WriteInt32LittleEndian(legacy, 3);
         using var legacyReader = new BinaryReader(new MemoryStream(legacy));
         restored.LoadState(legacyReader);
         if ((bool)mode.GetValue(restored)!) throw new Exception("Legacy savestate retained stale coverage mode");
         if (legacyReader.BaseStream.Position != legacy.Length) throw new Exception("Legacy savestate alignment changed");
-        return 4;
+        return 6;
     }
 }
