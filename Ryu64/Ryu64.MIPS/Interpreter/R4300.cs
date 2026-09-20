@@ -2515,6 +2515,7 @@ namespace Ryu64.MIPS
         public static void PowerOnR4300()
         {
             StopR4300();
+            ResetCpuJitCache();
 
             for (int i = 0; i < Registers.R4300.Reg.Length; ++i)
                 Registers.R4300.Reg[i] = 0; // Clear Registers.
@@ -3757,7 +3758,7 @@ namespace Ryu64.MIPS
                             }
                             int historyBeforeBlock = _recentInstPos;
                             uint blockInstructions = pc >= 0x80004000u && pc < 0xc0000000u
-                                ? TryAdvanceCpuBlock(pc, Opcode, 32, true) : 0;
+                                ? TryAdvanceCpuBlock(pc, Opcode, 128, true) : 0;
                             if (blockInstructions != 0)
                             {
                                 uint lastBlockPc = _recentInst[(_recentInstPos - 1) & RecentInstHistoryMask].Pc;

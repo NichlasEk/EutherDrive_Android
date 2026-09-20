@@ -89,8 +89,12 @@ internal static class CpuStateBenchmark
             if (expected != "" && expected != hash) throw new Exception("Replay is not deterministic");
             expected = hash;
             if (run >= 0) timings.Add(ms);
+            Console.WriteLine($"replayRun={run} elapsedMs={ms:F3} jitCompilations={typeof(R4300).GetField("CpuJitCompilations", flags)?.GetValue(null)} invalidations={typeof(R4300).GetField("CpuJitInvalidations", flags)?.GetValue(null)} rejected={typeof(R4300).GetField("CpuJitRejectedCompilations", flags)?.GetValue(null)}");
         }
         hostCounters?.Report();
+        var jitInstructions = typeof(R4300).GetField("CpuJitInstructions", flags);
+        if (jitInstructions != null)
+            Console.WriteLine($"cpuJitInstructions={jitInstructions.GetValue(null)} compilations={typeof(R4300).GetField("CpuJitCompilations", flags)!.GetValue(null)}");
         timings.Sort();
         if (profile)
         {

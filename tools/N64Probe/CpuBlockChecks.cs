@@ -7,10 +7,17 @@ using Ryu64.MIPS;
 // serialized RAM/device state. Rejected entries must leave all state untouched.
 internal static class CpuBlockChecks
 {
-    internal static void Run()
+    internal static void Run(bool jit = false)
     {
         const BindingFlags cpuFlags = BindingFlags.Static | BindingFlags.NonPublic;
         const BindingFlags memoryFlags = BindingFlags.Instance | BindingFlags.NonPublic;
+        if (jit)
+        {
+            typeof(R4300).GetField("CpuJitHotThreshold", cpuFlags)!.SetValue(null, 1);
+            typeof(R4300).GetField("CpuJitSynchronous", cpuFlags)!.SetValue(null, true);
+        }
+        else typeof(R4300).GetField("CpuJitUnavailable", cpuFlags)!.SetValue(null, true);
+        int compiledCases = 0;
         var batch = typeof(R4300).GetMethod("TryAdvanceCpuBlock", cpuFlags)!.CreateDelegate<Func<uint,uint,uint,bool,uint>>();
         var fetch = typeof(R4300).GetMethod("ReadOpcode", cpuFlags)!.CreateDelegate<Func<uint,uint>>();
         var randomAfter = typeof(R4300).GetMethod("GetRandomAfterInstructions", cpuFlags)!.CreateDelegate<Func<uint,uint>>();
@@ -66,19 +73,48 @@ internal static class CpuBlockChecks
         void Set(string name, object value) => typeof(Memory).GetField(name, memoryFlags)!.SetValue(R4300.memory, value);
         string Hash() { output.SetLength(0); R4300.SaveState(ow); ow.Flush(); return Convert.ToHexString(SHA256.HashData(output.GetBuffer().AsSpan(0, (int)output.Length))); }
         int cases = 0;
-        void Check(uint expected, uint budget = 32)
+        void Check(uint expected, uint budget = 32, bool clearJit = true)
         {
+            if (jit && clearJit)
+            {
+                Array.Clear((Array)typeof(R4300).GetField("CpuJitCache", cpuFlags)!.GetValue(null)!);
+                ((System.Collections.IDictionary)typeof(R4300).GetField("CpuJitEntries", cpuFlags)!.GetValue(null)!).Clear();
+                ((System.Collections.IDictionary)typeof(R4300).GetField("CpuJitVersions", cpuFlags)!.GetValue(null)!).Clear();
+                typeof(R4300).GetField("CpuJitCompilations", cpuFlags)!.SetValue(null, 0);
+                typeof(R4300).GetField("CpuJitInstructions", cpuFlags)!.SetValue(null, 0L);
+            }
             before.SetLength(0); R4300.SaveState(bw); bw.Flush(); string original = Hash();
             Ryu64.Common.Measure.InstructionCount = 0;
             uint op = fetch(Registers.R4300.PC);
-            uint n = batch(Registers.R4300.PC, op, budget, false);
+            var historyPosition = typeof(R4300).GetField("_recentInstPos", cpuFlags)!;
+            historyPosition.SetValue(null, 0);
+            uint n = batch(Registers.R4300.PC, op, budget, jit);
+            var recorded = new List<(uint, uint)>();
+            if (jit)
+            {
+                var entries = (Array)typeof(R4300).GetField("_recentInst", cpuFlags)!.GetValue(null)!;
+                for (int h = 0; h < (int)historyPosition.GetValue(null)!; h++)
+                {
+                    object entry = entries.GetValue(h)!;
+                    recorded.Add(((uint)entry.GetType().GetField("Pc")!.GetValue(entry)!, (uint)entry.GetType().GetField("Op")!.GetValue(entry)!));
+                }
+            }
             if (n != expected || Ryu64.Common.Measure.InstructionCount != n)
                 throw new Exception($"CPU block case {cases}: accepted {n}, expected {expected}");
+            if (jit && (long)typeof(R4300).GetField("CpuJitInstructions", cpuFlags)!.GetValue(null)! > 0) compiledCases++;
             string actual = Hash();
             if (n != 0)
             {
                 before.Position = 0; R4300.LoadState(br); Ryu64.Common.Measure.InstructionCount = 0;
-                while (Ryu64.Common.Measure.InstructionCount < n) R4300.InterpretOpcode(fetch(Registers.R4300.PC));
+                var expectedHistory = new List<(uint, uint)>();
+                while (Ryu64.Common.Measure.InstructionCount < n)
+                {
+                    uint stepPc = Registers.R4300.PC, stepWord = fetch(stepPc);
+                    if (Ryu64.Common.Measure.InstructionCount != 0) expectedHistory.Add((stepPc, stepWord));
+                    R4300.InterpretOpcode(stepWord);
+                }
+                if (jit && !recorded.SequenceEqual(expectedHistory))
+                    throw new Exception($"CPU JIT case {cases}: instruction history differs");
                 if (Hash() != actual || Ryu64.Common.Measure.InstructionCount != n)
                     throw new Exception($"CPU block case {cases}: state differs");
             }
@@ -118,7 +154,7 @@ internal static class CpuBlockChecks
             uint load = primary << 26 | 4u << 21 | target << 16 | 0xfff8u;
             if (delaySlot) { Code(0,0x08004004); Code(1,load); }
             else Code(0,load);
-            Check(2,2);
+            Check(delaySlot ? 2u : 32u, delaySlot ? 2u : 32u);
         }
         // Validated stores retain page epochs and overlapping framebuffer dirtiness.
         foreach (uint address in new uint[] { 0x80020ffc,0xa0021000,0x807ffffc })
@@ -132,7 +168,7 @@ internal static class CpuBlockChecks
             Set("_rdramWriteEpoch", epoch);
             Registers.R4300.Reg[4] = address; Registers.R4300.Reg[5] = 0xabcdef1234567890;
             if (delaySlot) { Code(0,0x08004004); Code(1,0xac850000); }
-            else { Code(0,0xac850000); Code(1,0xac850000); }
+            else { Code(0,0x24420001); Code(1,0xac850000); }
             Check(2,2);
         }
         foreach (uint branch in new uint[] { 0x08004000,0x0c004000,0x10850002,0x1485fffc,0x00800008,0x0080f809,0x00800009 })
@@ -172,7 +208,7 @@ internal static class CpuBlockChecks
         Reset(); Code(0, 0x3c250001); Check(0); // Invalid LUI rs.
         foreach (uint op in new uint[] { 0x40824800, 0x42000018, 0x46000000, 0x0000000c, 0xffffffff })
         { Reset(); Code(0, op); Check(0); Reset(); Code(3, op); Check(3); }
-        foreach (uint budget in new uint[] { 0,1,2,7,31,32,33 }) { Reset(); Check(budget < 2 ? 0 : Math.Min(budget,32), budget); }
+        foreach (uint budget in new uint[] { 0,1,2,7,31,32,33 }) { Reset(); Check(budget < 2 ? 0 : Math.Min(budget,jit ? 128u : 32u), budget); }
         foreach (uint wired in new uint[] { 0,1,30,31 })
         foreach (uint r in new uint[] { 0,1,15,30,31 })
         { Reset(); Registers.COP0.Reg[6] = wired; Registers.COP0.Reg[1] = r; Check(32); }
@@ -236,6 +272,63 @@ internal static class CpuBlockChecks
         Reset(); Registers.COP0.Reg[9] = 1; Check(0);
         Reset(); Ryu64.Common.Variables.Debug = true; Check(0); Ryu64.Common.Variables.Debug = false;
         Reset(); Ryu64.Common.Settings.STEP_MODE = true; Check(0); Ryu64.Common.Settings.STEP_MODE = false;
+        if (jit)
+        {
+            foreach (uint iterations in new uint[] { 1,2,7,32,100 })
+            foreach (uint budget in new uint[] { 3,4,7,16,31,32,63,128 })
+            {
+                Reset(); Registers.R4300.Reg[2] = 0; Registers.R4300.Reg[3] = iterations;
+                Code(0, 0x24420001); Code(1, 0x24630000); Code(2, 0x1443fffd); Code(3, 0);
+                uint expected = budget;
+                // A terminal branch and its delay slot execute together.
+                if (budget < iterations * 4 && budget % 4 == 3) expected--;
+                Check(expected, budget);
+            }
+            Reset(); Registers.R4300.Reg[4] = 0x807ffff8;
+            Code(0, 0x8c850000); Code(1, 0x24840004); Code(2, 0x1480fffd); Code(3, 0);
+            Check(8, 128); // Later loop iteration must stop before a non-RAM load.
+            Reset(); Check(128, 128);
+            Reset(); Set("_piInterruptDelayArmed", true); Set("_piInterruptDelayRemaining", 65u); Check(64, 128);
+            Reset(); Set("_viInterruptCyclesRemaining", 65u); Check(64, 128);
+            // Reuse compiled code after an interior opcode change, including
+            // direct DMA-style writes and restored snapshots with unchanged entry.
+            Reset(); Check(32);
+            Reset(); Code(3, 0x3406abcd); Check(32, clearJit: false);
+            Reset(); Check(32, clearJit: false);
+            Reset(); Code(2, 0x0000000c); Check(2, clearJit: false);
+            // Stores terminate a compiled region before newly written code is fetched.
+            Reset(); Registers.R4300.Reg[4] = 0xa0010008; Registers.R4300.Reg[5] = 0x3406abcd;
+            Code(1, 0xac850000); Check(32);
+            // A register dependency can make a later load leave RAM: execute only
+            // the safe prefix and leave the fault/MMIO instruction to the interpreter.
+            Reset(); Code(0, 0x3c048000); Code(1, 0x8c850000); Code(2, 0x3c04a440); Code(3, 0x8c850000); Check(3);
+            if (compiledCases < 300) throw new Exception($"Too few compiled cases: {compiledCases}");
+            Console.WriteLine($"cpuJitCompiledCases={compiledCases}");
+            var resetCache = typeof(R4300).GetMethod("ResetCpuJitCache", cpuFlags)!;
+            var compile = typeof(R4300).GetMethod("CompileCpuJit", cpuFlags)!;
+            var pending = typeof(R4300).GetField("CpuJitCompilePending", cpuFlags)!;
+            var versions = (System.Collections.IDictionary)typeof(R4300).GetField("CpuJitVersions", cpuFlags)!.GetValue(null)!;
+            typeof(R4300).GetField("CpuJitSynchronous", cpuFlags)!.SetValue(null, false);
+            Reset(); resetCache.Invoke(null, null);
+            compile.Invoke(null, new object[] { Registers.R4300.PC });
+            object holder = versions.Values.Cast<object>().Single();
+            Code(3, 0x3406abcd);
+            string changedState = Hash();
+            if (!SpinWait.SpinUntil(() => (int)pending.GetValue(null)! == 0, 10000))
+                throw new Exception("CPU JIT worker did not complete");
+            var stale = (Func<uint,uint,bool,uint>)holder.GetType().GetField("Run", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(holder)!;
+            if (stale == null || stale(32, 0, false) != uint.MaxValue || Hash() != changedState)
+                throw new Exception("CPU JIT worker/stale code changed machine state");
+            Reset(); resetCache.Invoke(null, null);
+            compile.Invoke(null, new object[] { Registers.R4300.PC });
+            resetCache.Invoke(null, null);
+            R4300.memory = new Memory(new byte[4096]); Reset();
+            string replacedState = Hash();
+            if (!SpinWait.SpinUntil(() => (int)pending.GetValue(null)! == 0, 10000)
+                || Hash() != replacedState || versions.Count != 0)
+                throw new Exception("CPU JIT worker survived cache reset incorrectly");
+            Console.WriteLine("cpuJitWorker=passed staleCode=passed resetDuringCompilation=passed");
+        }
         Console.WriteLine($"cpuBlockCases={cases} state=passed rejection=passed eventBoundaries=passed selfModification=passed");
     }
 }

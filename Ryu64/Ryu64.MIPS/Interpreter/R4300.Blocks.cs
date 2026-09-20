@@ -225,15 +225,33 @@ namespace Ryu64.MIPS
             uint physical = pc & 0x1fffffffu;
             if (physical < 0x4000 || (ulong)physical + 8 > (ulong)memory.RDRAM.Length)
                 return 0;
-            uint limit = memory.GetQuietCpuCycles(Math.Min(maximumInstructions, 32));
+            uint limit = memory.GetQuietCpuCycles(Math.Min(maximumInstructions, CpuJitEnabled ? 128u : 32u));
             ulong count = Registers.COP0.Reg[Registers.COP0.COUNT_REG];
             if (limit < 2 || count >= uint.MaxValue || (Count >> 1) != count
                 || ((Count + limit) >> 1) >= uint.MaxValue
                 || CountCompareReached((uint)count, (uint)((Count + limit) >> 1), (uint)Registers.COP0.Reg[Registers.COP0.COMPARE_REG]))
                 return 0;
             uint done = 0;
+            bool tryCompiled = true;
             while (done < limit)
             {
+                uint compiled = tryCompiled ? TryRunCpuJit(pc, opcode, limit - done, done, recordHistory) : 0;
+                if (compiled != 0)
+                {
+                    done += compiled;
+                    // A terminal self-branch must keep the outer watchdog cadence.
+                    uint terminalPc = pc + (compiled >= 2 ? compiled - 2 : 0) * 4;
+                    if (Registers.R4300.PC == terminalPc) break;
+                    pc = Registers.R4300.PC;
+                    physical = pc & 0x1fffffffu;
+                    if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
+                        || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
+                        || IsExistingLoopEntry(pc, opcode) || (kind = GetCpuBlockOpcodeKind(opcode)) < 0)
+                        break;
+                    continue;
+                }
+                if (done == 0) limit = Math.Min(limit, 32);
+                tryCompiled = false;
                 var desc = new OpcodeTable.OpcodeDesc(opcode);
                 // Only load/store primary opcodes can access memory. Avoid a
                 // validator call for arithmetic, CP0 and branch instructions.
