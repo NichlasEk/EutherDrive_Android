@@ -6,7 +6,8 @@ namespace Ryu64.MIPS
     public partial class R4300
     {
         // The dispatch key is the primary opcode, SPECIAL function + 64, or
-        // 144 for MTC0 STATUS. Match the reserved bits used by OpcodeTable.
+        // 128/129 for BLTZ/BGEZ, or 144 for MTC0 STATUS.
+        // Match the reserved bits used by OpcodeTable.
         // Trapping arithmetic, FPU, TLB operations and other CP0 writes stay
         // on the ordinary instruction path.
         private static readonly uint[] CpuBlockReservedBits = CreateCpuBlockReservedBits();
@@ -18,6 +19,7 @@ namespace Ryu64.MIPS
             foreach (int primary in new[] { 2,3,4,5,9,10,11,12,13,14,25,32,33,35,36,37,39,40,41,43,55,63 })
                 masks[primary] = 0;
             masks[15] = 0x03e00000u;
+            masks[6] = masks[7] = 0x001f0000u;
             foreach (int function in new[] { 0,2,3,56,58,59,60,62,63 })
                 masks[64 + function] = 0x03e00000u;
             foreach (int function in new[] { 4,6,7,20,22,23,33,35,36,37,38,39,42,43,45,47 })
@@ -31,6 +33,11 @@ namespace Ryu64.MIPS
         private static int GetCpuBlockOpcodeKind(uint opcode)
         {
             int primary = (int)(opcode >> 26);
+            if (primary == 1)
+            {
+                uint condition = (opcode >> 16) & 31;
+                return condition <= 1 ? 128 + (int)condition : -1;
+            }
             if (primary == 16)
             {
                 if ((opcode & 0x03e00000u) == 0) return 16;
@@ -174,8 +181,11 @@ namespace Ryu64.MIPS
                 target = (uint)Registers.R4300.Reg[desc.op1];
             else
             {
-                bool equal = Registers.R4300.Reg[desc.op1] == Registers.R4300.Reg[desc.op2];
-                bool take = kind == 4 ? equal : !equal;
+                long value = (long)Registers.R4300.Reg[desc.op1];
+                bool take = kind == 128 ? value < 0 : kind == 129 ? value >= 0
+                    : kind == 6 ? value <= 0 : kind == 7 ? value > 0
+                    : kind == 4 ? Registers.R4300.Reg[desc.op1] == Registers.R4300.Reg[desc.op2]
+                    : Registers.R4300.Reg[desc.op1] != Registers.R4300.Reg[desc.op2];
                 target = take ? unchecked(branchPc + 4u + (uint)((int)(short)desc.Imm << 2)) : branchPc + 8;
             }
             if (kind == 3 || kind == 73)
@@ -256,13 +266,13 @@ namespace Ryu64.MIPS
                 // Only load/store primary opcodes can access memory. Avoid a
                 // validator call for arithmetic, CP0 and branch instructions.
                 if ((uint)(kind - 32) < 32 && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
-                bool branch = (kind >= 2 && kind <= 5) || kind == 72 || kind == 73;
+                bool branch = CpuJitBranch(kind);
                 uint delayOpcode = 0;
                 int delayKind = -1;
                 if (branch && (done + 2 > limit
                     || !memory.TryReadRdramUInt32PhysicalFast(physical + 4, out delayOpcode)
                     || (delayKind = GetCpuBlockOpcodeKind(delayOpcode)) < 0
-                    || (delayKind >= 2 && delayKind <= 5) || delayKind == 72 || delayKind == 73
+                    || CpuJitBranch(delayKind)
                     || !CanAccessCpuBlockOperand(new OpcodeTable.OpcodeDesc(delayOpcode), delayKind,
                         kind == 3 ? 31 : kind == 73 ? desc.op3 : -1, pc + 8)))
                     break;

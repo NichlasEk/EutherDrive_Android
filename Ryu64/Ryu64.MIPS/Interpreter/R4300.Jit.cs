@@ -116,7 +116,7 @@ namespace Ryu64.MIPS
         private static ulong ReadCpuJit16(byte[] ram, int address)
             => System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(ram.AsSpan(address, 2));
 
-        private static bool CpuJitBranch(int kind) => (kind >= 2 && kind <= 5) || kind == 72 || kind == 73;
+        private static bool CpuJitBranch(int kind) => (kind >= 2 && kind <= 7) || kind == 72 || kind == 73 || kind == 128 || kind == 129;
         private static bool CpuJitStore(int kind) => kind == 40 || kind == 41 || kind == 43 || kind == 63;
 
         private static Func<uint, uint, bool, uint> CompileCpuJit(uint start)
@@ -193,7 +193,7 @@ namespace Ryu64.MIPS
             int terminalKind = GetCpuBlockOpcodeKind(words[words.Count - 2]);
             uint branchPc = start + (uint)(words.Count - 2) * 4;
             uint branchWord = words[words.Count - 2];
-            bool loop = words.Count >= 3 && (terminalKind == 4 || terminalKind == 5)
+            bool loop = words.Count >= 3 && ((terminalKind >= 4 && terminalKind <= 7) || terminalKind == 128 || terminalKind == 129)
                 && unchecked(branchPc + 4u + (uint)((int)(short)branchWord << 2)) == start;
             foreach (uint word in words)
             {
@@ -285,8 +285,17 @@ namespace Ryu64.MIPS
                     {
                         var taken = il.DefineLabel(); var selected = il.DefineLabel();
                         il.Emit(OpCodes.Ldloc, regs); U(desc.op1); il.Emit(OpCodes.Ldelem_I8);
-                        il.Emit(OpCodes.Ldloc, regs); U(desc.op2); il.Emit(OpCodes.Ldelem_I8);
-                        il.Emit(kind == 4 ? OpCodes.Beq : OpCodes.Bne_Un, taken);
+                        if (kind == 4 || kind == 5)
+                        {
+                            il.Emit(OpCodes.Ldloc, regs); U(desc.op2); il.Emit(OpCodes.Ldelem_I8);
+                            il.Emit(kind == 4 ? OpCodes.Beq : OpCodes.Bne_Un, taken);
+                        }
+                        else
+                        {
+                            il.Emit(OpCodes.Ldc_I8, 0L);
+                            il.Emit(kind == 128 ? OpCodes.Blt : kind == 129 ? OpCodes.Bge
+                                : kind == 6 ? OpCodes.Ble : OpCodes.Bgt, taken);
+                        }
                         U(pc + 8); il.Emit(OpCodes.Br, selected);
                         il.MarkLabel(taken); U(unchecked(pc + 4u + (uint)((int)(short)desc.Imm << 2)));
                         il.MarkLabel(selected);

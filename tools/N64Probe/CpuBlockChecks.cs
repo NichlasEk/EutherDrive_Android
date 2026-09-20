@@ -42,7 +42,7 @@ internal static class CpuBlockChecks
         var count = typeof(R4300).GetField("Count", cpuFlags)!;
         R4300.memory = new Memory(new byte[4096]); OpcodeTable.Init();
         var classify = typeof(R4300).GetMethod("GetCpuBlockOpcodeKind", cpuFlags)!.CreateDelegate<Func<uint,int>>();
-        var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
+        var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR","BLTZ","BGEZ","BLEZ","BGTZ", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
         uint sample = 0x430064;
         int decoded = 0;
         for (int i = 0; i < 1_000_000; i++)
@@ -171,6 +171,26 @@ internal static class CpuBlockChecks
             else { Code(0,0x24420001); Code(1,0xac850000); }
             Check(2,2);
         }
+        // Signed conditions read all 64 bits before their delay-slot writes.
+        // Include r0 normalization and values whose low word has the opposite sign.
+        foreach (uint branch in new uint[] { 0x04800002,0x04810002,0x18800002,0x1c800002 })
+        foreach (ulong value in new ulong[] { 0,1,ulong.MaxValue,0x8000000000000000,0x7fffffffffffffff,0x80000000,0xffffffff00000000 })
+        foreach (uint delay in new uint[] { 0,0x24840001,0x40806000,0x40044800 })
+        {
+            Reset(); Registers.R4300.Reg[4] = value;
+            Code(0,branch); Code(1,delay); Check(2,2);
+            Reset(); Registers.R4300.Reg[4] = value;
+            Code(3,branch); Code(4,delay); Check(5,5);
+            Reset(); Registers.R4300.Reg[0] = value;
+            Code(0,branch & ~(31u << 21)); Code(1,delay); Check(2,2);
+        }
+        foreach (uint branch in new uint[] { 0x0480ffff,0x0481ffff,0x1880ffff,0x1c80ffff })
+        {
+            Reset(); Registers.R4300.Reg[4] = (branch == 0x0480ffff || branch == 0x1880ffff) ? ulong.MaxValue : 1;
+            Code(0,branch); Code(1,0); Check(2,128); // Preserve self-branch watchdog cadence.
+            Reset(); Code(0,branch); Code(1,0x8c850001); Check(0); // Faulting delay.
+            Reset(); Code(0,0x10000002); Code(1,branch); Check(0); // Nested branch rejected.
+        }
         foreach (uint branch in new uint[] { 0x08004000,0x0c004000,0x10850002,0x1485fffc,0x00800008,0x0080f809,0x00800009 })
         foreach (uint delay in new uint[] { 0,0x24420001,0x3404abcd,0x03e01825,0x24000042,0x8c850000,0xac850000,0xdc850000 })
         foreach (bool equal in new[] { false,true })
@@ -283,6 +303,14 @@ internal static class CpuBlockChecks
                 // A terminal branch and its delay slot execute together.
                 if (budget < iterations * 4 && budget % 4 == 3) expected--;
                 Check(expected, budget);
+            }
+            foreach (uint branch in new uint[] { 0x0440fffd,0x0441fffd,0x1840fffd,0x1c40fffd })
+            foreach (uint budget in new uint[] { 3,4,7,16,31,32,63,128 })
+            {
+                bool increasing = branch == 0x0440fffd || branch == 0x1840fffd;
+                Reset(); Registers.R4300.Reg[2] = increasing ? unchecked((ulong)-100L) : 100;
+                Code(0,increasing ? 0x24420001u : 0x2442ffffu); Code(1,0); Code(2,branch); Code(3,0);
+                Check(budget % 4 == 3 ? budget - 1 : budget,budget);
             }
             Reset(); Registers.R4300.Reg[4] = 0x807ffff8;
             Code(0, 0x8c850000); Code(1, 0x24840004); Code(2, 0x1480fffd); Code(3, 0);
