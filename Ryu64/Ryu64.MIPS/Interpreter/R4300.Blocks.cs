@@ -95,6 +95,8 @@ namespace Ryu64.MIPS
             if (done == 0) return (uint)Registers.COP0.Reg[Registers.COP0.RANDOM_REG];
             uint random = (uint)Registers.COP0.Reg[Registers.COP0.RANDOM_REG] & 31;
             uint wired = (uint)Registers.COP0.Reg[Registers.COP0.WIRED_REG] & 31;
+            // With no wired TLB entries, RANDOM is a 32-value down-counter.
+            if (wired == 0) return unchecked(random - done) & 31u;
             uint firstRun = random > wired ? random - wired : 0;
             return done <= firstRun ? random - done
                 : 31 - ((done - firstRun - 1) % (32 - wired));

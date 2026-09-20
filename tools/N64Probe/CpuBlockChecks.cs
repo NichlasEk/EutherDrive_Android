@@ -13,6 +13,25 @@ internal static class CpuBlockChecks
         const BindingFlags memoryFlags = BindingFlags.Instance | BindingFlags.NonPublic;
         var batch = typeof(R4300).GetMethod("TryAdvanceCpuBlock", cpuFlags)!.CreateDelegate<Func<uint,uint,uint,bool,uint>>();
         var fetch = typeof(R4300).GetMethod("ReadOpcode", cpuFlags)!.CreateDelegate<Func<uint,uint>>();
+        var randomAfter = typeof(R4300).GetMethod("GetRandomAfterInstructions", cpuFlags)!.CreateDelegate<Func<uint,uint>>();
+        int randomCases = 0;
+        for (uint wired = 0; wired < 32; wired++)
+        for (uint initialRandom = 0; initialRandom < 64; initialRandom++)
+        {
+            uint expected = initialRandom | 0x12340000u;
+            Registers.COP0.Reg[1] = expected;
+            Registers.COP0.Reg[6] = wired | 0x56780000u;
+            for (uint done = 0; done <= 128; done++)
+            {
+                if (randomAfter(done) != expected)
+                    throw new Exception($"RANDOM batch wired={wired}, initial={initialRandom}, count={done}");
+                uint current = expected & 31;
+                expected = current <= wired ? 31 : current - 1;
+                randomCases++;
+            }
+        }
+        Registers.COP0.Reg[1] = 31; Registers.COP0.Reg[6] = 0;
+        Console.WriteLine($"randomBatchCases={randomCases} passed");
         var count = typeof(R4300).GetField("Count", cpuFlags)!;
         R4300.memory = new Memory(new byte[4096]); OpcodeTable.Init();
         var classify = typeof(R4300).GetMethod("GetCpuBlockOpcodeKind", cpuFlags)!.CreateDelegate<Func<uint,int>>();
