@@ -1301,14 +1301,20 @@ namespace Ryu64.MIPS
 
         private void ComputeVectorAccumulate(int op, int vd)
         {
-            ushort[] lhs = _vectorLhs, rhs = _vectorRhs, result = _vectorResult;
+            // Validate the eight lanes once so the loop does not repeatedly
+            // bounds-check each accumulator plane and operand array.
+            Span<ushort> lhs = _vectorLhs.AsSpan(0, 8), rhs = _vectorRhs.AsSpan(0, 8);
+            Span<ushort> result = _vectorResult.AsSpan(0, 8);
+            Span<ushort> hi = _accHi.AsSpan(0, 8), md = _accMd.AsSpan(0, 8), lo = _accLo.AsSpan(0, 8);
             if (op == 0x0d)
             {
                 for (int lane = 0; lane < 8; lane++)
                 {
-                    long acc = ReadAccumulator(lane);
+                    long acc = ((long)(short)hi[lane] << 32) | ((long)md[lane] << 16) | lo[lane];
                     acc += (long)(short)lhs[lane] * (ushort)rhs[lane];
-                    WriteAccumulator(lane, acc);
+                    lo[lane] = unchecked((ushort)acc);
+                    md[lane] = unchecked((ushort)(acc >> 16));
+                    hi[lane] = unchecked((ushort)(acc >> 32));
                     result[lane] = unchecked((ushort)ClampSigned16((int)(acc >> 16)));
                 }
             }
@@ -1316,9 +1322,11 @@ namespace Ryu64.MIPS
             {
                 for (int lane = 0; lane < 8; lane++)
                 {
-                    long acc = ReadAccumulator(lane);
+                    long acc = ((long)(short)hi[lane] << 32) | ((long)md[lane] << 16) | lo[lane];
                     acc += (long)(ushort)lhs[lane] * (short)rhs[lane];
-                    WriteAccumulator(lane, acc);
+                    lo[lane] = unchecked((ushort)acc);
+                    md[lane] = unchecked((ushort)(acc >> 16));
+                    hi[lane] = unchecked((ushort)(acc >> 32));
                     result[lane] = UnsignedClampAccumulator(acc);
                 }
             }
@@ -1327,14 +1335,14 @@ namespace Ryu64.MIPS
                 for (int lane = 0; lane < 8; lane++)
                 {
                     // The product is added at bit 16; preserve LO and wrap the upper 32 bits.
-                    int top = ((short)_accHi[lane] << 16) | _accMd[lane];
+                    int top = ((short)hi[lane] << 16) | md[lane];
                     top = unchecked(top + (short)lhs[lane] * (short)rhs[lane]);
-                    _accMd[lane] = unchecked((ushort)top);
-                    _accHi[lane] = unchecked((ushort)(top >> 16));
+                    md[lane] = unchecked((ushort)top);
+                    hi[lane] = unchecked((ushort)(top >> 16));
                     result[lane] = unchecked((ushort)ClampSigned16(top));
                 }
             }
-            StoreVector(vd, result);
+            StoreVector(vd, _vectorResult);
         }
 
         private bool ExecuteVectorMemory(uint pc, bool isLoad, uint rs, uint vt, uint instr, out string stopReason)
@@ -1667,20 +1675,18 @@ namespace Ryu64.MIPS
             _vr[(vt) * 16 + (byteIndex + 1)] = (byte)value;
         }
 
-        private unsafe void LoadVectorUnshuffled(int vt, ushort[] dest)
+        private void LoadVectorUnshuffled(int vt, ushort[] dest)
         {
             // All callers use a decoded five-bit register and eight-lane
             // scratch storage. Keep explicit bounds checks before raw copies.
             if ((uint)vt >= 32u || dest.Length < 8)
                 throw new ArgumentOutOfRangeException();
-            fixed (byte* registers = _vr)
-            fixed (ushort* lanes = dest)
-            {
-                ulong* source = (ulong*)(registers + vt * 16);
-                ulong* target = (ulong*)lanes;
-                target[0] = NativeVectorLaneOrder(source[0]);
-                target[1] = NativeVectorLaneOrder(source[1]);
-            }
+            // Managed byrefs remain GC-tracked; no pinning is needed for these
+            // two unaligned native-word transfers.
+            ref byte source = ref _vr[vt * 16];
+            ref byte target = ref Unsafe.As<ushort, byte>(ref dest[0]);
+            Unsafe.WriteUnaligned(ref target, NativeVectorLaneOrder(Unsafe.ReadUnaligned<ulong>(ref source)));
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref target, 8), NativeVectorLaneOrder(Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref source, 8))));
         }
 
         private static ulong NativeVectorLaneOrder(ulong value)
@@ -1736,18 +1742,14 @@ namespace Ryu64.MIPS
             }
         }
 
-        private unsafe void StoreVector(int vt, ushort[] src)
+        private void StoreVector(int vt, ushort[] src)
         {
             if ((uint)vt >= 32u || src.Length < 8)
                 throw new ArgumentOutOfRangeException();
-            fixed (byte* registers = _vr)
-            fixed (ushort* lanes = src)
-            {
-                ulong* target = (ulong*)(registers + vt * 16);
-                ulong* source = (ulong*)lanes;
-                target[0] = NativeVectorLaneOrder(source[0]);
-                target[1] = NativeVectorLaneOrder(source[1]);
-            }
+            ref byte source = ref Unsafe.As<ushort, byte>(ref src[0]);
+            ref byte target = ref _vr[vt * 16];
+            Unsafe.WriteUnaligned(ref target, NativeVectorLaneOrder(Unsafe.ReadUnaligned<ulong>(ref source)));
+            Unsafe.WriteUnaligned(ref Unsafe.Add(ref target, 8), NativeVectorLaneOrder(Unsafe.ReadUnaligned<ulong>(ref Unsafe.Add(ref source, 8))));
         }
 
         private void ExecuteVectorRound(int vd, int vs, ushort[] rhs, bool positive)
