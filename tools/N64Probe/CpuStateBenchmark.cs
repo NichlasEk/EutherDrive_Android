@@ -24,6 +24,7 @@ internal static class CpuStateBenchmark
         R4300.memory = new Memory(rom);
         using var source = new BinaryReader(new MemoryStream(File.ReadAllBytes(path)));
         var timings = new List<double>();
+        using var hostCounters = HostCounters.Create();
         string expected = "";
         var fallbackCounts = new Dictionary<string, long>();
         var blockLengths = new Dictionary<uint, long>();
@@ -33,6 +34,7 @@ internal static class CpuStateBenchmark
             source.BaseStream.Position = 0;
             R4300.LoadState(source);
             Ryu64.Common.Measure.InstructionCount = 0;
+            hostCounters?.Start();
             long start = Stopwatch.GetTimestamp();
             while (Ryu64.Common.Measure.InstructionCount < 20_000_000)
             {
@@ -74,6 +76,7 @@ internal static class CpuStateBenchmark
                 catch (Ryu64.Common.Exceptions.AddressErrorException ex) { address(ex.Address, ex.IsStore, pc); }
             }
             double ms = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+            hostCounters?.Stop(run >= 0);
             using var output = new MemoryStream();
             using var writer = new BinaryWriter(output);
             R4300.SaveState(writer); writer.Flush();
@@ -82,6 +85,7 @@ internal static class CpuStateBenchmark
             expected = hash;
             if (run >= 0) timings.Add(ms);
         }
+        hostCounters?.Report();
         timings.Sort();
         if (profile)
         {

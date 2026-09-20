@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -8627,10 +8628,7 @@ namespace Ryu64.MIPS
             if (arr == null || arr.Length < 4)
                 return 0;
 
-            return ((uint)arr[0] << 24)
-                 | ((uint)arr[1] << 16)
-                 | ((uint)arr[2] << 8)
-                 | arr[3];
+            return BinaryPrimitives.ReadUInt32BigEndian(arr);
         }
 
         private static void WriteBigEndianWord(byte[] arr, uint value)
@@ -8638,10 +8636,7 @@ namespace Ryu64.MIPS
             if (arr == null || arr.Length < 4)
                 return;
 
-            arr[0] = (byte)((value >> 24) & 0xFF);
-            arr[1] = (byte)((value >> 16) & 0xFF);
-            arr[2] = (byte)((value >> 8) & 0xFF);
-            arr[3] = (byte)(value & 0xFF);
+            BinaryPrimitives.WriteUInt32BigEndian(arr, value);
         }
 
         private static void ApplyMiMaskPair(ref uint mask, uint value, int clearBit, int setBit, int targetBit)
@@ -10433,8 +10428,7 @@ namespace Ryu64.MIPS
             uint physical = index & 0x1fffffffu;
             if (!WordAccessTracingEnabled && index >= 0x80000000u && index < 0xc0000000u
                 && physical + 3u < RDRAM.Length)
-                return ((uint)RDRAM[physical] << 24) | ((uint)RDRAM[physical + 1] << 16)
-                    | ((uint)RDRAM[physical + 2] << 8) | RDRAM[physical + 3];
+                return BinaryPrimitives.ReadUInt32BigEndian(RDRAM.AsSpan((int)physical, 4));
             return ReadUInt32Slow(index);
         }
 
@@ -10484,10 +10478,7 @@ namespace Ryu64.MIPS
             physical &= 0x1FFFFFFFu;
             if (physical + 3u < RDRAM.Length)
             {
-                return ((uint)RDRAM[physical] << 24)
-                    | ((uint)RDRAM[physical + 1u] << 16)
-                    | ((uint)RDRAM[physical + 2u] << 8)
-                    | RDRAM[physical + 3u];
+                return BinaryPrimitives.ReadUInt32BigEndian(RDRAM.AsSpan((int)physical, 4));
             }
 
             return ReadUInt32(0xA0000000u | physical);
@@ -10502,10 +10493,7 @@ namespace Ryu64.MIPS
                 return false;
             }
 
-            value = ((uint)RDRAM[physical] << 24)
-                | ((uint)RDRAM[physical + 1u] << 16)
-                | ((uint)RDRAM[physical + 2u] << 8)
-                | RDRAM[physical + 3u];
+            value = BinaryPrimitives.ReadUInt32BigEndian(RDRAM.AsSpan((int)physical, 4));
             return true;
         }
 
@@ -10515,10 +10503,7 @@ namespace Ryu64.MIPS
             if (!WordAccessTracingEnabled && index >= 0x80000000u && index < 0xc0000000u
                 && physical + 3u < RDRAM.Length)
             {
-                RDRAM[physical] = (byte)(value >> 24);
-                RDRAM[physical + 1] = (byte)(value >> 16);
-                RDRAM[physical + 2] = (byte)(value >> 8);
-                RDRAM[physical + 3] = (byte)value;
+                BinaryPrimitives.WriteUInt32BigEndian(RDRAM.AsSpan((int)physical, 4), value);
                 NoteRdramWriteRange(physical, 4);
                 return;
             }
@@ -10715,14 +10700,7 @@ namespace Ryu64.MIPS
             {
                 uint physical = index & 0x1FFFFFFFu;
                 if ((ulong)physical + 8u <= (ulong)RDRAM.Length)
-                    return ((ulong)RDRAM[physical] << 56)
-                        | ((ulong)RDRAM[physical + 1u] << 48)
-                        | ((ulong)RDRAM[physical + 2u] << 40)
-                        | ((ulong)RDRAM[physical + 3u] << 32)
-                        | ((ulong)RDRAM[physical + 4u] << 24)
-                        | ((ulong)RDRAM[physical + 5u] << 16)
-                        | ((ulong)RDRAM[physical + 6u] << 8)
-                        | RDRAM[physical + 7u];
+                    return BinaryPrimitives.ReadUInt64BigEndian(RDRAM.AsSpan((int)physical, 8));
             }
             byte[] Res = this[index, 8];
             Array.Reverse(Res);

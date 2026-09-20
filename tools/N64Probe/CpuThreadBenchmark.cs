@@ -72,6 +72,7 @@ internal static class CpuThreadBenchmark
         using var result = new MemoryStream();
         using var resultWriter = new BinaryWriter(result, System.Text.Encoding.UTF8, true);
         var timings = new List<double>();
+        using var hostCounters = HostCounters.Create();
         string digest = "", historyDigest = "";
         try
         {
@@ -86,11 +87,13 @@ internal static class CpuThreadBenchmark
                     Array.Clear((Array)typeof(R4300).GetField("_recentInst", flags)!.GetValue(null)!);
                 }
                 R4300.R4300_ON = true;
+                hostCounters?.Start();
                 long start = Stopwatch.GetTimestamp();
                 startCpu();
                 var thread = (Thread)threadField.GetValue(null)!;
                 if (!thread.Join(TimeSpan.FromSeconds(30))) throw new TimeoutException("CPU benchmark did not stop");
                 double elapsed = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
+                hostCounters?.Stop(run >= 0);
                 if (Registers.R4300.PC != (0x80000000u + (uint)codeBase + (multiplyRoutine ? 0x18u : cop1Block ? 0x3cu : cpuBlock ? 0x30u : 0x2cu)) || (!multiplyRoutine && Registers.R4300.Reg[2] != (ulong)iterations)
                     || Registers.R4300.Reg[9] != 0 || R4300.GetUnknownOpcodeCount() != 0
                     || Ryu64.Common.Measure.InstructionCount != instructionTotal)
@@ -125,6 +128,7 @@ internal static class CpuThreadBenchmark
             R4300.StopR4300();
             sync[index] = original;
         }
+        hostCounters?.Report();
         timings.Sort();
         Console.WriteLine($"cpuThreadBench instructions={instructionTotal} runs=6 " +
             $"medianMs={(timings[2] + timings[3]) / 2:F3} minMs={timings[0]:F3} maxMs={timings[^1]:F3} " +
