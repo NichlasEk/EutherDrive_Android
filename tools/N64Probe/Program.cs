@@ -2,6 +2,21 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--bench-multiply-thread")
+{
+    CpuThreadBenchmark.Run(multiplyRoutine: true);
+    return;
+}
+if (args.Length == 1 && args[0] == "--check-multiply-batch")
+{
+    CpuMultiplyBatchChecks.Run();
+    return;
+}
+if (args.Length == 2 && args[0] == "--check-primary-dispatch")
+{
+    CpuPrimaryDispatchChecks.Run(args[1]);
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-low-vi")
 {
     LowViFramebufferChecks.Run();

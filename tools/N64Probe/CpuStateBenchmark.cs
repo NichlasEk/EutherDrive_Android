@@ -12,6 +12,7 @@ internal static class CpuStateBenchmark
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
         var fetch = typeof(R4300).GetMethod("ReadOpcode", flags)!.CreateDelegate<Func<uint, uint>>();
         var service = typeof(R4300).GetMethod("ServiceInterrupts", flags)!.CreateDelegate<Func<uint, bool>>();
+        var multiply = typeof(R4300).GetMethod("TryAdvanceMultiplyRoutine", flags)?.CreateDelegate<Func<uint, uint, uint>>();
         var cop1 = typeof(R4300).GetMethod("RaiseCop1UnusableException", flags)!.CreateDelegate<Action<uint>>();
         OpcodeTable.Init();
         byte[] rom = File.ReadAllBytes(romPath);
@@ -32,6 +33,8 @@ internal static class CpuStateBenchmark
                 uint pc = Registers.R4300.PC;
                 if (service(pc)) continue;
                 uint opcode = fetch(pc);
+                if (opcode == 0xafa40000u && multiply != null
+                    && multiply(pc, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount)) != 0) continue;
                 try { R4300.InterpretOpcode(opcode); }
                 catch (Exception ex) when (ex.GetType().Name == "Cop1UnusableException") { cop1(pc); }
             }

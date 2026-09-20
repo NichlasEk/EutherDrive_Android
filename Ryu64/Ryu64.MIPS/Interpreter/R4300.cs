@@ -1916,6 +1916,85 @@ namespace Ryu64.MIPS
             return pc == 0x80000814u && TryFastForwardIdleLoop(pc);
         }
 
+        private static readonly uint[] MultiplyRoutineOpcodes = {
+            0xafa40000u, 0xafa50004u, 0xafa60008u, 0xafa7000cu,
+            0xdfaf0008u, 0xdfae0000u, 0x01cf001du, 0x00001012u,
+            0x0002183cu, 0x0003183fu, 0x03e00008u, 0x0002103fu
+        };
+        private static readonly bool CpuBatchTracingEnabled = IsCpuBatchTracingEnabled();
+
+        private static bool IsCpuBatchTracingEnabled()
+        {
+            foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+                if (((string)entry.Key).StartsWith("EUTHERDRIVE_TRACE_", StringComparison.Ordinal)
+                    // Zero can be a meaningful watch address/range, not just a
+                    // disabled boolean flag. Conservatively keep ordinary steps.
+                    && !string.IsNullOrEmpty(entry.Value as string))
+                    return true;
+            return false;
+        }
+
+        // Execute this compiler's 64-bit multiply leaf routine as one quiet
+        // device interval. Live code, stack and event checks precede all writes.
+        private static uint TryAdvanceMultiplyRoutine(uint pc, uint maximumInstructions)
+        {
+            const uint instructions = 12, cycles = 19; // DMULTU costs eight, others one.
+            if (!FastIdleLoop || maximumInstructions < instructions || CpuBatchTracingEnabled
+                || Common.Variables.Debug || Common.Settings.STEP_MODE || CpuWindowTracingEnabled
+                || TraceSm64DispatchWindow || TraceHotPcSamples || InstInterp.BranchTracingEnabled
+                || _executingDelaySlot || _delaySlotExceptionPending || (pc & 3) != 0
+                || pc < 0x80000000u || pc >= 0xc0000000u
+                || memory.HasPendingRcpInterrupt
+                || (Registers.COP0.Reg[Registers.COP0.CAUSE_REG] & CauseIpMask) != 0)
+                return 0;
+            uint stack = (uint)Registers.R4300.Reg[29];
+            if (stack < 0x80000000u || stack >= 0xc0000000u || (stack & 7) != 0)
+                return 0;
+            uint codePhysical = pc & 0x1fffffffu, stackPhysical = stack & 0x1fffffffu;
+            if ((ulong)codePhysical + 48 > (ulong)memory.RDRAM.Length
+                || (ulong)stackPhysical + 16 > (ulong)memory.RDRAM.Length
+                || (stackPhysical < codePhysical + 48 && codePhysical < stackPhysical + 16))
+                return 0;
+            ulong count = Registers.COP0.Reg[Registers.COP0.COUNT_REG];
+            uint nextCount = (uint)((Count + cycles) >> 1);
+            if (count >= uint.MaxValue || (Count >> 1) != count
+                || ((Count + cycles) >> 1) >= uint.MaxValue
+                || CountCompareReached((uint)count, nextCount, (uint)Registers.COP0.Reg[Registers.COP0.COMPARE_REG])
+                || memory.GetQuietCpuCycles(cycles) < cycles)
+                return 0;
+            for (int i = 0; i < MultiplyRoutineOpcodes.Length; i++)
+                if (!memory.TryReadRdramUInt32PhysicalFast(codePhysical + (uint)i * 4, out uint opcode)
+                    || opcode != MultiplyRoutineOpcodes[i])
+                    return 0;
+
+            Registers.R4300.Reg[0] = 0;
+            InstInterp.SW(new OpcodeTable.OpcodeDesc(0xafa40000));
+            InstInterp.SW(new OpcodeTable.OpcodeDesc(0xafa50004));
+            InstInterp.SW(new OpcodeTable.OpcodeDesc(0xafa60008));
+            InstInterp.SW(new OpcodeTable.OpcodeDesc(0xafa7000c));
+            InstInterp.LD(new OpcodeTable.OpcodeDesc(0xdfaf0008));
+            InstInterp.LD(new OpcodeTable.OpcodeDesc(0xdfae0000));
+            InstInterp.DMULTU(new OpcodeTable.OpcodeDesc(0x01cf001d));
+            InstInterp.MFLO(new OpcodeTable.OpcodeDesc(0x00001012));
+            InstInterp.DSLL32(new OpcodeTable.OpcodeDesc(0x0002183c));
+            InstInterp.DSRA32(new OpcodeTable.OpcodeDesc(0x0003183f));
+            Registers.R4300.PC += 4; // JR, followed by its non-faulting delay instruction.
+            InstInterp.DSRA32(new OpcodeTable.OpcodeDesc(0x0002103f));
+            Registers.R4300.PC = (uint)Registers.R4300.Reg[31];
+            CycleCounter += cycles;
+            Count += cycles;
+            memory.Tick(cycles);
+            Registers.COP0.Reg[Registers.COP0.COUNT_REG] = nextCount;
+            uint random = (uint)Registers.COP0.Reg[Registers.COP0.RANDOM_REG] & 31;
+            uint wired = (uint)Registers.COP0.Reg[Registers.COP0.WIRED_REG] & 31;
+            uint firstRun = random > wired ? random - wired : 0;
+            Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = instructions <= firstRun ? random - instructions
+                : 31 - ((instructions - firstRun - 1) % (32 - wired));
+            Common.Measure.InstructionCount += instructions;
+            Common.Measure.CycleCounter = CycleCounter;
+            return instructions;
+        }
+
         private static uint TryAdvanceMappedIdleLoop(uint pc, uint maximumCycles)
         {
             uint segment = pc & 0xe0000000u;
@@ -2373,12 +2452,32 @@ namespace Ryu64.MIPS
             else
             {
                 uint primary = Opcode >> 26;
+                OpcodeTable.OpcodeDesc Desc = new OpcodeTable.OpcodeDesc(Opcode);
+                if (!TraceSm64DispatchWindow && !Common.Variables.Debug)
+                {
+                    // These primary encodings accept every operand bit and
+                    // have one cycle in OpcodeTable. Keep the original handlers
+                    // and shared timing boundary, but allow direct-call inlining.
+                    cycles = 1;
+                    switch (primary)
+                    {
+                        case 0x02: InstInterp.J(Desc); goto InstructionCompleted;
+                        case 0x03: InstInterp.JAL(Desc); goto InstructionCompleted;
+                        case 0x04: InstInterp.BEQ(Desc); goto InstructionCompleted;
+                        case 0x05: InstInterp.BNE(Desc); goto InstructionCompleted;
+                        case 0x09: InstInterp.ADDIU(Desc); goto InstructionCompleted;
+                        case 0x0c: InstInterp.ANDI(Desc); goto InstructionCompleted;
+                        case 0x0d: InstInterp.ORI(Desc); goto InstructionCompleted;
+                        case 0x23: InstInterp.LW(Desc); goto InstructionCompleted;
+                        case 0x2b: InstInterp.SW(Desc); goto InstructionCompleted;
+                        case 0x37: InstInterp.LD(Desc); goto InstructionCompleted;
+                    }
+                }
                 // COP1 and its four load/store opcodes require CU1. Throw so
                 // a fault in a delay slot aborts the enclosing branch as well.
                 if ((primary == 0x11 || (primary & 0x33) == 0x31)
                     && (Registers.COP0.Reg[Registers.COP0.STATUS_REG] & 0x20000000UL) == 0)
                     throw new Cop1UnusableException();
-                OpcodeTable.OpcodeDesc Desc = new OpcodeTable.OpcodeDesc(Opcode);
                 ref readonly OpcodeTable.InstInfo Info = ref OpcodeTable.GetOpcodeInfoRef(Opcode);
                 if (TraceSm64DispatchWindow || Common.Variables.Debug)
                     TraceCpuDispatch(Opcode, Desc, Info);
@@ -2386,6 +2485,7 @@ namespace Ryu64.MIPS
                 cycles = Info.Cycles;
             }
 
+        InstructionCompleted:
             CycleCounter += cycles;
             Count += cycles;
             memory?.Tick(cycles);
@@ -3621,6 +3721,19 @@ namespace Ryu64.MIPS
                             _recentInstPos = (_recentInstPos + 1) & RecentInstHistoryMask;
                             if (CpuWindowTracingEnabled)
                                 TraceCpuInstructionWindows(pc, Opcode);
+
+                            if (Opcode == 0xafa40000u && TryAdvanceMultiplyRoutine(pc, 12) != 0)
+                            {
+                                // The outer loop records JR but not its delay slot.
+                                for (int i = 1; i < 11; i++)
+                                {
+                                    _recentInst[_recentInstPos] = new RecentInst { Pc = pc + (uint)i * 4, Op = MultiplyRoutineOpcodes[i] };
+                                    _recentInstPos = (_recentInstPos + 1) & RecentInstHistoryMask;
+                                }
+                                lastPc = pc + 40;
+                                samePcIterations = 0;
+                                continue;
+                            }
 
                             if (Opcode == 0x1000ffffu)
                             {
