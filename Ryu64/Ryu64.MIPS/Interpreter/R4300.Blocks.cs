@@ -8,63 +8,39 @@ namespace Ryu64.MIPS
         // 144 for MTC0 STATUS. Match the reserved bits used by OpcodeTable.
         // Trapping arithmetic, FPU, TLB operations and other CP0 writes stay
         // on the ordinary instruction path.
+        private static readonly uint[] CpuBlockReservedBits = CreateCpuBlockReservedBits();
+
+        private static uint[] CreateCpuBlockReservedBits()
+        {
+            var masks = new uint[128];
+            for (int i = 0; i < masks.Length; i++) masks[i] = uint.MaxValue;
+            foreach (int primary in new[] { 2,3,4,5,9,10,11,12,13,14,25,32,33,35,36,37,39,40,41,43,55,63 })
+                masks[primary] = 0;
+            masks[15] = 0x03e00000u;
+            foreach (int function in new[] { 0,2,3,56,58,59,60,62,63 })
+                masks[64 + function] = 0x03e00000u;
+            foreach (int function in new[] { 4,6,7,20,22,23,33,35,36,37,38,39,42,43,45,47 })
+                masks[64 + function] = 0x000007c0u;
+            masks[72] = 0x001fffc0u;
+            masks[73] = 0x001f07c0u;
+            return masks;
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         private static int GetCpuBlockOpcodeKind(uint opcode)
         {
-            switch (opcode >> 26)
+            int primary = (int)(opcode >> 26);
+            if (primary == 16)
             {
-                case 2: case 3: case 4: case 5: return (int)(opcode >> 26);
-                case 9: return 9;
-                case 10: return 10;
-                case 11: return 11;
-                case 12: return 12;
-                case 13: return 13;
-                case 14: return 14;
-                case 15: return (opcode & 0x03e00000u) == 0 ? 15 : -1;
-                case 16:
-                    if ((opcode & 0x03e00000u) == 0) return 16;
-                    // STATUS alone cannot create a pending interrupt. The block
-                    // starts with no pending IP bits and ends before new events.
-                    return (opcode & 0x03e0f800u) == 0x00806000u ? 144 : -1;
-                case 25: return 25;
-                case 32: case 33: case 36: case 37: case 39:
-                case 40: case 41: case 63: return (int)(opcode >> 26);
-                case 35: return 35;
-                case 43: return 43;
-                case 55: return 55;
-                case 0:
-                    switch (opcode & 63)
-                    {
-                        case 8: return (opcode & 0x001fffc0u) == 0 ? 72 : -1;
-                        case 9: return (opcode & 0x001f07c0u) == 0 ? 73 : -1;
-                        case 0: return (opcode & 0x03e00000u) == 0 ? 64 : -1;
-                        case 2: return (opcode & 0x03e00000u) == 0 ? 66 : -1;
-                        case 3: return (opcode & 0x03e00000u) == 0 ? 67 : -1;
-                        case 4: return (opcode & 0x000007c0u) == 0 ? 68 : -1;
-                        case 6: return (opcode & 0x000007c0u) == 0 ? 70 : -1;
-                        case 7: return (opcode & 0x000007c0u) == 0 ? 71 : -1;
-                        case 20: return (opcode & 0x000007c0u) == 0 ? 84 : -1;
-                        case 22: return (opcode & 0x000007c0u) == 0 ? 86 : -1;
-                        case 23: return (opcode & 0x000007c0u) == 0 ? 87 : -1;
-                        case 33: return (opcode & 0x000007c0u) == 0 ? 97 : -1;
-                        case 35: return (opcode & 0x000007c0u) == 0 ? 99 : -1;
-                        case 36: return (opcode & 0x000007c0u) == 0 ? 100 : -1;
-                        case 37: return (opcode & 0x000007c0u) == 0 ? 101 : -1;
-                        case 38: return (opcode & 0x000007c0u) == 0 ? 102 : -1;
-                        case 39: return (opcode & 0x000007c0u) == 0 ? 103 : -1;
-                        case 42: return (opcode & 0x000007c0u) == 0 ? 106 : -1;
-                        case 43: return (opcode & 0x000007c0u) == 0 ? 107 : -1;
-                        case 45: return (opcode & 0x000007c0u) == 0 ? 109 : -1;
-                        case 47: return (opcode & 0x000007c0u) == 0 ? 111 : -1;
-                        case 56: return (opcode & 0x03e00000u) == 0 ? 120 : -1;
-                        case 58: return (opcode & 0x03e00000u) == 0 ? 122 : -1;
-                        case 59: return (opcode & 0x03e00000u) == 0 ? 123 : -1;
-                        case 60: return (opcode & 0x03e00000u) == 0 ? 124 : -1;
-                        case 62: return (opcode & 0x03e00000u) == 0 ? 126 : -1;
-                        case 63: return (opcode & 0x03e00000u) == 0 ? 127 : -1;
-                    }
-                    break;
+                if ((opcode & 0x03e00000u) == 0) return 16;
+                // STATUS alone cannot create a pending interrupt. The block
+                // starts with no pending IP bits and ends before new events.
+                return (opcode & 0x03e0f800u) == 0x00806000u ? 144 : -1;
             }
-            return -1;
+            int kind = primary == 0 ? 64 + (int)(opcode & 63) : primary;
+            // Unsupported entries reject every nonzero encoding. The sole
+            // zero encoding is SLL/NOP and has its own valid SPECIAL entry.
+            return (opcode & CpuBlockReservedBits[kind]) == 0 ? kind : -1;
         }
 
         private static bool IsExistingLoopEntry(uint pc, uint opcode)

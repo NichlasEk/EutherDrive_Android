@@ -22,6 +22,11 @@ if (args.Length == 1 && args[0] == "--bench-block-thread")
     CpuThreadBenchmark.Run(cpuBlock: true);
     return;
 }
+if (args.Length == 2 && args[0] == "--check-block-decode")
+{
+    CpuBlockDecodeChecks.Run(args[1]);
+    return;
+}
 if (args.Length == 1 && args[0] == "--check-cpu-blocks")
 {
     CpuBlockChecks.Run();
