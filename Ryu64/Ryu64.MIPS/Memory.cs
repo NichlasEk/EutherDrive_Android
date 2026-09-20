@@ -793,6 +793,10 @@ namespace Ryu64.MIPS
         private SpDmaRequest _spQueuedDma;
         private bool _spQueuedDmaValid;
         private bool _rspTaskActive;
+        private bool _rspSlicePending;
+        // Give the CPU a chance to publish display-list work which a running
+        // RSP may be polling. A slice is not a BREAK or a task completion.
+        private const uint RspSliceInstructions = 16384;
         private bool _rspTaskDispatching;
         private uint _rspTaskCyclesRemaining;
         private uint _rspInterruptDelayRemaining;
@@ -1046,7 +1050,7 @@ namespace Ryu64.MIPS
             if (writer == null)
                 throw new ArgumentNullException(nameof(writer));
 
-            const int version = 4;
+            const int version = 5;
             writer.Write(version);
 
             WriteByteArrays(writer);
@@ -1183,6 +1187,8 @@ namespace Ryu64.MIPS
             writer.Write(_controllerAnalogX);
             writer.Write(_controllerAnalogY);
             writer.Write(_rdpOtherModesCvgTimesAlpha);
+            writer.Write(_rspSlicePending);
+            _rspInterpreter.SaveExecutionState(writer);
         }
 
         public void LoadState(BinaryReader reader)
@@ -1191,7 +1197,7 @@ namespace Ryu64.MIPS
                 throw new ArgumentNullException(nameof(reader));
 
             int version = reader.ReadInt32();
-            if (version < 1 || version > 4)
+            if (version < 1 || version > 5)
                 throw new InvalidDataException($"Unsupported N64 memory savestate version: {version}.");
 
             lock (_audioQueueLock) _audioQueue.Clear();
@@ -1364,6 +1370,8 @@ namespace Ryu64.MIPS
             }
 
             _rdpOtherModesCvgTimesAlpha = version >= 4 && reader.ReadBoolean();
+            _rspSlicePending = version >= 5 && reader.ReadBoolean();
+            if (version >= 5) _rspInterpreter.LoadExecutionState(reader);
             RefreshCpuInterruptView();
         }
 
@@ -2153,6 +2161,8 @@ namespace Ryu64.MIPS
                     case 0x28: // SyncTile
                         break;
                     case 0x29: // SyncFull
+                        // Buffer submission is not completion; only FULL_SYNC raises DP.
+                        if (!SuppressDpInterrupt) SetMiDpInterrupt();
                         FlushVisibleRdpFramebufferSnapshot();
                         break;
                     case 0x2D: // SetScissor
@@ -6735,12 +6745,19 @@ namespace Ryu64.MIPS
                 }
             }
 
-            if (_rspTaskActive)
+            if (_rspTaskActive && (!_rspSlicePending || (ReadBigEndianWord(SP_STATUS_REG_R) & SpStatusHalt) == 0))
             {
                 if (cpuCycles >= _rspTaskCyclesRemaining)
                 {
                     _rspTaskCyclesRemaining = 0;
-                    CompleteRspTask();
+                    if (_rspSlicePending)
+                    {
+                        _rspTaskActive = false;
+                        uint status = ReadBigEndianWord(SP_STATUS_REG_R);
+                        TryDispatchRspTaskInterpreter(ref status);
+                        WriteBigEndianWord(SP_STATUS_REG_R, status);
+                    }
+                    else CompleteRspTask();
                 }
                 else
                 {
@@ -7589,6 +7606,14 @@ namespace Ryu64.MIPS
         {
             uint value = ReadBigEndianWord(SP_PC_REG_RW) & 0x00000FFCu;
             WriteBigEndianWord(SP_PC_REG_RW, value);
+            // An explicit CPU PC write starts a new instruction stream. Do not
+            // retain a deferred branch from the previous scheduling slice.
+            if (_rspSlicePending)
+            {
+                _rspSlicePending = false;
+                _rspTaskActive = false;
+                _rspTaskCyclesRemaining = 0;
+            }
             if (!TraceN64Io)
                 return;
 
@@ -7948,20 +7973,6 @@ namespace Ryu64.MIPS
             if (consumed >= (value & 0x00FFFFF8u))
                 status &= ~(DpcStatusStartValid | DpcStatusEndValid | DpcStatusCbufReady);
             WriteBigEndianWord(DPC_STATUS_REG_R, status);
-            uint span = consumed > current ? consumed - current : 0u;
-            if (span != 0)
-            {
-                if (MupenStyleDpcStatus && !SuppressDpInterrupt)
-                {
-                    SetMiDpInterrupt();
-                }
-                else
-                {
-                    _dpCompletionPending = true;
-                    _dpInterruptDelayArmed = true;
-                    _dpInterruptDelayRemaining = Math.Max(1u, span / 8u);
-                }
-            }
 
             if (TraceN64Io)
             {
@@ -8056,7 +8067,9 @@ namespace Ryu64.MIPS
 
         private void TryDispatchRspTaskInterpreter(ref uint status)
         {
-            bool hasTask = TryReadRspTaskFromDmem(out RspTask task);
+            bool resume = _rspSlicePending;
+            RspTask task = _activeRspTask;
+            bool hasTask = resume ? task.Type != 0 : TryReadRspTaskFromDmem(out task);
 
             if (!hasTask && IsIplRawRspKick())
             {
@@ -8075,12 +8088,13 @@ namespace Ryu64.MIPS
                 return;
             }
 
-            _rspKickCount++;
-            if (hasTask)
+            _rspSlicePending = false;
+            if (!resume) _rspKickCount++;
+            if (hasTask && !resume)
                 NoteRspTaskDispatch(task.Type);
             _activeRspTask = hasTask ? task : default;
 
-            if (hasTask && (TraceN64Io || TraceRspTaskDmem))
+            if (!resume && hasTask && (TraceN64Io || TraceRspTaskDmem))
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] RSP interpreter dispatch type={task.Type} flags=0x{task.Flags:x8} " +
@@ -8090,7 +8104,7 @@ namespace Ryu64.MIPS
                     $"yield=0x{task.YieldDataPtr:x8}/0x{task.YieldDataSize:x} " +
                     $"pc=0x{Registers.R4300.PC:x8}");
             }
-            else if (TraceN64Io || TraceRspTaskDmem)
+            else if (!resume && (TraceN64Io || TraceRspTaskDmem))
             {
                 Common.Logger.PrintWarningLine(
                     $"[N64IO] RSP interpreter raw dispatch pc=0x{Registers.R4300.PC:x8} rspPc=0x{ReadRspPc():x3} " +
@@ -8104,7 +8118,7 @@ namespace Ryu64.MIPS
             long rspPerfStart = StartPerfTimer();
             try
             {
-                completed = _rspInterpreter.ExecuteTask(out executedInstructions, out stopReason);
+                completed = _rspInterpreter.ExecuteSlice(out executedInstructions, out stopReason, resume, hasTask ? RspSliceInstructions : uint.MaxValue);
             }
             finally
             {
@@ -8114,6 +8128,15 @@ namespace Ryu64.MIPS
                     AddPerfTicks(ref _perfRspGraphicsTicks, ref _perfRspGraphicsCalls, rspPerfStart);
                 else if (hasTask && task.Type == 2)
                     AddPerfTicks(ref _perfRspAudioTicks, ref _perfRspAudioCalls, rspPerfStart);
+            }
+
+            if (!completed && stopReason == "slice")
+            {
+                _rspSlicePending = true;
+                _rspTaskActive = true;
+                _rspTaskCyclesRemaining = RspSliceInstructions;
+                status = ReadBigEndianWord(SP_STATUS_REG_R);
+                return;
             }
 
             if (!completed && string.IsNullOrEmpty(stopReason))

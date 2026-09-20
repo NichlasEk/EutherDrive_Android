@@ -130,6 +130,51 @@ namespace Ryu64.MIPS
         private readonly uint[] _recentInstrs = new uint[RecentInstructionCount];
         private int _recentIndex;
 
+        // Architectural state must survive a CPU/RSP scheduling boundary and savestates.
+        internal void SaveExecutionState(System.IO.BinaryWriter writer)
+        {
+            foreach (var value in _gpr) writer.Write(value);
+            foreach (var value in _vr) writer.Write(value);
+            foreach (var value in _vcc) writer.Write(value);
+            foreach (var value in _vco) writer.Write(value);
+            foreach (var value in _accHi) writer.Write(value);
+            foreach (var value in _accMd) writer.Write(value);
+            foreach (var value in _accLo) writer.Write(value);
+            writer.Write(_vce);
+            writer.Write(_divIn);
+            writer.Write(_divOut);
+            writer.Write(_dpFlag);
+            writer.Write(_pc);
+            writer.Write(_branchPending);
+            writer.Write(_branchTarget);
+            writer.Write(_skipNextInstruction);
+            writer.Write(_hi);
+            writer.Write(_lo);
+        }
+
+        internal void LoadExecutionState(System.IO.BinaryReader reader)
+        {
+            for (int i = 0; i < _gpr.Length; i++) _gpr[i] = reader.ReadUInt32();
+            for (int i = 0; i < _vr.Length; i++) _vr[i] = reader.ReadByte();
+            for (int i = 0; i < _vcc.Length; i++) _vcc[i] = reader.ReadUInt16();
+            for (int i = 0; i < _vco.Length; i++) _vco[i] = reader.ReadUInt16();
+            for (int i = 0; i < _accHi.Length; i++) _accHi[i] = reader.ReadUInt16();
+            for (int i = 0; i < _accMd.Length; i++) _accMd[i] = reader.ReadUInt16();
+            for (int i = 0; i < _accLo.Length; i++) _accLo[i] = reader.ReadUInt16();
+            _vce = reader.ReadByte();
+            _divIn = reader.ReadUInt16();
+            _divOut = reader.ReadUInt16();
+            _dpFlag = reader.ReadByte();
+            _pc = reader.ReadUInt32();
+            _branchPending = reader.ReadBoolean();
+            _branchTarget = reader.ReadUInt32();
+            _skipNextInstruction = reader.ReadBoolean();
+            _hi = reader.ReadUInt32();
+            _lo = reader.ReadUInt32();
+            _stagnantInstructionCount = 0;
+            _lastProgressSignature = ComputeProgressSignature(_memory.HasActiveRspTask());
+        }
+
         private static uint ReadUIntEnvironment(string name, uint fallback)
         {
             string value = Environment.GetEnvironmentVariable(name);
@@ -151,6 +196,9 @@ namespace Ryu64.MIPS
         }
 
         public bool ExecuteTask(out uint executedInstructions, out string stopReason)
+            => ExecuteSlice(out executedInstructions, out stopReason, false, uint.MaxValue);
+
+        internal bool ExecuteSlice(out uint executedInstructions, out string stopReason, bool resume, uint budget)
         {
             bool hasValidTask = _memory.HasActiveRspTask();
             uint activeTaskType = _memory.GetActiveRspTaskType();
@@ -158,26 +206,30 @@ namespace Ryu64.MIPS
             uint noProgressInstructionLimit = enforceWatchdog ? NoProgressInstructionLimitRaw : NoProgressInstructionLimitTask;
             uint absoluteMaxInstructions = enforceWatchdog ? AbsoluteMaxInstructionsRaw : AbsoluteMaxInstructionsTask;
 
-            _pc = _memory.ReadRspPc();
-            _branchPending = false;
-            _branchTarget = 0;
-            _skipNextInstruction = false;
-            _lastPc = 0xffffffffu;
-            _lastInstr = 0;
-            _samePcRunLength = 0;
-            _lastProgressSignature = ComputeProgressSignature(hasValidTask);
-            _progressRegistersDirty = false;
-            _stagnantInstructionCount = 0;
-            _recentIndex = 0;
-            Array.Clear(_recentPcs, 0, _recentPcs.Length);
-            Array.Clear(_recentInstrs, 0, _recentInstrs.Length);
+            if (!resume)
+            {
+                _pc = _memory.ReadRspPc();
+                _branchPending = false;
+                _branchTarget = 0;
+                _skipNextInstruction = false;
+                _lastPc = 0xffffffffu;
+                _lastInstr = 0;
+                _samePcRunLength = 0;
+                _lastProgressSignature = ComputeProgressSignature(hasValidTask);
+                _progressRegistersDirty = false;
+                _stagnantInstructionCount = 0;
+                _recentIndex = 0;
+                Array.Clear(_recentPcs, 0, _recentPcs.Length);
+                Array.Clear(_recentInstrs, 0, _recentInstrs.Length);
+            }
             stopReason = "no-progress";
+            uint sliceLimit = Math.Min(absoluteMaxInstructions, budget);
 
-            for (executedInstructions = 0; executedInstructions < absoluteMaxInstructions; executedInstructions++)
+            for (executedInstructions = 0; executedInstructions < sliceLimit; executedInstructions++)
             {
                 if (BlockJitEnabled && hasValidTask && !_branchPending && !_skipNextInstruction && !TraceRspFlow)
                 {
-                    int count = TryExecuteBlock(absoluteMaxInstructions - executedInstructions, noProgressInstructionLimit);
+                    int count = TryExecuteBlock(sliceLimit - executedInstructions, noProgressInstructionLimit);
                     if (count > 0)
                     {
                         executedInstructions += (uint)count - 1;
@@ -278,6 +330,14 @@ namespace Ryu64.MIPS
                 {
                     _pc = sequentialPc;
                 }
+            }
+
+            if (executedInstructions >= sliceLimit && sliceLimit < absoluteMaxInstructions)
+            {
+                _memory.WriteRspPc(_pc);
+                _memory.ClearActiveRspTracePc();
+                stopReason = "slice";
+                return false;
             }
 
             if (executedInstructions >= absoluteMaxInstructions)

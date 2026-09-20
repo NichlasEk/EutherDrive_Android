@@ -15,11 +15,13 @@ internal sealed class RspTaskCapture : TextWriter
     private readonly string directory;
     private readonly int taskType;
     private bool started, finished;
+    private int tasksToSkip;
     public override Encoding Encoding => previous.Encoding;
     internal RspTaskCapture(string directory)
     {
         this.directory = directory;
         taskType = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_RSP_TYPE") == "2" ? 2 : 1;
+        tasksToSkip = int.TryParse(Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_RSP_SKIP"), out int skip) ? Math.Max(0, skip) : 0;
         if (new[] { "rsp-start.bin", "rsp-end.bin", "rsp-start-registers.bin", "rsp-end-registers.bin" }
             .Any(name => File.Exists(Path.Combine(directory, name)))) throw new IOException("Use a fresh capture directory");
         Console.SetOut(this);
@@ -30,6 +32,7 @@ internal sealed class RspTaskCapture : TextWriter
     {
         if (finished) return;
         bool start = !started && value.StartsWith($"[N64IO] RSP interpreter dispatch type={taskType} ");
+        if (start && tasksToSkip > 0) { tasksToSkip--; return; }
         bool end = started && value.StartsWith($"[N64IO] RSP interpreter task type={taskType} validTask=True ");
         if (!start && !end) return;
         string suffix = start ? "start" : "end";
