@@ -5,17 +5,17 @@ using Ryu64.MIPS;
 
 internal static class MemoryWordAccessChecks
 {
-    internal static void Run(string reference)
+    internal static void Run(string reference, bool instructionFetch = false)
     {
         var context = new AssemblyLoadContext("word-access-reference", true);
-        var expected = Check(context.LoadFromAssemblyPath(Path.GetFullPath(reference)));
+        var expected = Check(context.LoadFromAssemblyPath(Path.GetFullPath(reference)), instructionFetch);
         context.Unload();
-        var actual = Check(typeof(Memory).Assembly);
+        var actual = Check(typeof(Memory).Assembly, instructionFetch);
         if (expected != actual) throw new Exception($"Word access mismatch: {expected} != {actual}");
-        Console.WriteLine($"wordAccess={actual} values=passed exceptions=passed framebufferEpochs=passed");
+        Console.WriteLine($"{(instructionFetch ? "opcodeFetch" : "wordAccess")}={actual} values=passed exceptions=passed framebufferEpochs=passed");
     }
 
-    private static string Check(Assembly assembly)
+    private static string Check(Assembly assembly, bool instructionFetch)
     {
         var cpu = assembly.GetType("Ryu64.MIPS.R4300")!;
         var memoryType = assembly.GetType("Ryu64.MIPS.Memory")!;
@@ -23,7 +23,9 @@ internal static class MemoryWordAccessChecks
         var memory = Activator.CreateInstance(memoryType, new object[] { rom })!;
         cpu.GetField("memory")!.SetValue(null,memory);
         assembly.GetType("Ryu64.MIPS.Registers+R4300")!.GetField("PC")!.SetValue(null,0x80010000u);
-        var read = memoryType.GetMethod("ReadUInt32")!.CreateDelegate<Func<uint,uint>>(memory);
+        var read = instructionFetch
+            ? cpu.GetMethod("ReadOpcode", BindingFlags.Static | BindingFlags.NonPublic)!.CreateDelegate<Func<uint,uint>>()
+            : memoryType.GetMethod("ReadUInt32")!.CreateDelegate<Func<uint,uint>>(memory);
         var write = memoryType.GetMethod("WriteUInt32")!.CreateDelegate<Action<uint,uint>>(memory);
         var save = cpu.GetMethod("SaveState")!.CreateDelegate<Action<BinaryWriter>>();
         byte[] ram = (byte[])memoryType.GetField("RDRAM")!.GetValue(memory)!;
@@ -58,6 +60,8 @@ internal static class MemoryWordAccessChecks
             Read(address); Read(address ^ 0x20000000);
         }
         foreach (uint address in new uint[] { 0xb0000000,0xb0000001,0xb0000ffc,0xa4400010,0xa404001c,0xa404001c }) Read(address);
+        if (instructionFetch)
+            foreach (uint address in new uint[] { 0x10000,0x70020000,0xc0020000 }) Read(address);
         writer.Flush();
         string values = Convert.ToHexString(SHA256.HashData(result.ToArray()));
         result.SetLength(0); save(writer); writer.Flush();

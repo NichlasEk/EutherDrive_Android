@@ -2,9 +2,9 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
-if (args.Length == 2 && args[0] == "--check-word-access")
+if (args.Length == 2 && (args[0] == "--check-word-access" || args[0] == "--check-opcode-fetch"))
 {
-    MemoryWordAccessChecks.Run(args[1]);
+    MemoryWordAccessChecks.Run(args[1], instructionFetch: args[0] == "--check-opcode-fetch");
     return;
 }
 if (args.Length == 1 && args[0] == "--bench-block-thread")
@@ -42,9 +42,9 @@ if (args.Length == 1 && args[0] == "--check-read64")
     MemoryRead64Checks.Run();
     return;
 }
-if (args.Length == 3 && args[0] == "--bench-cpu-state")
+if (args.Length == 3 && (args[0] == "--bench-cpu-state" || args[0] == "--profile-cpu-state"))
 {
-    CpuStateBenchmark.Run(args[1], args[2]);
+    CpuStateBenchmark.Run(args[1], args[2], profile: args[0] == "--profile-cpu-state");
     return;
 }
 

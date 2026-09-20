@@ -63,8 +63,15 @@ internal static class CpuMultiplyBatchChecks
             Registers.COP0.Reg[Registers.COP0.WIRED_REG] = (uint)(i / 2);
             Check(true);
         }
-        for (int i = 0; i < code.Length; i++)
-        { Reset(); R4300.memory.RDRAM[0x10000 + i * 4 + 3] ^= 1; Check(false); }
+        for (int i = 0; i < code.Length * 4; i++)
+        { Reset(); R4300.memory.RDRAM[0x10000 + i] ^= 1; Check(false); }
+        foreach (uint pc in new uint[] { 0x80010004, 0xa0010004, 0x807fffd0, 0xa07fffd0 })
+        {
+            Reset();
+            byte[] bytes = R4300.memory.RDRAM.AsSpan(0x10000,48).ToArray();
+            bytes.CopyTo(R4300.memory.RDRAM, (int)(pc & 0x1fffffff));
+            Registers.R4300.PC = pc; Check(true);
+        }
         foreach (ulong sp in new ulong[] { 0x80020001, 0x80010000, 0x80010028, 0x8000fff8, 0x807ffff8, 0xa4040000, 0x70020000 })
         { Reset(); Registers.R4300.Reg[29] = sp; Check(false); }
         foreach (uint budget in new uint[] { 0, 1, 11, 12, 100 }) { Reset(); Check(budget >= 12, budget); }

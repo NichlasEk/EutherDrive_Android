@@ -7,7 +7,7 @@ using Ryu64.MIPS;
 // the entire serialized CPU/device/RAM state across builds, outside timed work.
 internal static class CpuStateBenchmark
 {
-    internal static void Run(string path, string romPath)
+    internal static void Run(string path, string romPath, bool profile = false)
     {
         const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
         var fetch = typeof(R4300).GetMethod("ReadOpcode", flags)!.CreateDelegate<Func<uint, uint>>();
@@ -25,7 +25,9 @@ internal static class CpuStateBenchmark
         using var source = new BinaryReader(new MemoryStream(File.ReadAllBytes(path)));
         var timings = new List<double>();
         string expected = "";
-        for (int run = -3; run < 5; run++)
+        var fallbackCounts = new Dictionary<string, long>();
+        var blockLengths = new Dictionary<uint, long>();
+        for (int run = profile ? 0 : -3; run < (profile ? 1 : 5); run++)
         {
             source.BaseStream.Position = 0;
             R4300.LoadState(source);
@@ -40,8 +42,17 @@ internal static class CpuStateBenchmark
                     uint opcode = fetch(pc);
                     if (opcode == 0xafa40000u && multiply != null
                         && multiply(pc, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount)) != 0) continue;
-                    if (block != null && pc >= 0x80004000u && pc < 0xc0000000u
-                        && block(pc, opcode, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount), false) != 0) continue;
+                    if (block != null && pc >= 0x80004000u && pc < 0xc0000000u)
+                    {
+                        uint length = block(pc, opcode, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount), false);
+                        if (profile) blockLengths[length] = blockLengths.GetValueOrDefault(length) + 1;
+                        if (length != 0) continue;
+                    }
+                    if (profile)
+                    {
+                        string name = OpcodeTable.GetOpcodeInfo(opcode).Interpret.Method.Name;
+                        fallbackCounts[name] = fallbackCounts.GetValueOrDefault(name) + 1;
+                    }
                     R4300.InterpretOpcode(opcode);
                 }
                 catch (Exception ex) when (ex.GetType().Name == "Cop1UnusableException") { cop1(pc); }
@@ -58,6 +69,12 @@ internal static class CpuStateBenchmark
             if (run >= 0) timings.Add(ms);
         }
         timings.Sort();
-        Console.WriteLine($"gameReplay medianMs={timings[timings.Count / 2]:F3} instructions={Ryu64.Common.Measure.InstructionCount} sha256={expected}");
+        if (profile)
+        {
+            Console.WriteLine("fallbackCounts=" + string.Join(",", fallbackCounts.OrderByDescending(x => x.Value).Select(x => $"{x.Key}:{x.Value}")));
+            Console.WriteLine("blockLengths=" + string.Join(",", blockLengths.OrderBy(x => x.Key).Select(x => $"{x.Key}:{x.Value}")));
+        }
+        string measurement = profile ? "gameProfile instrumentedMs" : "gameReplay medianMs";
+        Console.WriteLine($"{measurement}={timings[timings.Count / 2]:F3} instructions={Ryu64.Common.Measure.InstructionCount} sha256={expected}");
     }
 }
