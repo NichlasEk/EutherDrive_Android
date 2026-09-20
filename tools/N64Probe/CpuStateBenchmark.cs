@@ -13,7 +13,10 @@ internal static class CpuStateBenchmark
         var fetch = typeof(R4300).GetMethod("ReadOpcode", flags)!.CreateDelegate<Func<uint, uint>>();
         var service = typeof(R4300).GetMethod("ServiceInterrupts", flags)!.CreateDelegate<Func<uint, bool>>();
         var multiply = typeof(R4300).GetMethod("TryAdvanceMultiplyRoutine", flags)?.CreateDelegate<Func<uint, uint, uint>>();
+        var block = typeof(R4300).GetMethod("TryAdvanceCpuBlock", flags)?.CreateDelegate<Func<uint, uint, uint, bool, uint>>();
         var cop1 = typeof(R4300).GetMethod("RaiseCop1UnusableException", flags)!.CreateDelegate<Action<uint>>();
+        var tlb = typeof(R4300).GetMethod("RaiseTlbRefillException", flags)!.CreateDelegate<Action<uint, uint, bool>>();
+        var address = typeof(R4300).GetMethod("RaiseAddressErrorException", flags)!.CreateDelegate<Action<uint, bool, uint>>();
         OpcodeTable.Init();
         byte[] rom = File.ReadAllBytes(romPath);
         if (System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(rom) != 0x80371240)
@@ -32,11 +35,18 @@ internal static class CpuStateBenchmark
             {
                 uint pc = Registers.R4300.PC;
                 if (service(pc)) continue;
-                uint opcode = fetch(pc);
-                if (opcode == 0xafa40000u && multiply != null
-                    && multiply(pc, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount)) != 0) continue;
-                try { R4300.InterpretOpcode(opcode); }
+                try
+                {
+                    uint opcode = fetch(pc);
+                    if (opcode == 0xafa40000u && multiply != null
+                        && multiply(pc, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount)) != 0) continue;
+                    if (block != null && pc >= 0x80004000u && pc < 0xc0000000u
+                        && block(pc, opcode, (uint)(20_000_000 - Ryu64.Common.Measure.InstructionCount), false) != 0) continue;
+                    R4300.InterpretOpcode(opcode);
+                }
                 catch (Exception ex) when (ex.GetType().Name == "Cop1UnusableException") { cop1(pc); }
+                catch (Ryu64.Common.Exceptions.TLBMissException ex) { tlb(ex.Address, pc, ex.IsStore); }
+                catch (Ryu64.Common.Exceptions.AddressErrorException ex) { address(ex.Address, ex.IsStore, pc); }
             }
             double ms = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
             using var output = new MemoryStream();

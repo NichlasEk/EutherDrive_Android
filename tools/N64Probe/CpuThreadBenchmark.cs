@@ -9,7 +9,7 @@ using Ryu64.MIPS;
 // instruction boundary; the production core needs no benchmark hooks.
 internal static class CpuThreadBenchmark
 {
-    internal static void Run(bool multiplyRoutine = false)
+    internal static void Run(bool multiplyRoutine = false, bool cpuBlock = false)
     {
         int iterations = multiplyRoutine ? 250_000 : 1_000_000;
         ulong instructionTotal = (ulong)iterations * (multiplyRoutine ? 17UL : 10UL) + 1;
@@ -26,10 +26,18 @@ internal static class CpuThreadBenchmark
         var startCpu = typeof(R4300).GetMethod("StartCpuThread", flags)!.CreateDelegate<Action>();
         var threadField = typeof(R4300).GetField("CpuThread", flags)!;
         R4300.memory = new Memory(new byte[4096]);
-        Registers.R4300.PC = 0x80001000;
+        int codeBase = cpuBlock ? 0x10000 : 0x1000;
+        Registers.R4300.PC = 0x80000000u + (uint)codeBase;
+        if (cpuBlock) R4300.memory.WriteUInt32(0xa4400018, 524);
         Registers.R4300.Reg[9] = (ulong)iterations;
         uint[] code = { 0x24420001, 0x00431826, 0x34645678, 0x00042880,
             0x3c078000, 0x8ce80000, 0xace80004, 0x2529ffff, 0x1520fff7, 0, 15 };
+        if (cpuBlock)
+        {
+            code = new uint[] { 0x24420001,0x00431826,0x34645678,0x00042880,
+                0x3c078000,0x8ce80000,0xace80004,0x400b0800,0x2529ffff,0x1520fff6,0x400a4800,15 };
+            instructionTotal = (ulong)iterations * 11 + 1;
+        }
         if (multiplyRoutine)
         {
             code = new uint[] { 0x0c000440, 0, 0x2529ffff, 0x1520fffc, 0, 15 };
@@ -46,7 +54,7 @@ internal static class CpuThreadBenchmark
             R4300.memory.WriteUInt32(0xa4400018, 524);
         }
         for (int i = 0; i < code.Length; i++)
-            BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x1000 + i * 4), code[i]);
+            BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(codeBase + i * 4), code[i]);
         using var initial = new MemoryStream();
         using var writer = new BinaryWriter(initial, System.Text.Encoding.UTF8, true);
         R4300.SaveState(writer);
@@ -63,7 +71,7 @@ internal static class CpuThreadBenchmark
                 initial.Position = 0;
                 R4300.LoadState(reader);
                 Ryu64.Common.Measure.InstructionCount = 0;
-                if (multiplyRoutine)
+                if (multiplyRoutine || cpuBlock)
                 {
                     typeof(R4300).GetField("_recentInstPos", flags)!.SetValue(null, 0);
                     Array.Clear((Array)typeof(R4300).GetField("_recentInst", flags)!.GetValue(null)!);
@@ -74,7 +82,7 @@ internal static class CpuThreadBenchmark
                 var thread = (Thread)threadField.GetValue(null)!;
                 if (!thread.Join(TimeSpan.FromSeconds(30))) throw new TimeoutException("CPU benchmark did not stop");
                 double elapsed = Stopwatch.GetElapsedTime(start).TotalMilliseconds;
-                if (Registers.R4300.PC != (multiplyRoutine ? 0x80001018u : 0x8000102cu) || (!multiplyRoutine && Registers.R4300.Reg[2] != (ulong)iterations)
+                if (Registers.R4300.PC != (0x80000000u + (uint)codeBase + (multiplyRoutine ? 0x18u : cpuBlock ? 0x30u : 0x2cu)) || (!multiplyRoutine && Registers.R4300.Reg[2] != (ulong)iterations)
                     || Registers.R4300.Reg[9] != 0 || R4300.GetUnknownOpcodeCount() != 0
                     || Ryu64.Common.Measure.InstructionCount != instructionTotal)
                     throw new Exception("CPU benchmark did not complete the expected instruction sequence");
@@ -84,7 +92,7 @@ internal static class CpuThreadBenchmark
                 string hash = Convert.ToHexString(SHA256.HashData(result.GetBuffer().AsSpan(0, (int)result.Length)));
                 if (digest != "" && hash != digest) throw new Exception("CPU thread replay is nondeterministic");
                 digest = hash;
-                if (multiplyRoutine)
+                if (multiplyRoutine || cpuBlock)
                 {
                     using var history = new MemoryStream(); using var historyWriter = new BinaryWriter(history);
                     historyWriter.Write((int)typeof(R4300).GetField("_recentInstPos", flags)!.GetValue(null)!);

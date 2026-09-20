@@ -6,7 +6,7 @@ using System.Threading;
 
 namespace Ryu64.MIPS
 {
-    public class R4300
+    public partial class R4300
     {
         public static bool R4300_ON = false;
         private static Thread CpuThread;
@@ -1557,8 +1557,14 @@ namespace Ryu64.MIPS
                 case 0x2129FFF8u: case 0x2529FFF8u:
                 case 0xAD000000u: case 0xAD000004u:
                 case 0x1520FFFCu: case 0x21080008u:
-                case 0x1520FFFBu: case 0x00000000u:
+                case 0x1520FFFBu:
                     return TryFastForwardInitialZeroLoop(pc) || TryFastForwardPollingLoops(pc);
+                case 0x00000000u:
+                    // The only zero-loop NOP is variant two's final delay slot.
+                    // Its live sequence is still fully checked at the sole
+                    // possible base, instead of probing all six entry offsets.
+                    return (pc >= 0x14u && TryFastForwardInitialZeroLoopAt(pc, pc - 0x14u))
+                        || TryFastForwardPollingLoops(pc);
                 case 0x8C8B0004u: case 0x24A50001u: case 0x00AB082Bu:
                 case 0x5420FFFCu: case 0xA0A00000u:
                     return TryFastForwardByteZeroUntilPointerLoop(pc) || TryFastForwardPollingLoops(pc);
@@ -3749,6 +3755,19 @@ namespace Ryu64.MIPS
                                     samePcIterations += extra;
                                     continue;
                                 }
+                            }
+                            int historyBeforeBlock = _recentInstPos;
+                            uint blockInstructions = pc >= 0x80004000u && pc < 0xc0000000u
+                                ? TryAdvanceCpuBlock(pc, Opcode, 32, true) : 0;
+                            if (blockInstructions != 0)
+                            {
+                                uint lastBlockPc = _recentInst[(_recentInstPos - 1) & RecentInstHistoryMask].Pc;
+                                if (_recentInstPos != historyBeforeBlock)
+                                {
+                                    lastPc = lastBlockPc;
+                                    samePcIterations = 0;
+                                }
+                                continue;
                             }
                             InterpretOpcode(Opcode);
                         }
