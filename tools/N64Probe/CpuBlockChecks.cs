@@ -195,6 +195,22 @@ internal static class CpuBlockChecks
             ("_rspInterruptDelayArmed","_rspInterruptDelayRemaining"),("_dpInterruptDelayArmed","_dpInterruptDelayRemaining"),
             ("_piInterruptDelayArmed","_piInterruptDelayRemaining"),("_siInterruptDelayArmed","_siInterruptDelayRemaining"),
             ("_aiInterruptDelayArmed","_aiInterruptDelayRemaining") };
+        // Exercise the quiet tick with simultaneous timers, a suspended RSP
+        // continuation, and VI interrupts disabled by their line threshold.
+        for (int mask = 0; mask < 128; mask++)
+        {
+            Reset();
+            for (int i = 0; i < timers.Length; i++)
+            {
+                Set(timers[i].active, (mask & (1 << i)) != 0);
+                Set(timers[i].remaining, 100u + (uint)i);
+            }
+            Set("_rspSlicePending", (mask & 4) != 0);
+            R4300.memory.SP_STATUS_REG_R[3] = (byte)((mask & 8) != 0 ? 1 : 0);
+            if ((mask & 16) != 0)
+                BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.VI_INTR_REG_RW, 1023);
+            Check(32);
+        }
         foreach (var timer in timers)
         foreach (uint distance in new uint[] { 0,1,2,3,31,32,33,100 })
         { Reset(); Set(timer.active,true); Set(timer.remaining,distance); Check(distance < 3 ? 0 : Math.Min(distance-1,32)); }

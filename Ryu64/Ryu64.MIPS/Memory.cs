@@ -6359,6 +6359,24 @@ namespace Ryu64.MIPS
         private static uint BeforeEvent(uint limit, uint remaining)
             => remaining == 0 ? 0 : Math.Min(limit, remaining - 1);
 
+        // Only for CPU blocks already bounded by GetQuietCpuCycles. Such blocks
+        // cannot touch MMIO or cross a device/VI event, so no completion handler
+        // or VI schedule recomputation can run here.
+        internal void TickQuietCpuCycles(uint cpuCycles)
+        {
+            if (_spDmaDelayArmed) _spDmaDelayRemaining -= cpuCycles;
+            if (_rspTaskActive && (!_rspSlicePending || (ReadBigEndianWord(SP_STATUS_REG_R) & SpStatusHalt) == 0))
+                _rspTaskCyclesRemaining -= cpuCycles;
+            if (_rspInterruptDelayArmed) _rspInterruptDelayRemaining -= cpuCycles;
+            if (_dpInterruptDelayArmed) _dpInterruptDelayRemaining -= cpuCycles;
+            if (_piInterruptDelayArmed) _piInterruptDelayRemaining -= cpuCycles;
+            if (_siInterruptDelayArmed) _siInterruptDelayRemaining -= cpuCycles;
+            if (_aiInterruptDelayArmed) _aiInterruptDelayRemaining -= cpuCycles;
+            _viLineCycleAccum += cpuCycles;
+            if ((ReadBigEndianWord(VI_INTR_REG_RW) & 0x3ffu) < (ReadBigEndianWord(VI_V_SYNC_REG_RW) & 0x3ffu))
+                _viInterruptCyclesRemaining -= cpuCycles;
+        }
+
         public void Tick(uint cpuCycles)
         {
             AdvanceRspDpLifecycle(cpuCycles);

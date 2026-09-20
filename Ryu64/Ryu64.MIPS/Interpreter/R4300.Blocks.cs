@@ -277,7 +277,7 @@ namespace Ryu64.MIPS
             if (done == 0) return 0;
             CycleCounter += done;
             Count += done;
-            memory.Tick(done);
+            memory.TickQuietCpuCycles(done);
             Registers.COP0.Reg[Registers.COP0.COUNT_REG] = (uint)(Count >> 1);
             Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = GetRandomAfterInstructions(done);
             Common.Measure.InstructionCount += done;
