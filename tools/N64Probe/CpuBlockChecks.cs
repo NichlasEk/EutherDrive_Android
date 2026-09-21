@@ -50,7 +50,9 @@ internal static class CpuBlockChecks
             sample = unchecked(sample * 1664525u + 1013904223u);
             if (classify(sample) < 0) continue;
             var info = OpcodeTable.GetOpcodeInfo(sample);
-            if (info.Cycles != 1 || !allowed.Contains(info.Interpret.Method.Name)
+            bool straightCop1 = (sample >> 26) == 17 && ((sample >> 21) & 31) != 8;
+            bool cop1Memory = (sample >> 26) is 49 or 53 or 57 or 61;
+            if (info.Cycles != 1 || (!allowed.Contains(info.Interpret.Method.Name) && !straightCop1 && !cop1Memory)
                 || (info.Interpret.Method.Name == "MTC0" && ((sample >> 11) & 31) != 12))
                 throw new Exception($"Unexpected block opcode {sample:x8}: {info.Interpret.Method.Name}/{info.Cycles}");
             decoded++;
@@ -138,6 +140,55 @@ internal static class CpuBlockChecks
         uint[] special = { 0,2,3,4,6,7,20,22,23,33,35,36,37,38,39,42,43,45,47,56,58,59,60,62,63 };
         uint[] shifts = { 0,2,3,56,58,59,60,62,63 };
         var random = new Random(640020);
+        // COP1 blocks share ordinary arithmetic but bypass instruction dispatch
+        // and aggregate time. Compare full state with FR pairing, special float
+        // payloads, register aliasing, CU1 transitions, and branch delay slots.
+        var floatingWords = new List<uint>();
+        foreach (uint format in new uint[] { 0,1,2,4,5,6,16,17,20,21 })
+        foreach (uint function in format < 16 ? new uint[] { 0 }
+            : Enumerable.Range(0,64).Select(x => (uint)x))
+        {
+            uint word = 0x44000000u | format << 21 | 5u << 16 | 3u << 11 | (format < 16 ? 0 : 3u << 6 | function);
+            if (classify(word) == 17) floatingWords.Add(word);
+        }
+        ulong[] floatingBits = { 0,0x8000000000000000UL,0x7ff0000000000000UL,0xfff0000000000000UL,
+            0x7ff800007fc00001UL,0x0000000100000001UL,0x3ff000003f800000UL,0xc0050000bf800000UL };
+        foreach (bool fr in new[] { false,true })
+        foreach (uint word in floatingWords)
+        {
+            Reset(); Registers.COP0.Reg[12] = 0x20000000u | (fr ? 0x04000000u : 0);
+            for (int r = 0; r < 32; r++) Registers.COP1.Reg[r] = floatingBits[r % floatingBits.Length];
+            Registers.COP1.Control[31] = 3;
+            Code(0,word); Check(32);
+            Reset(); Registers.COP0.Reg[12] = fr ? 0x04000000u : 0;
+            Code(2,word); Check(2); // Stop before unusable COP1, with exact safe prefix.
+        }
+        foreach (uint primary in new uint[] { 49,53,57,61 })
+        foreach (bool fr in new[] { false,true })
+        foreach (bool delaySlot in new[] { false,true })
+        foreach (uint address in new uint[] { 0x80020000,0xa0020000,0x807ffff8,0x80020001,0xa4400000,0x80800000 })
+        {
+            Reset(); Registers.COP0.Reg[12] = 0x20000000u | (fr ? 0x04000000u : 0);
+            Registers.R4300.Reg[4] = address; Registers.COP1.Reg[4] = 0x7fc1234587654321UL;
+            Registers.COP1.Reg[5] = 0x1234567889abcdefUL;
+            uint word = primary << 26 | 4u << 21 | 5u << 16;
+            if (delaySlot) { Code(0,0x0c004004); Code(1,word); }
+            else Code(0,word);
+            bool valid = address is 0x80020000 or 0xa0020000 or 0x807ffff8;
+            Check(valid ? (delaySlot ? 2u : 32u) : 0, delaySlot ? 2u : 32u);
+        }
+        foreach (uint word in new uint[] { 0x46051802,0x4605183c,0x44851800,0x4445f800 })
+        foreach (bool usable in new[] { false,true })
+        {
+            Reset(); Registers.COP0.Reg[12] = usable ? 0x20000000u : 0;
+            Code(0,0x0c004004); Code(1,word); Check(usable ? 2u : 0,2);
+            Reset(); Registers.COP0.Reg[12] = usable ? 0 : 0x20000000u;
+            Registers.R4300.Reg[4] = usable ? 0x24000000u : 0;
+            Code(0,0x40846000); Code(1,word); Check(usable ? 32u : 1u);
+            Reset(); Registers.COP0.Reg[12] = 0x20000000u;
+            Registers.R4300.Reg[4] = usable ? 0x24000000u : 0;
+            Code(0,0x46051802); Code(1,0x40846000); Code(2,word); Check(usable ? 32u : 2u);
+        }
         foreach (uint fn in special)
         foreach (int zero in new[] { 0, 1 })
         {
@@ -431,6 +482,29 @@ internal static class CpuBlockChecks
             // Stores terminate a compiled region before newly written code is fetched.
             Reset(); Registers.R4300.Reg[4] = 0xa0010008; Registers.R4300.Reg[5] = 0x3406abcd;
             Code(1, 0xac850000); Check(32);
+            foreach (uint primary in new uint[] { 57,61 })
+            {
+                Reset(); Registers.COP0.Reg[12] = 0x24000000u;
+                Registers.R4300.Reg[4] = 0xa0010008;
+                Registers.COP1.Reg[5] = primary == 57 ? 0x3406abcdu : 0x3406abcd24420001UL;
+                Code(1,primary << 26 | 4u << 21 | 5u << 16); Check(32);
+            }
+            // Stores must terminate compiled code before the next instruction
+            // is fetched. Cover partial writes, 64-bit overlap and both RAM
+            // aliases, including writes to earlier/later instructions and just
+            // outside the compiled region.
+            foreach (uint primary in new uint[] { 40,41,43,63,57,61 })
+            foreach (int offset in new[] { -8,0,8,16,56,64 })
+            foreach (uint segment in new uint[] { 0x80000000,0xa0000000 })
+            {
+                Reset(); Registers.COP0.Reg[12] = 0x24000000u;
+                int byteOffset = primary == 40 ? 3 : primary == 41 ? 2 : 0;
+                Registers.R4300.Reg[4] = segment + (uint)(0x10000 + offset + byteOffset);
+                ulong payload = primary is 40 or 41 ? 2u : primary is 61 or 63
+                    ? 0x2442000224420002UL : 0x24420002u;
+                Registers.R4300.Reg[5] = payload; Registers.COP1.Reg[5] = payload;
+                Code(1,primary << 26 | 4u << 21 | 5u << 16); Check(32);
+            }
             // A register dependency can make a later load leave RAM: execute only
             // the safe prefix and leave the fault/MMIO instruction to the interpreter.
             Reset(); Code(0, 0x3c048000); Code(1, 0x8c850000); Code(2, 0x3c04a440); Code(3, 0x8c850000); Check(3);

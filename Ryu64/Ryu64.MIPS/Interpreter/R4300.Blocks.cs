@@ -8,7 +8,7 @@ namespace Ryu64.MIPS
         // The dispatch key is the primary opcode, SPECIAL function + 64, or
         // 128/129 for BLTZ/BGEZ, or 144 for MTC0 STATUS.
         // Match the reserved bits used by OpcodeTable.
-        // Trapping arithmetic, FPU, TLB operations and other CP0 writes stay
+        // Trapping integer arithmetic, TLB operations and other CP0 writes stay
         // on the ordinary instruction path.
         private static readonly uint[] CpuBlockReservedBits = CreateCpuBlockReservedBits();
 
@@ -16,7 +16,7 @@ namespace Ryu64.MIPS
         {
             var masks = new uint[128];
             for (int i = 0; i < masks.Length; i++) masks[i] = uint.MaxValue;
-            foreach (int primary in new[] { 2,3,4,5,9,10,11,12,13,14,25,32,33,35,36,37,39,40,41,43,55,63 })
+            foreach (int primary in new[] { 2,3,4,5,9,10,11,12,13,14,25,32,33,35,36,37,39,40,41,43,49,53,55,57,61,63 })
                 masks[primary] = 0;
             masks[15] = 0x03e00000u;
             masks[6] = masks[7] = 0x001f0000u;
@@ -33,6 +33,7 @@ namespace Ryu64.MIPS
         private static int GetCpuBlockOpcodeKind(uint opcode)
         {
             int primary = (int)(opcode >> 26);
+            if (primary == 17) return IsStraightCop1Instruction(opcode) ? 17 : -1;
             if (primary == 1)
             {
                 uint condition = (opcode >> 16) & 31;
@@ -118,6 +119,11 @@ namespace Ryu64.MIPS
                 case 41: InstInterp.SH(desc); break;
                 case 63: InstInterp.SD(desc); break;
                 case 144: InstInterp.MTC0(desc); break;
+                case 17: OpcodeTable.GetOpcodeInfo(desc.Opcode).Interpret(desc); break;
+                case 49: InstInterp.LWC1(desc); break;
+                case 53: InstInterp.LDC1(desc); break;
+                case 57: InstInterp.SWC1(desc); break;
+                case 61: InstInterp.SDC1(desc); break;
                 case 35:
                     Registers.R4300.Reg[desc.op2] = unchecked((ulong)(long)BinaryPrimitives.ReadInt32BigEndian(memory.RDRAM.AsSpan(CpuBlockRamAddress(desc), 4)));
                     Registers.R4300.PC += 4;
@@ -198,13 +204,15 @@ namespace Ryu64.MIPS
 
         private static bool CanAccessCpuBlockOperand(OpcodeTable.OpcodeDesc desc, int kind, int linkRegister, uint linkValue)
         {
+            if (IsCpuBlockCop1(kind) && (Registers.COP0.Reg[Registers.COP0.STATUS_REG] & 0x20000000UL) == 0)
+                return false;
             uint width;
             switch (kind)
             {
                 case 32: case 36: case 40: width = 1; break;
                 case 33: case 37: case 41: width = 2; break;
-                case 35: case 39: case 43: width = 4; break;
-                case 55: case 63: width = 8; break;
+                case 35: case 39: case 43: case 49: case 57: width = 4; break;
+                case 55: case 63: case 53: case 61: width = 8; break;
                 default: return true;
             }
             ulong baseValue = desc.op1 == 0 ? 0 : desc.op1 == linkRegister
@@ -263,9 +271,9 @@ namespace Ryu64.MIPS
                 if (done == 0) limit = Math.Min(limit, 32);
                 tryCompiled = false;
                 var desc = new OpcodeTable.OpcodeDesc(opcode);
-                // Only load/store primary opcodes can access memory. Avoid a
-                // validator call for arithmetic, CP0 and branch instructions.
-                if ((uint)(kind - 32) < 32 && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
+                // COP1 needs a live usability check, and loads/stores need
+                // operand validation. Integer ALU and CP0 need neither here.
+                if ((kind == 17 || (uint)(kind - 32) < 32) && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
                 bool branch = CpuJitBranch(kind);
                 uint delayOpcode = 0;
                 int delayKind = -1;
