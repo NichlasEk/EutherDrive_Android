@@ -20,7 +20,8 @@ namespace Ryu64.MIPS
         }
 
         private static bool IsSimdVectorOp(int op) => op <= 0x01 || (op >= 0x04 && op <= 0x09)
-            || (op >= 0x0c && op <= 0x11) || op == 0x14 || op == 0x15 || (op >= 0x27 && op <= 0x2d);
+            || (op >= 0x0c && op <= 0x11) || op == 0x13 || op == 0x14 || op == 0x15
+            || (op >= 0x20 && op <= 0x2d);
 
         private static Vector128<byte>[] CreateVectorByteShuffles()
         {
@@ -207,6 +208,84 @@ namespace Ryu64.MIPS
                 {
                     result = lo = VectorSelect(VectorFlagLanes(_vcc[1]), lhs, rhs);
                     _vco[0] = _vco[1] = 0;
+                }
+                else if (op == 0x13) // VABS: accumulator wraps, destination saturates.
+                {
+                    lo = Ssse3.Sign(rhs.AsInt16(), lhs.AsInt16()).AsUInt16();
+                    var overflow = Sse2.And(VectorSign(lhs), Sse2.CompareEqual(rhs, Vector128.Create((ushort)0x8000)));
+                    result = VectorSelect(overflow, Vector128.Create((ushort)0x7fff), lo);
+                }
+                else if (op >= 0x20 && op <= 0x23)
+                {
+                    var equal = Sse2.CompareEqual(lhs, rhs);
+                    var co0 = VectorFlagLanes(_vco[0]);
+                    Vector128<ushort> select;
+                    if (op == 0x20) // VLT
+                        select = Sse2.Or(Sse2.CompareGreaterThan(rhs.AsInt16(), lhs.AsInt16()).AsUInt16(),
+                            Sse2.And(equal, Sse2.And(co0, VectorFlagLanes(_vco[1]))));
+                    else if (op == 0x21) // VEQ
+                        select = Sse2.AndNot(co0, equal);
+                    else if (op == 0x22) // VNE
+                        select = Sse2.Or(Sse2.Xor(equal, Vector128.Create(ushort.MaxValue)), co0);
+                    else // VGE
+                        select = Sse2.Or(Sse2.CompareGreaterThan(lhs.AsInt16(), rhs.AsInt16()).AsUInt16(),
+                            Sse2.AndNot(Sse2.And(co0, VectorFlagLanes(_vco[1])), equal));
+                    result = lo = VectorSelect(select, lhs, rhs);
+                    _vcc[0] = 0;
+                    _vcc[1] = (ushort)Vector128.ExtractMostSignificantBits(select);
+                    _vco[0] = _vco[1] = 0;
+                }
+                else if (op >= 0x24 && op <= 0x26)
+                {
+                    var all = Vector128.Create(ushort.MaxValue);
+                    var sign = op == 0x24 ? VectorFlagLanes(_vco[1]) : VectorSign(Sse2.Xor(lhs, rhs));
+                    var adjusted = Sse2.Xor(rhs, sign);
+                    if (op != 0x26) adjusted = Sse2.Subtract(adjusted, sign);
+                    Vector128<ushort> ge, le;
+                    if (op == 0x24) // VCL updates only lanes not marked unequal by VCH.
+                    {
+                        var eq = VectorFlagLanes(_vco[0]);
+                        var sum = Sse2.Add(lhs, rhs);
+                        var sumZero = Sse2.CompareEqual(sum, zero);
+                        var carry = VectorLessUnsigned(sum, lhs);
+                        // Widened sum <= 0x10000, or == 0 when VCE is clear.
+                        var leTest = VectorSelect(VectorFlagLanes(_vce),
+                            Sse2.Or(Sse2.Xor(carry, all), sumZero), Sse2.AndNot(carry, sumZero));
+                        le = VectorSelect(Sse2.AndNot(eq, sign), leTest, VectorFlagLanes(_vcc[1]));
+                        ge = VectorSelect(Sse2.AndNot(Sse2.Or(sign, eq), all),
+                            Sse2.Xor(VectorLessUnsigned(lhs, rhs), all), VectorFlagLanes(_vcc[0]));
+                        // Preserve unused upper bits just as SetMaskBit does.
+                        _vcc[0] = (ushort)((_vcc[0] & 0xff00) | Vector128.ExtractMostSignificantBits(ge));
+                        _vcc[1] = (ushort)((_vcc[1] & 0xff00) | Vector128.ExtractMostSignificantBits(le));
+                        _vco[0] = _vco[1] = 0;
+                        _vce = 0;
+                    }
+                    else if (op == 0x25) // VCH uses wrapping signed 16-bit differences.
+                    {
+                        var diff = Sse2.Subtract(lhs, adjusted);
+                        ge = VectorSelect(sign, VectorSign(rhs), Sse2.Xor(VectorSign(diff), all));
+                        le = VectorSelect(sign,
+                            Sse2.Xor(Sse2.CompareGreaterThan(diff.AsInt16(), zero.AsInt16()).AsUInt16(), all), VectorSign(rhs));
+                        var vce = Sse2.And(sign, Sse2.CompareEqual(diff, all));
+                        var unequal = Sse2.Xor(Sse2.Or(Sse2.CompareEqual(diff, zero), vce), all);
+                        _vcc[0] = (ushort)Vector128.ExtractMostSignificantBits(ge);
+                        _vcc[1] = (ushort)Vector128.ExtractMostSignificantBits(le);
+                        _vco[0] = (ushort)Vector128.ExtractMostSignificantBits(unequal);
+                        _vco[1] = (ushort)Vector128.ExtractMostSignificantBits(sign);
+                        _vce = (byte)Vector128.ExtractMostSignificantBits(vce);
+                    }
+                    else // VCR: opposite-sign inputs cannot overflow the signed sum.
+                    {
+                        ge = VectorSelect(sign, VectorSign(rhs),
+                            Sse2.Xor(Sse2.CompareGreaterThan(rhs.AsInt16(), lhs.AsInt16()).AsUInt16(), all));
+                        le = VectorSelect(sign,
+                            Sse2.Xor(Sse2.CompareGreaterThan(Sse2.Add(lhs, rhs).AsInt16(), zero.AsInt16()).AsUInt16(), all), VectorSign(rhs));
+                        _vcc[0] = (ushort)Vector128.ExtractMostSignificantBits(ge);
+                        _vcc[1] = (ushort)Vector128.ExtractMostSignificantBits(le);
+                        _vco[0] = _vco[1] = 0;
+                        _vce = 0;
+                    }
+                    result = lo = VectorSelect(VectorSelect(sign, le, ge), adjusted, lhs);
                 }
                 else
                 {

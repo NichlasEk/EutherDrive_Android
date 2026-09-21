@@ -68,7 +68,9 @@ internal static class RspSimdChecks
         }
 
         ushort[] edges = { 0, 1, 0x7ffe, 0x7fff, 0x8000, 0x8001, 0xfffe, 0xffff };
-        int[] ops = { 0, 1, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17, 20, 21, 39, 40, 41, 42, 43, 44, 45 };
+        int[] ops = { 0, 1, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17, 19, 20, 21,
+            29, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45,
+            48, 49, 50, 51, 52, 53, 54 };
         var random = new Random(640128);
         foreach (int op in ops)
         for (int pattern = 0; pattern < 64; pattern++)
@@ -94,7 +96,7 @@ internal static class RspSimdChecks
         }
         // Exhaust every packed carry/selection mask, including saturation with
         // a carry on the signed limit. Preserve unrelated control flags.
-        foreach (int op in new[] { 16, 17, 20, 21, 39 })
+        foreach (int op in new[] { 16, 17, 20, 21, 32, 33, 34, 35, 36, 37, 38, 39 })
         for (int flags = 0; flags < 256; flags++)
         {
             for (int lane = 0; lane < 8; lane++)
@@ -106,6 +108,29 @@ internal static class RspSimdChecks
             actual.Vcc[0] = actual.Vcc[1] = (ushort)flags;
             CopyState();
             Check(0x4a071ac0u | (uint)op);
+        }
+        // VCL consumes VCH flags, including VCE at the widened carry boundary.
+        // Exercise every packed VCE mask, independent GE/LE/EQ/sign masks,
+        // unused high flag bits, and sums at 0, 0xffff, 0x10000 and 0x10001.
+        ushort[] clipLeft = { 0,0,1,1,2,0x7fff,0x8000,0xffff };
+        ushort[] clipRight = { 0,0xffff,0xfffe,0xffff,0xffff,0x8001,0x8000,0xffff };
+        for (int flags = 0; flags < 256; flags++)
+        for (int pattern = 0; pattern < 16; pattern++)
+        {
+            for (int lane = 0; lane < 8; lane++)
+            {
+                BinaryPrimitives.WriteUInt16BigEndian(actual.Registers.AsSpan(3 * 16 + lane * 2), clipLeft[(lane + pattern) & 7]);
+                BinaryPrimitives.WriteUInt16BigEndian(actual.Registers.AsSpan(7 * 16 + lane * 2), clipRight[(lane + pattern) & 7]);
+            }
+            actual.Vco[0] = (ushort)(pattern % 2 == 0 ? flags : flags ^ 255);
+            actual.Vco[1] = (ushort)(pattern % 4 < 2 ? flags : 255);
+            actual.Vcc[0] = (ushort)(0xab00 | flags);
+            actual.Vcc[1] = (ushort)(0xcd00 | (flags ^ 255));
+            actual.Scalars[0].SetValue(actual.Rsp, (byte)flags);
+            CopyState();
+            Check(0x4a071ae4); // VCL v11,v3,v7[0]
+            Check(0x4a071ae5); // VCH, then consume its newly produced flags.
+            Check(0x4a071ae4);
         }
         // Mixed instructions also catch stale work buffers when execution
         // alternates between optimized operations, reciprocal/clip and VSAR.

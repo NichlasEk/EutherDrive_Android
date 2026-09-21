@@ -84,6 +84,15 @@ internal static class RspBlockChecks
                     | source << 16 | ((source + 2) & 31) << 11
                     | destination << 6 | accumulate);
             }
+            // Mix SIMD clipping with accumulator/reciprocal instructions in
+            // compiled blocks, including VCH -> VCL flag flow.
+            foreach (uint operation in new uint[] { 19,29,32,33,34,35,37,36,38,51,48,49,50,52,53,54 })
+            {
+                uint source = (uint)(iteration % 32);
+                uint destination = iteration % 2 == 0 ? source : (source + 1) & 31;
+                Op(0x4a000000u | (uint)(iteration % 16) << 21
+                    | source << 16 | ((source + 2) & 31) << 11 | destination << 6 | operation);
+            }
             for (int i = 0; i < 24; i++)
             {
                 // Every form is selected explicitly at least once, in addition

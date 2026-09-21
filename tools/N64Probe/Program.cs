@@ -362,6 +362,13 @@ finally { core.Stop(); }
 File.WriteAllBytes(Path.Combine(output, "rdram.bin"), R4300.memory.RDRAM);
 Console.WriteLine(core.LastPerformanceStatus);
 
+var jitFlags = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic;
+Console.WriteLine($"cpuJit instructions={typeof(R4300).GetField("CpuJitInstructions", jitFlags)!.GetValue(null)} " +
+    $"compilations={typeof(R4300).GetField("CpuJitCompilations", jitFlags)!.GetValue(null)} " +
+    $"rejected={typeof(R4300).GetField("CpuJitRejectedCompilations", jitFlags)!.GetValue(null)} " +
+    $"invalidations={typeof(R4300).GetField("CpuJitInvalidations", jitFlags)!.GetValue(null)} " +
+    $"peakMemoryBytes={probeProcess.PeakWorkingSet64}");
+
 static void WriteFrame(string path, byte[] pixels, int width, int height, int bpp)
 {
     using var frame = File.Create(path);
