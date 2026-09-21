@@ -30,6 +30,7 @@ internal static class RspChecks
                 throw new Exception($"RSP state differs from reference: {expected}");
             if (CheckTasks(assembly) != tasks)
                 throw new Exception("RSP task execution differs from reference");
+            RspSimdChecks.Run(assembly);
             Console.WriteLine("rspDifferential=passed");
             Benchmark(assembly, "reference");
             context.Unload();
@@ -174,15 +175,16 @@ internal static class RspChecks
             for (int repeat = 0; repeat < 3; repeat++) Record(step(0, instruction, out _));
             count++;
         }
-        // LQV/SQV fast-copy boundaries, including descriptor tracing fallback,
-        // DMEM wrapping and high address bits ignored by the RSP.
+        // Byte/halfword/word/doubleword and LQV/SQV fast-copy boundaries,
+        // including descriptor tracing fallback, DMEM wrapping and high bits.
+        for (uint op = 0; op <= 4; op++)
         foreach (uint address in new uint[] { 0, 0x3f0, 0x400, 0x410, 0x420, 0x430, 0xfe0, 0x12345000 })
         for (uint element = 0; element < 16; element++)
         for (uint alignment = 0; alignment < 16; alignment++)
         {
             Initialize();
             ((uint[])arrays[0])[1] = address + alignment;
-            uint instruction = 1u << 21 | 31u << 16 | 4u << 11 | element << 7;
+            uint instruction = 1u << 21 | 31u << 16 | op << 11 | element << 7;
             Record(step(0, 0xc8000000 | instruction, out _));
             Record(step(0, 0xe8000000 | instruction, out _));
             count++;

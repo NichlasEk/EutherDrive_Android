@@ -1,0 +1,229 @@
+#if NET8_0_OR_GREATER
+using System;
+using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Runtime.Intrinsics.X86;
+
+namespace Ryu64.MIPS
+{
+    internal sealed partial class RspInterpreter
+    {
+        // The portable interpreter remains the fallback for older targets and
+        // hosts without SSSE3. No architectural state depends on this choice.
+        private static readonly bool VectorSimdEnabled = Ssse3.IsSupported
+            && Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_SIMD") != "0";
+        private static class VectorSimdMasks
+        {
+            // Initialize after the outer type's shuffle setting, independently
+            // of the compiler's ordering of partial-class field initializers.
+            internal static readonly Vector128<byte>[] ByteShuffles = CreateVectorByteShuffles();
+        }
+
+        private static bool IsSimdVectorOp(int op) => op <= 0x01 || (op >= 0x04 && op <= 0x09)
+            || (op >= 0x0c && op <= 0x11) || op == 0x14 || op == 0x15 || (op >= 0x27 && op <= 0x2d);
+
+        private static Vector128<byte>[] CreateVectorByteShuffles()
+        {
+            var masks = new Vector128<byte>[16];
+            byte[] bytes = new byte[16];
+            for (int element = 0; element < masks.Length; element++)
+            {
+                for (int lane = 0; lane < 8; lane++)
+                {
+                    int source = element < 2 ? lane
+                        : element < 4 ? (lane & ~1) + (element & 1)
+                        : element < 8 ? element - 4 + ((lane & (StrictHalfVectorShuffle ? 4 : 2)) == 0 ? 0 : 4)
+                        : element - 8;
+                    // Fuse element selection with the register's big-endian
+                    // halfword conversion. Destination lanes stay in RSP order.
+                    bytes[lane * 2] = (byte)(source * 2 + 1);
+                    bytes[lane * 2 + 1] = (byte)(source * 2);
+                }
+                masks[element] = Vector128.LoadUnsafe(ref bytes[0]);
+            }
+            return masks;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Vector128<ushort> ReadVectorPlane(ushort[] plane) => Vector128.LoadUnsafe(ref plane[0]);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void WriteVectorPlane(ushort[] plane, Vector128<ushort> value) => value.StoreUnsafe(ref plane[0]);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Vector128<ushort> VectorSign(Vector128<ushort> value) => Sse2.ShiftRightArithmetic(value.AsInt16(), 15).AsUInt16();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Vector128<ushort> VectorLessUnsigned(Vector128<ushort> left, Vector128<ushort> right)
+        {
+            var sign = Vector128.Create((ushort)0x8000);
+            return Sse2.CompareGreaterThan(Sse2.Xor(right, sign).AsInt16(), Sse2.Xor(left, sign).AsInt16()).AsUInt16();
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Vector128<ushort> VectorSelect(Vector128<ushort> mask, Vector128<ushort> yes, Vector128<ushort> no)
+            => Sse2.Or(Sse2.And(mask, yes), Sse2.AndNot(mask, no));
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Vector128<ushort> VectorSignedClamp(Vector128<ushort> hi, Vector128<ushort> md)
+            => Sse2.PackSignedSaturate(Sse2.UnpackLow(md, hi).AsInt32(), Sse2.UnpackHigh(md, hi).AsInt32()).AsUInt16();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Vector128<ushort> VectorUnsignedClamp(Vector128<ushort> hi, Vector128<ushort> md, Vector128<ushort> lo)
+        {
+            var inRange = Sse2.CompareEqual(hi, VectorSign(md));
+            return VectorSelect(inRange, lo, Sse2.Xor(VectorSign(hi), Vector128.Create(ushort.MaxValue)));
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static Vector128<ushort> VectorFlagLanes(ushort bits)
+        {
+            var weights = Vector128.Create((ushort)1, 2, 4, 8, 16, 32, 64, 128);
+            return Sse2.CompareEqual(Sse2.And(Vector128.Create(bits), weights), weights);
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void AddVectorAccumulator(Vector128<ushort> termLo, Vector128<ushort> termMd, Vector128<ushort> termHi,
+            out Vector128<ushort> lo, out Vector128<ushort> md, out Vector128<ushort> hi)
+        {
+            var oldLo = ReadVectorPlane(_accLo);
+            var oldMd = ReadVectorPlane(_accMd);
+            lo = Sse2.Add(oldLo, termLo);
+            var carryLo = VectorLessUnsigned(lo, oldLo);
+            var sumMd = Sse2.Add(oldMd, termMd);
+            md = Sse2.Subtract(sumMd, carryLo); // true masks are -1: subtracting adds the carry.
+            var carryMd = Sse2.Or(VectorLessUnsigned(sumMd, oldMd), VectorLessUnsigned(md, sumMd));
+            hi = Sse2.Subtract(Sse2.Add(ReadVectorPlane(_accHi), termHi), carryMd);
+        }
+
+        private void ExecuteVectorSimd(int op, int vd, int vs, int vt, int element)
+        {
+            if (ProfileVectorOps) _vectorOpCounts[op]++;
+            // All register indices and selectors are decoded instruction fields.
+            // Load both operands before any destination write, including aliases.
+            var masks = VectorSimdMasks.ByteShuffles;
+            var swap = masks[0];
+            var lhs = Ssse3.Shuffle(Vector128.LoadUnsafe(ref _vr[vs * 16]), swap).AsUInt16();
+            var rhs = Ssse3.Shuffle(Vector128.LoadUnsafe(ref _vr[vt * 16]), masks[element]).AsUInt16();
+            var zero = Vector128<ushort>.Zero;
+            Vector128<ushort> result, lo, md, hi;
+            if (op <= 0x01)
+            {
+                var productLo = Sse2.MultiplyLow(lhs, rhs);
+                var productHi = Sse2.MultiplyHigh(lhs.AsInt16(), rhs.AsInt16()).AsUInt16();
+                var doubledLo = Sse2.ShiftLeftLogical(productLo, 1);
+                lo = Sse2.Add(doubledLo, Vector128.Create((ushort)0x8000));
+                md = Sse2.Add(Sse2.ShiftLeftLogical(productHi, 1),
+                    Sse2.Add(Sse2.ShiftRightLogical(productLo, 15), Sse2.ShiftRightLogical(doubledLo, 15)));
+                var negative = VectorSign(md);
+                if (op == 0x00) // VMULF, including the -32768 * -32768 exception.
+                {
+                    var equal = Sse2.CompareEqual(lhs, rhs);
+                    hi = Sse2.AndNot(equal, negative);
+                    result = Sse2.Add(md, Sse2.And(equal, negative));
+                }
+                else // VMULU preserves the existing accumulator sign convention.
+                {
+                    hi = negative;
+                    result = Sse2.AndNot(negative, md);
+                }
+            }
+            else if (op <= 0x0f)
+            {
+                var productLo = Sse2.MultiplyLow(lhs, rhs);
+                var productHi = Sse2.MultiplyHigh(lhs, rhs);
+                int kind = op & 7;
+                if (kind == 0x00 || kind == 0x01 || kind == 0x07)
+                    productHi = Sse2.MultiplyHigh(lhs.AsInt16(), rhs.AsInt16()).AsUInt16();
+                else if (kind == 0x05)
+                    productHi = Sse2.Subtract(productHi, Sse2.And(VectorSign(lhs), rhs));
+                else if (kind == 0x06)
+                    productHi = Sse2.Subtract(productHi, Sse2.And(VectorSign(rhs), lhs));
+
+                if (kind == 0x00 || kind == 0x01) // VMACF/U: double the signed 32-bit product into 48 bits.
+                {
+                    lo = Sse2.ShiftLeftLogical(productLo, 1);
+                    md = Sse2.Or(Sse2.ShiftLeftLogical(productHi, 1), Sse2.ShiftRightLogical(productLo, 15));
+                    hi = VectorSign(productHi);
+                }
+                else if (kind == 0x04) // VMUDL / VMADL
+                {
+                    lo = productHi; md = zero; hi = zero;
+                }
+                else if (kind == 0x07) // VMUDH / VMADH
+                {
+                    lo = zero; md = productLo; hi = productHi;
+                }
+                else // VMUDM/N / VMADM/N
+                {
+                    lo = productLo; md = productHi; hi = VectorSign(productHi);
+                }
+                if (op >= 0x08)
+                    AddVectorAccumulator(lo, md, hi, out lo, out md, out hi);
+
+                if (op == 0x04 || op == 0x06) result = lo;
+                else if (op == 0x05) result = md;
+                else if (op == 0x0c || op == 0x0e) result = VectorUnsignedClamp(hi, md, lo);
+                else if (op == 0x09) // VMACU: negative -> zero, positive overflow -> 0xffff.
+                {
+                    var negative = VectorSign(hi);
+                    var overflow = Sse2.Or(Sse2.CompareGreaterThan(hi.AsInt16(), zero.AsInt16()).AsUInt16(), VectorSign(md));
+                    result = Sse2.AndNot(negative, Sse2.Or(overflow, md));
+                }
+                else result = VectorSignedClamp(hi, md);
+            }
+            else
+            {
+                if (op == 0x10 || op == 0x11) // VADD / VSUB, with carry before signed saturation.
+                {
+                    var carry = VectorFlagLanes(_vco[1]);
+                    var aLo = Sse2.UnpackLow(lhs, VectorSign(lhs)).AsInt32();
+                    var aHi = Sse2.UnpackHigh(lhs, VectorSign(lhs)).AsInt32();
+                    var bLo = Sse2.UnpackLow(rhs, VectorSign(rhs)).AsInt32();
+                    var bHi = Sse2.UnpackHigh(rhs, VectorSign(rhs)).AsInt32();
+                    var cLo = Sse2.UnpackLow(carry, carry).AsInt32();
+                    var cHi = Sse2.UnpackHigh(carry, carry).AsInt32();
+                    if (op == 0x10)
+                    {
+                        lo = Sse2.Subtract(Sse2.Add(lhs, rhs), carry);
+                        result = Sse2.PackSignedSaturate(Sse2.Subtract(Sse2.Add(aLo, bLo), cLo), Sse2.Subtract(Sse2.Add(aHi, bHi), cHi)).AsUInt16();
+                    }
+                    else
+                    {
+                        lo = Sse2.Add(Sse2.Subtract(lhs, rhs), carry);
+                        result = Sse2.PackSignedSaturate(Sse2.Add(Sse2.Subtract(aLo, bLo), cLo), Sse2.Add(Sse2.Subtract(aHi, bHi), cHi)).AsUInt16();
+                    }
+                    _vco[0] = _vco[1] = 0;
+                }
+                else if (op == 0x14 || op == 0x15) // VADDC / VSUBC
+                {
+                    lo = op == 0x14 ? Sse2.Add(lhs, rhs) : Sse2.Subtract(lhs, rhs);
+                    var carry = VectorLessUnsigned(op == 0x14 ? lo : lhs, op == 0x14 ? lhs : rhs);
+                    _vco[1] = (ushort)Vector128.ExtractMostSignificantBits(carry);
+                    _vco[0] = op == 0x14 ? (ushort)0 : (ushort)(~Vector128.ExtractMostSignificantBits(Sse2.CompareEqual(lhs, rhs)) & 0xff);
+                    result = lo;
+                }
+                else if (op == 0x27) // VMRG
+                {
+                    result = lo = VectorSelect(VectorFlagLanes(_vcc[1]), lhs, rhs);
+                    _vco[0] = _vco[1] = 0;
+                }
+                else
+                {
+                    result = op <= 0x29 ? Sse2.And(lhs, rhs) : op <= 0x2b ? Sse2.Or(lhs, rhs) : Sse2.Xor(lhs, rhs);
+                    if ((op & 1) != 0) result = Sse2.Xor(result, Vector128.Create(ushort.MaxValue));
+                    lo = result;
+                }
+                // Non-multiply operations only replace the low accumulator plane.
+                WriteVectorPlane(_accLo, lo);
+                Ssse3.Shuffle(result.AsByte(), swap).StoreUnsafe(ref _vr[vd * 16]);
+                return;
+            }
+            WriteVectorPlane(_accLo, lo);
+            WriteVectorPlane(_accMd, md);
+            WriteVectorPlane(_accHi, hi);
+            Ssse3.Shuffle(result.AsByte(), swap).StoreUnsafe(ref _vr[vd * 16]);
+        }
+    }
+}
+#endif

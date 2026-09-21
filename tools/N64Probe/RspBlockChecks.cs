@@ -148,7 +148,7 @@ internal static class RspBlockChecks
             save(writer); writer.Flush();
             StateChecks.NormalizeForLegacyComparison(stream);
             hash.AppendData(stream.GetBuffer(), 0, (int)stream.Length);
-            hash.AppendData(RspTaskCapture.SaveRegisters(rsp));
+            hash.AppendData(RspTaskCapture.SaveRegisters(rsp, includeScratch: false));
             hash.AppendData(BitConverter.GetBytes(instructions));
             hash.AppendData(System.Text.Encoding.UTF8.GetBytes(reason));
         }

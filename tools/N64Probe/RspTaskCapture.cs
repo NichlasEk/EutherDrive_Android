@@ -44,12 +44,17 @@ internal sealed class RspTaskCapture : TextWriter
     }
     protected override void Dispose(bool disposing) { Console.SetOut(previous); base.Dispose(disposing); }
 
-    internal static byte[] SaveRegisters(object rsp)
+    internal static byte[] SaveRegisters(object rsp, bool includeScratch = true)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
         foreach (var field in rsp.GetType().GetFields(Private).Where(f => f.Name != "_memory" && !f.IsDefined(typeof(NonSerializedAttribute), false)).OrderBy(f => f.Name, StringComparer.Ordinal))
         {
+            // SIMD operates directly on vector registers; these fully replaced
+            // work buffers are not machine state. Keep them in old task captures
+            // by default, but exclude them when comparing different executors.
+            if (!includeScratch && field.Name is "_vectorLhs" or "_vectorRhs" or "_vectorResult"
+                or "_vectorMemoryTemp" or "_vectorReciprocalOperand") continue;
             writer.Write(field.Name);
             object value = field.GetValue(rsp)!;
             if (value is Array array)

@@ -683,12 +683,19 @@ namespace Ryu64.MIPS
         {
             stopReason = string.Empty;
             int op = (int)(instr & 0x3F);
-            if (ProfileVectorOps) _vectorOpCounts[op]++;
             int vd = (int)((instr >> 6) & 0x1F);
             int vs = (int)((instr >> 11) & 0x1F);
             int vt = (int)((instr >> 16) & 0x1F);
             int element = (int)((instr >> 21) & 0xF);
 
+#if NET8_0_OR_GREATER
+            if (VectorSimdEnabled && IsSimdVectorOp(op))
+            {
+                ExecuteVectorSimd(op, vd, vs, vt, element);
+                return true;
+            }
+#endif
+            if (ProfileVectorOps) _vectorOpCounts[op]++;
             ushort[] lhs = _vectorLhs;
             ushort[] rhs = _vectorRhs;
             ushort[] result = _vectorResult;
@@ -1402,6 +1409,25 @@ namespace Ryu64.MIPS
 
         private void TransferVectorBytes(bool isLoad, int vt, int element, uint address, int count, bool partialLoad = false)
         {
+            uint contiguousAddress = address & 0xfffu;
+            if (!TraceRspFlow && element + count <= 16 && contiguousAddress + (uint)count <= 0x1000u
+                && (isLoad || !Memory.IsRspDescriptorDmemAddress(contiguousAddress, (uint)count)))
+            {
+                // Full scalar-sized vector transfers need neither per-byte
+                // address wrapping nor byte-order conversion. Partial loads,
+                // wrapping stores and descriptor/trace writes retain the loop.
+                ref byte memory = ref _memory.SP_MEM_RW[contiguousAddress];
+                ref byte vector = ref _vr[vt * 16 + element];
+                ref byte source = ref (isLoad ? ref memory : ref vector);
+                ref byte target = ref (isLoad ? ref vector : ref memory);
+                switch (count)
+                {
+                    case 1: target = source; return;
+                    case 2: Unsafe.WriteUnaligned(ref target, Unsafe.ReadUnaligned<ushort>(ref source)); return;
+                    case 4: Unsafe.WriteUnaligned(ref target, Unsafe.ReadUnaligned<uint>(ref source)); return;
+                    case 8: Unsafe.WriteUnaligned(ref target, Unsafe.ReadUnaligned<ulong>(ref source)); return;
+                }
+            }
             int end = isLoad && partialLoad && element + count > 16
                 ? 16
                 : element + count;
