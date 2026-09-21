@@ -13,6 +13,9 @@ internal sealed class RdpCapture : TextWriter
     private BinaryWriter? _tape;
     private bool _finished;
     private int _commands;
+    private readonly bool _waitForFullSync = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_RDP_AFTER_FULL_SYNC") == "1";
+    private bool _sawFullSync;
+    private int _observedLists;
     public override Encoding Encoding => _previous.Encoding;
     private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
 
@@ -44,6 +47,13 @@ internal sealed class RdpCapture : TextWriter
         if (_finished || !line.StartsWith("[N64RDP] list start=")) return;
         var match = Regex.Match(line, @"start=0x([0-9a-f]+) end=0x([0-9a-f]+) xbus=(True|False).*hist=(.*?) firstUnhandled");
         if (!match.Success) throw new InvalidDataException("Cannot parse RDP capture trace");
+        if (_waitForFullSync && !_sawFullSync)
+        {
+            _sawFullSync = match.Groups[4].Value.Contains("29:");
+            if (++_observedLists % 1024 == 0 || _sawFullSync)
+                typeof(Memory).GetField("_traceRdpSummaryCount", BindingFlags.Static | BindingFlags.NonPublic)!.SetValue(null, 0);
+            return;
+        }
         uint start = Convert.ToUInt32(match.Groups[1].Value, 16);
         uint end = Convert.ToUInt32(match.Groups[2].Value, 16);
         bool xbus = match.Groups[3].Value == "True";
@@ -55,8 +65,9 @@ internal sealed class RdpCapture : TextWriter
             command[i] = xbus ? memory.SP_MEM_RW[(start + i) & 0xfff] : memory.RDRAM[start + i];
         if (_tape == null)
         {
-            // A fresh frame starts with SyncPipe, which does not change render state.
-            // Refuse a partial-frame capture rather than silently invent its inputs.
+            // SyncPipe itself does not change render state. With the optional
+            // FullSync gate, start at the following frame's first SyncPipe.
+            // Otherwise this can be a mid-frame frozen-input diagnostic tape.
             if (length != 8 || (command[0] & 0x3f) != 0x27) return;
             using (var state = new BinaryWriter(File.Create(Path.Combine(_directory, "rdp-start.bin")))) memory.SaveState(state);
             _tape = new BinaryWriter(File.Create(Path.Combine(_directory, "rdp-tape.bin")));

@@ -2,6 +2,18 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-rdp-export")
+{
+    RdpDumpExportChecks.Run();
+    return;
+}
+
+if (args.Length == 3 && args[0] == "--export-rdp-dump")
+{
+    RdpDumpExport.Run(args[1], args[2]);
+    return;
+}
+
 if (args.Length == 2 && args[0] == "--check-triangle-modes")
 {
     TriangleModeChecks.Run(args[1]);
