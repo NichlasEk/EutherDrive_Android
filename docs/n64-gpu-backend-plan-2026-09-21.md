@@ -129,6 +129,12 @@ flowchart LR
 
 ### 1. Make the recording boundary complete
 
+Progress: [the ordered-journal checkpoint](n64-rdp-journal-2026-09-21.md)
+implements complete-command capture, exact external write ranges, strict
+software replay and 20-checkpoint reset replay against the GPU/reference.
+CPU-read dependencies and DPC/VI event timing remain open; the full gate below
+is not yet satisfied. Normal-build Memory IL is unchanged.
+
 Add an opt-in capture build at the common point where `ExecuteRdpDisplayList`
 has assembled one complete command. Keep the existing partial-command buffer
 and CURRENT advancement unchanged. Record:

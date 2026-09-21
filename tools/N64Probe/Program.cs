@@ -2,6 +2,24 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 2 && args[0] == "--check-journal-production")
+{
+    RdpJournalIsolationChecks.Run(args[1]);
+    return;
+}
+
+#if N64_RDP_JOURNAL
+if (args.Length == 2 && args[0] == "--replay-rdp-journal")
+{
+    RdpJournalReplay.Run(args[1]);
+    return;
+}
+if (args.Length == 1 && args[0] == "--check-rdp-journal")
+{
+    RdpJournalChecks.Run();
+    return;
+}
+#endif
 if (args.Length == 1 && args[0] == "--check-rdp-export")
 {
     RdpDumpExportChecks.Run();
@@ -280,6 +298,14 @@ File.WriteAllBytes(normalized, rom);
 var core = new Ryu64Core.Ryu64Core();
 core.LoadROM(normalized);
 if (args.Length > 3) core.LoadState(args[3]);
+#if N64_RDP_JOURNAL
+string? journalFramesText = Environment.GetEnvironmentVariable("N64_PROBE_RDP_JOURNAL_FRAMES");
+using var journal = journalFramesText != null
+    ? new RdpJournal(R4300.memory, Path.Combine(output, "journal"), int.Parse(journalFramesText), args.Length <= 3) : null;
+#else
+if (Environment.GetEnvironmentVariable("N64_PROBE_RDP_JOURNAL_FRAMES") != null)
+    throw new InvalidOperationException("Build with -p:N64RdpJournalCapture=true to capture an RDP journal");
+#endif
 using var rdpCapture = captureRdp ? new RdpCapture(output) : null;
 using var rspCapture = captureRsp ? new RspTaskCapture(output) : null;
 if (Environment.GetEnvironmentVariable("N64_PROBE_REPLAY_RDP") == "1")
@@ -354,6 +380,9 @@ try
             }
         }
         Console.WriteLine($"seconds={timer.Elapsed.TotalSeconds:F2} cpuSeconds={(probeProcess.TotalProcessorTime - cpuStart).TotalSeconds:F3} {core.LastExecutionStatus}");
+#if N64_RDP_JOURNAL
+        if (journal != null && (journal.Completed || journal.Failure != null)) break;
+#endif
         if (second % 5 == 4 || fireInput)
         {
             Console.WriteLine(core.LastPerformanceStatus);
@@ -377,6 +406,9 @@ try
     core.SaveState(Path.Combine(output, "state.bin"));
 }
 finally { core.Stop(); }
+#if N64_RDP_JOURNAL
+journal?.RequireComplete();
+#endif
 File.WriteAllBytes(Path.Combine(output, "rdram.bin"), R4300.memory.RDRAM);
 Console.WriteLine(core.LastPerformanceStatus);
 

@@ -1,4 +1,8 @@
 <Project>
+  <!-- Diagnostic capture only: no observer fields or calls in shipping builds. -->
+  <PropertyGroup Condition="'$(N64RdpJournalCapture)' == 'true'">
+    <DefineConstants>$(DefineConstants);N64_RDP_JOURNAL</DefineConstants>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(MSBuildProjectName)' != 'EutherDrive.Android'">
     <DisableWorkloadResolverRoot>$(MSBuildThisFileDirectory)</DisableWorkloadResolverRoot>
     <!-- point the resolver sentinel to a repo-local file and disable the resolver so we don't rely on /usr/share/dotnet permissions -->

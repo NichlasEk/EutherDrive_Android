@@ -8,7 +8,7 @@ using System.Threading;
 
 namespace Ryu64.MIPS
 {
-    public class Memory
+    public partial class Memory
     {
         // Host playback owns snapshots, never the live AI countdown registers.
         // Bounded even when a headless frontend does not consume audio.
@@ -2194,6 +2194,9 @@ namespace Ryu64.MIPS
                 _rdpReadingPendingCommand = buffered;
                 try
                 {
+#if N64_RDP_JOURNAL
+                    JournalBeforeCommand(commandAddress, xbusDmem, words);
+#endif
                     switch (command)
                     {
                         case 0x08: // Triangle
@@ -2299,8 +2302,17 @@ namespace Ryu64.MIPS
                             }
                             break;
                     }
+#if N64_RDP_JOURNAL
+                    RdpJournal?.AfterCommand(this, command);
+#endif
                 }
-                finally { _rdpReadingPendingCommand = false; }
+                finally
+                {
+                    _rdpReadingPendingCommand = false;
+#if N64_RDP_JOURNAL
+                    _journalExecutingCommand = false;
+#endif
+                }
                 if (buffered)
                 {
                     _rdpPendingWordCount = 0;
@@ -6053,6 +6065,9 @@ namespace Ryu64.MIPS
 
         private void PostFramebufferWrite(uint address, uint length, uint epoch)
         {
+#if N64_RDP_JOURNAL
+            if (!_journalExecutingCommand) RdpJournal?.RdramWritten(address, length);
+#endif
             if (length == 0 || _fbInfos[0].Addr == 0)
                 return;
 
@@ -10341,6 +10356,12 @@ namespace Ryu64.MIPS
                 int offset = ResolveArrayOffset(Entry.WriteArray, regOffset, Entry.WriteBaseOffset);
                 byte oldValue = Entry.WriteArray[offset];
                 Entry.WriteArray[offset] = value;
+#if N64_RDP_JOURNAL
+                // Array/indexer stores (including SD and mirrored RAM) bypass
+                // NoteRdramWriteRange. Observe the actual backing-array byte.
+                if (!_journalExecutingCommand && ReferenceEquals(Entry.WriteArray, RDRAM))
+                    RdpJournal?.RdramWritten((uint)offset, 1);
+#endif
 
                 if (ReferenceEquals(Entry.WriteArray, SP_MEM_RW)
                     && IsRspDescriptorDmemAddress((uint)Entry.WriteBaseOffset | (regOffset & 0x0FFFu)))
@@ -11269,6 +11290,10 @@ namespace Ryu64.MIPS
                     TraceRspDescriptorDmemSnapshot("bulk-post");
                 }
 
+#if N64_RDP_JOURNAL
+                if (!_journalExecutingCommand && ReferenceEquals(dstEntry.WriteArray, RDRAM))
+                    RdpJournal?.RdramWritten((uint)dstOff, (uint)chunk);
+#endif
                 if (dest < RDRAM.Length)
                     NoteRdramWriteRange(dest, (uint)chunk);
 

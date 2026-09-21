@@ -10,6 +10,7 @@
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Test executable only. Angrylion is an independent rendering oracle here,
@@ -115,13 +116,23 @@ void save_frame(const std::filesystem::path &path, const Result &result, const R
     }
 }
 
+#include "journal.hpp"
+
 int run(int argc, char **argv) {
-    if (argc < 3 || argc > 4) throw std::runtime_error("Usage: n64-gpu-probe frame.rdp NEW_OUTPUT [--bench|--negative-control]");
+    if (argc < 3 || argc > 4) throw std::runtime_error("Usage: n64-gpu-probe frame.rdp|journal.bin NEW_OUTPUT [--bench|--negative-control|--validate-journal]");
     bool bench = argc == 4 && std::string(argv[3]) == "--bench";
     bool negative = argc == 4 && std::string(argv[3]) == "--negative-control";
-    if (argc == 4 && !bench && !negative) throw std::runtime_error("Unknown option");
+    bool parse_only = argc == 4 && std::string(argv[3]) == "--validate-journal";
+    if (argc == 4 && !bench && !negative && !parse_only) throw std::runtime_error("Unknown option");
     std::filesystem::path output(argv[2]);
     if (std::filesystem::exists(output)) throw std::runtime_error("Use a new output directory");
+    std::ifstream input(argv[1], std::ios::binary);
+    char magic[8] = {};
+    input.read(magic, 8);
+    if (parse_only || std::string(magic, 8) == "NRDPJ001") {
+        if (bench) throw std::runtime_error("Ordered journal replay is a correctness check, not a benchmark");
+        return run_journal(argv[1], output, negative, parse_only);
+    }
     RDP::DumpPlayer player;
     Fixture fixture;
     if (!player.load_dump(argv[1])) throw std::runtime_error("Invalid RDPDUMP2 file");

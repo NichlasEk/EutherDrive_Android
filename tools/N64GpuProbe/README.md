@@ -108,3 +108,104 @@ but failed validation. `PARALLEL_RDP_SMALL_TYPES=1` selects the backend's
 existing 8/16-bit arithmetic path, which passed both validation and the three
 recorded-frame comparisons on this RTX 4090. This is a tested prototype
 configuration, not a claim that the unmodified default or other GPUs passed.
+
+## Ordered multi-frame journals
+
+The `NRDPJ001` path records **complete** commands from the real FIFO assembler,
+plus exact external RDRAM write ranges before the next command. It retains
+stores of unchanged values: GPU rendering may have left a different value in
+its own memory. It never replaces a whole page when only a byte was written.
+CPU/JIT stores, byte-indexer/bulk/mirrored writes, SP DMA and cartridge DMA are
+covered. Repeated writes between two commands coalesce to their final bytes.
+Software RDP output is excluded from these patches. A separate whole-RDRAM
+shadow audit rejects changed bytes missed by the hooks. This diagnostic audit
+is intentionally expensive and cannot detect an unhooked same-value store;
+the write-path tests cover that separate case.
+
+Build and capture into separate local directories. Do not use this instrumented
+build for speed measurements or install it as the emulator:
+
+```sh
+dotnet build tools/N64Probe/N64Probe.csproj -c Release --no-restore -m:1 \
+  -p:N64RdpJournalCapture=true -o "$PWD/.build-tmp/n64-journal/capture"
+dotnet .build-tmp/n64-journal/capture/N64Probe.dll --check-rdp-journal
+
+# ROM is a local cartridge path; no savestate argument means capture from reset.
+N64_PROBE_RDP_JOURNAL_FRAMES=20 taskset -c 6,7 \
+  dotnet .build-tmp/n64-journal/capture/N64Probe.dll "$ROM" \
+  .build-tmp/n64-journal/mario-reset 180
+dotnet .build-tmp/n64-journal/capture/N64Probe.dll --replay-rdp-journal \
+  .build-tmp/n64-journal/mario-reset/journal
+
+PARALLEL_RDP_SMALL_TYPES=1 GRANITE_NUM_WORKER_THREADS=2 GRANITE_VULKAN_NO_VALIDATION=0 \
+  taskset -c 6,7 .build-tmp/n64-gpu-probe/build/n64-gpu-probe \
+  .build-tmp/n64-journal/mario-reset/journal/journal.bin \
+  .build-tmp/n64-journal/mario-gpu --negative-control
+python3 tools/N64GpuProbe/check-journal.py \
+  .build-tmp/n64-gpu-probe/build/n64-gpu-probe \
+  .build-tmp/n64-journal/mario-reset/journal/journal.bin \
+  .build-tmp/n64-journal/parser-checks
+```
+
+The capture ends at the requested number of FULL_SYNC checkpoints (1–120),
+or fails if the time limit expires first. Output includes `start.bin`,
+`journal.bin` and `manifest.json`; keep them together. `start.bin` is a software
+Memory snapshot taken before the first recorded command. The already assembled
+command is stored in the journal, so its transient complete FIFO is cleared
+only while serializing that snapshot, then restored for live execution.
+
+Managed replay requires exact SHA-256 matches for all RDRAM, hidden bits, TMEM
+and TLUT at **every** checkpoint, plus image-register state and the DP interrupt
+bit. A corrupt patch, wrong start state, missing record or incomplete file fails.
+It can replay a warm savestate because it restores the software renderer state.
+Native replay deliberately rejects warm captures: importing raw warm hardware
+state is not implemented. Reset captures need no guessed register primer.
+
+The native path keeps one renderer instance alive across all checkpoints and
+compares paraLLEl-RDP with Angrylion at each FULL_SYNC. Captured software hashes
+are checked by managed replay; they are not hardware-reference expectations.
+Before each group of external writes it waits, reads back, modifies only the
+recorded bytes in word-swapped RDRAM, and flushes caches. This preserves GPU
+results in untouched neighbouring bytes. It is a conservative correctness
+path with excessive synchronization, **not a performance result**. `--bench`
+is rejected for journals. `--validate-journal` checks the format without Vulkan.
+
+VI values are observations at command boundaries, not a record of every VI
+write or scanout. CPU/DMA read dependencies, DPC submission timing and live
+memory ownership are not captured yet. This replay does not prove that CPU
+execution with GPU-generated data will behave identically. See the remaining
+gates in the design document before enabling a live backend.
+
+Rebuild normally after working on capture, and verify the absence of hooks
+against an accepted pre-journal `Ryu64.MIPS.dll`:
+
+```sh
+dotnet build tools/N64Probe/N64Probe.csproj -c Release --no-restore -m:1 \
+  -o "$PWD/.build-tmp/n64-journal/production"
+dotnet .build-tmp/n64-journal/production/N64Probe.dll \
+  --check-journal-production "$REFERENCE_MIPS_DLL"
+```
+
+### NRDPJ001 format
+
+Integers are little-endian unless specified. The header is 8 ASCII magic bytes,
+`u32 flags` (bit 0: started from reset; other bits rejected), `u32 rdramSize`
+(8 MiB), `u32 hiddenSize` (4 MiB), 32 bytes SHA-256 of `start.bin`, then initial
+RDRAM (big-endian emulated byte order) and hidden memory (logical halfword order).
+Native conversion uses `rdram[i ^ 3]` and `hidden[i ^ 1]`.
+
+Each record is `u8 kind, u32 payloadLength, u64 sequence, payload`; sequence
+starts at 1 and increases by one. Length is bounded to 8 MiB + 4 bytes.
+
+| Kind | Payload |
+| --- | --- |
+| 1: external write | `u32 byteOffset`, followed by 1 or more exact RDRAM bytes |
+| 2: command | 2–44 `u32` raw command words; exact opcode length required |
+| 3: VI observation | 14 registers in address order, 4 big-endian bytes each |
+| 4: FULL_SYNC checkpoint | `u32 index`, 4 image values (color address, width, size, depth address), `u32 DP interrupt bit`, 4 SHA-256 hashes (RDRAM, hidden, TMEM, little-endian TLUT) |
+| 5: end | `u32 checkpoints`, `u64 commands`, `u64 patches`, `u64 patchBytes` |
+
+A FULL_SYNC command must immediately precede its checkpoint. End must follow a
+checkpoint, its counts must match, and no trailing bytes are allowed. Software-
+rendered pixels are never injected as correction patches to force a comparison
+to pass.
