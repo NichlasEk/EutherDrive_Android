@@ -5,6 +5,12 @@ every byte of RDRAM, hidden memory and TMEM with its Angrylion reference. It
 does **not** enable GPU rendering in EutherDrive. The runtime integration plan
 and capture limitations are in [the design document](../../docs/n64-gpu-backend-plan-2026-09-21.md).
 
+The next milestone's separate shared library and C# replay adapter are in
+[native/N64Gpu](../../native/N64Gpu/README.md). This reference executable stays
+a development tool; the shared library does not link its Angrylion dependency.
+`--journal-reference` exports independent full-memory checkpoints for the
+managed/native comparison without requiring a Vulkan device.
+
 Requires .NET 8 for export; CMake, Ninja, a C/C++17 compiler and Vulkan for the
 native test. The native probe refuses software/integrated-device timings.
 Khronos validation is optional but required for the synchronization check.

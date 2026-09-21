@@ -1,0 +1,4 @@
+EUTHER_N64_GPU_1 {
+    global: ed_n64_gpu_*;
+    local: *;
+};

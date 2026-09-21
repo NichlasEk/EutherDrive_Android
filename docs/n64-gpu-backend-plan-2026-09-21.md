@@ -156,6 +156,12 @@ Old frozen-input tapes remain useful component fixtures, labeled as such.
 
 ### 2. Native backend boundary, still headless
 
+Progress: [the native boundary checkpoint](n64-native-gpu-2026-09-21.md)
+adds a permissive-only shared library, a SafeHandle C# adapter and exact
+multi-frame replay. Conservative dependency batching cuts measured warm
+startup-journal transfer/render/readback from about 159 to 6 ms. This is not
+live gameplay or a comparison against the current software renderer.
+
 Build a small shared library from the permissive backend and its required
 dependencies only. Proposed ABI operations: create/destroy, submit complete
 command batches, stage CPU memory ranges, flush/wait for a timeline, retrieve

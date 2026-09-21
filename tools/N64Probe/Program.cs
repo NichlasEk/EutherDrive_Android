@@ -2,6 +2,11 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 2 && args[0] == "--check-gpu-abi")
+{
+    N64GpuChecks.Run(args[1]);
+    return;
+}
 if (args.Length == 2 && args[0] == "--check-journal-production")
 {
     RdpJournalIsolationChecks.Run(args[1]);
@@ -9,6 +14,18 @@ if (args.Length == 2 && args[0] == "--check-journal-production")
 }
 
 #if N64_RDP_JOURNAL
+if (args.Length == 2 && args[0] == "--capture-gpu-hazards")
+{
+    N64GpuHazards.Capture(args[1]);
+    return;
+}
+if (args.Length is 6 or 7 && args[0] == "--replay-gpu-journal")
+{
+    if (args[5] is not ("strict" or "batched" or "ranges") || (args.Length == 7 && args[6] != "--bench"))
+        throw new ArgumentException("Usage: --replay-gpu-journal LIBRARY JOURNAL_DIR REFERENCE_DIR NEW_OUTPUT strict|batched|ranges [--bench]");
+    N64GpuJournalReplay.Run(args[1], args[2], args[3], args[4], args[5], args.Length == 7);
+    return;
+}
 if (args.Length == 2 && args[0] == "--replay-rdp-journal")
 {
     RdpJournalReplay.Run(args[1]);

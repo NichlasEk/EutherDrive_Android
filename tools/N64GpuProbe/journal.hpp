@@ -71,7 +71,40 @@ struct Journal : RDP::CommandInterface {
     }
 };
 
-int run_journal(const char *path, const std::filesystem::path &output, bool negative, bool parse_only) {
+int export_journal_reference(Journal &journal, const std::filesystem::path &output) {
+    if (!journal.from_reset) throw std::runtime_error("Reference export requires capture from reset");
+    RDP::Interface iface;
+    auto reference = RDP::create_replayer_driver_angrylion(journal, iface);
+    reference->update_rdram(journal.ram.data(), journal.ram.size(), 0);
+    reference->update_hidden_rdram(journal.hidden.data(), journal.hidden.size(), 0);
+    std::filesystem::create_directories(output);
+    while (!journal.ended) {
+        auto record = journal.next(); auto &data = record.data;
+        if (record.kind == 1) {
+            auto *ram = reference->get_rdram(); uint32_t offset = Journal::u32(data.data());
+            for (size_t i = 4; i < data.size(); i++) ram[(offset + i - 4) ^ 3] = data[i];
+        } else if (record.kind == 2) {
+            std::vector<uint32_t> words(data.size() / 4);
+            for (size_t i = 0; i < words.size(); i++) words[i] = Journal::u32(data.data() + 4 * i);
+            reference->command(RDP::Op((words[0] >> 24) & 63), unsigned(words.size()), words.data());
+        } else if (record.kind == 3) {
+            for (unsigned reg = 0; reg < 14; reg++) {
+                auto *p = data.data() + reg * 4;
+                reference->set_vi_register(RDP::VIRegister(reg), uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]);
+            }
+        } else if (record.kind == 4) {
+            auto memory = snapshot(*reference);
+            char name[32]; std::snprintf(name, sizeof(name), "frame-%04u.bin", journal.frames);
+            std::ofstream file(output / name, std::ios::binary); file.exceptions(std::ios::failbit | std::ios::badbit);
+            for (auto *bytes : {&memory.rdram, &memory.hidden, &memory.tmem})
+                file.write(reinterpret_cast<const char *>(bytes->data()), std::streamsize(bytes->size()));
+        }
+    }
+    std::cout << "journalReferenceExport=passed frames=" << journal.frames << " commands=" << journal.commands << '\n';
+    return 0;
+}
+
+int run_journal(const char *path, const std::filesystem::path &output, bool negative, bool parse_only, bool reference_only) {
     Journal journal(path);
     if (parse_only) {
         while (!journal.ended) journal.next();
@@ -81,6 +114,7 @@ int run_journal(const char *path, const std::filesystem::path &output, bool nega
     }
     if (!journal.from_reset)
         throw std::runtime_error("Native journal replay requires capture from reset; raw warm RDP state import is not implemented");
+    if (reference_only) return export_journal_reference(journal, output);
     std::atomic<unsigned> validation_errors{0};
     ValidationInstanceFactory instance_factory;
     RDP::ReplayerState state;
