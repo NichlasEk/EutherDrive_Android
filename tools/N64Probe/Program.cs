@@ -2,6 +2,12 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 2 && args[0] == "--check-triangle-modes")
+{
+    TriangleModeChecks.Run(args[1]);
+    return;
+}
+
 if (args.Length == 1 && args[0] == "--check-rdp-streaming")
 {
     RdpStreamingChecks.Run();

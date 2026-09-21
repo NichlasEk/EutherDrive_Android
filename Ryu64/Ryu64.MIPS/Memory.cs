@@ -2490,6 +2490,70 @@ namespace Ryu64.MIPS
             bool flip,
             uint bytesPerPixel)
         {
+            // These common pipelines have fixed sampling, combining and
+            // depth enablement. Value-type specializations let the JIT remove
+            // their per-pixel mode branches while sharing the exact span walker.
+            if ((uint)tileIndex < _rdpTiles.Length && modulateShade && bytesPerPixel == 2u
+                && _rdpCombineModeSet && _rdpOtherModesCycleType == 0u && (_rdpCombineFast1 == 4 || _rdpCombineFast1 == 5)
+                && !_rdpOtherModesEnableTlut
+                && !_rdpOtherModesAlphaCompare && !_rdpOtherModesCvgTimesAlpha
+                && _rdpOtherModesSampleType && _rdpOtherModesBiLerp0
+                && (shade.DrDx | shade.DgDx | shade.DbDx | shade.DaDx
+                    | shade.DrDe | shade.DgDe | shade.DbDe | shade.DaDe) == 0)
+            {
+                ref RdpTileState tile = ref _rdpTiles[tileIndex];
+                if ((tile.Format & 7u) == 0u && (tile.Size & 3u) == 2u)
+                {
+                    bool wrap = tile.ShiftS == 0u && tile.ShiftT == 0u
+                        && !tile.ClampS && !tile.ClampT && !tile.MirrorS && !tile.MirrorT
+                        && tile.MaskS > 0u && tile.MaskS < 31u && tile.MaskT > 0u && tile.MaskT < 31u;
+                    if (wrap && useDepth && _rdpCombineFast1 == 5 && _rdpOtherModesForceBlend)
+                        return DrawRdpTexturedTriangleCore<RdpWrappedBlendTriangle>(command, commandAddress, xbusDmem, shade, modulateShade, depth, useDepth, tileIndex,
+                            xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, bytesPerPixel);
+                    if (wrap && useDepth && _rdpCombineFast1 == 4 && !_rdpOtherModesForceBlend)
+                        return DrawRdpTexturedTriangleCore<RdpWrappedDepthTriangle>(command, commandAddress, xbusDmem, shade, modulateShade, depth, useDepth, tileIndex,
+                            xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, bytesPerPixel);
+                    if (!useDepth && _rdpCombineFast1 == 4 && !_rdpOtherModesForceBlend
+                        && IsRdpLinearClampCoordinate(tile.MaskS, tile.ShiftS, tile.ClampS)
+                        && IsRdpLinearClampCoordinate(tile.MaskT, tile.ShiftT, tile.ClampT))
+                        return DrawRdpTexturedTriangleCore<RdpClampedTriangle>(command, commandAddress, xbusDmem, shade, modulateShade, depth, useDepth, tileIndex,
+                            xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, bytesPerPixel);
+                }
+            }
+            return DrawRdpTexturedTriangleCore<RdpGeneralTriangle>(command, commandAddress, xbusDmem, shade, modulateShade, depth, useDepth, tileIndex,
+                    xh, dxhdy, xm, dxmdy, xl, dxldy, yh, ym, yl, flip, bytesPerPixel);
+        }
+
+        private struct RdpGeneralTriangle { }
+        private struct RdpWrappedDepthTriangle { }
+        private struct RdpClampedTriangle { }
+        private struct RdpWrappedBlendTriangle { }
+
+        private bool DrawRdpTexturedTriangleCore<TMode>(
+            int command,
+            uint commandAddress,
+            bool xbusDmem,
+            RdpTriangleShadeCoefficients shade,
+            bool modulateShade,
+            RdpTriangleDepthCoefficients depth,
+            bool useDepth,
+            int tileIndex,
+            double xh,
+            double dxhdy,
+            double xm,
+            double dxmdy,
+            double xl,
+            double dxldy,
+            double yh,
+            double ym,
+            double yl,
+            bool flip,
+            uint bytesPerPixel) where TMode : struct
+        {
+            bool specialized = typeof(TMode) != typeof(RdpGeneralTriangle);
+            bool depthEnabled = typeof(TMode) == typeof(RdpWrappedDepthTriangle)
+                || typeof(TMode) == typeof(RdpWrappedBlendTriangle) || (!specialized && useDepth);
+            if (specialized) bytesPerPixel = 2u;
             long perfStart = StartPerfTimer();
             try
             {
@@ -2505,11 +2569,11 @@ namespace Ryu64.MIPS
 
             // Exact zero gradients, not an approximation. This scanline walker
             // interpolates with d/de and d/dx; it does not use d/dy here.
-            bool constantShade = modulateShade
+            bool constantShade = specialized || modulateShade
                 && (shade.DrDx | shade.DgDx | shade.DbDx | shade.DaDx
                     | shade.DrDe | shade.DgDe | shade.DbDe | shade.DaDe) == 0;
             uint constantShadeRgba = constantShade ? RdpShadeToRgba(shade.R, shade.G, shade.B, shade.A) : 0xFFFFFFFFu;
-            bool interpolateShade = modulateShade && !constantShade;
+            bool interpolateShade = !specialized && modulateShade && !constantShade;
 
             uint maxRows = (uint)((RDRAM.Length - _rdpColorImageAddress) / (_rdpColorImageWidth * bytesPerPixel));
             if (maxRows == 0)
@@ -2564,7 +2628,7 @@ namespace Ryu64.MIPS
                 long rowS = tex.S + (long)Math.Round(yDelta * tex.DsDe);
                 long rowT = tex.T + (long)Math.Round(yDelta * tex.DtDe);
                 long rowW = tex.W + (long)Math.Round(yDelta * tex.DwDe);
-                long rowZ = useDepth ? RdpDepthRowStart(depth, yDelta) : 0;
+                long rowZ = depthEnabled ? RdpDepthRowStart(depth, yDelta) : 0;
                 long rowR = interpolateShade ? shade.R + (long)Math.Round(yDelta * shade.DrDe) : 0;
                 long rowG = interpolateShade ? shade.G + (long)Math.Round(yDelta * shade.DgDe) : 0;
                 long rowB = interpolateShade ? shade.B + (long)Math.Round(yDelta * shade.DbDe) : 0;
@@ -2573,7 +2637,7 @@ namespace Ryu64.MIPS
                 long currentS = rowS + (long)Math.Round(xDelta * tex.DsDx);
                 long currentT = rowT + (long)Math.Round(xDelta * tex.DtDx);
                 long currentW = rowW + (long)Math.Round(xDelta * tex.DwDx);
-                long currentZ = useDepth ? rowZ + (long)Math.Round(xDelta * depthDx) : 0;
+                long currentZ = depthEnabled ? rowZ + (long)Math.Round(xDelta * depthDx) : 0;
                 long currentR = interpolateShade ? rowR + (long)Math.Round(xDelta * shade.DrDx) : 0;
                 long currentG = interpolateShade ? rowG + (long)Math.Round(xDelta * shade.DgDx) : 0;
                 long currentB = interpolateShade ? rowB + (long)Math.Round(xDelta * shade.DbDx) : 0;
@@ -2593,13 +2657,18 @@ namespace Ryu64.MIPS
                         out int sampleT,
                         out int sampleFracS,
                         out int sampleFracT);
-                    if (!SampleRdpTexture(ref sampler, sampleS, sampleT, sampleFracS, sampleFracT, out uint rgba))
+                    uint rgba;
+                    if (specialized)
+                        rgba = SampleRdpTriangleRgba16<TMode>(ref sampler, sampleS, sampleT, sampleFracS, sampleFracT);
+                    else if (!SampleRdpTexture(ref sampler, sampleS, sampleT, sampleFracS, sampleFracT, out rgba))
                     {
                         sampleMisses++;
                         goto AdvancePixel;
                     }
 
-                    if (interpolateShade)
+                    if (specialized)
+                        rgba = ModulateRdpTextureCombine(rgba, constantShadeRgba, multiplyAlpha: typeof(TMode) == typeof(RdpWrappedBlendTriangle));
+                    else if (interpolateShade)
                     {
                         uint shadeRgba = RdpShadeToRgba(
                             currentR,
@@ -2622,7 +2691,7 @@ namespace Ryu64.MIPS
                     }
 
                     sampleHits++;
-                    if (ShouldRejectRdpAlpha(rgba))
+                    if (!specialized && ShouldRejectRdpAlpha(rgba))
                     {
                         zeroSampleHits++;
                         goto AdvancePixel;
@@ -2638,13 +2707,14 @@ namespace Ryu64.MIPS
 
                     uint pixelIndex = rowPixelIndex + (uint)x;
                     uint address = rowStart + ((uint)(x - firstX) * bytesPerPixel);
-                    if (useDepth && !PassRdpDepthTest(pixelIndex, currentZ, dzPix, dzPixEncoded))
+                    if (depthEnabled && !PassRdpDepthTest(pixelIndex, currentZ, dzPix, dzPixEncoded))
                     {
                         depthRejects++;
                         goto AdvancePixel;
                     }
 
-                    if (bytesPerPixel == 2u && !_rdpOtherModesForceBlend)
+                    if ((specialized && typeof(TMode) != typeof(RdpWrappedBlendTriangle))
+                        || (!specialized && bytesPerPixel == 2u && !_rdpOtherModesForceBlend))
                         WriteRdpRgba5551PixelNoBlend(address, rgba);
                     else
                         WriteRdpRgbaPixel(address, rgba, bytesPerPixel);
@@ -2656,7 +2726,7 @@ namespace Ryu64.MIPS
                     currentS += tex.DsDx;
                     currentT += tex.DtDx;
                     currentW += tex.DwDx;
-                    if (useDepth)
+                    if (depthEnabled)
                         currentZ += depthDx;
                     if (interpolateShade)
                     {
@@ -2697,6 +2767,34 @@ namespace Ryu64.MIPS
             {
                 AddPerfTicks(ref _perfRdpTexturedTriangleTicks, ref _perfRdpTexturedTriangleCalls, perfStart);
             }
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private uint SampleRdpTriangleRgba16<TMode>(ref RdpPreparedTextureSampler sampler,
+            int s, int t, int fracS, int fracT) where TMode : struct
+        {
+            int s0, t0, s1, t1;
+            if (typeof(TMode) == typeof(RdpWrappedDepthTriangle) || typeof(TMode) == typeof(RdpWrappedBlendTriangle))
+            {
+                s0 = (s - (int)sampler.OriginS) & sampler.WrapMaskS;
+                t0 = (t - (int)sampler.OriginT) & sampler.WrapMaskT;
+                s1 = (s0 + 1) & sampler.WrapMaskS;
+                t1 = (t0 + 1) & sampler.WrapMaskT;
+            }
+            else
+            {
+                int rawS = s - (int)sampler.OriginS, rawT = t - (int)sampler.OriginT;
+                s0 = ClampRdpTextureCoordinate(rawS, sampler.Width);
+                t0 = ClampRdpTextureCoordinate(rawT, sampler.Height);
+                s1 = ClampRdpTextureCoordinate(rawS + 1, sampler.Width);
+                t1 = ClampRdpTextureCoordinate(rawT + 1, sampler.Height);
+            }
+            if ((fracS | fracT) != 0)
+                return FilterRdpRgba16(sampler.Tile, s0, t0, s1, t1, fracS, fracT, fracS + fracT >= 32);
+
+            uint row = ((sampler.Tile.Tmem + sampler.Tile.Line * (uint)t0) & 0x1FFu) << 2;
+            uint address = (((row + (uint)s0) ^ RdpTmemWordRowXor((uint)t0)) & 0x7FFu) << 1;
+            return RdpRgba5551Colors[(_rdpTmem[address] << 8) | _rdpTmem[address + 1u]];
         }
 
         private struct RdpTriangleTextureCoefficients
