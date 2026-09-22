@@ -97,13 +97,40 @@ local state_tap = program:install_write_tap(
 	0x00227ab0, 0x00227af7, "gauntdl-phase5-main-state", record_writer)
 local state_kseg_tap = program:install_write_tap(
 	0x80227ab0, 0x80227af7, "gauntdl-phase5-main-state-kseg", record_writer)
+local function record_render_owner(offset, data, mask)
+		if not phase5_frame then
+			return
+		end
+		local pc = maincpu.state["PC"] and maincpu.state["PC"].value or 0
+		local sp = maincpu.state["SP"].value
+		print(string.format(
+			"[render-owner-write] frame=%d rel=%d pc=%08x data=%08x mask=%08x state=%08x heap=%08x ra=%08x a0=%08x a1=%08x a2=%08x a3=%08x v0=%08x v1=%08x s0=%08x s1=%08x s2=%08x s3=%08x s4=%08x s5=%08x s6=%08x s7=%08x sp=%08x stack=%08x/%08x/%08x/%08x/%08x/%08x/%08x/%08x",
+			frame, frame - phase5_frame, pc, data, mask,
+			program:read_u32(0x00227ab0), program:read_u32(0x0020f1d8),
+			maincpu.state["RA"].value,
+			maincpu.state["A0"].value, maincpu.state["A1"].value,
+			maincpu.state["A2"].value, maincpu.state["A3"].value,
+			maincpu.state["V0"].value, maincpu.state["V1"].value,
+			maincpu.state["S0"].value, maincpu.state["S1"].value,
+			maincpu.state["S2"].value, maincpu.state["S3"].value,
+			maincpu.state["S4"].value, maincpu.state["S5"].value,
+			maincpu.state["S6"].value, maincpu.state["S7"].value, sp,
+			program:read_u32(sp + 0x00), program:read_u32(sp + 0x04),
+			program:read_u32(sp + 0x08), program:read_u32(sp + 0x0c),
+			program:read_u32(sp + 0x10), program:read_u32(sp + 0x14),
+			program:read_u32(sp + 0x18), program:read_u32(sp + 0x1c)))
+	end
+local render_owner_tap = program:install_write_tap(
+	0x00227bc0, 0x00227bc3, "gauntdl-render-owner", record_render_owner)
+local render_owner_kseg_tap = program:install_write_tap(
+	0x80227bc0, 0x80227bc3, "gauntdl-render-owner-kseg", record_render_owner)
 
 local function install_breakpoint(address, label)
 	if not maincpu.debug then
 		return
 	end
 	maincpu.debug:bpset(address, "1", string.format(
-		"logerror \"PHASE5_CALL label=%s pc=%%08X a0=%%08X a1=%%08X v0=%%08X s0=%%08X s1=%%08X s2=%%08X phase=%%08X state=%%08X input=%%08X norm=%%08X\\n\",pc,a0,a1,v0,s0,s1,s2,ppd@229338,ppd@227ab0,ppd@262b90,ppd@227ba8; g",
+		"logerror \"PHASE5_CALL label=%s pc=%%08X ra=%%08X sp=%%08X a0=%%08X a1=%%08X a2=%%08X v0=%%08X s0=%%08X s1=%%08X s2=%%08X s3=%%08X s4=%%08X s5=%%08X s6=%%08X s7=%%08X phase=%%08X state=%%08X input=%%08X norm=%%08X\\n\",pc,ra,sp,a0,a1,a2,v0,s0,s1,s2,s3,s4,s5,s6,s7,ppd@229338,ppd@227ab0,ppd@262b90,ppd@227ba8; g",
 		label))
 end
 
@@ -123,10 +150,16 @@ local function install_phase5_breakpoints()
 	install_breakpoint(0x800148c8, "main-state-write-148c8")
 	install_breakpoint(0x80015320, "main-state-save")
 	install_breakpoint(0x80015328, "main-state-store")
+	install_breakpoint(0x800159b8, "render-reset-entry")
+	install_breakpoint(0x80015aa8, "render-owner-caller")
+	install_breakpoint(0x8001d7e0, "render-owner-entry")
+	install_breakpoint(0x8001d920, "render-owner-store")
 	maincpu.debug:wpset(program, "w", 0x80229338, 4, "1",
 		"logerror \"PHASE5_PHASE_WRITE pc=%08X address=%08X data=%08X size=%08X\\n\",pc,wpaddr,wpdata,wpsize; g")
 	maincpu.debug:wpset(program, "w", 0x80227ab0, 4, "1",
 		"logerror \"PHASE5_STATE_WRITE pc=%08X address=%08X data=%08X size=%08X\\n\",pc,wpaddr,wpdata,wpsize; g")
+	maincpu.debug:wpset(program, "w", 0x80227bc0, 4, "1",
+		"logerror \"PHASE5_OWNER_WRITE pc=%08X address=%08X data=%08X size=%08X ra=%08X sp=%08X a0=%08X a1=%08X a2=%08X s0=%08X s1=%08X s2=%08X s3=%08X s4=%08X s5=%08X s6=%08X s7=%08X\\n\",pc,wpaddr,wpdata,wpsize,ra,sp,a0,a1,a2,s0,s1,s2,s3,s4,s5,s6,s7; g")
 	maincpu.debug:go()
 	breakpoints_installed = true
 	print("[phase5-oracle] bounded caller breakpoints installed")
