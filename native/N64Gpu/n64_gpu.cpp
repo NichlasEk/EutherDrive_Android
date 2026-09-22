@@ -108,6 +108,34 @@ struct FramebufferRanges {
             && !overlaps(low, high, depth, width * 1024 * 2);
     }
 };
+// Narrow read bound for the pinned renderer's ordinary 16-bit LoadBlock.
+// load_tile_iteration() keeps Block S/T in full pixels (not quarter pixels),
+// rounds width to four pixels, and sets upload height to one. With a matching
+// 16-bit non-YUV tile and zero tile stride, update_tmem_16() reads that linear
+// span; DXT only permutes halfwords within each eight-byte group. Other tile
+// layouts, LoadTile/TLUT and out-of-installed-RAM reads retain the barrier.
+struct LoadBlockRange {
+    uint32_t address = 0, width = 0, size = 0;
+    struct Tile { uint32_t size = 0, format = 0, stride = 0; bool known = false; } tiles[8];
+    void command(uint32_t op, uint32_t w0, uint32_t w1) {
+        if (op == 0x3d) {
+            address = w1 & 0xffffff; width = (w0 & 1023) + 1; size = (w0 >> 19) & 3;
+        } else if (op == 0x35) {
+            tiles[(w1 >> 24) & 7] = { (w0 >> 19) & 3, (w0 >> 21) & 7, (w0 >> 9) & 511, true };
+        }
+    }
+    bool disjoint(uint32_t low, uint32_t high, uint32_t w0, uint32_t w1) const {
+        const auto &tile = tiles[(w1 >> 24) & 7];
+        if (!width || size != 2 || !tile.known || tile.size != 2 || tile.format == 1 || tile.format > 4 || tile.stride) return false;
+        uint32_t s = (w0 >> 12) & 4095, t = w0 & 4095;
+        uint32_t pixels = (((w1 >> 12) & 4095) - s + 1) & 4095;
+        if (!pixels || pixels > 2048) return false;
+        uint32_t begin = address + 2 * (s + width * t), end = begin + 2 * ((pixels + 3) & ~3u);
+        if ((begin & 1) || end > ram_size) return false;
+        begin &= ~3u; end = (end + 3) & ~3u;
+        return low >= end || high <= begin;
+    }
+};
 struct Context : RDP::ValidationInterface {
     Managers managers;
     std::atomic<uint64_t> errors{0};
@@ -119,12 +147,15 @@ struct Context : RDP::ValidationInterface {
     ed_n64_gpu_stats stats{};
     bool batch_state_writes;
     bool defer_disjoint_writes;
+    bool defer_disjoint_load_blocks;
     FramebufferRanges framebuffers;
+    LoadBlockRange texture;
 
     Context(uint32_t flags, const uint8_t *initial_ram, const uint8_t *initial_hidden)
         : factory((flags & ED_N64_GPU_VALIDATE) != 0),
-          batch_state_writes((flags & (ED_N64_GPU_BATCH_STATE_WRITES | ED_N64_GPU_DEFER_DISJOINT_WRITES)) != 0),
-          defer_disjoint_writes((flags & ED_N64_GPU_DEFER_DISJOINT_WRITES) != 0) {
+          batch_state_writes((flags & (ED_N64_GPU_BATCH_STATE_WRITES | ED_N64_GPU_DEFER_DISJOINT_WRITES | ED_N64_GPU_DEFER_DISJOINT_LOAD_BLOCKS)) != 0),
+          defer_disjoint_writes((flags & (ED_N64_GPU_DEFER_DISJOINT_WRITES | ED_N64_GPU_DEFER_DISJOINT_LOAD_BLOCKS)) != 0),
+          defer_disjoint_load_blocks((flags & ED_N64_GPU_DEFER_DISJOINT_LOAD_BLOCKS) != 0) {
         if (!Vulkan::Context::init_loader(nullptr)) throw std::runtime_error("Cannot load Vulkan");
         vulkan.set_instance_factory(&factory);
         vulkan.set_notification_callback([this](const char *) { errors++; });
@@ -214,7 +245,8 @@ void validate_batch(const uint8_t *bytes, uint32_t size) {
 // Exhaustive whitelist of state-only commands in the pinned CommandProcessor.
 // Unknown commands take the barrier path. Draws can additionally pass only
 // when DEFER_DISJOINT_WRITES proves their entire memory bounds disjoint.
-// Texture loads, FULL_SYNC and public submit boundaries always flush writes.
+// FULL_SYNC and public submit boundaries always flush writes. The separate
+// LoadBlock whitelist must prove a texture read disjoint before deferring it.
 bool state_only(uint32_t op) {
     switch (op) {
     case 0x26: case 0x27: case 0x28:
@@ -231,7 +263,7 @@ int ed_n64_gpu_create(uint32_t abi, uint32_t flags, const uint8_t *ram, uint32_t
     const uint8_t *hidden, uint32_t hidden_bytes, uint64_t *handle, char *error, uint32_t capacity) {
     if (handle) *handle = 0;
     return boundary(error, capacity, [&] {
-        require(abi == ED_N64_GPU_ABI && (flags & ~15u) == 0, "Unsupported ABI or flags");
+        require(abi == ED_N64_GPU_ABI && (flags & ~31u) == 0, "Unsupported ABI or flags");
         require(handle && ram && hidden && size == ram_size && hidden_bytes == hidden_size, "Invalid initial memory buffers");
         require(next_handle <= uint64_t(INT64_MAX), "GPU handle space exhausted");
         auto context = std::make_unique<Context>(flags, ram, hidden);
@@ -263,13 +295,16 @@ int ed_n64_gpu_submit(uint64_t handle, const uint8_t *bytes, uint32_t size, uint
                 uint32_t op = kind == 2 ? (le32(data) >> 24) & 63 : 0;
                 bool draw = (op >= 8 && op <= 15) || op == 0x24 || op == 0x25 || op == 0x36;
                 bool defer = ctx.batch_state_writes && (kind == 3 || state_only(op)
-                    || (ctx.defer_disjoint_writes && draw && ctx.framebuffers.disjoint(pending_low, pending_high)));
+                    || (ctx.defer_disjoint_writes && draw && ctx.framebuffers.disjoint(pending_low, pending_high))
+                    || (ctx.defer_disjoint_load_blocks && op == 0x33
+                        && ctx.texture.disjoint(pending_low, pending_high, le32(data), le32(data + 4))));
                 if (!defer) flush();
                 if (kind == 2) {
                     uint32_t words[44];
                     for (uint32_t i = 0; i < length / 4; i++) words[i] = le32(data + i * 4);
                     ctx.gpu->enqueue_command(length / 4, words); ctx.stats.commands++;
                     ctx.framebuffers.command(op, words[0], words[1]);
+                    ctx.texture.command(op, words[0], words[1]);
                 } else for (unsigned reg = 0; reg < 14; reg++) {
                     auto *p = data + reg * 4;
                     uint32_t value = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];

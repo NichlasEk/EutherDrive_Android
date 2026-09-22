@@ -6,7 +6,7 @@ using EutherDrive.Core.Savestates;
 
 namespace EutherDrive.Core;
 
-public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
+public sealed class N64Adapter : IEmulatorCore, ISavestateCapable, IDisposable
 {
     private const uint HeaderZ64 = 0x80371240;
     private const uint HeaderN64 = 0x40123780;
@@ -51,6 +51,13 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
     ~N64Adapter()
     {
         CleanupTempRom();
+    }
+
+    public void Dispose()
+    {
+        _core.Dispose();
+        CleanupTempRom();
+        GC.SuppressFinalize(this);
     }
 
     public void LoadRom(string path)
@@ -126,6 +133,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
     }
 
     public string GetPerformanceStatus() => _core.LastPerformanceStatus;
+    public bool UsesGpuRendering => _core.UsesGpuRendering;
 
     public RomIdentity? RomIdentity => _romIdentity;
 
@@ -339,6 +347,12 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable
         if (bytesPerPixel == 4)
         {
             ConvertRgba8888ToBgra(raw, _frameBuffer);
+        }
+        else if (_core.UsesGpuRendering)
+        {
+            // Native readback has a defined CPU big-endian layout. A content
+            // heuristic must not change byte order when the scene changes.
+            ConvertRgba5551ToBgra(raw, _frameBuffer, swapBytes: false);
         }
         else
         {

@@ -125,6 +125,9 @@ namespace Ryu64.MIPS
                 case 57: InstInterp.SWC1(desc); break;
                 case 61: InstInterp.SDC1(desc); break;
                 case 35:
+#if N64_LIVE_GPU
+                    memory.GpuBeforeRead((uint)CpuBlockRamAddress(desc), 4);
+#endif
                     Registers.R4300.Reg[desc.op2] = unchecked((ulong)(long)BinaryPrimitives.ReadInt32BigEndian(memory.RDRAM.AsSpan(CpuBlockRamAddress(desc), 4)));
                     Registers.R4300.PC += 4;
                     break;
@@ -133,6 +136,9 @@ namespace Ryu64.MIPS
                     Registers.R4300.PC += 4;
                     break;
                 case 55:
+#if N64_LIVE_GPU
+                    memory.GpuBeforeRead((uint)CpuBlockRamAddress(desc), 8);
+#endif
                     Registers.R4300.Reg[desc.op2] = BinaryPrimitives.ReadUInt64BigEndian(memory.RDRAM.AsSpan(CpuBlockRamAddress(desc), 8));
                     Registers.R4300.PC += 4;
                     break;

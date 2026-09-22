@@ -42,7 +42,7 @@ def main():
     ram = C.create_string_buffer(initial, RAM); hidden = C.create_string_buffer(bytes([3]) * HIDDEN, HIDDEN)
     read_ram = C.create_string_buffer(RAM); read_hidden = C.create_string_buffer(HIDDEN); read_tmem = C.create_string_buffer(TMEM)
     handle = U64()
-    for abi, flags, size, pointer in [(0, 7, RAM, ram), (1, 16, RAM, ram), (1, 7, RAM - 1, ram), (1, 7, RAM, None)]:
+    for abi, flags, size, pointer in [(0, 7, RAM, ram), (1, 32, RAM, ram), (1, 7, RAM - 1, ram), (1, 7, RAM, None)]:
         call("create", abi, flags, pointer, size, hidden, HIDDEN, C.byref(handle), expected=1)
         assert handle.value == 0
     call("create", 1, 7, ram, RAM, hidden, HIDDEN, C.byref(handle))

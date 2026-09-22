@@ -2,9 +2,26 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+#if N64_LIVE_GPU && N64_RDP_JOURNAL
+if (args.Length == 4 && args[0] == "--check-live-gpu")
+{
+    N64LiveGpuChecks.Run(args[1], args[2], args[3]);
+    return;
+}
+if (args.Length == 4 && args[0] == "--check-live-gpu-lifecycle")
+{
+    N64LiveGpuChecks.Lifecycle(args[1], args[2], args[3]);
+    return;
+}
+#endif
 if (args.Length == 2 && args[0] == "--check-gpu-abi")
 {
     N64GpuChecks.Run(args[1]);
+    return;
+}
+if (args.Length == 2 && args[0] == "--check-gpu-textures")
+{
+    N64GpuTextureChecks.Run(args[1]);
     return;
 }
 if (args.Length == 2 && args[0] == "--check-journal-production")
@@ -21,8 +38,8 @@ if (args.Length == 2 && args[0] == "--capture-gpu-hazards")
 }
 if (args.Length is 6 or 7 && args[0] == "--replay-gpu-journal")
 {
-    if (args[5] is not ("strict" or "batched" or "ranges") || (args.Length == 7 && args[6] != "--bench"))
-        throw new ArgumentException("Usage: --replay-gpu-journal LIBRARY JOURNAL_DIR REFERENCE_DIR NEW_OUTPUT strict|batched|ranges [--bench]");
+    if (args[5] is not ("strict" or "batched" or "ranges" or "textures") || (args.Length == 7 && args[6] != "--bench"))
+        throw new ArgumentException("Usage: --replay-gpu-journal LIBRARY JOURNAL_DIR REFERENCE_DIR NEW_OUTPUT strict|batched|ranges|textures [--bench]");
     N64GpuJournalReplay.Run(args[1], args[2], args[3], args[4], args[5], args.Length == 7);
     return;
 }
@@ -312,7 +329,7 @@ else if (header == 0x40123780)
 else if (header != 0x80371240) throw new InvalidDataException("Unknown N64 ROM byte order");
 string normalized = Path.Combine(output, "input.z64");
 File.WriteAllBytes(normalized, rom);
-var core = new Ryu64Core.Ryu64Core();
+using var core = new Ryu64Core.Ryu64Core();
 core.LoadROM(normalized);
 if (args.Length > 3) core.LoadState(args[3]);
 #if N64_RDP_JOURNAL
@@ -341,9 +358,11 @@ if (Environment.GetEnvironmentVariable("N64_PROBE_REPLAY_RDP") == "1")
 }
 int seconds = args.Length > 2 ? int.Parse(args[2]) : 30;
 bool sm64Input = Environment.GetEnvironmentVariable("N64_PROBE_SM64_INPUT") == "1";
+bool sm64BootInput = Environment.GetEnvironmentVariable("N64_PROBE_SM64_BOOT_INPUT") == "1";
+bool sm64EnteredGame = false;
 bool sm64Us = BinaryPrimitives.ReadUInt32BigEndian(rom.AsSpan(0x10)) == 0x635a2bff
     && BinaryPrimitives.ReadUInt32BigEndian(rom.AsSpan(0x14)) == 0x8b022326;
-if (sm64Input && !sm64Us) throw new ArgumentException("SM64 input/telemetry requires the original USA cartridge");
+if ((sm64Input || sm64BootInput) && !sm64Us) throw new ArgumentException("SM64 input/telemetry requires the original USA cartridge");
 using var probeProcess = Process.GetCurrentProcess();
 TimeSpan cpuStart = probeProcess.TotalProcessorTime;
 bool fireInput = Environment.GetEnvironmentVariable("N64_PROBE_FIRE_INPUT") == "1";
@@ -383,18 +402,23 @@ try
             core.SetInputState(new Ryu64Core.InputState {
                 StickY = second >= 10 && second < 45 ? (sbyte)80 : (sbyte)0,
                 StickX = second >= 45 && second < 60 ? (sbyte)60 : (sbyte)0 });
-        if (sm64Input)
+        if (sm64Input || sm64BootInput)
         {
-            core.SetInputState(new Ryu64Core.InputState { A = second % 4 == 0, StickY = second >= 20 ? (sbyte)80 : (sbyte)0 });
             var ram = R4300.memory.RDRAM;
             uint pointer = BinaryPrimitives.ReadUInt32BigEndian(ram.AsSpan(0x32d93c));
             int mario = (int)(pointer & 0x1fffffff);
+            int inputSecond = sm64BootInput ? (int)(core.GetCycleCounter() / 93_750_000) : second;
+            bool move = inputSecond >= (sm64BootInput ? 45 : 20);
+            bool jump = inputSecond % 4 == 0;
             if (pointer >= 0x80000000 && mario <= ram.Length - 0xc0)
             {
                 uint action = BinaryPrimitives.ReadUInt32BigEndian(ram.AsSpan(mario + 0xc));
+                sm64EnteredGame |= action != 0;
                 float Float(int offset) => BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32BigEndian(ram.AsSpan(mario + offset)));
-                Console.WriteLine($"mario action={action:x8} pos={Float(0x3c):F2},{Float(0x40):F2},{Float(0x44):F2} velocity={Float(0x54):F2} inputY={(second >= 20 ? 80 : 0)} inputA={second % 4 == 0}");
+                Console.WriteLine($"mario action={action:x8} pos={Float(0x3c):F2},{Float(0x40):F2},{Float(0x44):F2} velocity={Float(0x54):F2} inputY={(move ? 80 : 0)} inputA={jump}");
             }
+            core.SetInputState(new Ryu64Core.InputState { Start = sm64BootInput && !sm64EnteredGame && inputSecond >= 3 && inputSecond % 4 == 0,
+                A = jump, StickY = move ? (sbyte)80 : (sbyte)0 });
         }
         Console.WriteLine($"seconds={timer.Elapsed.TotalSeconds:F2} cpuSeconds={(probeProcess.TotalProcessorTime - cpuStart).TotalSeconds:F3} {core.LastExecutionStatus}");
 #if N64_RDP_JOURNAL
@@ -420,6 +444,14 @@ try
         }
     }
     core.Stop();
+#if N64_LIVE_GPU
+    if (R4300.memory.GpuRenderer != null)
+    {
+        R4300.memory.GpuRenderer.Synchronize();
+        Console.WriteLine("gpuSavestate=unsupported; no state file written");
+    }
+    else
+#endif
     core.SaveState(Path.Combine(output, "state.bin"));
 }
 finally { core.Stop(); }
@@ -428,6 +460,9 @@ journal?.RequireComplete();
 #endif
 File.WriteAllBytes(Path.Combine(output, "rdram.bin"), R4300.memory.RDRAM);
 Console.WriteLine(core.LastPerformanceStatus);
+#if N64_LIVE_GPU
+Console.WriteLine(R4300.memory.GpuHazardSummary);
+#endif
 
 var jitFlags = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic;
 Console.WriteLine($"cpuJit instructions={typeof(R4300).GetField("CpuJitInstructions", jitFlags)!.GetValue(null)} " +

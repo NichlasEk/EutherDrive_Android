@@ -1,4 +1,7 @@
 <Project>
+  <PropertyGroup Condition="'$(N64LiveGpu)' == 'true'">
+    <DefineConstants>$(DefineConstants);N64_LIVE_GPU</DefineConstants>
+  </PropertyGroup>
   <!-- Diagnostic capture only: no observer fields or calls in shipping builds. -->
   <PropertyGroup Condition="'$(N64RdpJournalCapture)' == 'true'">
     <DefineConstants>$(DefineConstants);N64_RDP_JOURNAL</DefineConstants>

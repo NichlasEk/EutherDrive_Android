@@ -866,6 +866,9 @@ namespace Ryu64.MIPS
                 if (physical + 3u >= rdram.Length)
                     return memory.ReadUInt32PhysicalFast(physical);
 
+#if N64_LIVE_GPU
+                memory.GpuBeforeRead(physical, 4);
+#endif
                 return ((uint)rdram[physical] << 24)
                     | ((uint)rdram[physical + 1u] << 16)
                     | ((uint)rdram[physical + 2u] << 8)
@@ -975,6 +978,9 @@ namespace Ryu64.MIPS
                 if (physical + 3u >= rdram.Length)
                     return memory.ReadUInt32PhysicalFast(physical);
 
+#if N64_LIVE_GPU
+                memory.GpuBeforeRead(physical, 4);
+#endif
                 return ((uint)rdram[physical] << 24)
                     | ((uint)rdram[physical + 1u] << 16)
                     | ((uint)rdram[physical + 2u] << 8)
@@ -1079,6 +1085,9 @@ namespace Ryu64.MIPS
             }
 
             Array.Clear(memory.RDRAM, (int)start, (int)(end - start));
+#if N64_LIVE_GPU
+            memory.GpuExternalWrite(start, end - start);
+#endif
             uint iterations = (end - start) >> 5;
             SetReg32(4, endAddress);
             Registers.R4300.PC = 0x8000309Cu;
@@ -1089,6 +1098,9 @@ namespace Ryu64.MIPS
 
         private static bool TryFastForwardBootAssetDecode(uint pc)
         {
+#if N64_LIVE_GPU
+            if (memory.GpuRenderer != null) return false;
+#endif
             if (!FastBootAssetDecode || pc != 0x800012C4u)
                 return false;
 
@@ -1373,6 +1385,9 @@ namespace Ryu64.MIPS
             uint words = bytes >> 2;
             uint srcPhysical = src & 0x1FFFFFFFu;
             uint dstPhysical = dst & 0x1FFFFFFFu;
+#if N64_LIVE_GPU
+            memory.GpuBeforeRead(srcPhysical, bytes);
+#endif
             byte[] rdram = memory.RDRAM;
             bool dstIsRdram = dstPhysical + bytes <= rdram.Length;
             uint lastWord = 0;
@@ -1395,6 +1410,9 @@ namespace Ryu64.MIPS
                 }
             }
 
+#if N64_LIVE_GPU
+            if (dstIsRdram) memory.GpuExternalWrite(dstPhysical, bytes);
+#endif
             Registers.R4300.Reg[8] = SignExtend32(end);
             Registers.R4300.Reg[9] = SignExtend32(dst + bytes);
             Registers.R4300.Reg[13] = SignExtend32(lastWord);
@@ -1701,6 +1719,9 @@ namespace Ryu64.MIPS
                 return false;
 
             Array.Clear(memory.RDRAM, (int)start, (int)bytes);
+#if N64_LIVE_GPU
+            memory.GpuExternalWrite(start, bytes);
+#endif
             Registers.R4300.Reg[8] = SignExtend32(startAddress + bytes);
             Registers.R4300.Reg[9] = 0;
             Registers.R4300.PC = exitPc;
@@ -1786,6 +1807,9 @@ namespace Ryu64.MIPS
                     return false;
 
                 Array.Clear(memory.RDRAM, (int)startPhysical, (int)bytes);
+#if N64_LIVE_GPU
+                memory.GpuExternalWrite(startPhysical, bytes);
+#endif
                 Registers.R4300.Reg[1] = 0;
                 Registers.R4300.Reg[5] = SignExtend32(end);
                 Registers.R4300.Reg[11] = SignExtend32(end);
@@ -1870,6 +1894,9 @@ namespace Ryu64.MIPS
                     return false;
 
                 Array.Clear(memory.RDRAM, (int)startPhysical, (int)bytes);
+#if N64_LIVE_GPU
+                memory.GpuExternalWrite(startPhysical, bytes);
+#endif
 
                 Registers.R4300.Reg[1] = 0;
                 Registers.R4300.Reg[2] = SignExtend32(end);
@@ -3929,6 +3956,13 @@ namespace Ryu64.MIPS
             Thread thread = CpuThread;
             if (thread != null && thread.IsAlive)
             {
+#if N64_LIVE_GPU
+                if (memory?.GpuRenderer != null)
+                {
+                    if (!thread.Join(30000)) throw new TimeoutException("N64 GPU thread did not stop; resources remain owned by it");
+                }
+                else
+#endif
                 if (!thread.Join(200))
                     thread.Interrupt();
             }

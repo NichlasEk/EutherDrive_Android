@@ -30,6 +30,9 @@ namespace Ryu64.MIPS
         private void CaptureAiAudio()
         {
             int length = (int)(_aiFifo0Length & 0x3FFF8u);
+#if N64_LIVE_GPU
+            GpuBeforeRead(_aiFifo0Address & 0xffffffu, (uint)length);
+#endif
             var pcm = new short[length / 2];
             for (int i = 0; i < pcm.Length; i++)
             {
@@ -1051,6 +1054,9 @@ namespace Ryu64.MIPS
             if (writer == null)
                 throw new ArgumentNullException(nameof(writer));
 
+#if N64_LIVE_GPU
+            if (GpuRenderer != null) throw new InvalidOperationException("GPU savestates are not supported yet; use software rendering for saves");
+#endif
             const int version = 7;
             writer.Write(version);
 
@@ -2197,6 +2203,9 @@ namespace Ryu64.MIPS
 #if N64_RDP_JOURNAL
                     JournalBeforeCommand(commandAddress, xbusDmem, words);
 #endif
+#if N64_LIVE_GPU
+                    if (GpuRenderer != null) GpuCommand(commandAddress, xbusDmem, words, command);
+#endif
                     switch (command)
                     {
                         case 0x08: // Triangle
@@ -2208,11 +2217,17 @@ namespace Ryu64.MIPS
                         case 0x0E: // TriangleShadeTexture
                         case 0x0F: // TriangleShadeTextureZ
                             Interlocked.Increment(ref _rdpTriangleCommandCount);
+#if N64_LIVE_GPU
+                            if (GpuRenderer == null)
+#endif
                             ExecuteRdpTriangle(command, commandAddress, xbusDmem);
                             break;
                         case 0x24: // TextureRectangle
                         case 0x25: // TextureRectangleFlip
                             Interlocked.Increment(ref _rdpTextureRectangleCommandCount);
+#if N64_LIVE_GPU
+                            if (GpuRenderer == null)
+#endif
                             ExecuteRdpTextureRectangle(command, w0, w1, ReadRdpCommandWord(commandAddress + 8u, xbusDmem), ReadRdpCommandWord(commandAddress + 12u, xbusDmem));
                             break;
                         case 0x26: // SyncLoad
@@ -2238,15 +2253,24 @@ namespace Ryu64.MIPS
                             ExecuteRdpSetCombine(w0, w1);
                             break;
                         case 0x30: // LoadTLut
+#if N64_LIVE_GPU
+                            if (GpuRenderer == null)
+#endif
                             ExecuteRdpLoadTlut(w0, w1);
                             break;
                         case 0x32: // SetTileSize
                             ExecuteRdpSetTileSize(w0, w1);
                             break;
                         case 0x33: // LoadBlock
+#if N64_LIVE_GPU
+                            if (GpuRenderer == null)
+#endif
                             ExecuteRdpLoadBlock(w0, w1);
                             break;
                         case 0x34: // LoadTile
+#if N64_LIVE_GPU
+                            if (GpuRenderer == null)
+#endif
                             ExecuteRdpLoadTile(w0, w1);
                             break;
                         case 0x35: // SetTile
@@ -2254,6 +2278,9 @@ namespace Ryu64.MIPS
                             break;
                         case 0x36: // FillRectangle
                             Interlocked.Increment(ref _rdpFillRectangleCommandCount);
+#if N64_LIVE_GPU
+                            if (GpuRenderer == null)
+#endif
                             ExecuteRdpFillRectangle(w0, w1);
                             break;
                         case 0x37: // SetFillColor
@@ -5235,6 +5262,9 @@ namespace Ryu64.MIPS
 
         private void FlushVisibleRdpFramebufferSnapshot()
         {
+#if N64_LIVE_GPU
+            if (GpuRenderer != null) return;
+#endif
             if (!_pendingVisibleRdpFramebufferSnapshot)
                 return;
 
@@ -6065,6 +6095,9 @@ namespace Ryu64.MIPS
 
         private void PostFramebufferWrite(uint address, uint length, uint epoch)
         {
+#if N64_LIVE_GPU
+            GpuExternalWrite(address, length);
+#endif
 #if N64_RDP_JOURNAL
             if (!_journalExecutingCommand) RdpJournal?.RdramWritten(address, length);
 #endif
@@ -8023,7 +8056,12 @@ namespace Ryu64.MIPS
                 uint rdAddress = dramAddr & 0x007FFFFFu;
                 int chunk = Math.Min(remaining, Math.Min(0x1000 - (int)memAddr, 0x800000 - (int)rdAddress));
                 if (isReadFromDram)
+                {
+#if N64_LIVE_GPU
+                    GpuBeforeRead(rdAddress, (uint)chunk);
+#endif
                     Buffer.BlockCopy(RDRAM, (int)rdAddress, SP_MEM_RW, (int)(memBank | memAddr), chunk);
+                }
                 else
                 {
                     Buffer.BlockCopy(SP_MEM_RW, (int)(memBank | memAddr), RDRAM, (int)rdAddress, chunk);
@@ -10335,6 +10373,9 @@ namespace Ryu64.MIPS
 
                 uint regOffset = nonCachedIndex - Entry.StartAddress;
                 int offset = ResolveArrayOffset(Entry.ReadArray, regOffset, Entry.ReadBaseOffset);
+#if N64_LIVE_GPU
+                if (ReferenceEquals(Entry.ReadArray, RDRAM)) GpuBeforeRead((uint)offset, 1);
+#endif
                 byte value = Entry.ReadArray[offset];
                 if ((regOffset & 0x3) == 0x3
                     && Entry.ReadEvent != null
@@ -10356,6 +10397,9 @@ namespace Ryu64.MIPS
                 int offset = ResolveArrayOffset(Entry.WriteArray, regOffset, Entry.WriteBaseOffset);
                 byte oldValue = Entry.WriteArray[offset];
                 Entry.WriteArray[offset] = value;
+#if N64_LIVE_GPU
+                if (ReferenceEquals(Entry.WriteArray, RDRAM)) GpuExternalWrite((uint)offset, 1);
+#endif
 #if N64_RDP_JOURNAL
                 // Array/indexer stores (including SD and mirrored RAM) bypass
                 // NoteRdramWriteRange. Observe the actual backing-array byte.
@@ -10573,6 +10617,9 @@ namespace Ryu64.MIPS
                     return ReadCartridgeBusUInt16(physical);
                 if (physical + 1u < RDRAM.Length)
                 {
+#if N64_LIVE_GPU
+                    GpuBeforeRead(physical, 2);
+#endif
                     return (ushort)((RDRAM[physical] << 8) | RDRAM[physical + 1u]);
                 }
             }
@@ -10716,7 +10763,12 @@ namespace Ryu64.MIPS
             uint physical = index & 0x1fffffffu;
             if (!WordAccessTracingEnabled && index >= 0x80000000u && index < 0xc0000000u
                 && physical + 3u < RDRAM.Length)
+            {
+#if N64_LIVE_GPU
+                GpuBeforeRead(physical, 4);
+#endif
                 return BinaryPrimitives.ReadUInt32BigEndian(RDRAM.AsSpan((int)physical, 4));
+            }
             return ReadUInt32Slow(index);
         }
 
@@ -10732,6 +10784,9 @@ namespace Ryu64.MIPS
                     return ReadCartridgeBusUInt32(physical);
                 if (physical + 3u < RDRAM.Length)
                 {
+#if N64_LIVE_GPU
+                    GpuBeforeRead(physical, 4);
+#endif
                     uint value = ((uint)RDRAM[physical] << 24)
                         | ((uint)RDRAM[physical + 1u] << 16)
                         | ((uint)RDRAM[physical + 2u] << 8)
@@ -10766,6 +10821,9 @@ namespace Ryu64.MIPS
             physical &= 0x1FFFFFFFu;
             if (physical + 3u < RDRAM.Length)
             {
+#if N64_LIVE_GPU
+                GpuBeforeRead(physical, 4);
+#endif
                 return BinaryPrimitives.ReadUInt32BigEndian(RDRAM.AsSpan((int)physical, 4));
             }
 
@@ -10781,6 +10839,9 @@ namespace Ryu64.MIPS
                 return false;
             }
 
+#if N64_LIVE_GPU
+            GpuBeforeRead(physical, 4);
+#endif
             value = BinaryPrimitives.ReadUInt32BigEndian(RDRAM.AsSpan((int)physical, 4));
             return true;
         }
@@ -11000,7 +11061,12 @@ namespace Ryu64.MIPS
             {
                 uint physical = index & 0x1FFFFFFFu;
                 if ((ulong)physical + 8u <= (ulong)RDRAM.Length)
+                {
+#if N64_LIVE_GPU
+                    GpuBeforeRead(physical, 8);
+#endif
                     return BinaryPrimitives.ReadUInt64BigEndian(RDRAM.AsSpan((int)physical, 8));
+                }
             }
             byte[] Res = this[index, 8];
             Array.Reverse(Res);
@@ -11213,6 +11279,9 @@ namespace Ryu64.MIPS
                 if (touchesSpDescriptorViaBulkCopy)
                     TraceRspDescriptorDmemSnapshot("bulk-pre");
 
+#if N64_LIVE_GPU
+                if (ReferenceEquals(srcArray, RDRAM)) GpuBeforeRead((uint)srcOff, (uint)copyCount);
+#endif
                 if (copyCount > 0)
                 {
                     bool srcIsSpDmem = ReferenceEquals(srcEntry.ReadArray, SP_MEM_RW) && srcEntry.ReadBaseOffset == 0;
@@ -11293,6 +11362,9 @@ namespace Ryu64.MIPS
 #if N64_RDP_JOURNAL
                 if (!_journalExecutingCommand && ReferenceEquals(dstEntry.WriteArray, RDRAM))
                     RdpJournal?.RdramWritten((uint)dstOff, (uint)chunk);
+#endif
+#if N64_LIVE_GPU
+                if (ReferenceEquals(dstEntry.WriteArray, RDRAM)) GpuExternalWrite((uint)dstOff, (uint)chunk);
 #endif
                 if (dest < RDRAM.Length)
                     NoteRdramWriteRange(dest, (uint)chunk);

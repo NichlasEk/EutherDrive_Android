@@ -324,6 +324,10 @@ namespace Ryu64.MIPS
 
             il.Emit(OpCodes.Ldarg_1); U((uint)words.Count); il.Emit(OpCodes.Blt_Un, zero);
             il.Emit(OpCodes.Ldsfld, JitMemoryField); il.Emit(OpCodes.Ldfld, JitRamField); il.Emit(OpCodes.Stloc, ram);
+#if N64_LIVE_GPU
+            il.Emit(OpCodes.Ldsfld, JitMemoryField); U(start & 0x1fffffffu); U((uint)words.Count * 4);
+            il.Emit(OpCodes.Call, typeof(Memory).GetMethod(nameof(Memory.GpuBeforeRead)));
+#endif
             il.Emit(OpCodes.Ldloc, ram); il.Emit(OpCodes.Ldlen); il.Emit(OpCodes.Conv_U4);
             U((start & 0x1fffffffu) + (uint)words.Count * 4); il.Emit(OpCodes.Blt_Un, invalid);
             for (int i = 0; i < words.Count; i += 2)
@@ -452,6 +456,12 @@ namespace Ryu64.MIPS
                     }
                     else
                     {
+#if N64_LIVE_GPU
+                        il.Emit(OpCodes.Ldsfld, JitMemoryField);
+                        il.Emit(OpCodes.Ldloc, address); U(0x1fffffffu); il.Emit(OpCodes.And);
+                        U(kind == 55 ? 8u : kind == 32 || kind == 36 ? 1u : kind == 33 || kind == 37 ? 2u : 4u);
+                        il.Emit(OpCodes.Call, typeof(Memory).GetMethod(nameof(Memory.GpuBeforeRead)));
+#endif
                         il.Emit(OpCodes.Ldloc, regs); U(desc.op2);
                         il.Emit(OpCodes.Ldloc, ram); il.Emit(OpCodes.Ldloc, address); U(0x1fffffffu); il.Emit(OpCodes.And);
                         if (kind == 32 || kind == 36)
@@ -537,6 +547,9 @@ namespace Ryu64.MIPS
                 // Short windows retain the ordinary first-block behavior.
                 if (budget < words.Count) return native[0](budget, elapsed, record);
                 var ram = memory.RDRAM;
+#if N64_LIVE_GPU
+                memory.GpuBeforeRead((uint)physical, (uint)code.Length);
+#endif
                 if ((ulong)physical + (uint)code.Length > (ulong)ram.Length
                     || !ram.AsSpan(physical, code.Length).SequenceEqual(code)) return uint.MaxValue;
                 uint done = 0;

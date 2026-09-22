@@ -7,7 +7,7 @@ using System.Threading;
 
 namespace Ryu64Core
 {
-    public class Ryu64Core
+    public class Ryu64Core : IDisposable
     {
         private const uint ViStatusReg = 0xA4400000;
         private const uint ViOriginReg = 0xA4400004;
@@ -43,6 +43,8 @@ namespace Ryu64Core
         private const uint PifRamStatusByte = 0xBFC007FF;
 
         private Z64 rom;
+        private string _romPath;
+        private Memory _loadedMemory;
         private bool isRunning = false;
         private bool _resumeLoadedState;
 
@@ -77,9 +79,19 @@ namespace Ryu64Core
         public event EventHandler<EmulationStateChangedEventArgs> StateChanged;
 
         public bool IsRunning => isRunning;
+        public bool UsesGpuRendering =>
+#if N64_LIVE_GPU
+            R4300.memory?.GpuRenderer != null;
+#else
+            false;
+#endif
         public string GameName => rom?.Name?.Trim() ?? "No ROM loaded";
         public string LastFramebufferStatus => _lastFramebufferStatus;
-        public string LastPerformanceStatus => R4300.memory?.PerformanceSummary ?? "perf=unavailable";
+        public string LastPerformanceStatus => (R4300.memory?.PerformanceSummary ?? "perf=unavailable")
+#if N64_LIVE_GPU
+            + " " + R4300.memory?.GpuRenderer?.Status
+#endif
+            ;
         public long GraphicsTaskCount => R4300.memory?.RspGraphicsTaskCount ?? 0;
         public string LastExecutionStatus
         {
@@ -181,7 +193,14 @@ namespace Ryu64Core
             {
                 Stop();
             }
+#if N64_LIVE_GPU
+            // R4300 is process-global. A newly created frontend core must also
+            // join a previous GPU owner before replacing its memory/device.
+            if (R4300.memory?.GpuRenderer != null) R4300.StopR4300();
+            R4300.memory?.DetachGpu();
+#endif
 
+            _romPath = romPath;
             rom = new Z64(romPath);
             rom.Parse();
 
@@ -197,7 +216,16 @@ namespace Ryu64Core
             }
 
             Settings.Parse($"{AppDomain.CurrentDomain.BaseDirectory}/Settings.ini");
-            R4300.memory = new Memory(rom.AllData);
+            _loadedMemory = R4300.memory = new Memory(rom.AllData);
+#if N64_LIVE_GPU
+            string gpuLibrary = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_LIBRARY");
+            if (!string.IsNullOrEmpty(gpuLibrary))
+                R4300.memory.AttachGpu(new N64LiveGpu(R4300.memory, gpuLibrary,
+                    Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_VALIDATE") == "1"));
+#else
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_LIBRARY")))
+                throw new InvalidOperationException("Build with -p:N64LiveGpu=true to use the GPU backend");
+#endif
             _resumeLoadedState = false;
             _lastAudioAddress = 0;
             _lastAudioLength = 0;
@@ -227,6 +255,12 @@ namespace Ryu64Core
             }
             else
             {
+#if N64_LIVE_GPU
+                // Start after Stop is a reset in this core. Recreate both CPU
+                // memory and GPU state together, never reuse an old RDP device.
+                if (R4300.memory.GpuRenderer != null && R4300.memory.RdpCommandCount != 0)
+                    LoadROM(_romPath);
+#endif
                 R4300.PowerOnR4300();
             }
             isRunning = true;
@@ -243,6 +277,15 @@ namespace Ryu64Core
             R4300.StopR4300();
             isRunning = false;
             StateChanged?.Invoke(this, new EmulationStateChangedEventArgs(false));
+        }
+
+        public void Dispose()
+        {
+            if (!ReferenceEquals(_loadedMemory, R4300.memory)) return;
+            Stop();
+#if N64_LIVE_GPU
+            R4300.memory?.DetachGpu();
+#endif
         }
 
         public ulong GetCycleCounter()
@@ -287,6 +330,16 @@ namespace Ryu64Core
 
             try
             {
+#if N64_LIVE_GPU
+                if (R4300.memory.GpuRenderer != null)
+                {
+                    bool available = R4300.memory.TryGetGpuFramebuffer(out framebuffer, out width, out height, out bytesPerPixel);
+                    string gpuStatus = R4300.memory.GpuRenderer.Status;
+                    _lastFramebufferStatus = gpuStatus.StartsWith("gpu=FAILED", StringComparison.Ordinal) ? gpuStatus
+                        : available ? $"Vulkan RDP / {width}x{height}" : "Vulkan RDP: waiting for completed frame";
+                    return available;
+                }
+#endif
                 uint status = R4300.memory.ReadUInt32(ViStatusReg);
                 uint rawOrigin = R4300.memory.ReadUInt32(ViOriginReg) & 0x00FFFFFF;
                 uint origin = rawOrigin;
@@ -736,6 +789,9 @@ namespace Ryu64Core
 
         public void SaveState(string path)
         {
+#if N64_LIVE_GPU
+            if (R4300.memory?.GpuRenderer != null) throw new InvalidOperationException("Saving is not available in experimental GPU mode. Existing saves are unchanged.");
+#endif
             using FileStream stream = File.Create(path);
             using BinaryWriter writer = new BinaryWriter(stream);
             SaveState(writer);
@@ -750,6 +806,9 @@ namespace Ryu64Core
 
         public void SaveState(BinaryWriter writer)
         {
+#if N64_LIVE_GPU
+            if (R4300.memory?.GpuRenderer != null) throw new InvalidOperationException("Saving is not available in experimental GPU mode");
+#endif
             if (writer == null)
                 throw new ArgumentNullException(nameof(writer));
             if (rom == null || R4300.memory == null)
@@ -788,6 +847,9 @@ namespace Ryu64Core
             bool restart = isRunning;
             if (restart)
                 Stop();
+#if N64_LIVE_GPU
+            R4300.memory.DetachGpu();
+#endif
 
             int version = reader.ReadInt32();
             if (version != 1)

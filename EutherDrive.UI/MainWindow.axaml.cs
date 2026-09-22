@@ -1217,7 +1217,11 @@ public partial class MainWindow : Window
 
     private void OnMainWindowClosing(object? sender, WindowClosingEventArgs e)
     {
+        _timer.Stop();
+        StopEmuLoop();
+        StopAudioEngine();
         EndTrackedPlaySession();
+        DisposeCurrentCore();
         _deckMonitorTimer.Stop();
         _machineRoomSeekTimer.Stop();
         _machineRoomSeekCommitTimer.Stop();
@@ -4651,6 +4655,9 @@ public partial class MainWindow : Window
 
         if (_core is N64Adapter n64)
         {
+#if N64_LIVE_GPU
+            backend += n64.UsesGpuRendering ? " / N64 GPU" : " / N64 software";
+#endif
             long now = Stopwatch.GetTimestamp();
             long tasks = n64.GraphicsTaskCounter;
             int generation = n64.StatisticsGeneration;

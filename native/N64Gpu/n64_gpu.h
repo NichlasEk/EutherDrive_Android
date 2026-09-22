@@ -12,7 +12,8 @@ extern "C" {
 
 enum { ED_N64_GPU_ABI = 1, ED_N64_GPU_RAM_SIZE = 8 << 20, ED_N64_GPU_HIDDEN_SIZE = 4 << 20, ED_N64_GPU_TMEM_SIZE = 4096 };
 enum { ED_N64_GPU_VALIDATE = 1, ED_N64_GPU_BATCH_STATE_WRITES = 2, ED_N64_GPU_REQUIRE_DISCRETE = 4,
-       ED_N64_GPU_DEFER_DISJOINT_WRITES = 8 }; // Includes state-write batching.
+       ED_N64_GPU_DEFER_DISJOINT_WRITES = 8, // Includes state-write batching.
+       ED_N64_GPU_DEFER_DISJOINT_LOAD_BLOCKS = 16 }; // Includes both previous batching modes.
 enum { ED_N64_GPU_OK = 0, ED_N64_GPU_ARGUMENT = 1, ED_N64_GPU_BACKEND = 2 };
 // All fields and pointers belong to the caller. Functions retain no caller
 // buffers after returning. Handles are IDs, never addresses. Calls serialize.

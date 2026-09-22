@@ -6,7 +6,7 @@ using Microsoft.Win32.SafeHandles;
 namespace Ryu64Core
 {
     [Flags]
-    public enum N64GpuFlags : uint { Validate = 1, BatchStateWrites = 2, RequireDiscrete = 4, DeferDisjointWrites = 8 }
+    public enum N64GpuFlags : uint { Validate = 1, BatchStateWrites = 2, RequireDiscrete = 4, DeferDisjointWrites = 8, DeferDisjointLoadBlocks = 16 }
 
     [StructLayout(LayoutKind.Sequential)]
     public struct N64GpuStats

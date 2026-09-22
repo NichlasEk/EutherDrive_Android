@@ -44,6 +44,7 @@ internal static class N64GpuJournalReplay
         Directory.CreateDirectory(output);
         var flags = N64GpuFlags.RequireDiscrete | (benchmark ? 0 : N64GpuFlags.Validate) | (mode switch {
             "strict" => 0, "batched" => N64GpuFlags.BatchStateWrites, "ranges" => N64GpuFlags.DeferDisjointWrites,
+            "textures" => N64GpuFlags.DeferDisjointLoadBlocks,
             _ => throw new ArgumentException("Invalid GPU replay mode")
         });
         var initialization = Stopwatch.StartNew();

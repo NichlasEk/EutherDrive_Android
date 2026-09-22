@@ -2,9 +2,9 @@
 
 `libeuther_n64_gpu.so.1` is a headless, versioned C ABI around the pinned
 paraLLEl-RDP backend. `Ryu64Core.N64GpuBackend` loads it explicitly through a
-`SafeHandle`. The normal emulator still renders in software. This checkpoint
-replays ordered journals; it does not run guest CPU/RSP execution against GPU
-output or present images to the frontend.
+`SafeHandle`. The normal emulator still renders in software. A separate
+opt-in desktop build now connects it to running CPU/RSP execution and completed
+frame presentation; see [live mode and its limits](../../docs/n64-live-gpu-2026-09-21.md).
 
 See [results and remaining gates](../../docs/n64-native-gpu-2026-09-21.md)
 and the [integration plan](../../docs/n64-gpu-backend-plan-2026-09-21.md).
@@ -72,13 +72,21 @@ Flags:
 | 2 | Defer writes across whitelisted state-only commands |
 | 4 | Require a discrete GPU |
 | 8 | Also defer writes across draws with provably disjoint RDRAM ranges; includes bit 2's behavior |
+| 16 | Also defer writes across a narrow, proven-disjoint 16-bit LoadBlock path; includes bits 2 and 8's behavior |
 
 No batching flag means a conservative barrier before every non-write record.
 Bit 8 considers both color and depth attachments, a full 1024-row pass, every
 color size, address alignment and RAM wrap. Missing target state forces a
-barrier. Texture loads, unknown opcodes, FULL_SYNC and submission boundaries
-always flush pending writes. This only reorders buffered writes inside an
-offline batch; it does not solve live CPU/GPU memory ownership.
+barrier. Bit 16 additionally tracks the texture image and all eight tile slots.
+It accepts only matching 16-bit source/tile sizes, non-YUV defined formats,
+zero tile stride and an aligned source span entirely inside installed RAM.
+The bound uses full-pixel Block S/T, image width and eight-byte transfer
+rounding; DXT permutes halfwords within each group. Other texture layouts,
+LoadTile/TLUT, unknown opcodes, FULL_SYNC and submission boundaries flush pending
+writes. The proof is tied to `load_tile_iteration` and `update_tmem_16` in the
+pinned source. This reorders buffered writes inside a submitted
+batch. Live CPU/GPU memory ownership is enforced separately by the opt-in
+managed integration described above.
 
 ABI 1 requires successful coherent `VK_EXT_external_memory_host` import. It
 rejects the backend's separate copy/mask fallback rather than using it without
@@ -97,6 +105,8 @@ PARALLEL_RDP_SMALL_TYPES=1 GRANITE_NUM_WORKER_THREADS=2 GRANITE_VULKAN_NO_VALIDA
   taskset -c 6,7 python3 native/N64Gpu/check_abi.py "$LIB" .build-tmp/n64-native-gpu/abi
 PARALLEL_RDP_SMALL_TYPES=1 GRANITE_NUM_WORKER_THREADS=2 GRANITE_VULKAN_NO_VALIDATION=0 \
   taskset -c 6,7 dotnet "$PROBE" --check-gpu-abi "$LIB"
+PARALLEL_RDP_SMALL_TYPES=1 GRANITE_NUM_WORKER_THREADS=2 GRANITE_VULKAN_NO_VALIDATION=0 \
+  taskset -c 6,7 dotnet "$PROBE" --check-gpu-textures "$LIB"
 
 # Export independent Angrylion checkpoints without Vulkan or production linkage.
 GRANITE_NUM_WORKER_THREADS=2 "$ORACLE" "$JOURNAL/journal.bin" \
@@ -109,7 +119,8 @@ PARALLEL_RDP_SMALL_TYPES=1 GRANITE_NUM_WORKER_THREADS=2 GRANITE_VULKAN_NO_VALIDA
 dotnet "$PROBE" --capture-gpu-hazards .build-tmp/n64-native-gpu/hazards
 ```
 
-Replay modes are `strict`, `batched` (state-only), and `ranges`. Every mode must
+Replay modes are `strict`, `batched` (state-only), `ranges`, and `textures`.
+Every mode must
 match the reference RDRAM, hidden memory and TMEM at every checkpoint. Warm
 captures are rejected because raw hardware-state import is not implemented.
 The native ABI test intentionally submits one hardware-invalid I4 fill and

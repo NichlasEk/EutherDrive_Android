@@ -1,5 +1,10 @@
 # N64 GPU rendering: measured starting point and integration plan
 
+Progress: [the experimental live desktop integration](n64-live-gpu-2026-09-21.md)
+now connects running CPU/RSP execution, memory ownership and completed frame
+presentation. The full five-game, savestate and distribution gates below are
+still open; normal builds continue using software rendering.
+
 Scope: the Linux N64 emulator, starting from `19ba64c1`. The existing CPU/RSP
 optimizations remain the baseline. This checkpoint adds offline tools; it does
 not select a different renderer in the running application.
