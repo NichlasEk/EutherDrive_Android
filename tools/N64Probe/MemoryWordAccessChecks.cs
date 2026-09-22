@@ -6,17 +6,17 @@ using Ryu64.MIPS;
 internal static class MemoryWordAccessChecks
 {
     private delegate bool ReadPhysical(uint physical, out uint value);
-    internal static void Run(string reference, bool instructionFetch = false)
+    internal static void Run(string reference, bool instructionFetch = false, bool byteAccess = false)
     {
         var context = new AssemblyLoadContext("word-access-reference", true);
-        var expected = Check(context.LoadFromAssemblyPath(Path.GetFullPath(reference)), instructionFetch);
+        var expected = Check(context.LoadFromAssemblyPath(Path.GetFullPath(reference)), instructionFetch, byteAccess);
         context.Unload();
-        var actual = Check(typeof(Memory).Assembly, instructionFetch);
+        var actual = Check(typeof(Memory).Assembly, instructionFetch, byteAccess);
         if (expected != actual) throw new Exception($"Word access mismatch: {expected} != {actual}");
-        Console.WriteLine($"{(instructionFetch ? "opcodeFetch" : "wordAccess")}={actual} values=passed exceptions=passed framebufferEpochs=passed");
+        Console.WriteLine($"{(byteAccess ? "byteAccess" : instructionFetch ? "opcodeFetch" : "wordAccess")}={actual} values=passed exceptions=passed framebufferEpochs=passed");
     }
 
-    private static string Check(Assembly assembly, bool instructionFetch)
+    private static string Check(Assembly assembly, bool instructionFetch, bool byteAccess)
     {
         var cpu = assembly.GetType("Ryu64.MIPS.R4300")!;
         var memoryType = assembly.GetType("Ryu64.MIPS.Memory")!;
@@ -28,6 +28,13 @@ internal static class MemoryWordAccessChecks
             ? cpu.GetMethod("ReadOpcode", BindingFlags.Static | BindingFlags.NonPublic)!.CreateDelegate<Func<uint,uint>>()
             : memoryType.GetMethod("ReadUInt32")!.CreateDelegate<Func<uint,uint>>(memory);
         var write = memoryType.GetMethod("WriteUInt32")!.CreateDelegate<Action<uint,uint>>(memory);
+        if (byteAccess)
+        {
+            var readByte = memoryType.GetMethod("ReadUInt8")!.CreateDelegate<Func<uint,byte>>(memory);
+            var writeByte = memoryType.GetMethod("WriteUInt8")!.CreateDelegate<Action<uint,byte>>(memory);
+            read = address => readByte(address);
+            write = (address,value) => writeByte(address,(byte)value);
+        }
         var save = cpu.GetMethod("SaveState")!.CreateDelegate<Action<BinaryWriter>>();
         byte[] ram = (byte[])memoryType.GetField("RDRAM")!.GetValue(memory)!;
         new Random(64002).NextBytes(ram);
@@ -61,6 +68,24 @@ internal static class MemoryWordAccessChecks
             Read(address); Read(address ^ 0x20000000);
         }
         foreach (uint address in new uint[] { 0xb0000000,0xb0000001,0xb0000ffc,0xa4400010,0xa404001c,0xa404001c }) Read(address);
+        if (byteAccess)
+        {
+            // Backing-array mirrors up to the exact RAM-window boundary, then
+            // open bus and device aliases. Reads retain register side effects.
+            foreach (uint segment in new uint[] { 0x80000000,0xa0000000 })
+            foreach (uint offset in new uint[] { 0x7fffff,0x800000,0xffffff,0x1000000,0x3effffc,0x3efffff,
+                0x3f00000,0x3ffffff,0x4000000,0x403ffff,0x404001f,0x408001f,0x410000f,
+                0x4200007,0x430000f,0x4400013,0x4500007,0x4600013,0x4700007,0x480001b,0x48fffff,0x4900000 })
+            {
+                uint address = segment + offset;
+                if (offset <= 0x3efffff)
+                {
+                    write(address,(uint)(offset * 73 + 17)); operations++;
+                    Read(address); Read(address ^ 0x20000000);
+                }
+                else Read(address);
+            }
+        }
         if (instructionFetch)
             foreach (uint address in new uint[] { 0x10000,0x70020000,0xc0020000 }) Read(address);
         if (instructionFetch)

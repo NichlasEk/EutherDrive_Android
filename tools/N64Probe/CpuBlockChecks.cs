@@ -43,6 +43,7 @@ internal static class CpuBlockChecks
         R4300.memory = new Memory(new byte[4096]); OpcodeTable.Init();
         var classify = typeof(R4300).GetMethod("GetCpuBlockOpcodeKind", cpuFlags)!.CreateDelegate<Func<uint,int>>();
         var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR","BLTZ","BGEZ","BLEZ","BGTZ", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
+        allowed.Add("MFHI"); allowed.Add("MFLO");
         uint sample = 0x430064;
         int decoded = 0;
         for (int i = 0; i < 1_000_000; i++)
@@ -140,6 +141,35 @@ internal static class CpuBlockChecks
         uint[] special = { 0,2,3,4,6,7,20,22,23,33,35,36,37,38,39,42,43,45,47,56,58,59,60,62,63 };
         uint[] shifts = { 0,2,3,56,58,59,60,62,63 };
         var random = new Random(640020);
+        // HI/LO moves preserve all 64 bits, read live state when cached native
+        // code is reused, and normalize r0 at ordinary instruction boundaries.
+        foreach (uint function in new uint[] { 16, 18 })
+        foreach (uint target in new uint[] { 0, 2, 31 })
+        foreach (ulong value in new ulong[] { 0, 0xffffffff80000001UL, 0x800000007fffffffUL, ulong.MaxValue })
+        {
+            Reset(); Registers.R4300.HI = value; Registers.R4300.LO = ~value;
+            uint word = target << 11 | function;
+            Code(0, word); Check(32);
+            Reset(); Registers.R4300.HI = ~value; Registers.R4300.LO = value;
+            Code(0, word); Check(32, clearJit: false);
+            Reset(); Registers.R4300.HI = value; Registers.R4300.LO = ~value;
+            Code(0, 0x0c004004); Code(1, word); Check(2, 2); // Link write precedes delay slot.
+        }
+        foreach (uint function in new uint[] { 16, 18 })
+        {
+            for (int bit = 0; bit < 32; bit++)
+            {
+                uint reserved = 1u << bit;
+                if ((reserved & 0x03ff07c0u) == 0) continue;
+                Reset(); Code(0, 2u << 11 | function | reserved); Check(0);
+            }
+            // A native backedge may read HI/LO repeatedly, but its destination
+            // and branch inputs must still satisfy the existing loop proof.
+            Reset(); Registers.R4300.HI = 7; Registers.R4300.LO = 9;
+            Code(0, 2u << 11 | function); Code(1, 0x1440fffe); Code(2, 0); Check(30, 30);
+            Reset(); Registers.R4300.HI = 0; Registers.R4300.LO = 0;
+            Code(0, 2u << 11 | function); Code(1, 0x1440fffe); Code(2, 0); Check(32);
+        }
         // COP1 blocks share ordinary arithmetic but bypass instruction dispatch
         // and aggregate time. Compare full state with FR pairing, special float
         // payloads, register aliasing, CU1 transitions, and branch delay slots.

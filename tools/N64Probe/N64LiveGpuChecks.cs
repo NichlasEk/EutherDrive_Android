@@ -145,17 +145,42 @@ internal static class N64LiveGpuChecks
             memory.WriteUInt8(0x80300001, 0x55); Draw(); memory.WriteUInt8(0x80300001, 0x55);
             if (memory.ReadUInt32(0x80300000) != 0xff55ff01) throw new Exception("Same-value store disappeared");
             checks++;
-            // Exercise real generated JIT loads, with no interpreter fallback.
+            // Exercise real generated JIT loads, including branch delay slots,
+            // against a newer GPU-owned value than the CPU's RAM mirror.
             foreach (var (opcode, expected) in new (uint, ulong)[] {
-                (0x90820000, 0xff), (0x94820000, 0xff01), (0x8c820000, 0xffffffffff01ff01), (0xdc820000, 0xff01ff01ff01ff01) })
+                (0x80820000, 0xffffffffffffffff), (0x90820000, 0xff),
+                (0x84820000, 0xffffffffffffff01), (0x94820000, 0xff01),
+                (0x8c820000, 0xffffffffff01ff01), (0x9c820000, 0xff01ff01),
+                (0xdc820000, 0xff01ff01ff01ff01) })
+            foreach (bool delaySlot in new[] { false, true })
             {
-                var words = new List<uint> { opcode, 0x03e00008, 0 };
+                var words = delaySlot ? new List<uint> { 0x03e00008, opcode }
+                    : new List<uint> { opcode, 0x03e00008, 0 };
                 for (int i = 0; i < words.Count; i++) memory.WriteUInt32(0x80010000u + (uint)i * 4, words[i]);
                 var run = (Func<uint,uint,bool,uint>)typeof(R4300).GetMethod("BuildCpuJit", BindingFlags.Static | BindingFlags.NonPublic)!
                     .Invoke(null, new object[] { 0x80010000u, words })!;
                 Registers.R4300.Reg[4] = 0x80300000; Registers.R4300.Reg[31] = 0x80020000;
                 Registers.R4300.PC = 0x80010000;
-                Read(() => { if (run(3, 0, false) != 3) throw new Exception("JIT did not run"); return Registers.R4300.Reg[2]; }, expected);
+                Read(() => {
+                    if (run((uint)words.Count, 0, false) != words.Count || Registers.R4300.PC != 0x80020000)
+                        throw new Exception("JIT load did not finish at the branch target");
+                    return Registers.R4300.Reg[2];
+                }, expected);
+            }
+            // A delay-slot store must retain surrounding GPU bytes and finish
+            // before the branch target can be fetched, just like a straight store.
+            var storeCode = new List<uint> { 0x03e00008, 0xac820000 };
+            for (int i = 0; i < storeCode.Count; i++) memory.WriteUInt32(0x80010000u + (uint)i * 4, storeCode[i]);
+            var store = (Func<uint,uint,bool,uint>)typeof(R4300).GetMethod("BuildCpuJit", BindingFlags.Static | BindingFlags.NonPublic)!
+                .Invoke(null, new object[] { 0x80010000u, storeCode })!;
+            Registers.R4300.Reg[4] = 0x80300000; Registers.R4300.Reg[31] = 0x80020000;
+            foreach (uint value in new uint[] { 0x12345678, 0x12345678 })
+            {
+                Draw(); Registers.R4300.Reg[2] = value; Registers.R4300.PC = 0x80010000;
+                if (store(2, 0, false) != 2 || Registers.R4300.PC != 0x80020000
+                    || memory.ReadUInt64(0x80300000) != ((ulong)value << 32 | 0xff01ff01u))
+                    throw new Exception("JIT delay store lost CPU/GPU bytes or branch ordering");
+                checks++;
             }
             // If the RDP overwrites compiled guest instructions, the JIT must
             // synchronize before validating its code and reject the stale block.

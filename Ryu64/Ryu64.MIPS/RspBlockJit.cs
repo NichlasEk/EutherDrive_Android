@@ -122,7 +122,7 @@ namespace Ryu64.MIPS
                             Expression.Constant((int)((word >> 21) & 15)));
 #if NET8_0_OR_GREATER
                     if (VectorSimdEnabled && IsSimdVectorOp(vectorOp))
-                        operation = Call(nameof(ExecuteVectorSimd), Expression.Constant(vectorOp),
+                        operation = Expression.Call(self, GetSpecializedVectorSimd(vectorOp), Expression.Constant(vectorOp),
                             Expression.Constant((int)((word >> 6) & 31)),
                             Expression.Constant((int)((word >> 11) & 31)),
                             Expression.Constant((int)((word >> 16) & 31)),

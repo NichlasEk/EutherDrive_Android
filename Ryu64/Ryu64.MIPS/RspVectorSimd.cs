@@ -1,6 +1,7 @@
 #if NET8_0_OR_GREATER
 using System;
 using System.Runtime.CompilerServices;
+using System.Reflection;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
@@ -97,8 +98,93 @@ namespace Ryu64.MIPS
             hi = Sse2.Subtract(Sse2.Add(ReadVectorPlane(_accHi), termHi), carryMd);
         }
 
-        private void ExecuteVectorSimd(int op, int vd, int vs, int vt, int element)
+        // Value-type specializations let the host JIT fold the operation tests.
+        // The interpreter uses the same body with a runtime operation number.
+        private interface IVectorSimdOperation { static abstract int Opcode { get; } }
+        private readonly struct RuntimeVectorOperation : IVectorSimdOperation { public static int Opcode => -1; }
+        private readonly struct VectorOperation00 : IVectorSimdOperation { public static int Opcode => 0x00; }
+        private readonly struct VectorOperation01 : IVectorSimdOperation { public static int Opcode => 0x01; }
+        private readonly struct VectorOperation04 : IVectorSimdOperation { public static int Opcode => 0x04; }
+        private readonly struct VectorOperation05 : IVectorSimdOperation { public static int Opcode => 0x05; }
+        private readonly struct VectorOperation06 : IVectorSimdOperation { public static int Opcode => 0x06; }
+        private readonly struct VectorOperation07 : IVectorSimdOperation { public static int Opcode => 0x07; }
+        private readonly struct VectorOperation08 : IVectorSimdOperation { public static int Opcode => 0x08; }
+        private readonly struct VectorOperation09 : IVectorSimdOperation { public static int Opcode => 0x09; }
+        private readonly struct VectorOperation0C : IVectorSimdOperation { public static int Opcode => 0x0c; }
+        private readonly struct VectorOperation0D : IVectorSimdOperation { public static int Opcode => 0x0d; }
+        private readonly struct VectorOperation0E : IVectorSimdOperation { public static int Opcode => 0x0e; }
+        private readonly struct VectorOperation0F : IVectorSimdOperation { public static int Opcode => 0x0f; }
+        private readonly struct VectorOperation10 : IVectorSimdOperation { public static int Opcode => 0x10; }
+        private readonly struct VectorOperation11 : IVectorSimdOperation { public static int Opcode => 0x11; }
+        private readonly struct VectorOperation13 : IVectorSimdOperation { public static int Opcode => 0x13; }
+        private readonly struct VectorOperation14 : IVectorSimdOperation { public static int Opcode => 0x14; }
+        private readonly struct VectorOperation15 : IVectorSimdOperation { public static int Opcode => 0x15; }
+        private readonly struct VectorOperation20 : IVectorSimdOperation { public static int Opcode => 0x20; }
+        private readonly struct VectorOperation21 : IVectorSimdOperation { public static int Opcode => 0x21; }
+        private readonly struct VectorOperation22 : IVectorSimdOperation { public static int Opcode => 0x22; }
+        private readonly struct VectorOperation23 : IVectorSimdOperation { public static int Opcode => 0x23; }
+        private readonly struct VectorOperation24 : IVectorSimdOperation { public static int Opcode => 0x24; }
+        private readonly struct VectorOperation25 : IVectorSimdOperation { public static int Opcode => 0x25; }
+        private readonly struct VectorOperation26 : IVectorSimdOperation { public static int Opcode => 0x26; }
+        private readonly struct VectorOperation27 : IVectorSimdOperation { public static int Opcode => 0x27; }
+        private readonly struct VectorOperation28 : IVectorSimdOperation { public static int Opcode => 0x28; }
+        private readonly struct VectorOperation29 : IVectorSimdOperation { public static int Opcode => 0x29; }
+        private readonly struct VectorOperation2A : IVectorSimdOperation { public static int Opcode => 0x2a; }
+        private readonly struct VectorOperation2B : IVectorSimdOperation { public static int Opcode => 0x2b; }
+        private readonly struct VectorOperation2C : IVectorSimdOperation { public static int Opcode => 0x2c; }
+        private readonly struct VectorOperation2D : IVectorSimdOperation { public static int Opcode => 0x2d; }
+
+        private static class VectorSimdOperations
         {
+            internal static readonly MethodInfo[] Methods = Create();
+            private static MethodInfo[] Create()
+            {
+                var methods = new MethodInfo[64];
+                var definition = typeof(RspInterpreter).GetMethod(nameof(ExecuteVectorSimdOperation), BindingFlags.Instance | BindingFlags.NonPublic);
+                methods[0x00] = definition.MakeGenericMethod(typeof(VectorOperation00));
+                methods[0x01] = definition.MakeGenericMethod(typeof(VectorOperation01));
+                methods[0x04] = definition.MakeGenericMethod(typeof(VectorOperation04));
+                methods[0x05] = definition.MakeGenericMethod(typeof(VectorOperation05));
+                methods[0x06] = definition.MakeGenericMethod(typeof(VectorOperation06));
+                methods[0x07] = definition.MakeGenericMethod(typeof(VectorOperation07));
+                methods[0x08] = definition.MakeGenericMethod(typeof(VectorOperation08));
+                methods[0x09] = definition.MakeGenericMethod(typeof(VectorOperation09));
+                methods[0x0c] = definition.MakeGenericMethod(typeof(VectorOperation0C));
+                methods[0x0d] = definition.MakeGenericMethod(typeof(VectorOperation0D));
+                methods[0x0e] = definition.MakeGenericMethod(typeof(VectorOperation0E));
+                methods[0x0f] = definition.MakeGenericMethod(typeof(VectorOperation0F));
+                methods[0x10] = definition.MakeGenericMethod(typeof(VectorOperation10));
+                methods[0x11] = definition.MakeGenericMethod(typeof(VectorOperation11));
+                methods[0x13] = definition.MakeGenericMethod(typeof(VectorOperation13));
+                methods[0x14] = definition.MakeGenericMethod(typeof(VectorOperation14));
+                methods[0x15] = definition.MakeGenericMethod(typeof(VectorOperation15));
+                methods[0x20] = definition.MakeGenericMethod(typeof(VectorOperation20));
+                methods[0x21] = definition.MakeGenericMethod(typeof(VectorOperation21));
+                methods[0x22] = definition.MakeGenericMethod(typeof(VectorOperation22));
+                methods[0x23] = definition.MakeGenericMethod(typeof(VectorOperation23));
+                methods[0x24] = definition.MakeGenericMethod(typeof(VectorOperation24));
+                methods[0x25] = definition.MakeGenericMethod(typeof(VectorOperation25));
+                methods[0x26] = definition.MakeGenericMethod(typeof(VectorOperation26));
+                methods[0x27] = definition.MakeGenericMethod(typeof(VectorOperation27));
+                methods[0x28] = definition.MakeGenericMethod(typeof(VectorOperation28));
+                methods[0x29] = definition.MakeGenericMethod(typeof(VectorOperation29));
+                methods[0x2a] = definition.MakeGenericMethod(typeof(VectorOperation2A));
+                methods[0x2b] = definition.MakeGenericMethod(typeof(VectorOperation2B));
+                methods[0x2c] = definition.MakeGenericMethod(typeof(VectorOperation2C));
+                methods[0x2d] = definition.MakeGenericMethod(typeof(VectorOperation2D));
+                return methods;
+            }
+        }
+
+        private static MethodInfo GetSpecializedVectorSimd(int op) => VectorSimdOperations.Methods[op];
+
+        private void ExecuteVectorSimd(int op, int vd, int vs, int vt, int element)
+            => ExecuteVectorSimdOperation<RuntimeVectorOperation>(op, vd, vs, vt, element);
+
+        private void ExecuteVectorSimdOperation<TOperation>(int op, int vd, int vs, int vt, int element)
+            where TOperation : struct, IVectorSimdOperation
+        {
+            if (TOperation.Opcode >= 0) op = TOperation.Opcode;
             if (ProfileVectorOps) _vectorOpCounts[op]++;
             // All register indices and selectors are decoded instruction fields.
             // Load both operands before any destination write, including aliases.

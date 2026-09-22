@@ -9872,6 +9872,17 @@ namespace Ryu64.MIPS
 
         private MemEntry GetEntry(uint index)
         {
+            // Peripheral aliases start at 0x04000000. Keep the existing RAM
+            // window (including its backing-array mirrors) ahead of the large
+            // device decoder, so ordinary byte accesses need no device locals.
+            if (index <= 0x03EFFFFF)
+                return new MemEntry(0x00000000, 0x03EFFFFF, RDRAM, RDRAM, "RDRAM_FALLBACK");
+            return GetDeviceEntry(index);
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        private MemEntry GetDeviceEntry(uint index)
+        {
             if (TryGetSiAliasedEntry(index, out MemEntry siEntry))
                 return siEntry;
 
@@ -9880,11 +9891,6 @@ namespace Ryu64.MIPS
 
             if (TryGetSpMirroredEntry(index, out MemEntry spEntry))
                 return spEntry;
-
-            // Robust fallback: treat the full RDRAM window as mapped even if table lookup
-            // would miss for any reason. This prevents runaway OpenBus loops on normal RAM.
-            if (index <= 0x03EFFFFF)
-                return new MemEntry(0x00000000, 0x03EFFFFF, RDRAM, RDRAM, "RDRAM_FALLBACK");
 
             bool FoundEntry = false;
             MemEntry Result = new MemEntry();

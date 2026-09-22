@@ -153,14 +153,30 @@ memory hooks. Existing savestate formats and user slots are unchanged.
 
 ## Next targets
 
-Full RDRAM/hidden/TMEM readback remains unchanged. Selective readback still
-needs explicit ownership validation. The CPU profile also identifies costly
-RSP block/history completion and progress-signature work, which now deserve
-isolated experiments. On the CPU side, inspect rejected hot instruction
-sequences around multiply/MFLO and branch-likely boundaries before expanding
-JIT coverage; preserve their latency, delay-slot and exception behavior.
+The [HI/LO follow-up](n64-mario-hilo-speed-2026-09-22.md) now extends CPU block
+coverage through MFHI/MFLO and measures a further 3.36% throughput gain in
+eight matched runs. It also records three rejected RSP bookkeeping trials;
+none of their production changes remain.
 
-The two retained changes improve the measured moving scene, but do not reach
+The subsequent [RAM-dispatch follow-up](n64-mario-ram-speed-2026-09-22.md)
+moves ordinary RAM accesses ahead of peripheral decoding. Its additional
+branch-likely JIT coverage, smaller loop lookup and native SIMD readback trials
+did not improve matched gameplay and were removed. The retained RAM change
+measures a further 3.30% throughput gain across eight matched runs, with
+material variation between the two four-run series.
+
+The [RSP specialization follow-up](n64-mario-rsp-specialization-2026-09-22.md)
+removes runtime operation selection from compiled SIMD vector operations.
+It improves the movement interval by 3.09% and the complete run by 2.84%
+across eight matched runs. The intervening multiplication and operand-guard
+CPU candidates did not demonstrate repeatable gains and were removed.
+
+Full RDRAM/hidden/TMEM readback remains unchanged. Selective readback still
+needs explicit ownership validation. On the CPU side, inspect remaining hot
+sequences around multiply boundaries before expanding JIT coverage further;
+preserve their latency, delay-slot and exception behavior.
+
+The retained changes improve the measured moving scene, but do not reach
 100% real time or establish equivalent speed in other games. Keep measuring
 the same controller-read sequence, and profile the updated build before
 choosing another broad optimization.

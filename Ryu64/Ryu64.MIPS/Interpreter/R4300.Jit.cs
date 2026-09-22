@@ -182,6 +182,12 @@ namespace Ryu64.MIPS
                     reads = kind == 15 ? 0 : 1u << d.op1;
                     writes = 1u << d.op2;
                 }
+                else if (kind == 80 || kind == 82)
+                {
+                    // HI/LO cannot change inside this pure ALU/load subset;
+                    // their writers and multiply/divide remain block boundaries.
+                    reads = 0; writes = 1u << d.op3;
+                }
                 else if (kind >= 64 && kind < 128 && kind != 72 && kind != 73)
                 {
                     reads = 1u << d.op2;
@@ -336,6 +342,8 @@ namespace Ryu64.MIPS
         private static readonly FieldInfo JitRamField = typeof(Memory).GetField(nameof(Memory.RDRAM));
         private static readonly FieldInfo JitRegsField = typeof(Registers.R4300).GetField(nameof(Registers.R4300.Reg));
         private static readonly FieldInfo JitPcField = typeof(Registers.R4300).GetField(nameof(Registers.R4300.PC));
+        private static readonly FieldInfo JitHiField = typeof(Registers.R4300).GetField(nameof(Registers.R4300.HI));
+        private static readonly FieldInfo JitLoField = typeof(Registers.R4300).GetField(nameof(Registers.R4300.LO));
         private static readonly ConstructorInfo JitDescConstructor = typeof(OpcodeTable.OpcodeDesc).GetConstructor(new[] { typeof(uint) });
         private static MethodInfo JitMethod(string name) => typeof(R4300).GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic);
         private static readonly MethodInfo JitValidate = JitMethod(nameof(CanAccessCpuBlockOperand));
@@ -664,6 +672,8 @@ namespace Ryu64.MIPS
                     il.Emit(OpCodes.Ldc_I8, (long)unchecked((int)((uint)d.Imm << 16))); break;
                 case 25:
                     R(d.op1); il.Emit(OpCodes.Ldc_I8, (long)(short)d.Imm); il.Emit(OpCodes.Add); break;
+                case 80: case 82:
+                    il.Emit(OpCodes.Ldsfld, kind == 80 ? JitHiField : JitLoField); break;
                 case 97: case 99:
                     R(d.op1); il.Emit(OpCodes.Conv_U4); R(d.op2); il.Emit(OpCodes.Conv_U4); il.Emit(kind == 97 ? OpCodes.Add : OpCodes.Sub); Sx(); break;
                 case 100: case 101: case 102: case 103:

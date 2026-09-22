@@ -35,24 +35,45 @@ internal static class RspSimdChecks
     {
         var actual = new Machine(typeof(Memory).Assembly);
         var expected = new Machine(reference);
+        var specialized = new Machine(typeof(Memory).Assembly);
         var enabled = actual.Rsp.GetType().GetField("VectorSimdEnabled", BindingFlags.Static | BindingFlags.NonPublic);
         bool simd = (bool?)enabled?.GetValue(null) ?? false;
         if (System.Runtime.Intrinsics.X86.Ssse3.IsSupported
             && Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_SIMD") != "0" && !simd)
             throw new Exception("The net8 SIMD path was not enabled in this build.");
+        var factory = specialized.Rsp.GetType().GetMethod("GetSpecializedVectorSimd", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var native = new Action<int,int,int,int,int>[64];
+        if (simd)
+            for (int op = 0; op < native.Length; op++)
+                if (factory.Invoke(null, new object[] { op }) is MethodInfo method)
+                    native[op] = method.CreateDelegate<Action<int,int,int,int,int>>(specialized.Rsp);
+        int specializedCount = 0;
         byte[] actualBytes = new byte[512], expectedBytes = new byte[512];
         int count = 0;
         void CopyState()
         {
-            for (int i = 0; i < actual.State.Length; i++)
-                Buffer.BlockCopy(actual.State[i], 0, expected.State[i], 0, Buffer.ByteLength(actual.State[i]));
-            for (int i = 0; i < actual.Scalars.Length; i++)
-                expected.Scalars[i].SetValue(expected.Rsp, actual.Scalars[i].GetValue(actual.Rsp));
+            foreach (var target in new[] { expected, specialized })
+            {
+                for (int i = 0; i < actual.State.Length; i++)
+                    Buffer.BlockCopy(actual.State[i], 0, target.State[i], 0, Buffer.ByteLength(actual.State[i]));
+                for (int i = 0; i < actual.Scalars.Length; i++)
+                    target.Scalars[i].SetValue(target.Rsp, actual.Scalars[i].GetValue(actual.Rsp));
+            }
         }
         void Check(uint word)
         {
             bool a = actual.Execute(0, word, out string ar), b = expected.Execute(0, word, out string br);
             if (a != b || ar != br) throw new Exception($"RSP vector completion mismatch: {word:x8}");
+            bool c; string cr;
+            int op = (int)(word & 63);
+            if (word >> 25 == 0x25 && native[op] != null)
+            {
+                native[op](op, (int)((word >> 6) & 31), (int)((word >> 11) & 31),
+                    (int)((word >> 16) & 31), (int)((word >> 21) & 15));
+                c = true; cr = string.Empty; specializedCount++;
+            }
+            else c = specialized.Execute(0, word, out cr);
+            if (c != b || cr != br) throw new Exception($"Specialized vector completion mismatch: {word:x8}");
             for (int i = 0; i < actual.State.Length; i++)
             {
                 int length = Buffer.ByteLength(actual.State[i]);
@@ -60,10 +81,16 @@ internal static class RspSimdChecks
                 Buffer.BlockCopy(expected.State[i], 0, expectedBytes, 0, length);
                 if (!actualBytes.AsSpan(0, length).SequenceEqual(expectedBytes.AsSpan(0, length)))
                     throw new Exception($"RSP vector mismatch case={count} instruction={word:x8} state={i}");
+                Buffer.BlockCopy(specialized.State[i], 0, actualBytes, 0, length);
+                if (!actualBytes.AsSpan(0, length).SequenceEqual(expectedBytes.AsSpan(0, length)))
+                    throw new Exception($"Specialized vector mismatch case={count} instruction={word:x8} state={i}");
             }
             for (int i = 0; i < actual.Scalars.Length; i++)
                 if (!Equals(actual.Scalars[i].GetValue(actual.Rsp), expected.Scalars[i].GetValue(expected.Rsp)))
                     throw new Exception($"RSP vector scalar mismatch: {word:x8} {actual.Scalars[i].Name}");
+            for (int i = 0; i < specialized.Scalars.Length; i++)
+                if (!Equals(specialized.Scalars[i].GetValue(specialized.Rsp), expected.Scalars[i].GetValue(expected.Rsp)))
+                    throw new Exception($"Specialized vector scalar mismatch: {word:x8} {specialized.Scalars[i].Name}");
             count++;
         }
 
@@ -136,6 +163,8 @@ internal static class RspSimdChecks
         // alternates between optimized operations, reciprocal/clip and VSAR.
         for (int i = 0; i < 25000; i++)
             Check(0x4a000000u | (uint)random.Next(1 << 25));
-        Console.WriteLine($"rspSimdCases={count} simdEnabled={simd} differential=passed");
+        if (simd && (native.Count(n => n != null) != 31 || specializedCount == 0))
+            throw new Exception("Specialized SIMD coverage did not execute all operation forms");
+        Console.WriteLine($"rspSimdCases={count} specializedCases={specializedCount} simdEnabled={simd} differential=passed");
     }
 }

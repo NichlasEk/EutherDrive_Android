@@ -15,11 +15,112 @@ internal static class RspBlockChecks
             throw new Exception("Remove EUTHERDRIVE_N64_RSP_BLOCK_JIT=0 for this check.");
         Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_TASK_MAX_INSTRUCTIONS", "61");
         string actual = Check(typeof(Memory).Assembly, true);
+        string sliced = CheckSlicedProgress(typeof(Memory).Assembly);
         var context = new AssemblyLoadContext("reference-blocks", true);
-        string expected = Check(context.LoadFromAssemblyPath(Path.GetFullPath(reference)), false);
-        if (actual != expected) throw new Exception($"Block execution differs: {actual}/{expected}");
-        context.Unload();
+        string previousBlocks = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT");
+        try
+        {
+            // The candidate has already initialized its block switch. Initialize
+            // the isolated reference with ordinary RSP execution for a real oracle.
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT", "0");
+            var referenceAssembly = context.LoadFromAssemblyPath(Path.GetFullPath(reference));
+            string expected = Check(referenceAssembly, false);
+            if (actual != expected) throw new Exception($"Block execution differs: {actual}/{expected}");
+            if (sliced != CheckSlicedProgress(referenceAssembly))
+                throw new Exception("RSP progress/history differs across CPU writes, DMA or slice boundaries");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT", previousBlocks);
+            context.Unload();
+        }
         Console.WriteLine($"rspBlockCases=96 sha256={actual} differential=passed");
+        Console.WriteLine($"rspProgressSlices=768 sha256={sliced} differential=passed");
+    }
+
+    private delegate bool ExecuteSlice(out uint count, out string reason, bool resume, uint budget);
+
+    private static string CheckSlicedProgress(Assembly assembly)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream);
+        foreach (bool validTask in new[] { false, true })
+        foreach (int variant in new[] { 0, 1, 2 })
+        foreach (uint budget in new uint[] { 1, 2, 3, 7, 15, 16, 17, 31 })
+        {
+            Type memoryType = assembly.GetType("Ryu64.MIPS.Memory")!;
+            object memory = Activator.CreateInstance(memoryType, new object[] { new byte[4096] })!;
+            assembly.GetType("Ryu64.MIPS.R4300")!.GetField("memory")!.SetValue(null, memory);
+            object rsp = memoryType.GetField("_rspInterpreter", Private)!.GetValue(memory)!;
+            Type rspType = rsp.GetType();
+            if (validTask)
+            {
+                var taskField = memoryType.GetField("_activeRspTask", Private)!;
+                object task = Activator.CreateInstance(taskField.FieldType)!;
+                taskField.FieldType.GetField("Type")!.SetValue(task, 1u);
+                taskField.SetValue(memory, task);
+            }
+            // Model synchronous dispatch so lifecycle ticks cannot recursively
+            // dispatch this manually sliced test program.
+            memoryType.GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);
+            byte[] sp = (byte[])memoryType.GetField("SP_MEM_RW")!.GetValue(memory)!;
+            uint[] gpr = (uint[])rspType.GetField("_gpr", Private)!.GetValue(rsp)!;
+            gpr[3] = 0x400; gpr[4] = 0x200; gpr[5] = 15;
+            bool dmaProgram = variant == 1;
+            uint[] program = {
+                0x24210001, 0x34300000, 0x34310000, 0x24420001,
+                dmaProgram ? 0x40830000u : 0u, // SP_MEM_ADDR
+                dmaProgram ? 0x40840800u : 0u, // SP_DRAM_ADDR
+                dmaProgram ? 0x40851000u : 0u, // SP_RD_LEN
+                dmaProgram ? 0x40182000u : 0u, // read SP_STATUS into tracked r24
+                0x27390001, 0x275a0001, 0x0c000000, 0 // tracked r25/r26/r31, JAL + delay
+            };
+            if (variant == 2)
+            {
+                // More than eight consecutive blocks, with unequal lengths,
+                // distinct PCs/words and all ring positions. This forces any
+                // bounded pending-history queue to discard overwritten entries.
+                var blocks = new List<uint>();
+                for (int block = 0; block < 16; block++)
+                {
+                    int length = block < 4 ? new[] { 2, 3, 5, 16 }[block] : 2;
+                    for (int i = 0; i < length - 2; i++)
+                        blocks.Add(0x24420000u | (uint)(block + i + 1));
+                    uint target = block == 15 ? 0u : (uint)blocks.Count + 2;
+                    blocks.Add(0x08000000u | target);
+                    blocks.Add(0x24210000u | (uint)block); // tracked write in delay slot
+                }
+                program = blocks.ToArray();
+            }
+            for (int i = 0; i < program.Length; i++)
+                BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + i * 4), program[i]);
+            var execute = rspType.GetMethod("ExecuteSlice", Private)!.CreateDelegate<ExecuteSlice>(rsp);
+            var cp0 = memoryType.GetMethod("WriteRspCp0", Private)!.CreateDelegate<Action<int, uint>>(memory);
+            var tick = memoryType.GetMethod("TickRspInterpreter", Private)!.CreateDelegate<Action<uint>>(memory);
+            var save = memoryType.GetMethod("SaveState")!.CreateDelegate<Action<BinaryWriter>>(memory);
+            for (int slice = 0; slice < 16; slice++)
+            {
+                // CPU changes between slices must become visible at exactly
+                // the same progress checkpoints as in the uncached reference.
+                if (slice % 4 == 1) cp0(0, (uint)(0x600 + slice * 8));
+                if (slice % 4 == 2) cp0(4, (slice & 4) == 0 ? 0x400u : 0x200u);
+                if (slice % 4 == 3 && variant != 2)
+                {
+                    cp0(0, 0x800); cp0(1, 0x200); cp0(2, 15);
+                    tick((uint)slice);
+                }
+                bool completed = execute(out uint instructions, out string reason, slice != 0, budget);
+                if (completed || instructions != budget || reason != "slice")
+                    throw new Exception($"Sliced RSP program stopped at budget {budget}: {reason}");
+                stream.SetLength(0);
+                save(writer);
+                writer.Write(RspTaskCapture.SaveRegisters(rsp, includeScratch: false));
+                writer.Write(instructions); writer.Write(reason); writer.Flush();
+                hash.AppendData(stream.GetBuffer(), 0, (int)stream.Length);
+            }
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     private static string Check(Assembly assembly, bool requireBlocks)
@@ -74,6 +175,13 @@ internal static class RspBlockChecks
             // Both encodings set r1 to the same value; alternating them also
             // checks invalidation when the first cached instruction changes.
             Op(iteration % 4 == 1 ? 0x34010fffu : 0x24010fffu);
+            // Exercise every specialized operation through a real compiled block.
+            uint[] simdOps = { 0,1,4,5,6,7,8,9,12,13,14,15,16,17,19,20,21,32,33,34,35,36,37,38,39,40,41,42,43,44,45 };
+            uint simdOp = simdOps[iteration % simdOps.Length];
+            uint simdSource = (uint)(iteration % 32);
+            uint simdDestination = iteration % 2 == 0 ? simdSource : (simdSource + 1) & 31;
+            Op(0x4a000000u | (uint)(iteration % 16) << 21 | simdSource << 16
+                | ((simdSource + 2) & 31) << 11 | simdDestination << 6 | simdOp);
             // Exercise each predecoded accumulate with all element selectors
             // and both aliased and distinct destination/source registers.
             for (uint accumulate = 13; accumulate <= 15; accumulate++)

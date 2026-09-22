@@ -18,10 +18,14 @@ def main():
     for name in ("reference", "candidate", "rom", "output"):
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--library", type=Path)
+    parser.add_argument("--reference-library", type=Path,
+                        help="Compare two GPU libraries; defaults to --library")
     parser.add_argument("--cores", default="6,7")
     parser.add_argument("--start", type=int, default=70)
     parser.add_argument("--end", type=int, default=90)
     args = parser.parse_args()
+    if args.reference_library and not args.library:
+        parser.error("--reference-library requires --library for the candidate")
     if args.start < 5 or args.end <= args.start or args.start % 5 or args.end % 5:
         parser.error("start/end must be increasing multiples of 5")
     args.output.mkdir(parents=True, exist_ok=False)
@@ -42,10 +46,13 @@ def main():
         name = f"{index}-{mode}"
         output = args.output / name
         print("running", name, flush=True)
+        run_env = env.copy()
+        if mode == "reference" and args.reference_library:
+            run_env["EUTHERDRIVE_N64_GPU_LIBRARY"] = str(args.reference_library.resolve())
         with (args.output / (name + ".log")).open("w") as log:
             subprocess.run(["taskset", "-c", args.cores, "dotnet", str(getattr(args, mode).resolve()),
                             "--bench-sm64", str(args.rom.resolve()), str(output.resolve()), str(args.end)],
-                           env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+                           env=run_env, stdout=log, stderr=subprocess.STDOUT, check=True)
         if (output / "jit-profile.json").exists():
             raise RuntimeError("Instrumented JIT profile cannot be used as a timing sample")
         points = json.loads((output / "checkpoints.json").read_text())

@@ -26,6 +26,7 @@ namespace Ryu64.MIPS
                 masks[64 + function] = 0x000007c0u;
             masks[72] = 0x001fffc0u;
             masks[73] = 0x001f07c0u;
+            masks[80] = masks[82] = 0x03ff07c0u; // MFHI/MFLO: only rd is variable.
             return masks;
         }
 
@@ -148,6 +149,8 @@ namespace Ryu64.MIPS
                 case 68: InstInterp.SLLV(desc); break;
                 case 70: InstInterp.SRLV(desc); break;
                 case 71: InstInterp.SRAV(desc); break;
+                case 80: InstInterp.MFHI(desc); break;
+                case 82: InstInterp.MFLO(desc); break;
                 case 84: InstInterp.DSLLV(desc); break;
                 case 86: InstInterp.DSRLV(desc); break;
                 case 87: InstInterp.DSRAV(desc); break;
