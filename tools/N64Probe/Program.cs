@@ -2,6 +2,24 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length is 4 or 5 && args[0] == "--bench-state")
+{
+#if N64_PERF_PROBE
+    StateGameplayBenchmark.Run(args[1], args[2], args[3], args.Length == 5 ? int.Parse(args[4]) : 30);
+    return;
+#else
+    throw new InvalidOperationException("Build with -p:N64PerformanceProbe=true for deterministic gameplay");
+#endif
+}
+
+#if N64_LIVE_GPU && N64_PERF_PROBE
+if (args.Length is 3 or 4 && args[0] == "--check-gpu-state-game")
+{
+    GpuGameplayStateChecks.Run(args[1], args[2], args.Length == 4 ? int.Parse(args[3]) : 10);
+    return;
+}
+#endif
+
 if (args.Length == 1 && args[0] == "--check-cpu-jit-cache")
 {
     CpuJitCacheChecks.Run();
@@ -19,6 +37,11 @@ if (args.Length is 3 or 4 && args[0] == "--bench-sm64")
 }
 
 #if N64_LIVE_GPU && N64_RDP_JOURNAL
+if (args.Length == 3 && args[0] == "--check-gpu-savestates")
+{
+    N64GpuSavestateChecks.Run(args[1], args[2]);
+    return;
+}
 if (args.Length == 4 && args[0] == "--check-live-gpu")
 {
     N64LiveGpuChecks.Run(args[1], args[2], args[3]);
@@ -465,14 +488,6 @@ try
         }
     }
     core.Stop();
-#if N64_LIVE_GPU
-    if (R4300.memory.GpuRenderer != null)
-    {
-        R4300.memory.GpuRenderer.Synchronize();
-        Console.WriteLine("gpuSavestate=unsupported; no state file written");
-    }
-    else
-#endif
     core.SaveState(Path.Combine(output, "state.bin"));
 }
 finally { core.Stop(); }

@@ -47,6 +47,15 @@ ED_N64_GPU_API int ed_n64_gpu_get_stats(uint64_t handle, ed_n64_gpu_stats *stats
     char *error, uint32_t error_capacity);
 ED_N64_GPU_API int ed_n64_gpu_device_name(uint64_t handle, char *name, uint32_t capacity,
     char *error, uint32_t error_capacity);
+// Optional ABI-1 extension. A checkpoint drains pending work and serializes
+// persistent RDP registers, tiles, TMEM and noise position. RDRAM/hidden bytes
+// are supplied separately to create(). No scanout/upscaling state is exposed.
+// Save requires a 16-KiB buffer and returns the actual byte count. Load is
+// permitted only on a newly created context; discard it if import fails.
+ED_N64_GPU_API int ed_n64_gpu_save_state(uint64_t handle, uint8_t *state, uint32_t capacity,
+    uint32_t *written, char *error, uint32_t error_capacity);
+ED_N64_GPU_API int ed_n64_gpu_load_state(uint64_t handle, const uint8_t *state, uint32_t size,
+    char *error, uint32_t error_capacity);
 ED_N64_GPU_API int ed_n64_gpu_destroy(uint64_t handle, char *error, uint32_t error_capacity);
 
 #ifdef __cplusplus

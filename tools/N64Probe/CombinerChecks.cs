@@ -28,8 +28,11 @@ internal static class CombinerChecks
         void Field(string name, object value) => type.GetField(name, flags)!.SetValue(memory, value);
         var random = new Random(646464);
         uint Word() => (uint)random.NextInt64(0, 1L << 32);
-        var modes = new List<ulong> { 0xfcfffffffffe7b3d, 0xfc127e24fffff9fc, 0xfc129a25ff37ffff,
+        var modes = new List<ulong> { 0xfc126203fffffff8, 0xfcfffffffffe7b3d, 0xfc127e24fffff9fc, 0xfc129a25ff37ffff,
             0xfc121824ff33ffff, 0xfcfffffffffe793c, 0xfcfffffffffcf279, 0xfc42ca85ff97ffff };
+        // Change every mux bit around two-cycle texture/shade/primitive
+        // modulation, including alpha and cycle-1 COMBINED dependencies.
+        for (int bit = 0; bit < 56; bit++) modes.Add(0xfc126203fffffff8 ^ (1UL << bit));
         ulong Pack(int a, int b, int c, int d, int aa, int ab, int ac, int ad)
         {
             ulong mode = 0xfc00000000000000;
@@ -70,9 +73,12 @@ internal static class CombinerChecks
             for (uint cycle = 0; cycle < 4; cycle++)
             {
                 Field("_rdpOtherModesCycleType", cycle);
-                for (int sample = 0; sample < 16; sample++)
+                for (int sample = 0; sample < (mode == 0 ? 256 : 16); sample++)
                 {
-                    uint texel = sample < 4 ? (uint)sample * 0x55555555u : Word();
+                    // Sweep every texel/alpha level through the two separate
+                    // rounding steps, including ONE * 255 producing 254.
+                    uint texel = mode == 0 ? (uint)sample * 0x01010101u
+                        : sample < 4 ? (uint)sample * 0x55555555u : Word();
                     uint shade = sample < 4 ? ~texel : Word();
                     Field("_rdpPrimColor", Word()); Field("_rdpEnvColor", Word());
                     hash.AppendData(BitConverter.GetBytes(combine(texel, shade)));

@@ -22,14 +22,18 @@ internal static class N64LiveGpuChecks
             core.LoadROM(rom);
             string slot = Path.Combine(output, "existing-slot.bin");
             byte[] marker = { 12, 34, 56, 78 }; File.WriteAllBytes(slot, marker);
-            try { core.SaveState(slot); throw new Exception("GPU save unexpectedly succeeded"); }
+            try { core.SaveState(slot); throw new Exception("Saved an uninitialized CPU"); }
             catch (InvalidOperationException) { }
-            if (!File.ReadAllBytes(slot).AsSpan().SequenceEqual(marker)) throw new Exception("GPU save damaged existing file");
+            if (!File.ReadAllBytes(slot).AsSpan().SequenceEqual(marker)) throw new Exception("Failed save modified existing file");
             core.Start();
             var timeout = System.Diagnostics.Stopwatch.StartNew();
             while (R4300.memory.RdpCommandCount == 0 && timeout.Elapsed.TotalSeconds < 45) Thread.Sleep(20);
             core.Stop();
             if (R4300.memory.RdpCommandCount == 0) throw new Exception("Boot produced no live GPU command");
+            core.SaveState(slot);
+            core.LoadState(slot);
+            if (R4300.memory.GpuRenderer == null) throw new Exception("GPU save resumed in software");
+            core.Start(); core.Stop();
             var old = R4300.memory;
             core.Start(); core.Stop();
             if (ReferenceEquals(old, R4300.memory) || old.GpuRenderer != null || R4300.memory.GpuRenderer == null)
@@ -41,7 +45,7 @@ internal static class N64LiveGpuChecks
             core.LoadState(new BinaryReader(state));
             if (R4300.memory.GpuRenderer != null) throw new Exception("Old save resumed against reset GPU state");
             core.Dispose();
-            Console.WriteLine("liveGpuLifecycle=passed existingSave=preserved restart=fresh oldSave=software stop=joined dispose=passed");
+            Console.WriteLine("liveGpuLifecycle=passed gpuSaveLoad=passed failedSave=preserved restart=fresh oldSave=software stop=joined dispose=passed");
         }
         finally { Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_GPU_LIBRARY", previous); }
     }
@@ -231,8 +235,12 @@ internal static class N64LiveGpuChecks
             if (!offsetFrame.AsSpan().SequenceEqual(held)) throw new Exception("Unfinished VI buffer did not hold completed image");
             checks++;
             using var state = new MemoryStream();
-            try { using var writer = new BinaryWriter(state, System.Text.Encoding.UTF8, true); memory.SaveState(writer); throw new Exception("GPU state silently saved as software"); }
-            catch (InvalidOperationException) { if (state.Length != 0) throw new Exception("Failed save wrote bytes"); checks++; }
+            using (var writer = new BinaryWriter(state, System.Text.Encoding.UTF8, true)) memory.SaveState(writer);
+            state.Position = 0; memory.LoadState(new BinaryReader(state));
+            if (memory.GpuRenderer == null) throw new Exception("GPU state resumed in software");
+            memory.TryGetGpuFramebuffer(out var restored, out _, out _, out _);
+            if (!restored.AsSpan().SequenceEqual(held)) throw new Exception("Savestate lost held GPU image");
+            checks++;
         }
         // Commands split across recycled DMEM must reach the live GPU only
         // after the real FIFO assembler has retained and joined every word.

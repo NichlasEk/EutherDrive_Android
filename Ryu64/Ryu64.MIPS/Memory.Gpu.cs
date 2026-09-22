@@ -1,6 +1,7 @@
 #if N64_LIVE_GPU
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
 
@@ -11,6 +12,8 @@ namespace Ryu64.MIPS
         void Command(ReadOnlySpan<uint> words);
         void RdramWritten(uint address, uint length);
         void Synchronize();
+        byte[] SaveState();
+        void LoadState(byte[] state);
         string Status { get; }
     }
 
@@ -48,14 +51,112 @@ namespace Ryu64.MIPS
             GpuRenderer = renderer ?? throw new ArgumentNullException(nameof(renderer));
         }
 
-        // Caller must first join the emulation thread. Old software saves may
-        // then load normally; an in-flight GPU state must never be saved as v7.
+        // Caller must first join the emulation thread.
         public void DetachGpu()
         {
             var renderer = GpuRenderer; GpuRenderer = null;
             renderer?.Dispose(); _gpuPending = false;
             Array.Clear(_gpuPendingPages, 0, _gpuPendingPages.Length);
             _gpuPendingRanges.Clear();
+            _gpuThread = 0; _gpuScissorHeight = 1024;
+            lock (_gpuFrameLock)
+            {
+                _gpuTargets.Clear(); _gpuCompleted.Clear(); _gpuLastPixels = Array.Empty<byte>();
+                _gpuLastWidth = _gpuLastHeight = _gpuLastBpp = 0;
+            }
+            GpuFrames = GpuReadHazards = 0;
+        }
+
+        public void AttachGpuForState(IRdpGpuRenderer renderer)
+        {
+            if (renderer == null) throw new ArgumentNullException(nameof(renderer));
+            DetachGpu(); GpuRenderer = renderer;
+        }
+
+        private void WriteGpuState(BinaryWriter writer, byte[] backend)
+        {
+            writer.Write(backend.Length); writer.Write(backend);
+            writer.Write(_gpuScissorHeight); writer.Write(GpuReadHazards); writer.Write(GpuFrames);
+            lock (_gpuFrameLock)
+            {
+                writer.Write(_gpuTargets.Count);
+                foreach (var frame in _gpuTargets.OrderBy(pair => pair.Key).Select(pair => pair.Value)) WriteGpuFrame(writer, frame);
+                writer.Write(_gpuCompleted.Count);
+                foreach (var frame in _gpuCompleted) WriteGpuFrame(writer, frame);
+                writer.Write(_gpuLastWidth); writer.Write(_gpuLastHeight); writer.Write(_gpuLastBpp);
+                writer.Write(_gpuLastPixels.Length); writer.Write(_gpuLastPixels);
+            }
+        }
+
+        private static void WriteGpuFrame(BinaryWriter writer, GpuFrame frame)
+        {
+            writer.Write(frame.Address); writer.Write(frame.Width); writer.Write(frame.Bpp);
+            writer.Write(frame.Pixels?.Length ?? 0);
+            if (frame.Pixels != null) writer.Write(frame.Pixels);
+        }
+
+        private static byte[] ReadGpuBytes(BinaryReader reader, int maximum)
+        {
+            int count = reader.ReadInt32();
+            if (count < 0 || count > maximum) throw new InvalidDataException("Invalid GPU savestate buffer size");
+            byte[] result = reader.ReadBytes(count);
+            if (result.Length != count) throw new EndOfStreamException();
+            return result;
+        }
+
+        private static GpuFrame ReadGpuFrame(BinaryReader reader)
+        {
+            var frame = new GpuFrame { Address = reader.ReadUInt32(), Width = reader.ReadUInt32(), Bpp = reader.ReadUInt32() };
+            frame.Pixels = ReadGpuBytes(reader, 1024 * 576 * 4);
+            if (frame.Address >= 0x800000 || frame.Width > 1024 || frame.Bpp < 1 || frame.Bpp > 4
+                || (frame.Pixels.Length != 0 && (frame.Width == 0 || frame.Bpp < 2
+                    || frame.Pixels.Length % (frame.Width * frame.Bpp) != 0
+                    || frame.Pixels.Length > Math.Min(0x800000u - frame.Address, frame.Width * frame.Bpp * 576))))
+                throw new InvalidDataException("Invalid completed GPU framebuffer");
+            return frame;
+        }
+
+        private void ReadGpuState(BinaryReader reader)
+        {
+            byte[] backend = ReadGpuBytes(reader, 16384);
+            uint scissorHeight = reader.ReadUInt32();
+            long hazards = reader.ReadInt64(), frames = reader.ReadInt64();
+            if (scissorHeight > 1024 || hazards < 0 || frames < 0) throw new InvalidDataException("Invalid GPU savestate counters");
+            int count = reader.ReadInt32();
+            if (count < 0 || count > 65536) throw new InvalidDataException("Invalid pending GPU target count");
+            var targets = new Dictionary<ulong, GpuFrame>();
+            for (int i = 0; i < count; i++)
+            {
+                var frame = ReadGpuFrame(reader);
+                if (frame.Pixels.Length != 0) throw new InvalidDataException("Pending GPU target contains published pixels");
+                ulong key = frame.Address | ((ulong)frame.Width << 24) | ((ulong)frame.Bpp << 40);
+                if (targets.ContainsKey(key)) throw new InvalidDataException("Duplicate GPU target");
+                targets.Add(key, frame);
+            }
+            count = reader.ReadInt32();
+            if (count < 0 || count > 8) throw new InvalidDataException("Invalid completed GPU target count");
+            var completed = new List<GpuFrame>();
+            for (int i = 0; i < count; i++)
+            {
+                var frame = ReadGpuFrame(reader);
+                if (frame.Pixels.Length == 0) throw new InvalidDataException("Empty completed GPU target");
+                completed.Add(frame);
+            }
+            int width = reader.ReadInt32(), height = reader.ReadInt32(), bpp = reader.ReadInt32();
+            byte[] pixels = ReadGpuBytes(reader, 1024 * 576 * 4);
+            if (width < 0 || width > 1024 || height < 0 || height > 576 || bpp < 0 || bpp > 4
+                || pixels.Length != (long)width * height * bpp || (pixels.Length != 0 && bpp < 2))
+                throw new InvalidDataException("Invalid GPU scanout snapshot");
+            GpuRenderer.LoadState(backend);
+            Array.Clear(_gpuPendingPages, 0, _gpuPendingPages.Length); _gpuPendingRanges.Clear();
+            _gpuPending = false; _gpuThread = 0; _gpuScissorHeight = scissorHeight;
+            GpuReadHazards = hazards; GpuFrames = frames;
+            lock (_gpuFrameLock)
+            {
+                _gpuTargets.Clear(); foreach (var target in targets) _gpuTargets.Add(target.Key, target.Value);
+                _gpuCompleted.Clear(); _gpuCompleted.AddRange(completed);
+                _gpuLastPixels = pixels; _gpuLastWidth = width; _gpuLastHeight = height; _gpuLastBpp = bpp;
+            }
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]

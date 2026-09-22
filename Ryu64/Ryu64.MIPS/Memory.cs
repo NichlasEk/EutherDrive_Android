@@ -858,6 +858,7 @@ namespace Ryu64.MIPS
         // Derived from the mux; rebuilt after commands/state loads, not serialized.
         private int _rdpCombineFast0;
         private int _rdpCombineFast1;
+        private bool _rdpCombineTextureShadePrimitive;
         private uint _rdpTextureImageAddress;
         private uint _rdpTextureImageWidth;
         private uint _rdpTextureImageSize;
@@ -1064,9 +1065,11 @@ namespace Ryu64.MIPS
                 throw new ArgumentNullException(nameof(writer));
 
 #if N64_LIVE_GPU
-            if (GpuRenderer != null) throw new InvalidOperationException("GPU savestates are not supported yet; use software rendering for saves");
-#endif
+            byte[] gpuState = GpuRenderer?.SaveState();
+            int version = gpuState == null ? 7 : 8;
+#else
             const int version = 7;
+#endif
             writer.Write(version);
 
             WriteByteArrays(writer);
@@ -1214,6 +1217,9 @@ namespace Ryu64.MIPS
             writer.Write(_pendingVisibleRdpFramebufferWidth);
             writer.Write(_pendingVisibleRdpFramebufferBytesPerPixel);
             writer.Write(_pendingVisibleRdpFramebufferKnownPixels);
+#if N64_LIVE_GPU
+            if (gpuState != null) WriteGpuState(writer, gpuState);
+#endif
         }
 
         public void LoadState(BinaryReader reader)
@@ -1222,8 +1228,16 @@ namespace Ryu64.MIPS
                 throw new ArgumentNullException(nameof(reader));
 
             int version = reader.ReadInt32();
+#if N64_LIVE_GPU
+            if (version == 8 && GpuRenderer == null) throw new InvalidDataException("This savestate requires the N64 GPU renderer");
+            if (version < 1 || version > 8)
+#else
             if (version < 1 || version > 7)
+#endif
                 throw new InvalidDataException($"Unsupported N64 memory savestate version: {version}.");
+#if N64_LIVE_GPU
+            if (version < 8) DetachGpu();
+#endif
 
             lock (_audioQueueLock) _audioQueue.Clear();
 
@@ -1423,6 +1437,9 @@ namespace Ryu64.MIPS
                     || _pendingVisibleRdpFramebufferWidth != _rdpColorImageWidth
                     || _pendingVisibleRdpFramebufferBytesPerPixel != RdpBytesPerPixel(_rdpColorImageSize)))
                 throw new InvalidDataException("Invalid pending framebuffer in savestate");
+#if N64_LIVE_GPU
+            if (version >= 8) ReadGpuState(reader);
+#endif
             RefreshCpuInterruptView();
         }
 
@@ -3443,6 +3460,15 @@ namespace Ryu64.MIPS
             if (_rdpOtherModesCycleType == 2u) // Copy bypasses the combiner.
                 return texel0;
 
+            if (_rdpOtherModesCycleType == 1u && _rdpCombineTextureShadePrimitive)
+            {
+                // Both cycles round separately. Alpha is ONE * TEXEL0 in
+                // cycle 0, then COMBINED passthrough; ONE is 255, not 256.
+                uint first = ModulateRdpTextureCombine(texel0, shade, false);
+                uint second = ModulateRdpTextureCombine(first, _rdpPrimColor, false);
+                return (second & 0xFFFFFF00u) | (((texel0 & 255u) * 255u + 128u) >> 8);
+            }
+
             // Common texture modulation has already been recognized when the
             // mux was set. Avoid passing all fourteen generic cycle operands
             // for each pixel; two-cycle COMBINED still uses both cycle calls.
@@ -3862,6 +3888,17 @@ namespace Ryu64.MIPS
 
         private void PrepareRdpCombineFastPaths()
         {
+            // Recognize the arithmetic sources, independently of cartridge
+            // identity. Rebuild this derived plan after every mux/state load.
+            _rdpCombineTextureShadePrimitive =
+                _rdpCombine.SubARgb0 == 1 && _rdpCombine.SubBRgb0 >= 6
+                && _rdpCombine.MulRgb0 == 4 && _rdpCombine.AddRgb0 == 7
+                && _rdpCombine.SubAA0 == 6 && _rdpCombine.SubBA0 == 7
+                && _rdpCombine.MulA0 == 1 && _rdpCombine.AddA0 == 7
+                && _rdpCombine.SubARgb1 == 0 && _rdpCombine.SubBRgb1 >= 6
+                && _rdpCombine.MulRgb1 == 3 && _rdpCombine.AddRgb1 == 7
+                && (_rdpCombine.MulA1 == 7 || _rdpCombine.SubAA1 == _rdpCombine.SubBA1)
+                && _rdpCombine.AddA1 == 0;
             _rdpCombineFast0 = ClassifyRdpCombineCycle(
                 _rdpCombine.SubARgb0, _rdpCombine.SubBRgb0, _rdpCombine.MulRgb0, _rdpCombine.AddRgb0,
                 _rdpCombine.SubAA0, _rdpCombine.SubBA0, _rdpCombine.MulA0, _rdpCombine.AddA0);

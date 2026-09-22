@@ -1,4 +1,5 @@
 #include "n64_gpu.h"
+#include "n64_gpu_state.hpp"
 #include "rdp_device.hpp"
 #include "context.hpp"
 #include "global_managers_init.hpp"
@@ -150,6 +151,7 @@ struct Context : RDP::ValidationInterface {
     bool defer_disjoint_load_blocks;
     FramebufferRanges framebuffers;
     LoadBlockRange texture;
+    uint32_t vi_registers[14] = {};
 
     Context(uint32_t flags, const uint8_t *initial_ram, const uint8_t *initial_hidden)
         : factory((flags & ED_N64_GPU_VALIDATE) != 0),
@@ -309,6 +311,7 @@ int ed_n64_gpu_submit(uint64_t handle, const uint8_t *bytes, uint32_t size, uint
                     auto *p = data + reg * 4;
                     uint32_t value = uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3];
                     ctx.gpu->set_vi_register(RDP::VIRegister(reg), value);
+                    ctx.vi_registers[reg] = value;
                 }
             }
             at += length;
@@ -348,4 +351,60 @@ int ed_n64_gpu_device_name(uint64_t handle, char *name, uint32_t size, char *err
 }
 int ed_n64_gpu_destroy(uint64_t handle, char *error, uint32_t capacity) {
     return boundary(error, capacity, [&] { get(handle); contexts.erase(handle); });
+}
+
+int ed_n64_gpu_save_state(uint64_t handle, uint8_t *state, uint32_t capacity,
+    uint32_t *written, char *error, uint32_t error_capacity) {
+    if (written) *written = 0;
+    return boundary(error, error_capacity, [&] {
+        require(state && written && capacity >= 16384, "Checkpoint buffer must hold 16 KiB");
+        auto &ctx = get(handle);
+        auto rdp = RDP::EutherCheckpoint::save(*ctx.gpu);
+        std::vector<uint8_t> blob;
+        auto word = [&](uint32_t value) { for (unsigned shift = 0; shift < 32; shift += 8) blob.push_back(uint8_t(value >> shift)); };
+        word(0x31534745); word(uint32_t(rdp.size()));
+        blob.insert(blob.end(), rdp.begin(), rdp.end());
+        const auto &f = ctx.framebuffers;
+        word(f.color); word(f.depth); word(f.width); word(f.pixel_bytes); word(f.have_depth);
+        const auto &t = ctx.texture;
+        word(t.address); word(t.width); word(t.size);
+        for (auto &tile : t.tiles) { word(tile.size); word(tile.format); word(tile.stride); word(tile.known); }
+        for (auto value : ctx.vi_registers) word(value);
+        require(blob.size() <= capacity, "Checkpoint exceeds buffer");
+        ctx.healthy(); std::memcpy(state, blob.data(), blob.size()); *written = uint32_t(blob.size());
+    });
+}
+
+int ed_n64_gpu_load_state(uint64_t handle, const uint8_t *state, uint32_t size, char *error, uint32_t capacity) {
+    return boundary(error, capacity, [&] {
+        require(state && size >= 8 && size <= 16384, "Invalid checkpoint size");
+        auto &ctx = get(handle);
+        require(ctx.stats.submissions == 0 && ctx.stats.commands == 0, "Checkpoint import requires a fresh context");
+        uint32_t at = 0;
+        auto word = [&]() { require(size - at >= 4, "Truncated checkpoint"); uint32_t value = le32(state + at); at += 4; return value; };
+        require(word() == 0x31534745, "Unsupported GPU checkpoint version");
+        uint32_t rdp_size = word();
+        require(rdp_size <= size - at, "Invalid RDP checkpoint size");
+        const uint8_t *rdp = state + at; at += rdp_size;
+        FramebufferRanges f;
+        f.color = word(); f.depth = word(); f.width = word(); f.pixel_bytes = word();
+        uint32_t known = word(); require(known <= 1, "Invalid framebuffer checkpoint flag"); f.have_depth = known != 0;
+        require(f.color <= 0xffffff && f.depth <= 0xffffff && f.width <= 1024 && f.pixel_bytes <= 4, "Invalid framebuffer checkpoint");
+        LoadBlockRange t;
+        t.address = word(); t.width = word(); t.size = word();
+        require(t.address <= 0xffffff && t.width <= 1024 && t.size <= 3, "Invalid texture checkpoint");
+        for (auto &tile : t.tiles) {
+            tile.size = word(); tile.format = word(); tile.stride = word(); known = word();
+            require(tile.size <= 3 && tile.format <= 7 && tile.stride <= 511 && known <= 1, "Invalid tile checkpoint");
+            tile.known = known != 0;
+        }
+        uint32_t vi[14]; for (auto &value : vi) value = word();
+        require(at == size, "Trailing checkpoint data");
+        RDP::EutherCheckpoint::load(*ctx.gpu, rdp, rdp_size);
+        ctx.framebuffers = f; ctx.texture = t;
+        for (unsigned reg = 0; reg < 14; reg++) {
+            ctx.vi_registers[reg] = vi[reg]; ctx.gpu->set_vi_register(RDP::VIRegister(reg), vi[reg]);
+        }
+        ctx.healthy();
+    });
 }

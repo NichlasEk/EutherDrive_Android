@@ -47,6 +47,9 @@ namespace Ryu64Core
         private Memory _loadedMemory;
         private bool isRunning = false;
         private bool _resumeLoadedState;
+#if N64_LIVE_GPU
+        private bool _executionInitialized;
+#endif
 
         // Retained only for version-1 savestate layout compatibility.
         private uint _lastAudioAddress;
@@ -227,6 +230,9 @@ namespace Ryu64Core
                 throw new InvalidOperationException("Build with -p:N64LiveGpu=true to use the GPU backend");
 #endif
             _resumeLoadedState = false;
+#if N64_LIVE_GPU
+            _executionInitialized = false;
+#endif
             _lastAudioAddress = 0;
             _lastAudioLength = 0;
             _lastAudioDacrate = 0;
@@ -264,6 +270,9 @@ namespace Ryu64Core
                 R4300.PowerOnR4300();
             }
             isRunning = true;
+#if N64_LIVE_GPU
+            _executionInitialized = true;
+#endif
             StateChanged?.Invoke(this, new EmulationStateChangedEventArgs(true));
         }
 
@@ -789,12 +798,18 @@ namespace Ryu64Core
 
         public void SaveState(string path)
         {
-#if N64_LIVE_GPU
-            if (R4300.memory?.GpuRenderer != null) throw new InvalidOperationException("Saving is not available in experimental GPU mode. Existing saves are unchanged.");
-#endif
-            using FileStream stream = File.Create(path);
-            using BinaryWriter writer = new BinaryWriter(stream);
-            SaveState(writer);
+            // Finish serialization before touching an existing save, including
+            // native GPU failures. Publish a complete file with one rename.
+            using var state = new MemoryStream();
+            using (var writer = new BinaryWriter(state, System.Text.Encoding.UTF8, true)) SaveState(writer);
+            string target = Path.GetFullPath(path), temporary = target + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                using (var stream = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                { state.Position = 0; state.CopyTo(stream); stream.Flush(true); }
+                File.Move(temporary, target, true);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
 
         public void LoadState(string path)
@@ -806,13 +821,14 @@ namespace Ryu64Core
 
         public void SaveState(BinaryWriter writer)
         {
-#if N64_LIVE_GPU
-            if (R4300.memory?.GpuRenderer != null) throw new InvalidOperationException("Saving is not available in experimental GPU mode");
-#endif
             if (writer == null)
                 throw new ArgumentNullException(nameof(writer));
             if (rom == null || R4300.memory == null)
                 throw new InvalidOperationException("No N64 ROM loaded.");
+#if N64_LIVE_GPU
+            if (R4300.memory.GpuRenderer != null && !_executionInitialized)
+                throw new InvalidOperationException("Start the emulator before saving.");
+#endif
 
             bool restart = isRunning;
             if (restart)
@@ -820,7 +836,11 @@ namespace Ryu64Core
 
             try
             {
+#if N64_LIVE_GPU
+                int version = R4300.memory.GpuRenderer == null ? 1 : 2;
+#else
                 const int version = 1;
+#endif
                 writer.Write(version);
                 writer.Write(_lastAudioAddress);
                 writer.Write(_lastAudioLength);
@@ -844,16 +864,28 @@ namespace Ryu64Core
             if (rom == null || R4300.memory == null)
                 throw new InvalidOperationException("No N64 ROM loaded.");
 
+            int version = reader.ReadInt32();
+            if (version != 1 && version != 2)
+                throw new InvalidDataException($"Unsupported Ryu64 savestate version: {version}.");
+#if N64_LIVE_GPU
+            N64LiveGpu gpu = null;
+            if (version == 2)
+            {
+                string library = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_LIBRARY");
+                if (string.IsNullOrEmpty(library)) throw new InvalidOperationException("This savestate requires the N64 GPU launcher (scripts/run-n64-gpu-desktop.sh).");
+                N64GpuBackend.RequireStateSupport(library);
+                gpu = new N64LiveGpu(R4300.memory, library, Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_VALIDATE") == "1");
+            }
+#else
+            if (version == 2) throw new InvalidOperationException("This savestate requires the N64 GPU launcher (scripts/run-n64-gpu-desktop.sh).");
+#endif
             bool restart = isRunning;
             if (restart)
                 Stop();
 #if N64_LIVE_GPU
-            R4300.memory.DetachGpu();
+            if (gpu == null) R4300.memory.DetachGpu();
+            else R4300.memory.AttachGpuForState(gpu);
 #endif
-
-            int version = reader.ReadInt32();
-            if (version != 1)
-                throw new InvalidDataException($"Unsupported Ryu64 savestate version: {version}.");
 
             _lastAudioAddress = reader.ReadUInt32();
             _lastAudioLength = reader.ReadUInt32();
@@ -864,6 +896,9 @@ namespace Ryu64Core
             ClearFramebufferCandidateCache();
             ClearLastVisibleFramebuffer();
             R4300.LoadState(reader);
+#if N64_LIVE_GPU
+            _executionInitialized = true;
+#endif
 
             if (restart)
                 ResumeLoadedExecution();

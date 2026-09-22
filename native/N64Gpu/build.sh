@@ -17,7 +17,9 @@ if [ -n "$(git -C "$source_dir" status --porcelain --untracked-files=no)" ]; the
     echo "Use an unmodified pinned source tree for this validated backend" >&2
     exit 1
 fi
+python3 native/N64Gpu/prepare-state-source.py "$source_dir" "$build_dir/state-source"
+prepared_dir=$(realpath "$build_dir/state-source")
 cmake -S native/N64Gpu -B "$build_dir" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-    -DPARALLEL_RDP_SOURCE="$source_dir"
+    -DPARALLEL_RDP_SOURCE="$prepared_dir"
 cmake --build "$build_dir" --target euther_n64_gpu -j "${N64_GPU_BUILD_JOBS:-6}"

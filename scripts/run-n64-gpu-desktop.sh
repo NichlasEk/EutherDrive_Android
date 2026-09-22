@@ -38,6 +38,6 @@ esac
 dotnet build EutherDrive.UI/EutherDrive.UI.csproj -c Release -m:1 \
     -p:N64LiveGpu=true -p:N64RdpJournalCapture=false -o "$build_dir/desktop" /clp:ErrorsOnly
 echo 'Experimental N64 Vulkan RDP: start from ROM/reset. Loading an old save uses software.'
-echo 'New savestates are unavailable while the GPU is active; existing slots are preserved.'
+echo 'New GPU savestates resume with GPU rendering; use Save/Load in the savestate panel.'
 if [ "$build_only" = 1 ]; then exit 0; fi
 exec dotnet "$build_dir/desktop/EutherDrive.UI.dll" "$@"

@@ -20,6 +20,7 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
     private string _slot2Label = "S2: Empty";
     private string _slot3Label = "S3: Empty";
     private bool _isAvailable;
+    private string _statusMessage = string.Empty;
 
     public SavestateViewModel(
         SavestateService service,
@@ -56,6 +57,18 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
     public ICommand ClearSlot1Command { get; }
     public ICommand ClearSlot2Command { get; }
     public ICommand ClearSlot3Command { get; }
+
+    public string StatusMessage
+    {
+        get => _statusMessage;
+        private set => SetField(ref _statusMessage, value);
+    }
+
+    private void ReportStatus(string message)
+    {
+        StatusMessage = message;
+        _statusReporter(message);
+    }
 
     public bool IsAvailable
     {
@@ -133,7 +146,7 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
         var core = _coreProvider();
         if (core == null || core.RomIdentity == null)
         {
-            _statusReporter("Savestate: no ROM loaded.");
+            ReportStatus("Savestate: no ROM loaded.");
             return;
         }
 
@@ -141,11 +154,11 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
         try
         {
             _service.Save(core, slotIndex);
-            _statusReporter($"Savestate: saved S{slotIndex}.");
+            ReportStatus($"Savestate: saved S{slotIndex}.");
         }
         catch (Exception ex)
         {
-            _statusReporter($"Savestate save failed: {ex.Message}");
+            ReportStatus($"Savestate save failed: {ex.Message}");
         }
         finally
         {
@@ -160,7 +173,7 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
         var core = _coreProvider();
         if (core == null || core.RomIdentity == null)
         {
-            _statusReporter("Savestate: no ROM loaded.");
+            ReportStatus("Savestate: no ROM loaded.");
             return;
         }
 
@@ -170,11 +183,11 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
             ClearCoreInput(core);
             _service.Load(core, slotIndex);
             ClearCoreInput(core);
-            _statusReporter($"Savestate: loaded S{slotIndex}.");
+            ReportStatus($"Savestate: loaded S{slotIndex}.");
         }
         catch (Exception ex)
         {
-            _statusReporter($"Savestate load failed: {ex.Message}");
+            ReportStatus($"Savestate load failed: {ex.Message}");
         }
         finally
         {
@@ -210,7 +223,7 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
         var core = _coreProvider();
         if (core == null || core.RomIdentity == null)
         {
-            _statusReporter("Savestate: no ROM loaded.");
+            ReportStatus("Savestate: no ROM loaded.");
             return;
         }
 
@@ -218,11 +231,11 @@ public sealed class SavestateViewModel : INotifyPropertyChanged
         try
         {
             _service.Clear(core, slotIndex);
-            _statusReporter($"Savestate: cleared S{slotIndex}.");
+            ReportStatus($"Savestate: cleared S{slotIndex}.");
         }
         catch (Exception ex)
         {
-            _statusReporter($"Savestate clear failed: {ex.Message}");
+            ReportStatus($"Savestate clear failed: {ex.Message}");
         }
         finally
         {

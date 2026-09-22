@@ -150,6 +150,7 @@
                     <Button Classes="small" Content="Load" Command="{Binding LoadSlot3Command}"/>
                     <Button Classes="small ghost" Content="Clear" Command="{Binding ClearSlot3Command}"/>
                   </StackPanel>
+                  <TextBlock Text="{Binding StatusMessage}" FontSize="10" TextWrapping="Wrap" MaxWidth="300"/>
                 </StackPanel>
               </Border>
             </Expander>

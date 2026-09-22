@@ -142,6 +142,40 @@ namespace Ryu64Core
             catch (Exception ex) { _status = "gpu=FAILED " + ex.Message; throw; }
         }
 
+        // The caller has joined the CPU thread. Finish staged commands and
+        // reconcile RAM before Memory serializes CPU/device state. Saving
+        // before the first RDP command retains lazy initialization.
+        public byte[] SaveState()
+        {
+            if (_gpu == null) N64GpuBackend.RequireStateSupport(_library);
+            Synchronize();
+            return _gpu == null ? Array.Empty<byte>() : _gpu.SaveState();
+        }
+
+        public void LoadState(byte[] state)
+        {
+            N64GpuBackend replacement = null;
+            try
+            {
+                if (state.Length != 0)
+                {
+                    replacement = new N64GpuBackend(_library, _memory.RDRAM, _memory.GpuHiddenBits, _flags);
+                    replacement.LoadState(state);
+                }
+            }
+            catch { replacement?.Dispose(); throw; }
+            _gpu?.Dispose(); _gpu = replacement;
+            _batch.SetLength(0); _batch.Position = 0;
+            Array.Clear(_dirty, 0, _dirty.Length); Array.Clear(_pages, 0, _pages.Length); _pageGroups = 0;
+            if (_auditWrites != null)
+            {
+                Array.Clear(_auditWrites, 0, _auditWrites.Length);
+                _auditShadow = _gpu == null ? null : (byte[])_memory.RDRAM.Clone();
+            }
+            _syncs = _ticks = 0;
+            _status = _gpu == null ? "gpu=waiting-for-first-command" : "gpu=Vulkan savestate restored";
+        }
+
         public void Dispose() { _gpu?.Dispose(); _gpu = null; _writer.Dispose(); _batch.Dispose(); }
     }
 }

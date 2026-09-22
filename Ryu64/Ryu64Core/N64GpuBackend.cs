@@ -73,6 +73,45 @@ namespace Ryu64Core
             finally { if (acquired) DangerousRelease(); }
         }
 
+        public byte[] SaveState()
+        {
+            if (_api.SaveState == null)
+                throw new InvalidOperationException("This GPU library predates savestate support. Restart with scripts/run-n64-gpu-desktop.sh to rebuild it.");
+            bool acquired = false;
+            try
+            {
+                DangerousAddRef(ref acquired); byte* error = stackalloc byte[ErrorSize]; uint written = 0;
+                byte[] state = new byte[16384];
+                fixed (byte* bytes = state)
+                    Check(_api.SaveState(Id, bytes, (uint)state.Length, &written, error, ErrorSize), error);
+                if (written == 0 || written > state.Length) throw new InvalidOperationException("Invalid GPU checkpoint length");
+                Array.Resize(ref state, (int)written); return state;
+            }
+            finally { if (acquired) DangerousRelease(); }
+        }
+
+        public static void RequireStateSupport(string library)
+        {
+            using var api = new Api(library);
+            if (api.Abi() != 1 || api.SaveState == null || api.LoadState == null)
+                throw new InvalidOperationException("This GPU library predates savestate support. Restart with scripts/run-n64-gpu-desktop.sh to rebuild it.");
+        }
+
+        public void LoadState(byte[] state)
+        {
+            if (_api.LoadState == null)
+                throw new InvalidOperationException("This GPU library predates savestate support. Restart with scripts/run-n64-gpu-desktop.sh to rebuild it.");
+            if (state == null || state.Length == 0 || state.Length > 16384) throw new ArgumentException("Invalid GPU checkpoint size");
+            bool acquired = false;
+            try
+            {
+                DangerousAddRef(ref acquired); byte* error = stackalloc byte[ErrorSize];
+                fixed (byte* bytes = state)
+                    Check(_api.LoadState(Id, bytes, (uint)state.Length, error, ErrorSize), error);
+            }
+            finally { if (acquired) DangerousRelease(); }
+        }
+
         public N64GpuStats GetStats()
         {
             bool acquired = false;
@@ -129,6 +168,8 @@ namespace Ryu64Core
             internal readonly StatsFn Stats;
             internal readonly NameFn DeviceName;
             internal readonly DestroyFn Destroy;
+            internal readonly SaveStateFn SaveState;
+            internal readonly LoadStateFn LoadState;
             internal Api(string path)
             {
                 _library = NativeLibrary.Load(System.IO.Path.GetFullPath(path));
@@ -137,6 +178,10 @@ namespace Ryu64Core
                     Abi = Load<AbiFn>("abi"); Create = Load<CreateFn>("create"); Submit = Load<SubmitFn>("submit");
                     Wait = Load<WaitFn>("wait"); Readback = Load<ReadbackFn>("readback"); Stats = Load<StatsFn>("get_stats");
                     DeviceName = Load<NameFn>("device_name"); Destroy = Load<DestroyFn>("destroy");
+                    if (NativeLibrary.TryGetExport(_library, "ed_n64_gpu_save_state", out var save))
+                        SaveState = Marshal.GetDelegateForFunctionPointer<SaveStateFn>(save);
+                    if (NativeLibrary.TryGetExport(_library, "ed_n64_gpu_load_state", out var load))
+                        LoadState = Marshal.GetDelegateForFunctionPointer<LoadStateFn>(load);
                 }
                 catch { Dispose(); throw; }
             }
@@ -151,5 +196,7 @@ namespace Ryu64Core
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int StatsFn(ulong handle, N64GpuStats* stats, uint size, byte* error, uint errorSize);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int NameFn(ulong handle, byte* name, uint size, byte* error, uint errorSize);
         [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int DestroyFn(ulong handle, byte* error, uint errorSize);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int SaveStateFn(ulong handle, byte* state, uint capacity, uint* written, byte* error, uint errorSize);
+        [UnmanagedFunctionPointer(CallingConvention.Cdecl)] private delegate int LoadStateFn(ulong handle, byte* state, uint size, byte* error, uint errorSize);
     }
 }

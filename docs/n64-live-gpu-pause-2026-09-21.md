@@ -1,5 +1,8 @@
 # Historical pause checkpoint — live N64 GPU integration
 
+The latest pause and continuation point are in
+[the 2026-09-22 GPU savestate checkpoint](n64-gpu-savestates-2026-09-22.md).
+
 **Resumed at the user's request on 2026-09-22.** The snapshot below describes
 the earlier pause, not an active stop instruction. Current implementation,
 validation, launch instructions and remaining work are in

@@ -24,6 +24,9 @@ dotnet build tools/N64Probe/N64Probe.csproj -c Release --no-restore -m:1 \
 
 The script requires unmodified paraLLEl-RDP revision
 `1cecd042b2619bc505c12bfdc713808386f2b54d` and its pinned submodules.
+Python 3 prepares a build-local copy with two `EutherCheckpoint` friend
+declarations; the original checkout and submodules remain unchanged. The
+checkpoint implementation is maintained in `n64_gpu_state.cpp` in this repo.
 The conservative address proof depends on that renderer implementation and
 unscaled rendering. Re-audit it when upgrading the backend.
 
@@ -43,7 +46,15 @@ See [n64_gpu.h](n64_gpu.h) for exact layouts. ABI 1 owns a native aligned stagin
 mirror: 8 MiB RDRAM, 4 MiB hidden memory, and opaque 4 KiB TMEM for validation.
 Caller RDRAM is big-endian emulated bytes. The bridge handles native word and
 halfword conversion, including unaligned byte patches. TMEM bytes are not a
-portable savestate format. Initial raw renderer state is reset state only.
+portable savestate format on their own. The optional `save_state`/`load_state`
+ABI-1 extension combines TMEM with explicit persistent register/tile state and
+the primitive counter used for noise/dithering. Its versioned format is tied
+to the pinned backend, native resolution, and little-endian hosts. It stores
+no Vulkan objects or C++ structure padding. Import requires a fresh context
+created with the saved RDRAM and hidden-memory bytes.
+
+The live core additionally saves pending/completed presentation targets and
+the held VI image. See [GPU savestate validation and continuation](../../docs/n64-gpu-savestates-2026-09-22.md).
 
 Each submission contains ordered write ranges, complete raw commands and VI
 observations. The whole envelope is validated before any command executes.
