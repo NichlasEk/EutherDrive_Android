@@ -14,6 +14,12 @@ namespace Ryu64.MIPS
         // Bounded even when a headless frontend does not consume audio.
         private readonly object _audioQueueLock = new object();
         private readonly Queue<Tuple<short[], uint>> _audioQueue = new Queue<Tuple<short[], uint>>();
+#if N64_PERF_PROBE
+        // Invoked on the CPU thread, so scripted input and audio accounting do
+        // not depend on the host poller's scheduling. Diagnostic builds only.
+        public Action PerfControllerRead;
+        public Action<short[], uint> PerfAudioCapture;
+#endif
 
         public short[] DequeueAudio(out uint sampleRate)
         {
@@ -41,6 +47,9 @@ namespace Ryu64.MIPS
                 if (address + 1 < RDRAM.Length)
                     pcm[i] = (short)((RDRAM[address] << 8) | RDRAM[address + 1]);
             }
+#if N64_PERF_PROBE
+            PerfAudioCapture?.Invoke(pcm, GetAiSampleRate());
+#endif
             lock (_audioQueueLock)
             {
                 if (_audioQueue.Count == 16) _audioQueue.Dequeue();
@@ -9638,6 +9647,9 @@ namespace Ryu64.MIPS
                     case 0x01: // READ BUTTONS
                         if (rxLen >= 4 && rxIndex + 3 < 64)
                         {
+#if N64_PERF_PROBE
+                            if (channel == 0) PerfControllerRead?.Invoke();
+#endif
                             PIFRAM[rxIndex + 0] = (byte)(_controllerButtons >> 8);
                             PIFRAM[rxIndex + 1] = (byte)_controllerButtons;
                             PIFRAM[rxIndex + 2] = unchecked((byte)_controllerAnalogX);

@@ -16,13 +16,15 @@ namespace Ryu64.MIPS
         {
             internal uint Pc, First;
             internal int Hits;
-            internal Func<uint, uint, bool, uint> Run;
+            internal CpuJitCode Code;
         }
         private static readonly CpuJitEntry[] CpuJitCache = new CpuJitEntry[65536];
         private static readonly Dictionary<uint, CpuJitEntry> CpuJitEntries = new Dictionary<uint, CpuJitEntry>();
         private sealed class CpuJitCode
         {
             internal volatile Func<uint, uint, bool, uint> Run;
+            internal ulong LastUsed;
+            internal bool Retired;
         }
         // The CPU thread alone owns dictionaries. A worker publishes only an
         // immutable delegate through its holder after compiling copied words.
@@ -50,6 +52,9 @@ namespace Ryu64.MIPS
 
         private static uint TryRunCpuJit(uint pc, uint word, uint budget, uint elapsed, bool history)
         {
+#if N64_CPU_JIT_PROFILE
+            ProfileCpuJit(pc, "attempt", 1);
+#endif
             if (!CpuJitEnabled || CpuJitUnavailable || budget < 2) return 0;
             int slot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
             var entry = CpuJitCache[slot];
@@ -57,9 +62,11 @@ namespace Ryu64.MIPS
             {
                 if (!CpuJitEntries.TryGetValue(pc, out entry))
                 {
-                    if (CpuJitEntries.Count >= 8192) return 0;
                     entry = new CpuJitEntry { Pc = pc, First = word };
-                    CpuJitEntries.Add(pc, entry);
+                    // The bounded secondary lookup must not permanently bar
+                    // code first reached later in a game. The direct cache is
+                    // also bounded and can still learn those hot addresses.
+                    if (CpuJitEntries.Count < 8192) CpuJitEntries.Add(pc, entry);
                 }
                 CpuJitCache[slot] = entry;
             }
@@ -67,31 +74,43 @@ namespace Ryu64.MIPS
             {
                 CpuJitInvalidations++;
                 entry.First = word;
-                entry.Run = null;
+                entry.Code = null;
                 entry.Hits = 0;
             }
-            if (entry.Run == null)
+            var code = entry.Code;
+            var run = code?.Run;
+            if (run == null)
             {
+                if (code != null && !code.Retired) return 0; // Worker still compiling.
                 if (++entry.Hits != CpuJitHotThreshold) return 0;
                 entry.Hits = 0;
-                try { entry.Run = CompileCpuJit(pc); }
+                try { entry.Code = code = FindOrCompileCpuJit(pc); run = code?.Run; }
                 catch (PlatformNotSupportedException) { CpuJitUnavailable = true; return 0; }
-                if (entry.Run == null)
+                if (run == null)
                 {
-                    CpuJitRejectedCompilations++;
-                    entry.Hits = -1024;
+                    if (code == null)
+                    {
+                        CpuJitRejectedCompilations++;
+                        entry.Hits = -1024;
+                    }
                     return 0;
                 }
             }
-            uint result = entry.Run(budget, elapsed, history);
+            uint result = run(budget, elapsed, history);
             if (result == uint.MaxValue)
             {
                 CpuJitInvalidations++;
-                entry.Run = null;
+                entry.Code = null;
                 entry.Hits = 0;
                 return 0;
             }
             CpuJitInstructions += result;
+            if (result != 0) code.LastUsed = CycleCounter;
+#if N64_CPU_JIT_PROFILE
+            ProfileCpuJit(pc, "executions", result == 0 ? 0 : 1);
+            ProfileCpuJit(pc, "instructions", result);
+            if (result == 0) ProfileCpuJit(pc, "guardExit", 1);
+#endif
             return result;
         }
 
@@ -215,6 +234,32 @@ namespace Ryu64.MIPS
         }
 
         private static Func<uint, uint, bool, uint> CompileCpuJit(uint start)
+            => FindOrCompileCpuJit(start)?.Run;
+
+        private static bool MakeRoomForCpuJit()
+        {
+            if (CpuJitVersions.Count < 128) return true;
+            // Keep the native-code cap. Reuse space only after a completed
+            // block has gone unused for roughly one emulated second, allowing
+            // scene code to replace cold startup routines without rapid churn.
+            const ulong idleCycles = 1UL << 27;
+            string oldestKey = null;
+            CpuJitCode oldest = null;
+            foreach (var version in CpuJitVersions)
+            {
+                var code = version.Value;
+                if (code.Run == null || CycleCounter < code.LastUsed || CycleCounter - code.LastUsed < idleCycles) continue;
+                if (oldest == null || code.LastUsed < oldest.LastUsed)
+                { oldestKey = version.Key; oldest = code; }
+            }
+            if (oldest == null) return false;
+            CpuJitVersions.Remove(oldestKey);
+            oldest.Retired = true;
+            oldest.Run = null; // All address entries share this holder.
+            return true;
+        }
+
+        private static CpuJitCode FindOrCompileCpuJit(uint start)
         {
             var words = new List<uint>();
             for (int i = 0; i < 16; i++)
@@ -234,22 +279,43 @@ namespace Ryu64.MIPS
                 words.Add(word);
                 if (CpuJitStore(kind)) break;
             }
-            if (words.Count < 2) return null;
+            if (words.Count < 2)
+            {
+#if N64_CPU_JIT_PROFILE
+                ProfileCpuJit(start, "shortOrUnsupported", 1);
+#endif
+                return null;
+            }
             ExtendInvariantCpuJitLoop(start, words);
             var key = new System.Text.StringBuilder(start.ToString("x8"));
             foreach (uint word in words) key.Append(':').Append(word.ToString("x8"));
             string identity = key.ToString();
-            if (CpuJitVersions.TryGetValue(identity, out var existing)) return existing.Run;
-            if (CpuJitVersions.Count >= 128) return null;
+            if (CpuJitVersions.TryGetValue(identity, out var existing)) return existing;
             if (CpuJitSynchronous)
             {
+                if (!MakeRoomForCpuJit()) return null;
                 var direct = BuildCpuJit(start, words);
-                CpuJitVersions.Add(identity, new CpuJitCode { Run = direct });
+                var ready = new CpuJitCode { Run = direct, LastUsed = CycleCounter };
+                CpuJitVersions.Add(identity, ready);
                 CpuJitCompilations++;
-                return direct;
+                return ready;
             }
-            if (Interlocked.CompareExchange(ref CpuJitCompilePending, 1, 0) != 0) return null;
-            var holder = new CpuJitCode();
+            if (Interlocked.CompareExchange(ref CpuJitCompilePending, 1, 0) != 0)
+            {
+#if N64_CPU_JIT_PROFILE
+                ProfileCpuJit(start, "workerBusy", 1);
+#endif
+                return null;
+            }
+            if (!MakeRoomForCpuJit())
+            {
+                Volatile.Write(ref CpuJitCompilePending, 0);
+#if N64_CPU_JIT_PROFILE
+                ProfileCpuJit(start, "versionLimit", 1);
+#endif
+                return null;
+            }
+            var holder = new CpuJitCode { LastUsed = CycleCounter };
             CpuJitVersions.Add(identity, holder);
             CpuJitCompilations++;
             ThreadPool.QueueUserWorkItem(_ =>
@@ -263,7 +329,7 @@ namespace Ryu64.MIPS
                 }
                 finally { Volatile.Write(ref CpuJitCompilePending, 0); }
             });
-            return null;
+            return holder;
         }
 
         private static readonly FieldInfo JitMemoryField = typeof(R4300).GetField(nameof(memory));

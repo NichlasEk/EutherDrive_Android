@@ -2,6 +2,22 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+if (args.Length == 1 && args[0] == "--check-cpu-jit-cache")
+{
+    CpuJitCacheChecks.Run();
+    return;
+}
+
+if (args.Length is 3 or 4 && args[0] == "--bench-sm64")
+{
+#if N64_PERF_PROBE
+    Sm64Benchmark.Run(args[1], args[2], args.Length == 4 ? int.Parse(args[3]) : 90);
+    return;
+#else
+    throw new InvalidOperationException("Build with -p:N64PerformanceProbe=true for deterministic gameplay");
+#endif
+}
+
 #if N64_LIVE_GPU && N64_RDP_JOURNAL
 if (args.Length == 4 && args[0] == "--check-live-gpu")
 {

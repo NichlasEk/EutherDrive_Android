@@ -1,4 +1,11 @@
 <Project>
+  <!-- Fixed-input performance experiments; absent from desktop/core builds. -->
+  <PropertyGroup Condition="'$(N64PerformanceProbe)' == 'true'">
+    <DefineConstants>$(DefineConstants);N64_PERF_PROBE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(N64CpuJitProfile)' == 'true'">
+    <DefineConstants>$(DefineConstants);N64_CPU_JIT_PROFILE</DefineConstants>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(N64LiveGpu)' == 'true'">
     <DefineConstants>$(DefineConstants);N64_LIVE_GPU</DefineConstants>
   </PropertyGroup>

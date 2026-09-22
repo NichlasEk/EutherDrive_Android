@@ -83,6 +83,27 @@ internal static class N64LiveGpuChecks
             }
         }
         {
+            // Sparse writes must survive readback in every page/group, including
+            // the last RAM byte and re-arming pages after a completed batch.
+            var memory = new Memory(new byte[4096]); R4300.memory = memory;
+            using var gpu = new N64LiveGpu(memory, library, true); memory.AttachGpu(gpu);
+            typeof(Memory).GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);
+            memory.JournalReplayCommand(new uint[] { 0xe9000000, 0 });
+            foreach (int pass in new[] { 0, 1 })
+            {
+                for (int page = 2047; page >= 0; page--)
+                {
+                    uint address = 0x80000000u + (uint)page * 4096;
+                    memory.WriteUInt8(address, (byte)(page + pass + 1));
+                    memory.WriteUInt8(address + 4095, (byte)(page * 3 + pass + 2));
+                }
+                byte[] expected = (byte[])memory.RDRAM.Clone();
+                memory.JournalReplayCommand(new uint[] { 0xe9000000, 0 });
+                if (!expected.AsSpan().SequenceEqual(memory.RDRAM)) throw new Exception("Sparse CPU page writes were lost during GPU readback");
+                checks++;
+            }
+        }
+        {
             var memory = new Memory(new byte[4096]); R4300.memory = memory;
             using var gpu = new N64LiveGpu(memory, library, true); memory.AttachGpu(gpu);
             typeof(Memory).GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);

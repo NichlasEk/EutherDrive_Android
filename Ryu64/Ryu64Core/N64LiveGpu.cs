@@ -18,9 +18,9 @@ namespace Ryu64Core
         private readonly MemoryStream _batch = new MemoryStream();
         private readonly BinaryWriter _writer;
         private readonly ulong[] _dirty = new ulong[N64GpuBackend.RamSize / 64];
-        private readonly bool[] _pages = new bool[N64GpuBackend.RamSize / 4096];
+        private readonly ulong[] _pages = new ulong[N64GpuBackend.RamSize / (4096 * 64)];
+        private uint _pageGroups;
         private readonly byte[] _tmem = new byte[4096];
-        private bool _writes;
         private byte[] _auditShadow;
         private ulong[] _auditWrites;
         private long _syncs, _ticks;
@@ -41,7 +41,11 @@ namespace Ryu64Core
         {
             if (_gpu == null || length == 0 || address >= N64GpuBackend.RamSize) return;
             uint end = (uint)Math.Min((ulong)N64GpuBackend.RamSize, (ulong)address + length);
-            for (uint p = address >> 12; p <= (end - 1) >> 12; p++) _pages[p] = true;
+            for (uint p = address >> 12; p <= (end - 1) >> 12; p++)
+            {
+                _pages[p >> 6] |= 1UL << (int)(p & 63);
+                _pageGroups |= 1u << (int)(p >> 6);
+            }
             while (address < end)
             {
                 int bit = (int)(address & 63), count = (int)Math.Min(end - address, (uint)(64 - bit));
@@ -50,31 +54,39 @@ namespace Ryu64Core
                 if (_auditWrites != null) _auditWrites[address >> 6] |= mask;
                 address += (uint)count;
             }
-            _writes = true;
         }
 
         private void Writes()
         {
-            if (!_writes) return;
-            for (int page = 0; page < _pages.Length; page++)
+            // Enumerate only dirty pages, in the same address order as the
+            // old full scan. CPU-byte ownership and command order are unchanged.
+            uint groups = _pageGroups;
+            _pageGroups = 0;
+            while (groups != 0)
             {
-                if (!_pages[page]) continue;
-                _pages[page] = false;
-                for (int word = page * 64; word < (page + 1) * 64; word++)
+                int group = BitOperations.TrailingZeroCount(groups);
+                groups &= groups - 1;
+                ulong pages = _pages[group];
+                _pages[group] = 0;
+                while (pages != 0)
                 {
-                    ulong bits = _dirty[word]; _dirty[word] = 0;
-                    while (bits != 0)
+                    int page = group * 64 + BitOperations.TrailingZeroCount(pages);
+                    pages &= pages - 1;
+                    for (int word = page * 64; word < (page + 1) * 64; word++)
                     {
-                        int begin = BitOperations.TrailingZeroCount(bits);
-                        int count = BitOperations.TrailingZeroCount(~(bits >> begin));
-                        int offset = word * 64 + begin;
-                        _writer.Write(1u); _writer.Write((uint)count + 4); _writer.Write((uint)offset);
-                        _writer.Write(_memory.RDRAM, offset, count);
-                        bits &= ~((ulong.MaxValue >> (64 - count)) << begin);
+                        ulong bits = _dirty[word]; _dirty[word] = 0;
+                        while (bits != 0)
+                        {
+                            int begin = BitOperations.TrailingZeroCount(bits);
+                            int count = BitOperations.TrailingZeroCount(~(bits >> begin));
+                            int offset = word * 64 + begin;
+                            _writer.Write(1u); _writer.Write((uint)count + 4); _writer.Write((uint)offset);
+                            _writer.Write(_memory.RDRAM, offset, count);
+                            bits &= ~((ulong.MaxValue >> (64 - count)) << begin);
+                        }
                     }
                 }
             }
-            _writes = false;
         }
 
         public void Command(ReadOnlySpan<uint> words)
