@@ -211,6 +211,20 @@
             Registers.R4300.PC += 4;
         }
 
+        public static void DMULT(OpcodeTable.OpcodeDesc Desc)
+        {
+            ulong a = Registers.R4300.Reg[Desc.op1];
+            ulong b = Registers.R4300.Reg[Desc.op2];
+            MultiplyUnsigned64(a, b, out ulong hi, out ulong lo);
+            // Sign extension changes only the upper half of the 128-bit product.
+            // Subtract modulo 2^64, including long.MinValue and negative operands.
+            if ((long)a < 0) hi = unchecked(hi - b);
+            if ((long)b < 0) hi = unchecked(hi - a);
+            Registers.R4300.HI = hi;
+            Registers.R4300.LO = lo;
+            Registers.R4300.PC += 4;
+        }
+
         public static void DMULTU(OpcodeTable.OpcodeDesc Desc)
         {
             MultiplyUnsigned64(Registers.R4300.Reg[Desc.op1], Registers.R4300.Reg[Desc.op2], out ulong hi, out ulong lo);

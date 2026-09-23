@@ -127,6 +127,7 @@ namespace Ryu64.MIPS
             SetOpcode("000000XXXXX000000000000000010001", InstInterp.MTHI,   "MTHI R[{0}]");
             SetOpcode("000000XXXXXXXXXX0000000000011000", InstInterp.MULT,   "MULT R[{0}], R[{1}]",   5);
             SetOpcode("000000XXXXXXXXXX0000000000011001", InstInterp.MULTU,  "MULTU R[{0}], R[{1}]",  5);
+            SetOpcode("000000XXXXXXXXXX0000000000011100", InstInterp.DMULT,  "DMULT R[{0}], R[{1}]",  8);
             SetOpcode("000000XXXXXXXXXX0000000000011101", InstInterp.DMULTU, "DMULTU R[{0}], R[{1}]", 8);
             SetOpcode("000000XXXXXXXXXX0000000000011010", InstInterp.DIV,    "DIV R[{0}], R[{1}]",    8);
             SetOpcode("000000XXXXXXXXXX0000000000011011", InstInterp.DIVU,   "DIVU R[{0}], R[{1}]",   8);

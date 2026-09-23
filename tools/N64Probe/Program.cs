@@ -202,6 +202,11 @@ if (args.Length == 1 && args[0] == "--check-multiply-batch")
     CpuMultiplyBatchChecks.Run();
     return;
 }
+if (args.Length == 1 && args[0] == "--check-double-multiply")
+{
+    CpuDoubleMultiplyChecks.Run();
+    return;
+}
 if (args.Length == 2 && args[0] == "--check-primary-dispatch")
 {
     CpuPrimaryDispatchChecks.Run(args[1]);
