@@ -12,6 +12,7 @@ namespace Ryu64.MIPS
         // bytes on every entry; a store always ends the compiled region.
         private static readonly bool CpuJitEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CPU_JIT") != "0";
         private const uint CpuJitMaximumInstructions = 512;
+        private const int CpuJitMaximumVersions = 512;
         private sealed class CpuJitEntry
         {
             internal uint Pc, First;
@@ -244,7 +245,7 @@ namespace Ryu64.MIPS
 
         private static bool MakeRoomForCpuJit()
         {
-            if (CpuJitVersions.Count < 128) return true;
+            if (CpuJitVersions.Count < CpuJitMaximumVersions) return true;
             // Keep the native-code cap. Reuse space only after a completed
             // block has gone unused for roughly one emulated second, allowing
             // scene code to replace cold startup routines without rapid churn.
@@ -385,6 +386,7 @@ namespace Ryu64.MIPS
             var result = il.DeclareLocal(typeof(uint));
             var target = il.DeclareLocal(typeof(uint));
             var completed = il.DeclareLocal(typeof(uint));
+            var registers = new CpuJitRegisters(il, regs, words, loop);
             var body = il.DefineLabel();
             var zero = il.DefineLabel();
             var invalid = il.DefineLabel();
@@ -392,7 +394,7 @@ namespace Ryu64.MIPS
             var ret = il.DefineLabel();
             void U(uint value) => il.Emit(OpCodes.Ldc_I4, unchecked((int)value));
             void Pc(uint value) { U(value); il.Emit(OpCodes.Stsfld, JitPcField); }
-            void Exit(uint count) { U(count); if (loop) { il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Add); } il.Emit(OpCodes.Stloc, result); il.Emit(OpCodes.Br, finish); }
+            void Exit(uint count) { U(count); if (loop) { il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Add); } il.Emit(OpCodes.Stloc, result); il.Emit(OpCodes.Br, registers.ExitLabel(finish)); }
             void Desc(uint word) { U(word); il.Emit(OpCodes.Newobj, JitDescConstructor); }
             void Elapsed(int count) { il.Emit(OpCodes.Ldarg_2); U((uint)count); il.Emit(OpCodes.Add); }
 
@@ -417,6 +419,7 @@ namespace Ryu64.MIPS
                 il.Emit(OpCodes.Bne_Un, invalid);
             }
             il.Emit(OpCodes.Ldsfld, JitRegsField); il.Emit(OpCodes.Stloc, regs);
+            registers.Initialize();
             il.MarkLabel(body);
             for (int i = 0; i < words.Count; i++)
             {
@@ -431,7 +434,7 @@ namespace Ryu64.MIPS
                 {
                     uint width = kind == 55 ? 8u : kind == 32 || kind == 36 ? 1u : kind == 33 || kind == 37 ? 2u : 4u;
                     if (desc.op1 == 0) il.Emit(OpCodes.Ldc_I8, 0L);
-                    else { il.Emit(OpCodes.Ldloc, regs); U(desc.op1); il.Emit(OpCodes.Ldelem_I8); }
+                    else registers.Read(desc.op1);
                     il.Emit(OpCodes.Ldc_I8, (long)(short)desc.Imm); il.Emit(OpCodes.Add); il.Emit(OpCodes.Conv_U4); il.Emit(OpCodes.Stloc, address);
                     var badAddress = il.DefineLabel(); var validAddress = il.DefineLabel();
                     il.Emit(OpCodes.Ldloc, address); U(0xc0000000u | (width - 1)); il.Emit(OpCodes.And);
@@ -452,22 +455,22 @@ namespace Ryu64.MIPS
                     il.Emit(OpCodes.Call, JitValidate); il.Emit(OpCodes.Brtrue, valid);
                     Pc(pc); Exit((uint)i); il.MarkLabel(valid);
                 }
-                il.Emit(OpCodes.Ldloc, regs); U(0); il.Emit(OpCodes.Ldc_I8, 0L); il.Emit(OpCodes.Stelem_I8);
+                registers.NormalizeZero();
                 if (branch)
                 {
                     // Capture the target before link writes or delay-slot operands.
                     if (kind == 2 || kind == 3) U((pc & 0xf0000000u) | (desc.Target << 2));
                     else if (kind == 72 || kind == 73)
                     {
-                        il.Emit(OpCodes.Ldloc, regs); U(desc.op1); il.Emit(OpCodes.Ldelem_I8); il.Emit(OpCodes.Conv_U4);
+                        registers.Read(desc.op1); il.Emit(OpCodes.Conv_U4);
                     }
                     else
                     {
                         var taken = il.DefineLabel(); var selected = il.DefineLabel();
-                        il.Emit(OpCodes.Ldloc, regs); U(desc.op1); il.Emit(OpCodes.Ldelem_I8);
+                        registers.Read(desc.op1);
                         if (kind == 4 || kind == 5)
                         {
-                            il.Emit(OpCodes.Ldloc, regs); U(desc.op2); il.Emit(OpCodes.Ldelem_I8);
+                            registers.Read(desc.op2);
                             il.Emit(kind == 4 ? OpCodes.Beq : OpCodes.Bne_Un, taken);
                         }
                         else
@@ -483,11 +486,12 @@ namespace Ryu64.MIPS
                     il.Emit(OpCodes.Stloc, target);
                     if (kind == 3 || kind == 73)
                     {
-                        il.Emit(OpCodes.Ldloc, regs); U(kind == 3 ? 31u : desc.op3);
-                        il.Emit(OpCodes.Ldc_I8, (long)unchecked((int)(pc + 8))); il.Emit(OpCodes.Stelem_I8);
+                        int link = kind == 3 ? 31 : desc.op3;
+                        registers.BeginWrite(link);
+                        il.Emit(OpCodes.Ldc_I8, (long)unchecked((int)(pc + 8))); registers.EndWrite(link);
                     }
-                    il.Emit(OpCodes.Ldloc, regs); U(0); il.Emit(OpCodes.Ldc_I8, 0L); il.Emit(OpCodes.Stelem_I8);
-                    if (!EmitCpuJitAlu(il, regs, new OpcodeTable.OpcodeDesc(delay), dk))
+                    registers.NormalizeZero();
+                    if (!EmitCpuJitAlu(il, registers, new OpcodeTable.OpcodeDesc(delay), dk))
                     {
                         Pc(pc + 4);
                         if (!EmitCpuJitCop1(il, new OpcodeTable.OpcodeDesc(delay), dk))
@@ -514,7 +518,7 @@ namespace Ryu64.MIPS
                             il.Emit(OpCodes.Ldarg_1); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Sub);
                             U((uint)words.Count); il.Emit(OpCodes.Bge_Un, body);
                         }
-                        il.MarkLabel(leave); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Stloc, result); il.Emit(OpCodes.Br, finish);
+                        il.MarkLabel(leave); il.Emit(OpCodes.Ldloc, completed); il.Emit(OpCodes.Stloc, result); il.Emit(OpCodes.Br, registers.ExitLabel(finish));
                     }
                     else Exit((uint)words.Count);
                     break;
@@ -525,7 +529,7 @@ namespace Ryu64.MIPS
                     {
                         il.Emit(OpCodes.Ldsfld, JitMemoryField);
                         il.Emit(OpCodes.Ldloc, address); U(0x1fffffffu); il.Emit(OpCodes.And);
-                        il.Emit(OpCodes.Ldloc, regs); U(desc.op2); il.Emit(OpCodes.Ldelem_I8); il.Emit(OpCodes.Conv_U4);
+                        registers.Read(desc.op2); il.Emit(OpCodes.Conv_U4);
                         il.Emit(OpCodes.Call, JitStore32);
                     }
                     else
@@ -536,7 +540,7 @@ namespace Ryu64.MIPS
                         U(kind == 55 ? 8u : kind == 32 || kind == 36 ? 1u : kind == 33 || kind == 37 ? 2u : 4u);
                         il.Emit(OpCodes.Call, typeof(Memory).GetMethod(nameof(Memory.GpuBeforeRead)));
 #endif
-                        il.Emit(OpCodes.Ldloc, regs); U(desc.op2);
+                        registers.BeginWrite(desc.op2);
                         il.Emit(OpCodes.Ldloc, ram); il.Emit(OpCodes.Ldloc, address); U(0x1fffffffu); il.Emit(OpCodes.And);
                         if (kind == 32 || kind == 36)
                         {
@@ -550,10 +554,10 @@ namespace Ryu64.MIPS
                             if (kind == 33) { il.Emit(OpCodes.Conv_I2); il.Emit(OpCodes.Conv_I8); }
                             else if (kind == 39) { il.Emit(OpCodes.Conv_U4); il.Emit(OpCodes.Conv_U8); }
                         }
-                        il.Emit(OpCodes.Stelem_I8);
+                        registers.EndWrite(desc.op2);
                     }
                 }
-                else if (!EmitCpuJitAlu(il, regs, desc, kind))
+                else if (!EmitCpuJitAlu(il, registers, desc, kind))
                 {
                     Pc(pc);
                     if (!EmitCpuJitCop1(il, desc, kind))
@@ -561,6 +565,8 @@ namespace Ryu64.MIPS
                 }
             }
             Pc(start + (uint)words.Count * 4); U((uint)words.Count); il.Emit(OpCodes.Stloc, result);
+            il.Emit(OpCodes.Br, registers.ExitLabel(finish));
+            registers.EmitExits(finish);
             il.MarkLabel(finish);
             il.Emit(OpCodes.Ldarg_3); il.Emit(OpCodes.Brfalse, ret);
             il.Emit(OpCodes.Ldloc, result); il.Emit(OpCodes.Brfalse, ret);
@@ -651,15 +657,16 @@ namespace Ryu64.MIPS
             return run;
         }
 
-        private static bool EmitCpuJitAlu(ILGenerator il, LocalBuilder regs, OpcodeTable.OpcodeDesc d, int kind)
+        private static bool EmitCpuJitAlu(ILGenerator il, CpuJitRegisters regs, OpcodeTable.OpcodeDesc d, int kind)
         {
             // r0 was normalized at the instruction boundary; NOP has no other effect.
             if (d.Opcode == 0) return true;
-            if (!((kind >= 9 && kind <= 15) || kind == 25 || (kind >= 64 && kind < 128 && kind != 72 && kind != 73))) return false;
-            void R(int index) { il.Emit(OpCodes.Ldloc, regs); il.Emit(OpCodes.Ldc_I4, index); il.Emit(OpCodes.Ldelem_I8); }
+            if (!IsCpuJitAlu(kind)) return false;
+            void R(int index) => regs.Read(index);
             void Sx() { il.Emit(OpCodes.Conv_I4); il.Emit(OpCodes.Conv_I8); }
             void Pair() { R(d.op1); R(d.op2); }
-            il.Emit(OpCodes.Ldloc, regs); il.Emit(OpCodes.Ldc_I4, kind < 64 ? (int)d.op2 : d.op3);
+            int destination = kind < 64 ? d.op2 : d.op3;
+            regs.BeginWrite(destination);
             switch (kind)
             {
                 case 9:
@@ -694,7 +701,7 @@ namespace Ryu64.MIPS
                     il.Emit(kind == 84 || kind == 120 || kind == 124 ? OpCodes.Shl : kind == 87 || kind == 123 || kind == 127 ? OpCodes.Shr : OpCodes.Shr_Un); break;
                 default: throw new InvalidOperationException("CPU JIT ALU decoder mismatch");
             }
-            il.Emit(OpCodes.Stelem_I8);
+            regs.EndWrite(destination);
             return true;
         }
     }

@@ -91,8 +91,73 @@ internal static class RspSchedulingChecks
         if ((dp.ReadUInt32(0x04300008) & 0x20) != 0) throw new Exception("Premature DP interrupt");
         dp.WriteUInt32(0x04100004, 0x1010);
         if ((dp.ReadUInt32(0x04300008) & 0x20) == 0) throw new Exception("Missing SyncFull interrupt");
+        CheckRspDpCompletion();
         CheckFramebufferPublication();
-        Console.WriteLine($"rspSliceBoundaries={cases} saveRestore=passed producerConsumer=passed dpSync=passed framebufferPublication=passed");
+        Console.WriteLine($"rspSliceBoundaries={cases} saveRestore=passed producerConsumer=passed dpSync=passed rspDpOrder=passed framebufferPublication=passed");
+    }
+
+    private static void CheckRspDpCompletion()
+    {
+        foreach (bool restore in new[] { false, true })
+        foreach (bool fullSync in new[] { false, true })
+        {
+            // A short graphics task submits its RDP tail, then immediately
+            // breaks. SP retirement must precede its deferred DP retirement.
+            var memory = NewMemory(new uint[] {
+                0x24011000, 0x40814000, // DPC_START = 0x1000
+                0x24011008, 0x40814800, // DPC_END = 0x1008
+                0x0000000d
+            });
+            memory.WriteUInt32(0x1000, fullSync ? 0xe9000000u : 0xe7000000u);
+            memory.WriteUInt32(0x04040010, 0x101);
+            if ((memory.ReadUInt32(0x04300008) & 0x21) != 0)
+                throw new Exception("Synchronous dispatch exposed a completion before retirement");
+            if (restore)
+            {
+                using var state = new MemoryStream();
+                using (var writer = new BinaryWriter(state, System.Text.Encoding.UTF8, true)) memory.SaveState(writer);
+                memory = new Memory(new byte[4096]);
+                R4300.memory = memory;
+                state.Position = 0;
+                using (var reader = new BinaryReader(state, System.Text.Encoding.UTF8, true)) memory.LoadState(reader);
+                using var restored = new MemoryStream();
+                using (var writer = new BinaryWriter(restored)) memory.SaveState(writer);
+                if (!state.ToArray().AsSpan().SequenceEqual(restored.ToArray()))
+                    throw new Exception("Pending SP/DP events changed during save/load");
+            }
+            memory.Tick(999);
+            if ((memory.ReadUInt32(0x04300008) & 0x21) != 0)
+                throw new Exception("Premature SP/DP retirement");
+            memory.Tick(1);
+            if ((memory.ReadUInt32(0x04300008) & 0x21) != 1)
+                throw new Exception("Short graphics task did not retire SP before DP");
+            memory.WriteUInt32(0x04040010, 8); // acknowledge SP
+            memory.Tick(3000);
+            if ((memory.ReadUInt32(0x04300008) & 0x21) != (fullSync ? 0x20u : 0u))
+                throw new Exception("Missing FULL_SYNC completion or fabricated DP without FULL_SYNC");
+            memory.WriteUInt32(0x04300000, 0x800); // acknowledge DP
+            memory.Tick(10000);
+            if ((memory.ReadUInt32(0x04300008) & 0x21) != 0)
+                throw new Exception("SP/DP completion was delivered twice");
+        }
+
+        // FULL_SYNC does not depend on a later BREAK. A producer can submit a
+        // completed RDP list and keep waiting for CPU work in the same RSP task.
+        var polling = NewMemory(new uint[] {
+            0x24011000, 0x40814000, 0x24011008, 0x40814800,
+            0x8c010080, 0x1020fffe, 0, 0x0000000d
+        });
+        polling.WriteUInt32(0x1000, 0xe9000000);
+        polling.WriteUInt32(0x04040010, 0x101);
+        if ((polling.ReadUInt32(0x04300008) & 0x21) != 0x20
+            || (polling.ReadUInt32(0x04040010) & 3) != 0)
+            throw new Exception("FULL_SYNC waited for RSP BREAK or fabricated SP completion");
+        polling.WriteUInt32(0x04300000, 0x800);
+        polling.WriteUInt32(0x04000080, 1);
+        polling.Tick(16384);
+        polling.Tick(4000);
+        if ((polling.ReadUInt32(0x04300008) & 0x21) != 1)
+            throw new Exception("RSP completion rearmed an already retired FULL_SYNC");
     }
 
     private static void CheckFramebufferPublication()

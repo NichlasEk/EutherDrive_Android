@@ -13,9 +13,10 @@ if (args.Length is 4 or 5 && args[0] == "--bench-state")
 }
 
 #if N64_LIVE_GPU && N64_PERF_PROBE
-if (args.Length is 3 or 4 && args[0] == "--check-gpu-state-game")
+if (args.Length is 3 or 4 or 5 && args[0] == "--check-gpu-state-game")
 {
-    GpuGameplayStateChecks.Run(args[1], args[2], args.Length == 4 ? int.Parse(args[3]) : 10);
+    GpuGameplayStateChecks.Run(args[1], args[2], args.Length >= 4 ? int.Parse(args[3]) : 10,
+        args.Length == 5 ? args[4] : null);
     return;
 }
 #endif
@@ -37,6 +38,11 @@ if (args.Length is 3 or 4 && args[0] == "--bench-sm64")
 }
 
 #if N64_LIVE_GPU && N64_RDP_JOURNAL
+if (args.Length == 2 && args[0] == "--check-gpu-cpu-frames")
+{
+    N64GpuCpuFramebufferChecks.Run(args[1]);
+    return;
+}
 if (args.Length == 3 && args[0] == "--check-gpu-savestates")
 {
     N64GpuSavestateChecks.Run(args[1], args[2]);
@@ -61,6 +67,16 @@ if (args.Length == 2 && args[0] == "--check-gpu-abi")
 if (args.Length == 2 && args[0] == "--check-gpu-textures")
 {
     N64GpuTextureChecks.Run(args[1]);
+    return;
+}
+if (args.Length == 2 && args[0] == "--check-gpu-textures-live")
+{
+    N64GpuTextureChecks.Run(args[1], true);
+    return;
+}
+if (args.Length == 2 && args[0] == "--check-gpu-readback")
+{
+    N64GpuReadbackChecks.Run(args[1]);
     return;
 }
 if (args.Length == 2 && args[0] == "--check-journal-production")

@@ -12,12 +12,13 @@ using Ryu64.MIPS;
 internal static class GpuGameplayStateChecks
 {
     private const ulong Clock = 93_750_000;
-    internal static void Run(string rom, string output, int warmSeconds)
+    internal static void Run(string rom, string output, int warmSeconds, string initialState = null)
     {
         if (warmSeconds < 1 || warmSeconds > 120) throw new ArgumentOutOfRangeException(nameof(warmSeconds));
         if (Directory.Exists(output)) throw new IOException("Use a new output directory");
         Directory.CreateDirectory(output);
         using var core = new Ryu64Core.Ryu64Core(); core.LoadROM(rom);
+        if (initialState != null) core.LoadState(initialState);
         if (R4300.memory.GpuRenderer == null) throw new Exception("Set EUTHERDRIVE_N64_GPU_LIBRARY for this check");
         var memory = R4300.memory;
         string Advance(string name, int seconds, Action start)

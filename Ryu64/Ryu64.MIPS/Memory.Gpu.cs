@@ -22,6 +22,10 @@ namespace Ryu64.MIPS
         public IRdpGpuRenderer GpuRenderer { get; private set; }
         public byte[] GpuHiddenBits => _rdpHiddenBits;
         private readonly bool[] _gpuPendingPages = new bool[2048];
+        // Indexer/array stores do not update the ordinary framebuffer epochs.
+        // Retain initialization evidence for those paths without adding work
+        // to every fast CPU byte/word store.
+        private readonly ulong[] _gpuIndexerWrittenPages = new ulong[32];
         private readonly List<Tuple<uint, uint>> _gpuPendingRanges = new List<Tuple<uint, uint>>();
         private bool _gpuPending, _gpuApplying;
         private int _gpuThread;
@@ -57,6 +61,7 @@ namespace Ryu64.MIPS
             var renderer = GpuRenderer; GpuRenderer = null;
             renderer?.Dispose(); _gpuPending = false;
             Array.Clear(_gpuPendingPages, 0, _gpuPendingPages.Length);
+            Array.Clear(_gpuIndexerWrittenPages, 0, _gpuIndexerWrittenPages.Length);
             _gpuPendingRanges.Clear();
             _gpuThread = 0; _gpuScissorHeight = 1024;
             lock (_gpuFrameLock)
@@ -86,6 +91,7 @@ namespace Ryu64.MIPS
                 writer.Write(_gpuLastWidth); writer.Write(_gpuLastHeight); writer.Write(_gpuLastBpp);
                 writer.Write(_gpuLastPixels.Length); writer.Write(_gpuLastPixels);
             }
+            foreach (ulong pages in _gpuIndexerWrittenPages) writer.Write(pages);
         }
 
         private static void WriteGpuFrame(BinaryWriter writer, GpuFrame frame)
@@ -116,7 +122,7 @@ namespace Ryu64.MIPS
             return frame;
         }
 
-        private void ReadGpuState(BinaryReader reader)
+        private void ReadGpuState(BinaryReader reader, int memoryVersion)
         {
             byte[] backend = ReadGpuBytes(reader, 16384);
             uint scissorHeight = reader.ReadUInt32();
@@ -147,7 +153,11 @@ namespace Ryu64.MIPS
             if (width < 0 || width > 1024 || height < 0 || height > 576 || bpp < 0 || bpp > 4
                 || pixels.Length != (long)width * height * bpp || (pixels.Length != 0 && bpp < 2))
                 throw new InvalidDataException("Invalid GPU scanout snapshot");
+            var indexerPages = new ulong[_gpuIndexerWrittenPages.Length];
+            if (memoryVersion >= 9)
+                for (int i = 0; i < indexerPages.Length; i++) indexerPages[i] = reader.ReadUInt64();
             GpuRenderer.LoadState(backend);
+            indexerPages.CopyTo(_gpuIndexerWrittenPages, 0);
             Array.Clear(_gpuPendingPages, 0, _gpuPendingPages.Length); _gpuPendingRanges.Clear();
             _gpuPending = false; _gpuThread = 0; _gpuScissorHeight = scissorHeight;
             GpuReadHazards = hazards; GpuFrames = frames;
@@ -196,6 +206,14 @@ namespace Ryu64.MIPS
         public void GpuExternalWrite(uint address, uint length)
         {
             if (!_gpuApplying) GpuRenderer?.RdramWritten(address, length);
+        }
+
+        private void GpuIndexerWrite(uint address)
+        {
+            if (GpuRenderer == null) return;
+            uint page = address >> 12;
+            _gpuIndexerWrittenPages[page >> 6] |= 1UL << (int)(page & 63);
+            GpuExternalWrite(address, 1);
         }
 
         public void GpuReadbackCompleted()
@@ -282,6 +300,50 @@ namespace Ryu64.MIPS
                 while (_gpuCompleted.Count > 8) _gpuCompleted.RemoveAt(0);
             }
             _gpuTargets.Clear(); GpuFrames++;
+        }
+
+        // CPU/RSP video decoders can write scanout directly without issuing
+        // any RDP command. Capture on the emulation thread at a VI boundary;
+        // the UI must continue to consume immutable, completed snapshots.
+        private void GpuPublishCpuFramebuffer()
+        {
+            if (GpuRenderer == null || _gpuPending || _gpuTargets.Count != 0 || _rdpPendingWordCount != 0)
+                return;
+            // _gpuTargets also survives a read hazard/save synchronization:
+            // reconciled RDRAM alone does not prove an RDP frame is complete.
+            uint origin = ReadBigEndianWord(VI_ORIGIN_REG_RW) & 0xffffffu;
+            uint width = ReadBigEndianWord(VI_WIDTH_REG_RW) & 0xfffu;
+            uint bpp = GetFramebufferBytesPerPixelHint(), rows = GetFramebufferHeightHint();
+            ulong bytes = (ulong)width * rows * bpp;
+            if (width == 0 || width > 1024 || bpp == 0 || origin >= RDRAM.Length || bytes > (ulong)RDRAM.Length - origin)
+                return;
+            // Retain the last completed image for an uninitialized destination.
+            // Ordinary stores and DMA already maintain serialized epochs;
+            // the small extra bitmap covers indexer/array stores, including SD.
+            bool written = false;
+            for (uint page = origin / RdramPageSize; page <= (origin + (uint)bytes - 1) / RdramPageSize; page++)
+                if (_rdramPageLastWriteEpoch[page] != 0 || (_gpuIndexerWrittenPages[page >> 6] & (1UL << (int)(page & 63))) != 0)
+                { written = true; break; }
+            if (!written) return;
+            lock (_gpuFrameLock)
+            {
+                for (int i = _gpuCompleted.Count - 1; i >= 0; i--)
+                {
+                    var completed = _gpuCompleted[i];
+                    if (completed.Width != width || completed.Bpp != bpp || origin < completed.Address) continue;
+                    uint offset = origin - completed.Address;
+                    if ((ulong)offset + bytes > (ulong)completed.Pixels.Length) continue;
+                    if (RDRAM.AsSpan((int)origin, (int)bytes).SequenceEqual(completed.Pixels.AsSpan((int)offset, (int)bytes)))
+                        return;
+                    break;
+                }
+                var frame = new GpuFrame { Address = origin, Width = width, Bpp = bpp, Pixels = new byte[(int)bytes] };
+                Buffer.BlockCopy(RDRAM, (int)origin, frame.Pixels, 0, frame.Pixels.Length);
+                _gpuCompleted.RemoveAll(f => f.Address == origin && f.Width == width && f.Bpp == bpp);
+                _gpuCompleted.Add(frame);
+                while (_gpuCompleted.Count > 8) _gpuCompleted.RemoveAt(0);
+                GpuFrames++;
+            }
         }
 
         public bool TryGetGpuFramebuffer(out byte[] pixels, out int width, out int height, out int bpp)

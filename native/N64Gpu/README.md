@@ -70,6 +70,23 @@ do not trigger scanout or interrupts. Error code 2 invalidates the context's
 use contract: destroy it, without attempting partial replay against modified
 memory. Device-loss recovery and timeout guarantees are not implemented.
 
+The optional ABI-1 `readback_live` extension retains the same completion and
+buffer-size requirements. Its first call copies all RDRAM; subsequent calls
+copy only pages that submitted GPU draws could have changed. The live caller
+must retain the previous RDRAM contents and apply every submitted CPU write
+to that same logical memory. Use ordinary `readback` for arbitrary snapshot
+buffers. Full snapshots do not consume the live caller's pending dirty pages.
+Hidden memory and TMEM are always copied in full. The managed live core falls
+back to full readback when an older library lacks this optional export.
+
+Dirty bounds include both attachments, all 1024 possible rows, every color
+size, word padding and RDRAM wrap, using the same pinned-renderer proof as
+bit 8 below. Missing target state and unknown commands force a full copy.
+This derived page metadata is not serialized: a restored fresh context starts
+with a full copy. The savestate format, CPU-write barriers and emulated timing
+are unchanged. See the [Mario readback measurements](../../docs/n64-mario-live-readback-speed-2026-09-23.md)
+for correctness checks and end-to-end timing.
+
 The API serializes calls and validates integer handles. Each instance owns its
 Granite managers, workers and Vulkan device. Thread-local managers are rebound
 on every call, including finalization from another thread. Managed calls hold
@@ -83,21 +100,41 @@ Flags:
 | 2 | Defer writes across whitelisted state-only commands |
 | 4 | Require a discrete GPU |
 | 8 | Also defer writes across draws with provably disjoint RDRAM ranges; includes bit 2's behavior |
-| 16 | Also defer writes across a narrow, proven-disjoint 16-bit LoadBlock path; includes bits 2 and 8's behavior |
+| 16 | Also defer writes across proven-disjoint LoadBlock, palette and single-row LoadTile reads; includes bits 2 and 8's behavior |
 
 No batching flag means a conservative barrier before every non-write record.
 Bit 8 considers both color and depth attachments, a full 1024-row pass, every
 color size, address alignment and RAM wrap. Missing target state forces a
 barrier. Bit 16 additionally tracks the texture image and all eight tile slots.
-It accepts only matching 16-bit source/tile sizes, non-YUV defined formats,
+For LoadBlock it accepts only matching 16-bit source/tile sizes, non-YUV defined formats,
 zero tile stride and an aligned source span entirely inside installed RAM.
 The bound uses full-pixel Block S/T, image width and eight-byte transfer
-rounding; DXT permutes halfwords within each group. Other texture layouts,
-LoadTile/TLUT, unknown opcodes, FULL_SYNC and submission boundaries flush pending
-writes. The proof is tied to `load_tile_iteration` and `update_tmem_16` in the
-pinned source. This reorders buffered writes inside a submitted
+rounding; DXT permutes halfwords within each group. TLUT loads additionally
+accept aligned 16-bit sources, one row of 1–256 entries, RGBA destination tiles
+of 4/8/16 bits and zero tile stride. Their S/T fields use quarter pixels.
+`load_tile_iteration` retains the exact source width, and `update_tmem_lut`
+bounds every source index by it even when the TMEM destination wraps.
+Single-row LoadTile accepts matching 8/16-bit source/tile sizes, non-YUV defined
+formats and aligned sources. Its quarter-pixel S/T defines an eight-byte-rounded
+source span; tile stride and TMEM wrap do not expand that span. Reversed S and
+multiple rows retain their barriers. All three proofs include source-word
+padding and reject reads outside installed RAM.
+
+The enclosing interval of pending CPU patches is checked first. If it overlaps
+a texture source, lists of at most 128 patches can be checked individually using
+the same source proof. Every patch must be disjoint; larger lists retain the
+barrier. This avoids false hazards when unrelated writes straddle a texture.
+Other texture layouts, unknown opcodes, FULL_SYNC and submission
+boundaries flush pending writes. The proof is tied to `load_tile_iteration`,
+`update_tmem_16` and `update_tmem_lut` in the pinned source. This reorders buffered writes inside a submitted
 batch. Live CPU/GPU memory ownership is enforced separately by the opt-in
 managed integration described above.
+
+The legacy flag name `ED_N64_GPU_DEFER_DISJOINT_LOAD_BLOCKS` and ABI value 16
+are unchanged. See the [Castlevania gameplay measurements](../../docs/n64-castlevania-gpu-speed-2026-09-23.md)
+for the palette-load change and its validation.
+The [Mega Man texture pass](../../docs/n64-megaman-texture-speed-2026-09-23.md)
+documents single-row loads, individual patch checks and their measurements.
 
 ABI 1 requires successful coherent `VK_EXT_external_memory_host` import. It
 rejects the backend's separate copy/mask fallback rather than using it without
@@ -118,6 +155,10 @@ PARALLEL_RDP_SMALL_TYPES=1 GRANITE_NUM_WORKER_THREADS=2 GRANITE_VULKAN_NO_VALIDA
   taskset -c 6,7 dotnet "$PROBE" --check-gpu-abi "$LIB"
 PARALLEL_RDP_SMALL_TYPES=1 GRANITE_NUM_WORKER_THREADS=2 GRANITE_VULKAN_NO_VALIDATION=0 \
   taskset -c 6,7 dotnet "$PROBE" --check-gpu-textures "$LIB"
+PARALLEL_RDP_SMALL_TYPES=1 GRANITE_NUM_WORKER_THREADS=2 GRANITE_VULKAN_NO_VALIDATION=0 \
+  taskset -c 6,7 dotnet "$PROBE" --check-gpu-textures-live "$LIB"
+PARALLEL_RDP_SMALL_TYPES=1 GRANITE_NUM_WORKER_THREADS=2 GRANITE_VULKAN_NO_VALIDATION=0 \
+  taskset -c 6,7 dotnet "$PROBE" --check-gpu-readback "$LIB"
 
 # Export independent Angrylion checkpoints without Vulkan or production linkage.
 GRANITE_NUM_WORKER_THREADS=2 "$ORACLE" "$JOURNAL/journal.bin" \

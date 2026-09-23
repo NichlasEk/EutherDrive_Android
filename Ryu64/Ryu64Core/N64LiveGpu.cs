@@ -127,7 +127,7 @@ namespace Ryu64Core
                 Writes();
                 if (_batch.Length == 0) return;
                 ulong token = _gpu.Submit(_batch.GetBuffer().AsSpan(0, checked((int)_batch.Length)));
-                _gpu.Readback(token, _memory.RDRAM, _memory.GpuHiddenBits, _tmem);
+                _gpu.ReadbackLive(token, _memory.RDRAM, _memory.GpuHiddenBits, _tmem);
                 _batch.SetLength(0); _batch.Position = 0;
                 _memory.GpuReadbackCompleted();
                 if (_auditShadow != null)

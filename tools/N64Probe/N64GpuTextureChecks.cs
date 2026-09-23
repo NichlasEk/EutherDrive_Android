@@ -4,7 +4,7 @@ using Ryu64Core;
 // with the unbatched GPU. Independent Angrylion replay covers renderer output.
 internal static class N64GpuTextureChecks
 {
-    internal static void Run(string library)
+    internal static void Run(string library, bool liveReadback = false)
     {
         byte[] initial = new byte[N64GpuBackend.RamSize], hidden = new byte[N64GpuBackend.HiddenSize];
         new Random(9122).NextBytes(initial); Array.Fill(hidden, (byte)3);
@@ -13,23 +13,35 @@ internal static class N64GpuTextureChecks
         using var candidate = new N64GpuBackend(library, initial, hidden, common | N64GpuFlags.DeferDisjointLoadBlocks);
         byte[][] a = { new byte[initial.Length], new byte[hidden.Length], new byte[4096] };
         byte[][] b = { new byte[initial.Length], new byte[hidden.Length], new byte[4096] };
+        if (liveReadback) initial.CopyTo(b[0], 0);
         using var batch = new MemoryStream(); using var writer = new BinaryWriter(batch);
         int checks = 0;
         void Cmd(uint w0, uint w1) { writer.Write(2u); writer.Write(8u); writer.Write(w0); writer.Write(w1); }
         void Write(uint address, params byte[] bytes)
-        { writer.Write(1u); writer.Write((uint)bytes.Length + 4); writer.Write(address); writer.Write(bytes); }
+        {
+            writer.Write(1u); writer.Write((uint)bytes.Length + 4); writer.Write(address); writer.Write(bytes);
+            if (liveReadback) bytes.CopyTo(b[0], (int)address);
+        }
         void Image(uint address, uint width = 1) => Cmd(0xfd100000u | (width - 1), address);
         void Tile(uint index = 0, uint size = 2, uint format = 0, uint stride = 0, uint offset = 0) =>
             Cmd(0xf5000000u | format << 21 | size << 19 | stride << 9 | offset, index << 24);
         void Block(uint pixels, uint dt = 0, uint s = 0, uint t = 0, uint tile = 0) =>
             Cmd(0xf3000000u | s << 12 | t, tile << 24 | ((s + pixels - 1) & 4095) << 12 | dt);
+        void Tlut(uint pixels, uint s = 0, uint t = 0, uint tile = 0, uint fraction = 0) =>
+            Cmd(0xf0000000u | s << 14 | fraction << 12 | t << 2 | fraction,
+                tile << 24 | ((s + pixels - 1) & 1023) << 14 | fraction << 12 | t << 2 | fraction);
+        void LoadTile(uint pixels, uint s = 0, uint t = 0, uint tile = 0, uint fraction = 0, uint rows = 1) =>
+            Cmd(0xf4000000u | s << 14 | fraction << 12 | t << 2 | fraction,
+                tile << 24 | ((s + pixels - 1) & 1023) << 14 | fraction << 12 | (t + rows - 1) << 2 | fraction);
         void Check(string name, ulong barriers)
         {
             Cmd(0xe9000000, 0);
             ulong before = candidate.GetStats().WriteBarriers;
             byte[] bytes = batch.ToArray(); batch.SetLength(0); batch.Position = 0;
             strict.Readback(strict.Submit(bytes), a[0], a[1], a[2]);
-            candidate.Readback(candidate.Submit(bytes), b[0], b[1], b[2]);
+            ulong timeline = candidate.Submit(bytes);
+            if (liveReadback) candidate.ReadbackLive(timeline, b[0], b[1], b[2]);
+            else candidate.Readback(timeline, b[0], b[1], b[2]);
             for (int i = 0; i < a.Length; i++)
                 if (!a[i].AsSpan().SequenceEqual(b[i])) throw new Exception($"{name}: memory component {i} differs");
             var stats = candidate.GetStats();
@@ -76,11 +88,122 @@ internal static class N64GpuTextureChecks
         }
         Tile(size: 3); Write(0x100000, 43); Block(32); Write(0x100004, 44); Check("mismatched-size", 2);
         Tile(); Image(0x700001); Write(0x100000, 45); Block(32); Write(0x100004, 46); Check("odd-source", 2);
-        Image(0x700000); Write(0x100000, 47); Cmd(0xf4000000, 0); Write(0x100004, 48); Check("load-tile", 2);
-        Tile(offset: 256); Write(0x100000, 49); Cmd(0xf0000000, 0); Write(0x100004, 50); Check("load-tlut", 2);
+        Image(0x700000); Write(0x100000, 47); Cmd(0xf4000000, 0); Write(0x100004, 48); Check("load-tile", 1);
+        Tile(offset: 256); Write(0x100000, 49); Cmd(0xf0000000, 0); Write(0x100004, 50); Check("load-tlut", 1);
         // Last installed aligned halfword is allowed. No out-of-RAM access.
         Tile(); Image(0x7ffff8); Write(0x100000, 51); Block(1); Write(0x100004, 52); Check("ram-end", 1);
 
-        Console.WriteLine($"gpuTextureChecks={checks} fullMemoryAndTmem=exact sourceOrdering=passed barriers=checked");
+        // RGBA16 palettes read one source halfword per entry, with quarter-pixel
+        // S/T and no LoadBlock rounding. TMEM destination wrap cannot expand
+        // that source range. Compare all RAM, hidden bytes and TMEM with strict
+        // ordering, including writes immediately after a deferred palette load.
+        foreach (uint pixels in new uint[] { 1, 2, 3, 4, 15, 16, 17, 255, 256 })
+        foreach (uint tile in new uint[] { 0, 7 })
+        foreach (uint offset in new uint[] { 256, 511 })
+        foreach (uint tileSize in new uint[] { 0, 1, 2 })
+        {
+            const uint source = 0x700002, width = 77, s = 9, t = 3;
+            uint begin = source + 2 * (s + width * t), end = begin + 2 * pixels;
+            Image(source, width); Tile(tile, size: tileSize, offset: offset);
+            Write(0x100001, 61); Tlut(pixels, s, t, tile, fraction: 3);
+            Write(begin + 1, 62); Check($"tlut-disjoint/{pixels}/{tile}/{offset}/{tileSize}", 1);
+            Write(end - 1, 63); Tlut(pixels, s, t, tile);
+            Write(0x100003, 64); Check($"tlut-source-end/{pixels}/{tile}/{offset}/{tileSize}", 2);
+        }
+        Image(0x700000); Tile(offset: 256);
+        Write(0x700001, 71); Tlut(16); Write(0x700001, 71); Tlut(16);
+        Write(0x700001, 72); Check("tlut-same-value-source", 3);
+        Image(0x710000); Write(0x700001, 73); Tlut(16);
+        Image(0x700000); Tlut(16); Write(0x100000, 74); Check("tlut-new-source", 2);
+        // Conservative padding includes the other half of the source word.
+        Image(0x700002); Write(0x700001, 75); Tlut(1);
+        Write(0x100000, 76); Check("tlut-source-word-padding", 2);
+        Image(0x7ffffe); Write(0x100000, 77); Tlut(1);
+        Write(0x100004, 78); Check("tlut-last-halfword", 1);
+        // These valid but unproven layouts retain the original wait.
+        Image(0x700001); Write(0x100000, 81); Tlut(16);
+        Write(0x100004, 82); Check("tlut-odd-source", 2);
+        Image(0x700000);
+        foreach (var (size, format, stride) in new (uint, uint, uint)[] { (2, 3, 0), (2, 0, 1) })
+        {
+            Tile(size: size, format: format, stride: stride, offset: 256);
+            Write(0x100000, 83); Tlut(16); Write(0x100004, 84);
+            Check($"tlut-fallback/{size}/{format}/{stride}", 2);
+        }
+        Tile(offset: 256); Write(0x100000, 85); Tlut(257);
+        Write(0x100004, 86); Check("tlut-wide-fallback", 2);
+
+        // Single-row LoadTile reads a rounded eight-byte span. Exercise both
+        // sizes, all tile slots, destination wrap, stride, fractional S/T and
+        // later source stores against the independently ordered strict GPU.
+        uint variant = 0;
+        foreach (uint size in new uint[] { 1, 2 })
+        foreach (uint pixels in new uint[] { 1, 3, 4, 5, 7, 8, 9, 31, 128, 1000 })
+        foreach (uint stride in new uint[] { 0, 1, 16, 511 })
+        foreach (uint offset in new uint[] { 0, 511 })
+        {
+            const uint source = 0x700002, width = 77, s = 9, t = 3;
+            uint tile = variant & 7, format = new uint[] { 0, 2, 3, 4 }[(variant++ >> 1) & 3];
+            uint start = source + (s + width * t) * (1u << (int)(size - 1));
+            uint end = start + ((pixels * (1u << (int)(size - 1)) + 7) & ~7u);
+            Cmd(0xfd000000u | size << 19 | (width - 1), source);
+            Tile(tile, size: size, format: format, stride: stride, offset: offset);
+            Write(0x100001, 91); LoadTile(pixels, s, t, tile, fraction: 3);
+            Write(start + 1, 92); Check($"tile-disjoint/{size}/{pixels}/{stride}/{offset}", 1);
+            // Rounded texels past the requested width still belong to the read.
+            Write(end - 1, 93); LoadTile(pixels, s, t, tile);
+            Write(0x100003, 94); Check($"tile-rounded-source/{size}/{pixels}/{stride}/{offset}", 2);
+        }
+        Image(0x700000); Tile();
+        Write(0x700001, 95); LoadTile(16); Write(0x700001, 95); LoadTile(16);
+        Write(0x700001, 96); Check("tile-same-value-source", 3);
+        Image(0x710000); Write(0x700001, 97); LoadTile(16);
+        Image(0x700000); LoadTile(16); Write(0x100000, 98); Check("tile-new-source", 2);
+        Image(0x700002); Write(0x700001, 99); LoadTile(1);
+        Write(0x100000, 100); Check("tile-source-word-padding", 2);
+        Image(0x7ffff8); Write(0x100000, 101); LoadTile(1);
+        Write(0x100004, 102); Check("tile-ram-end", 1);
+        // Multiline, odd, wrapped-coordinate and mismatched layouts retain
+        // their barrier. Include a valid 32-bit layout and YUV as fallbacks.
+        Image(0x700001); Write(0x100000, 103); LoadTile(16);
+        Write(0x100004, 104); Check("tile-odd-source", 2);
+        Image(0x700000, 32); Tile(stride: 8);
+        Write(0x100000, 105); LoadTile(16, rows: 2);
+        Write(0x100004, 106); Check("tile-multiline", 2);
+        Tile(); Write(0x100000, 107); LoadTile(16, s: 1020);
+        Write(0x100004, 108); Check("tile-wrapped-s", 2);
+        foreach (var (sourceSize, tileSize, format) in new (uint, uint, uint)[] { (1, 2, 0), (2, 1, 0), (2, 2, 1), (3, 3, 0) })
+        {
+            Cmd(0xfd000000u | sourceSize << 19, 0x700000);
+            Tile(size: tileSize, format: format);
+            Write(0x100000, 109); LoadTile(16); Write(0x100004, 110);
+            Check($"tile-layout-fallback/{sourceSize}/{tileSize}/{format}", 2);
+        }
+
+        // Independent patches on both sides of a texture must not become a
+        // false source hazard. A later store to that source must still wait
+        // for the load, and a real overlap in any patch must flush first.
+        foreach (uint op in new uint[] { 0x30, 0x33, 0x34 })
+        {
+            void Load() { if (op == 0x30) Tlut(16); else if (op == 0x33) Block(16); else LoadTile(16); }
+            Image(0x700000); Tile(offset: 256);
+            Write(0x6ffffc, 111); Write(0x700024, 112); Load();
+            Write(0x700001, 113); Check($"sparse-texture/{op:x}", 1);
+            Write(0x6ffffc, 114); Write(0x70001f, 115); Write(0x700024, 116); Load();
+            Write(0x100000, 117); Check($"sparse-real-overlap/{op:x}", 2);
+            Write(0x6ffffc, 118); Write(0x700024, 119); Load();
+            Image(0x700024); Load(); Write(0x100000, 120); Check($"sparse-new-source/{op:x}", 2);
+            // Source-word padding and the bounded-scan fallback are preserved.
+            Image(0x700002); Write(0x700001, 121); Write(0x700030, 122); Load();
+            Write(0x100000, 123); Check($"sparse-padding/{op:x}", 2);
+            Image(0x700000);
+            foreach (int count in new int[] { 128, 129 })
+            {
+                for (int i = 0; i < count; i++) Write((i & 1) == 0 ? 0x6ffffcu : 0x700024u, (byte)i);
+                Load(); Write(0x700001, 124); Check($"sparse-limit/{op:x}/{count}", count == 128 ? 1u : 2u);
+            }
+        }
+
+        Console.WriteLine($"gpuTextureChecks={checks} fullMemoryAndTmem=exact sourceOrdering=passed barriers=checked liveReadback={liveReadback}");
     }
 }

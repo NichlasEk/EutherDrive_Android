@@ -11,6 +11,10 @@ namespace Ryu64.MIPS
         // Trapping integer arithmetic, TLB operations and other CP0 writes stay
         // on the ordinary instruction path.
         private static readonly uint[] CpuBlockReservedBits = CreateCpuBlockReservedBits();
+        // Derived from instruction bits only. Each lookup still uses a freshly
+        // fetched word, so code writes, aliases and state loads need no cache
+        // invalidation. The PC merely selects a slot; the full word is the key.
+        private static readonly ulong[] CpuBlockNextKinds = new ulong[4096];
 
         private static uint[] CreateCpuBlockReservedBits()
         {
@@ -72,6 +76,20 @@ namespace Ryu64.MIPS
                     return true;
             }
             return false;
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static int GetNextCpuBlockOpcodeKind(uint pc, uint opcode)
+        {
+            // NOP's loop-entry status depends on the preceding live word, not
+            // just its own bits. It also cannot match an empty cache entry.
+            if (opcode == 0) return IsExistingLoopEntry(pc, opcode) ? -1 : 64;
+            int slot = (int)((pc >> 2) & (CpuBlockNextKinds.Length - 1));
+            ulong cached = CpuBlockNextKinds[slot];
+            if ((uint)cached == opcode) return unchecked((int)(cached >> 32));
+            int kind = IsExistingLoopEntry(pc, opcode) ? -1 : GetCpuBlockOpcodeKind(opcode);
+            CpuBlockNextKinds[slot] = ((ulong)(uint)kind << 32) | opcode;
+            return kind;
         }
 
         private static uint GetRandomAfterInstructions(uint done)
@@ -273,7 +291,7 @@ namespace Ryu64.MIPS
                     physical = pc & 0x1fffffffu;
                     if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
                         || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
-                        || IsExistingLoopEntry(pc, opcode) || (kind = GetCpuBlockOpcodeKind(opcode)) < 0)
+                        || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
                         break;
                     continue;
                 }
@@ -316,7 +334,7 @@ namespace Ryu64.MIPS
                 physical = pc & 0x1fffffffu;
                 if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
                     || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
-                    || IsExistingLoopEntry(pc, opcode) || (kind = GetCpuBlockOpcodeKind(opcode)) < 0)
+                    || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
                     break;
             }
             if (done == 0) return 0;

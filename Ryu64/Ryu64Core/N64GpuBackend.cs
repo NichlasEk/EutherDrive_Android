@@ -61,14 +61,23 @@ namespace Ryu64Core
         }
 
         public void Readback(ulong timeline, byte[] ram, byte[] hidden, byte[] tmem)
+            => ReadbackCore(timeline, ram, hidden, tmem, false);
+
+        // The live core retains RAM and has already applied every staged CPU
+        // write to it. Old ABI-1 libraries keep the full-readback fallback.
+        public void ReadbackLive(ulong timeline, byte[] ram, byte[] hidden, byte[] tmem)
+            => ReadbackCore(timeline, ram, hidden, tmem, true);
+
+        private void ReadbackCore(ulong timeline, byte[] ram, byte[] hidden, byte[] tmem, bool live)
         {
             RequireSize(ram, RamSize); RequireSize(hidden, HiddenSize); RequireSize(tmem, TmemSize);
             bool acquired = false;
             try
             {
                 DangerousAddRef(ref acquired); byte* error = stackalloc byte[ErrorSize];
+                var readback = live ? _api.ReadbackLive ?? _api.Readback : _api.Readback;
                 fixed (byte* ramPtr = ram, hiddenPtr = hidden, tmemPtr = tmem)
-                    Check(_api.Readback(Id, timeline, ramPtr, RamSize, hiddenPtr, HiddenSize, tmemPtr, TmemSize, error, ErrorSize), error);
+                    Check(readback(Id, timeline, ramPtr, RamSize, hiddenPtr, HiddenSize, tmemPtr, TmemSize, error, ErrorSize), error);
             }
             finally { if (acquired) DangerousRelease(); }
         }
@@ -165,6 +174,7 @@ namespace Ryu64Core
             internal readonly SubmitFn Submit;
             internal readonly WaitFn Wait;
             internal readonly ReadbackFn Readback;
+            internal readonly ReadbackFn ReadbackLive;
             internal readonly StatsFn Stats;
             internal readonly NameFn DeviceName;
             internal readonly DestroyFn Destroy;
@@ -177,6 +187,8 @@ namespace Ryu64Core
                 {
                     Abi = Load<AbiFn>("abi"); Create = Load<CreateFn>("create"); Submit = Load<SubmitFn>("submit");
                     Wait = Load<WaitFn>("wait"); Readback = Load<ReadbackFn>("readback"); Stats = Load<StatsFn>("get_stats");
+                    if (NativeLibrary.TryGetExport(_library, "ed_n64_gpu_readback_live", out var live))
+                        ReadbackLive = Marshal.GetDelegateForFunctionPointer<ReadbackFn>(live);
                     DeviceName = Load<NameFn>("device_name"); Destroy = Load<DestroyFn>("destroy");
                     if (NativeLibrary.TryGetExport(_library, "ed_n64_gpu_save_state", out var save))
                         SaveState = Marshal.GetDelegateForFunctionPointer<SaveStateFn>(save);

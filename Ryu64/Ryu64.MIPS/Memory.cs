@@ -761,6 +761,11 @@ namespace Ryu64.MIPS
         private ushort _controllerButtons = InitialN64ControllerButtons;
         private sbyte _controllerAnalogX = InitialN64ControllerAnalogX;
         private sbyte _controllerAnalogY = InitialN64ControllerAnalogY;
+        public uint RomTvType { get; }
+        private readonly uint _viRefreshRate;
+        private readonly uint _viClock;
+        private readonly uint _cpuCyclesPerViFrame;
+        private readonly uint[] _cpuCyclesPerViLineTable;
         public byte RomCountryCode => _rom != null && _rom.Length > 0x3Eu ? _rom[0x3E] : (byte)0;
         private uint _openBusMissCount;
         private bool _piDmaBusy;
@@ -984,11 +989,10 @@ namespace Ryu64.MIPS
             public int AddA1;
         }
 
-        private const uint CpuCyclesPerViFrame = 1_562_500; // 93.75 MHz / 60 Hz
-        private const uint CpuCyclesPerSecond = CpuCyclesPerViFrame * 60u;
+        private const uint CpuCyclesPerSecond = 93_750_000;
         private const uint DefaultViLinesPerFrame = 1024;
-        private const uint DefaultCpuCyclesPerViLine = CpuCyclesPerViFrame / DefaultViLinesPerFrame;
-        private static readonly uint[] CpuCyclesPerViLineTable = BuildCpuCyclesPerViLineTable();
+        private static readonly uint[] NtscCpuCyclesPerViLineTable = BuildCpuCyclesPerViLineTable(CpuCyclesPerSecond / 60u);
+        private static readonly uint[] PalCpuCyclesPerViLineTable = BuildCpuCyclesPerViLineTable(CpuCyclesPerSecond / 50u);
         private const uint PlausibleFramebufferOriginFloor = 0x00001000u;
         private const uint RdramPageSize = 0x1000u;
         private const int RdramPageCount = (8 * 1024 * 1024) / 0x1000;
@@ -1066,7 +1070,7 @@ namespace Ryu64.MIPS
 
 #if N64_LIVE_GPU
             byte[] gpuState = GpuRenderer?.SaveState();
-            int version = gpuState == null ? 7 : 8;
+            int version = gpuState == null ? 7 : 9;
 #else
             const int version = 7;
 #endif
@@ -1229,8 +1233,8 @@ namespace Ryu64.MIPS
 
             int version = reader.ReadInt32();
 #if N64_LIVE_GPU
-            if (version == 8 && GpuRenderer == null) throw new InvalidDataException("This savestate requires the N64 GPU renderer");
-            if (version < 1 || version > 8)
+            if (version >= 8 && GpuRenderer == null) throw new InvalidDataException("This savestate requires the N64 GPU renderer");
+            if (version < 1 || version > 9)
 #else
             if (version < 1 || version > 7)
 #endif
@@ -1438,7 +1442,7 @@ namespace Ryu64.MIPS
                     || _pendingVisibleRdpFramebufferBytesPerPixel != RdpBytesPerPixel(_rdpColorImageSize)))
                 throw new InvalidDataException("Invalid pending framebuffer in savestate");
 #if N64_LIVE_GPU
-            if (version >= 8) ReadGpuState(reader);
+            if (version >= 8) ReadGpuState(reader, version);
 #endif
             RefreshCpuInterruptView();
         }
@@ -2262,7 +2266,7 @@ namespace Ryu64.MIPS
                             break;
                         case 0x29: // SyncFull
                             // Buffer submission is not completion; only FULL_SYNC raises DP.
-                            if (!SuppressDpInterrupt) SetMiDpInterrupt();
+                            if (!SuppressDpInterrupt) SignalRdpFullSync();
                             FlushVisibleRdpFramebufferSnapshot();
                             break;
                         case 0x2D: // SetScissor
@@ -6347,19 +6351,19 @@ namespace Ryu64.MIPS
             // VI_V_SYNC has ten bits. Precompute its line periods instead of
             // dividing again for every emulated CPU instruction. No cached
             // register state needs invalidation after writes or savestate loads.
-            if (viLinesPerFrame < CpuCyclesPerViLineTable.Length)
-                return CpuCyclesPerViLineTable[viLinesPerFrame];
+            if (viLinesPerFrame < _cpuCyclesPerViLineTable.Length)
+                return _cpuCyclesPerViLineTable[viLinesPerFrame];
 
-            uint cpuCyclesPerViLine = CpuCyclesPerViFrame / viLinesPerFrame;
+            uint cpuCyclesPerViLine = _cpuCyclesPerViFrame / viLinesPerFrame;
             return (cpuCyclesPerViLine == 0) ? 1u : cpuCyclesPerViLine;
         }
 
-        private static uint[] BuildCpuCyclesPerViLineTable()
+        private static uint[] BuildCpuCyclesPerViLineTable(uint cyclesPerFrame)
         {
             var periods = new uint[1025];
-            periods[0] = DefaultCpuCyclesPerViLine;
+            periods[0] = Math.Max(1u, cyclesPerFrame / DefaultViLinesPerFrame);
             for (uint lines = 1; lines < periods.Length; lines++)
-                periods[lines] = Math.Max(1u, CpuCyclesPerViFrame / lines);
+                periods[lines] = Math.Max(1u, cyclesPerFrame / lines);
             return periods;
         }
 
@@ -6392,7 +6396,7 @@ namespace Ryu64.MIPS
             uint cpuCyclesPerViLine = GetCpuCyclesPerViLine(viLinesPerFrame);
             _viFrameDelayCycles = cpuCyclesPerViLine * viLinesPerFrame;
             if (_viFrameDelayCycles == 0)
-                _viFrameDelayCycles = CpuCyclesPerViFrame;
+                _viFrameDelayCycles = _cpuCyclesPerViFrame;
 
             uint viIntrLine = ReadBigEndianWord(VI_INTR_REG_RW) & 0x03FFu;
             // VI_INTR gates vertical interrupts, but the interrupt event itself is
@@ -6410,6 +6414,24 @@ namespace Ryu64.MIPS
         public Memory(byte[] Rom)
         {
             _rom = Rom;
+            // Use the same TV system for IPL metadata, VI pacing and the AI DAC.
+            // PAL software schedules timers for 50 fields/s; forcing 60 can
+            // repeatedly postpone those timers before controller init finishes.
+            RomTvType = 1u;
+            switch ((char)RomCountryCode)
+            {
+                case 'D': case 'F': case 'I': case 'P':
+                case 'S': case 'U': case 'X': case 'Y':
+                    RomTvType = 0u;
+                    break;
+                case 'B':
+                    RomTvType = 2u;
+                    break;
+            }
+            _viRefreshRate = RomTvType == 0 ? 50u : 60u;
+            _viClock = RomTvType == 0 ? 49_656_530u : RomTvType == 2 ? 48_628_316u : 48_681_812u;
+            _cpuCyclesPerViFrame = CpuCyclesPerSecond / _viRefreshRate;
+            _cpuCyclesPerViLineTable = RomTvType == 0 ? PalCpuCyclesPerViLineTable : NtscCpuCyclesPerViLineTable;
             _joybusEepromSize = GetCartridgeEepromSize(Rom);
             _rspInterpreter = new RspInterpreter(this);
             for (int i = 0; i < _rdpHiddenBits.Length; i++)
@@ -6684,7 +6706,7 @@ namespace Ryu64.MIPS
             uint cpuCyclesPerViLine = GetCpuCyclesPerViLine(viLinesPerFrame);
             uint viFrameDelayCycles = cpuCyclesPerViLine * viLinesPerFrame;
             if (viFrameDelayCycles == 0)
-                viFrameDelayCycles = CpuCyclesPerViFrame;
+                viFrameDelayCycles = _cpuCyclesPerViFrame;
 
             if (_viFrameDelayCycles != viFrameDelayCycles)
                 RecomputeViInterruptSchedule();
@@ -7140,14 +7162,6 @@ namespace Ryu64.MIPS
                 || taskLocked
                 || (rspStoppedOnBreak && (status & SpStatusIntrBreak) != 0);
 
-            if (_activeRspTask.Type == 1 && dpInterruptPending)
-            {
-                FinalizeGraphicsTask();
-                _dpInterruptDelayArmed = true;
-                _dpInterruptDelayRemaining = 4000;
-                _dpCompletionPending = true;
-            }
-
             _rspTaskLocked = taskLocked;
             _rspInterruptDelayArmed = scheduleRspInterrupt;
             _rspInterruptDelayRemaining = scheduleRspInterrupt
@@ -7183,14 +7197,6 @@ namespace Ryu64.MIPS
             bool scheduleRspInterrupt = rspInterruptPending
                 || taskLocked
                 || (rspStoppedOnBreak && (postStatus & SpStatusIntrBreak) != 0);
-
-            if (_activeRspTask.Type == 1 && dpInterruptPending)
-            {
-                FinalizeGraphicsTask();
-                _dpInterruptDelayArmed = true;
-                _dpInterruptDelayRemaining = 4000;
-                _dpCompletionPending = true;
-            }
 
             _rspTaskLocked = taskLocked;
             _rspInterruptDelayArmed = scheduleRspInterrupt;
@@ -7312,8 +7318,7 @@ namespace Ryu64.MIPS
             if (dacRate == 0)
                 return 44_100u;
 
-            const double N64NtscClock = 48_681_812.0;
-            uint rate = (uint)Math.Round(N64NtscClock / (dacRate + 1.0));
+            uint rate = (uint)Math.Round(_viClock / (dacRate + 1.0));
             if (rate < 4_000u) rate = 4_000u;
             if (rate > 96_000u) rate = 96_000u;
             return rate;
@@ -7331,7 +7336,7 @@ namespace Ryu64.MIPS
             uint cpuCountsPerSecond = CpuCyclesPerSecond;
             uint viDelay = _viFrameDelayCycles;
             if (viDelay != 0)
-                cpuCountsPerSecond = viDelay * 60u;
+                cpuCountsPerSecond = viDelay * _viRefreshRate;
 
             ulong duration = ((ulong)length * cpuCountsPerSecond) / (4UL * sampleRate);
             if (duration == 0)
@@ -9174,6 +9179,9 @@ namespace Ryu64.MIPS
 
         private void SetMiViInterrupt(bool immediate = false)
         {
+#if N64_LIVE_GPU
+            GpuPublishCpuFramebuffer();
+#endif
             const byte MiViIntrBit = 0x08; // MI_INTR_REG bit for VI
             bool wasSet = (MI_INTR_REG_R[3] & MiViIntrBit) != 0;
             MI_INTR_REG_R[3] |= MiViIntrBit;
@@ -9231,6 +9239,28 @@ namespace Ryu64.MIPS
             const byte MiAiIntrBit = 0x04; // MI_INTR_REG bit for AI
             MI_INTR_REG_R[3] = (byte)(MI_INTR_REG_R[3] & ~MiAiIntrBit);
             RefreshCpuInterruptView();
+        }
+
+        private void SignalRdpFullSync()
+        {
+            if (!_rspTaskDispatching)
+            {
+                SetMiDpInterrupt();
+                return;
+            }
+
+            // RSP slices run synchronously, but their SP completion is retired
+            // on the device clock. Retire the RDP completion there too: raising
+            // DP here while delaying SP reverses the completion order of short
+            // graphics tasks. Only an executed FULL_SYNC can arm this event.
+            // Start at submission, so a producer waiting inside a later slice
+            // can still receive DP without first reaching RSP BREAK.
+            _dpCompletionPending = true;
+            if (!_dpInterruptDelayArmed)
+            {
+                _dpInterruptDelayArmed = true;
+                _dpInterruptDelayRemaining = 4000;
+            }
         }
 
         private void SetMiDpInterrupt(bool immediate = false)
@@ -9344,6 +9374,9 @@ namespace Ryu64.MIPS
 
         public void VI_ORIGIN_WRITE_EVENT()
         {
+#if N64_LIVE_GPU
+            GpuPublishCpuFramebuffer();
+#endif
             uint value = ReadBigEndianWord(VI_ORIGIN_REG_RW) & 0x00FFFFFFu;
             _lastViOriginWriteValue = value;
             _lastViOriginWritePc = Registers.R4300.PC;
@@ -10453,7 +10486,7 @@ namespace Ryu64.MIPS
                 byte oldValue = Entry.WriteArray[offset];
                 Entry.WriteArray[offset] = value;
 #if N64_LIVE_GPU
-                if (ReferenceEquals(Entry.WriteArray, RDRAM)) GpuExternalWrite((uint)offset, 1);
+                if (ReferenceEquals(Entry.WriteArray, RDRAM)) GpuIndexerWrite((uint)offset);
 #endif
 #if N64_RDP_JOURNAL
                 // Array/indexer stores (including SD and mirrored RAM) bypass
@@ -10584,6 +10617,21 @@ namespace Ryu64.MIPS
         }
 
         public void WriteUInt8(uint index, byte value)
+        {
+            uint physical = index & 0x1fffffffu;
+            if (!WordAccessTracingEnabled && index >= 0x80000000u && index < 0xc0000000u
+                && physical < RDRAM.Length)
+            {
+                // Direct RAM aliases need no map lookup. Note every store,
+                // including same-value writes, for framebuffer/GPU ownership.
+                RDRAM[physical] = value;
+                NoteRdramWriteRange(physical, 1);
+                return;
+            }
+            WriteUInt8Slow(index, value);
+        }
+
+        private void WriteUInt8Slow(uint index, byte value)
         {
             uint physical = 0;
             bool havePhysical = false;

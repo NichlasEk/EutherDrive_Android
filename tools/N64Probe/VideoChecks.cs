@@ -49,6 +49,60 @@ internal static class VideoChecks
         memory.WriteUInt32(0xa4400004, 0x7ffff0);
         if (core.TryGetFramebuffer(out _, out _, out _, out _))
             throw new Exception("Out-of-range VI framebuffer accepted");
+        CheckTvTiming();
         Console.WriteLine($"videoChecks={checks + 1} passed");
+    }
+
+    private static void CheckTvTiming()
+    {
+        int cases = 0;
+        foreach (char country in "DFIPSUXYEJB\0")
+        foreach (uint lines in new uint[] { 263, 313, 525, 625 })
+        foreach (bool restore in new[] { false, true })
+        {
+            byte[] rom = new byte[4096];
+            rom[0x3e] = (byte)country;
+            bool pal = "DFIPSUXY".Contains(country);
+            uint hz = pal ? 50u : 60u;
+            var memory = new Memory(rom);
+            R4300.memory = memory;
+            if (memory.RomTvType != (pal ? 0u : country == 'B' ? 2u : 1u))
+                throw new Exception("IPL TV type disagrees with region");
+            memory.WriteUInt32(0x0440000c, 2); // VI_INTR
+            memory.WriteUInt32(0x04400018, lines - 1); // VI_V_SYNC
+            // Integer scanline periods must remain within one line count of
+            // the selected 50/60 Hz period, independently of source resolution.
+            uint period = (93_750_000u / hz / lines) * lines;
+            memory.Tick(period / 2);
+            if (restore)
+            {
+                using var saved = new MemoryStream();
+                using (var writer = new BinaryWriter(saved, System.Text.Encoding.UTF8, true)) memory.SaveState(writer);
+                memory = new Memory(rom);
+                R4300.memory = memory;
+                saved.Position = 0;
+                using (var reader = new BinaryReader(saved, System.Text.Encoding.UTF8, true)) memory.LoadState(reader);
+                using var actual = new MemoryStream();
+                using (var writer = new BinaryWriter(actual)) memory.SaveState(writer);
+                if (!actual.ToArray().AsSpan().SequenceEqual(saved.ToArray()))
+                    throw new Exception("TV timing state changed during save/load");
+            }
+            memory.Tick(period - period / 2 - 1);
+            if ((memory.ReadUInt32(0x04300008) & 8) != 0)
+                throw new Exception($"Early VI for region {country}, lines={lines}");
+            memory.Tick(1);
+            for (int frame = 0; frame < 3; frame++)
+            {
+                if ((memory.ReadUInt32(0x04300008) & 8) == 0)
+                    throw new Exception($"Missing VI for region {country}, lines={lines}");
+                memory.WriteUInt32(0x04400010, 0);
+                memory.Tick(period - 1);
+                if ((memory.ReadUInt32(0x04300008) & 8) != 0)
+                    throw new Exception("VI acknowledgement changed the next field deadline");
+                memory.Tick(1);
+            }
+            cases++;
+        }
+        Console.WriteLine($"tvTimingCases={cases} pal50=passed ntsc60=passed mpal60=passed saveRestore=passed");
     }
 }

@@ -28,6 +28,8 @@ namespace Ryu64.MIPS
         private static readonly RecentInst[] _recentInst = new RecentInst[RecentInstHistorySize];
         private static int _recentInstPos = 0;
         private static ulong _stuckPcLogCount = 0;
+        private const ulong FirstStuckPcReport = 5_000_000;
+        private const ulong StuckPcReportInterval = 20_000_000;
         private static readonly bool TraceBootWindow =
             string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_TRACE_N64_BOOT_WINDOW"), "1", StringComparison.Ordinal);
         private static readonly int TraceBootWindowLimit = ParseTraceLimit("EUTHERDRIVE_TRACE_N64_BOOT_WINDOW_LIMIT", 4000);
@@ -2027,13 +2029,28 @@ namespace Ryu64.MIPS
             return instructions;
         }
 
-        private static uint TryAdvanceMappedIdleLoop(uint pc, uint maximumCycles)
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static bool IsSelfIdleBranch(uint pc, uint opcode)
+            => opcode == 0x1000ffffu || ((opcode >> 26) == 2
+                && (((pc + 4) & 0xf0000000u) | ((opcode & 0x03ffffffu) << 2)) == pc);
+
+        private static uint GetIdleBranchCycleBudget(ulong samePcIterations)
+        {
+            // Stop immediately before the next outer-loop watchdog report.
+            // The caller has already counted the first branch in this batch.
+            ulong pairs = samePcIterations < FirstStuckPcReport
+                ? FirstStuckPcReport - samePcIterations
+                : StuckPcReportInterval - samePcIterations % StuckPcReportInterval;
+            return (uint)Math.Min(65536UL, pairs * 2);
+        }
+
+        private static uint TryAdvanceIdleBranchLoop(uint pc, uint maximumCycles)
         {
             uint segment = pc & 0xe0000000u;
-            if (!FastIdleLoop || Common.Variables.Debug || Common.Settings.STEP_MODE || CpuWindowTracingEnabled
+            bool direct = segment == 0x80000000u || segment == 0xa0000000u;
+            if (!FastIdleLoop || CpuBatchTracingEnabled || Common.Variables.Debug || Common.Settings.STEP_MODE || CpuWindowTracingEnabled
                 || TraceSm64DispatchWindow || TraceHotPcSamples || InstInterp.BranchTracingEnabled
                 || _executingDelaySlot || _delaySlotExceptionPending
-                || segment == 0x80000000u || segment == 0xa0000000u
                 || (pc & 3) != 0 || (pc & 0xfff) > 0xff8
                 || memory.HasPendingRcpInterrupt
                 || (Registers.COP0.Reg[Registers.COP0.CAUSE_REG] & CauseIpMask) != 0)
@@ -2049,22 +2066,36 @@ namespace Ryu64.MIPS
             uint compare = (uint)Registers.COP0.Reg[Registers.COP0.COMPARE_REG];
             if (compare > count)
                 cycles = (uint)Math.Min(cycles, (((ulong)compare - count) << 1) - (Count & 1) - 1);
-            cycles &= ~1u; // Whole BEQ + NOP pairs only.
+            cycles &= ~1u; // Whole branch + delay instruction pairs only.
             if (cycles < 4)
                 return 0;
 
-            // Validate live mapped RAM each time. No translation cache; misses
-            // and non-NOP delay slots go through normal exception handling.
+            // Validate both live RAM words each time. Direct segments bypass
+            // the TLB just as instruction fetch does. Mapped misses and any
+            // delay-slot work retain normal execution/exception handling, except
+            // a nontrapping self-increment whose complete result is computed below.
+            uint delay;
             try
             {
-                uint physical = TLB.TranslateAddress(pc, throwOnMiss: true) & 0x1fffffffu;
-                uint delayPhysical = TLB.TranslateAddress(pc + 4, throwOnMiss: true) & 0x1fffffffu;
-                if (!memory.TryReadRdramUInt32PhysicalFast(physical, out uint branch) || branch != 0x1000ffffu
-                    || !memory.TryReadRdramUInt32PhysicalFast(delayPhysical, out uint delay) || delay != 0)
+                uint physical = (direct ? pc : TLB.TranslateAddress(pc, throwOnMiss: true)) & 0x1fffffffu;
+                uint delayPhysical = (direct ? pc + 4 : TLB.TranslateAddress(pc + 4, throwOnMiss: true)) & 0x1fffffffu;
+                if (!memory.TryReadRdramUInt32PhysicalFast(physical, out uint branch) || !IsSelfIdleBranch(pc, branch)
+                    || !memory.TryReadRdramUInt32PhysicalFast(delayPhysical, out delay))
                     return 0;
             }
             catch (Common.Exceptions.TLBMissException) { return 0; }
 
+            if (delay != 0)
+            {
+                uint kind = delay >> 26, source = (delay >> 21) & 31, target = (delay >> 16) & 31;
+                // ADDIU/DADDIU rx,rx,imm. The branch is unconditional and the
+                // delay cannot fault or access devices. Keep r0 writes on the
+                // interpreter path, including its temporary nonzero result.
+                if ((kind != 9 && kind != 25) || source != target || target == 0) return 0;
+                ulong increment = unchecked((ulong)((long)(short)delay * (cycles / 2)));
+                ulong value = unchecked(Registers.R4300.Reg[target] + increment);
+                Registers.R4300.Reg[target] = kind == 9 ? unchecked((ulong)(long)(int)value) : value;
+            }
             Registers.R4300.Reg[0] = 0;
             CycleCounter += cycles;
             Count += cycles;
@@ -2405,27 +2436,7 @@ namespace Ryu64.MIPS
             return (cicSeed >> 8) & 0xFFu;
         }
 
-        private static uint GetBootTvType()
-        {
-            byte country = memory != null ? memory.RomCountryCode : (byte)0;
-
-            switch ((char)country)
-            {
-                case 'D':
-                case 'F':
-                case 'I':
-                case 'P':
-                case 'S':
-                case 'U':
-                case 'X':
-                case 'Y':
-                    return 0u; // PAL
-                case 'B':
-                    return 2u; // MPAL
-                default:
-                    return 1u; // NTSC
-            }
-        }
+        private static uint GetBootTvType() => memory?.RomTvType ?? 1u;
 
         private static void TraceCpuDispatch(uint Opcode, OpcodeTable.OpcodeDesc Desc, OpcodeTable.InstInfo Info)
         {
@@ -3664,7 +3675,7 @@ namespace Ryu64.MIPS
                         if (pc == lastPc)
                         {
                             samePcIterations++;
-                            if (samePcIterations == 5_000_000 || (samePcIterations % 20_000_000) == 0)
+                            if (samePcIterations == FirstStuckPcReport || (samePcIterations % StuckPcReportInterval) == 0)
                             {
                                 _stuckPcLogCount++;
                                 Common.Logger.PrintWarningLine(
@@ -3768,9 +3779,9 @@ namespace Ryu64.MIPS
                                 continue;
                             }
 
-                            if (Opcode == 0x1000ffffu)
+                            if (IsSelfIdleBranch(pc, Opcode))
                             {
-                                uint idleCycles = TryAdvanceMappedIdleLoop(pc, 65536);
+                                uint idleCycles = TryAdvanceIdleBranchLoop(pc, GetIdleBranchCycleBudget(samePcIterations));
                                 if (idleCycles != 0)
                                 {
                                     // The first branch is already in the history.

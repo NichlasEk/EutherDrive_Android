@@ -18,6 +18,8 @@ internal static class CpuStateBenchmark
         var fetch = typeof(R4300).GetMethod("ReadOpcode", flags)!.CreateDelegate<Func<uint, uint>>();
         var service = typeof(R4300).GetMethod("ServiceInterrupts", flags)!.CreateDelegate<Func<uint, bool>>();
         var multiply = typeof(R4300).GetMethod("TryAdvanceMultiplyRoutine", flags)?.CreateDelegate<Func<uint, uint, uint>>();
+        var idle = typeof(R4300).GetMethod("TryAdvanceIdleBranchLoop", flags)?.CreateDelegate<Func<uint, uint, uint>>();
+        var isIdle = typeof(R4300).GetMethod("IsSelfIdleBranch", flags)?.CreateDelegate<Func<uint, uint, bool>>();
         var block = typeof(R4300).GetMethod("TryAdvanceCpuBlock", flags)?.CreateDelegate<Func<uint, uint, uint, bool, uint>>();
         var cop1 = typeof(R4300).GetMethod("RaiseCop1UnusableException", flags)!.CreateDelegate<Action<uint>>();
         var tlb = typeof(R4300).GetMethod("RaiseTlbRefillException", flags)!.CreateDelegate<Action<uint, uint, bool>>();
@@ -50,6 +52,8 @@ internal static class CpuStateBenchmark
                     uint opcode = fetch(pc);
                     if (opcode == 0xafa40000u && multiply != null
                         && multiply(pc, (uint)(instructionLimit - Ryu64.Common.Measure.InstructionCount)) != 0) continue;
+                    if (idle != null && isIdle != null && isIdle(pc, opcode)
+                        && idle(pc, (uint)(instructionLimit - Ryu64.Common.Measure.InstructionCount)) != 0) continue;
                     if (block != null && pc >= 0x80004000u && pc < 0xc0000000u)
                     {
                         uint length = block(pc, opcode, (uint)(instructionLimit - Ryu64.Common.Measure.InstructionCount), false);

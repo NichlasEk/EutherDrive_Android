@@ -1,7 +1,9 @@
 # N64 GPU savestates and Castlevania checkpoint
 
-Work is paused at the user's request after committing and pushing this slice.
-Resume from this document and the live checkout. The target remains Linux.
+This slice was committed, pushed and paused at the user's request. Work resumed
+on 2026-09-23 using new GPU saves in slots 2 and 3; see the
+[Castlevania optimization pass](n64-castlevania-gpu-speed-2026-09-23.md).
+The target remains Linux.
 
 ## What changed
 
@@ -18,7 +20,9 @@ dithering. Loading constructs a fresh GPU context with saved memory and imports
 these values. The live layer restores pending targets, completed frame copies,
 and the held VI image without publishing unfinished drawing.
 
-Core version 2 and memory version 8 identify GPU saves. Software saves retain
+Core version 2 and memory version 8 identify the initial GPU saves. The
+2026-09-23 CPU-video fix writes memory version 9, adding a 256-byte bitmap for
+indexer-written framebuffer pages; version 8 remains loadable. Software saves retain
 core version 1/memory version 7. A normal build rejects a GPU save with a message
 to use the GPU launcher. Older native libraries are checked before replacing
 the running renderer. Saving before the CPU has started is rejected, and a

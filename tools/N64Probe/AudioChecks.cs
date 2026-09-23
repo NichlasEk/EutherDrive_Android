@@ -64,6 +64,37 @@ internal static class AudioChecks
             resampler.Reset();
             Check(resampler.Convert(input, source, target).SequenceEqual(whole), "Resampler reset");
         }
-        Console.WriteLine("Audio checks passed: AI snapshots/FIFO/reuse/rate/bounds/state and 24 streaming resampling combinations.");
+        CheckTvAudio();
+        Console.WriteLine("Audio checks passed: AI snapshots/FIFO/reuse/rate/bounds/state, NTSC/PAL/MPAL clocks and 24 streaming resampling combinations.");
+    }
+
+    private static void CheckTvAudio()
+    {
+        // 320 stereo samples at DAC divider 1520. PAL's slower VI must not
+        // stretch AI DMA by 60/50; its independent DAC clock sets the rate.
+        foreach (var (country, rate, viCycles, noViCycles, lines) in new[] {
+            ('E', 32028u, 936620u, 936680u, 525u),
+            ('P', 32669u, 918301u, 918301u, 625u),
+            ('B', 31992u, 937674u, 937734u, 525u)
+        })
+        foreach (bool enableVi in new[] { false, true })
+        {
+            byte[] rom = new byte[4096];
+            rom[0x3e] = (byte)country;
+            var memory = new Memory(rom);
+            R4300.memory = memory;
+            if (enableVi) memory.WriteUInt32(0x04400018, lines - 1);
+            memory.WriteUInt32(0x04500010, 1519);
+            memory.WriteUInt32(0x04500000, 0);
+            memory.WriteUInt32(0x04500004, 1280);
+            if (memory.DequeueAudio(out uint actualRate).Length != 640 || actualRate != rate)
+                throw new Exception($"Incorrect {country} AI DAC rate");
+            memory.Tick((enableVi ? viCycles : noViCycles) - 1);
+            if ((memory.ReadUInt32(0x04300008) & 4) != 0)
+                throw new Exception("Premature regional AI completion");
+            memory.Tick(1);
+            if ((memory.ReadUInt32(0x04300008) & 4) == 0)
+                throw new Exception("VI refresh rate stretched the audio DMA deadline");
+        }
     }
 }

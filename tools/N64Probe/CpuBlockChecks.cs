@@ -42,6 +42,8 @@ internal static class CpuBlockChecks
         var count = typeof(R4300).GetField("Count", cpuFlags)!;
         R4300.memory = new Memory(new byte[4096]); OpcodeTable.Init();
         var classify = typeof(R4300).GetMethod("GetCpuBlockOpcodeKind", cpuFlags)!.CreateDelegate<Func<uint,int>>();
+        var classifyNext = typeof(R4300).GetMethod("GetNextCpuBlockOpcodeKind", cpuFlags)!.CreateDelegate<Func<uint,uint,int>>();
+        var loopEntry = typeof(R4300).GetMethod("IsExistingLoopEntry", cpuFlags)!.CreateDelegate<Func<uint,uint,bool>>();
         var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR","BLTZ","BGEZ","BLEZ","BGTZ", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
         allowed.Add("MFHI"); allowed.Add("MFLO");
         uint sample = 0x430064;
@@ -49,6 +51,16 @@ internal static class CpuBlockChecks
         for (int i = 0; i < 1_000_000; i++)
         {
             sample = unchecked(sample * 1664525u + 1013904223u);
+            uint samplePc = 0x80010000u + (uint)(i & 4095) * 4;
+            int nextKind = loopEntry(samplePc, sample) ? -1 : classify(sample);
+            // Miss, hit, aliased address and a conflicting instruction word.
+            if (classifyNext(samplePc, sample) != nextKind
+                || classifyNext(samplePc, sample) != nextKind
+                || classifyNext(samplePc ^ 0x20000000u, sample) != nextKind)
+                throw new Exception($"Next block decode differs for {sample:x8}");
+            classifyNext(samplePc + 0x4000u, ~sample);
+            if (classifyNext(samplePc, sample) != nextKind)
+                throw new Exception($"Next block decode collision differs for {sample:x8}");
             if (classify(sample) < 0) continue;
             var info = OpcodeTable.GetOpcodeInfo(sample);
             bool straightCop1 = (sample >> 26) == 17 && ((sample >> 21) & 31) != 8;
@@ -59,6 +71,19 @@ internal static class CpuBlockChecks
             decoded++;
         }
         Console.WriteLine($"blockDecodeSamples=1000000 accepted={decoded} cycles=passed reservedBits=passed");
+        // NOP must observe predecessor changes even when its own bits and PC
+        // are unchanged. Rejected loop entries must not poison later code.
+        foreach (uint predecessor in new uint[] { 0, 0x1520fffb, 0, 0x1520fffb })
+        {
+            BinaryPrimitives.WriteUInt32BigEndian(R4300.memory.RDRAM.AsSpan(0x10000, 4), predecessor);
+            foreach (uint pc in new uint[] { 0x80010004, 0xa0010004 })
+                if (classifyNext(pc, 0) != (predecessor == 0x1520fffb ? -1 : 64))
+                    throw new Exception("Next block NOP predecessor differs");
+        }
+        foreach (uint word in new uint[] { 0x1520fffb, 0x24420001, 0xffffffff, 0x24420001 })
+            if (classifyNext(0x80010004, word) != (loopEntry(0x80010004, word) ? -1 : classify(word)))
+                throw new Exception("Next block changed instruction differs");
+        Console.WriteLine("blockNextDecodeSamples=4000012 aliases=passed collisions=passed livePredecessor=passed");
         Registers.R4300.PC = 0x80010000;
         Registers.COP0.Reg[11] = 0;
         R4300.memory.WriteUInt32(0xa4400018, 524);
@@ -538,6 +563,81 @@ internal static class CpuBlockChecks
             // A register dependency can make a later load leave RAM: execute only
             // the safe prefix and leave the fault/MMIO instruction to the interpreter.
             Reset(); Code(0, 0x3c048000); Code(1, 0x8c850000); Code(2, 0x3c04a440); Code(3, 0x8c850000); Check(3);
+            // Reused registers must be published on every safe-prefix exit,
+            // including locals whose first write would have followed the fault.
+            foreach (int fault in Enumerable.Range(0, 8))
+            foreach (uint address in new uint[] { 0x80020001, 0xa4400000, 0x80800000 })
+            {
+                Reset(); Registers.R4300.Reg[0] = 0xabcdef; Registers.R4300.Reg[4] = address;
+                for (int i = 0; i < 16; i++)
+                    Code(i, (i & 1) == 0 ? 0x24420001u : 0x24630001u);
+                Code(fault, 0x8c850000); Check((uint)fault, 16);
+                if (fault != 0)
+                {
+                    Reset(); Registers.R4300.Reg[4] = address;
+                    for (int i = 0; i < 16; i++) Code(i, 0x24420001);
+                    Code(fault - 1, 0x24000042); Code(fault, 0x8c850000);
+                    Check((uint)fault, 16); // Preserve r0 until the failed guard's instruction executes.
+                }
+            }
+            // Cached jump sources can alias the link destination. The target
+            // uses the old value; the delay slot sees the new link (or r0).
+            foreach (uint link in new uint[] { 0, 4, 5, 31 })
+            foreach (uint delayTarget in new uint[] { 0, 4, 6 })
+            {
+                Reset(); Registers.R4300.Reg[4] = 0x80010040;
+                Code(0, 0x24840004); Code(1, 0x24850004);
+                Code(2, 4u << 21 | link << 11 | 9u);
+                Code(3, link << 21 | delayTarget << 11 | 0x25u);
+                Check(4, 4);
+            }
+            // A temporary first defined after a rejected guard must retain its
+            // old array value. A definition before that guard must be published,
+            // even when the normal exit would overwrite it again.
+            foreach (int fault in Enumerable.Range(0, 8))
+            foreach (uint address in new uint[] { 0x80020001, 0xa4400000, 0x80800000 })
+            foreach (bool definedBefore in new[] { false, true })
+            {
+                if (definedBefore && fault == 0) continue;
+                Reset(); Registers.R4300.Reg[4] = address;
+                Registers.R4300.Reg[6] = 0xfedcba9876543210UL;
+                for (int i = 0; i < 16; i++) Code(i, 0x24420001);
+                if (definedBefore) Code(fault - 1, 0x24060021);
+                Code(fault, 0x8c850000);
+                Code(fault + 1, 0x24060042);
+                Code(fault + 2, 6u << 21 | 6u << 16 | 7u << 11 | 0x2du);
+                Code(fault + 3, 0x24c60001);
+                Check((uint)fault, 16);
+            }
+            // A later iteration can fail before rewriting its temporary. Keep
+            // the value from the preceding iteration; preserve live-in state
+            // instead when the very first load guard fails.
+            foreach (bool firstFails in new[] { false, true })
+            {
+                Reset(); Registers.R4300.Reg[4] = firstFails ? 0x80800000u : 0x807ffffcu;
+                Registers.R4300.Reg[6] = 0xfedcba9876543210UL;
+                Code(0, 0x8c850000); Code(1, 0x24060001); Code(2, 0x24840004);
+                Code(3, 0x1480fffc); Code(4, 0x24c60001);
+                Check(firstFails ? 0u : 5u, 10);
+            }
+            // More live operands than a small host-register cache can hold,
+            // with aliases, full-width values, discarded writes and live reuse.
+            for (int variant = 0; variant < 64; variant++)
+            {
+                Reset();
+                for (int r = 0; r < 32; r++)
+                    Registers.R4300.Reg[r] = (ulong)random.NextInt64() ^ ((ulong)random.Next(2) << 63);
+                for (int i = 0; i < 16; i++)
+                {
+                    uint rs = (uint)random.Next(10), rt = (uint)random.Next(10), rd = (uint)random.Next(10);
+                    uint instruction = i % 4 == 0 ? 0x24000000u | rs << 21 | rt << 16 | (uint)random.Next(65536)
+                        : i % 4 == 1 ? rs << 21 | rt << 16 | rd << 11 | 0x2du
+                        : i % 4 == 2 ? rs << 21 | rt << 16 | rd << 11 | 0x26u
+                        : 0x64000000u | rs << 21 | rt << 16 | (uint)random.Next(65536);
+                    Code(i, instruction);
+                }
+                Check(16, 16);
+            }
             if (compiledCases < 300) throw new Exception($"Too few compiled cases: {compiledCases}");
             Console.WriteLine($"cpuJitCompiledCases={compiledCases}");
             var resetCache = typeof(R4300).GetMethod("ResetCpuJitCache", cpuFlags)!;

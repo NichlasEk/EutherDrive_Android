@@ -17,6 +17,7 @@ internal static class CpuJitCacheChecks
         var synchronous = typeof(R4300).GetField("CpuJitSynchronous", cpu)!;
         var threshold = typeof(R4300).GetField("CpuJitHotThreshold", cpu)!;
         var cycles = typeof(R4300).GetField("CycleCounter", cpu | BindingFlags.Public)!;
+        int capacity = (int)typeof(R4300).GetField("CpuJitMaximumVersions", cpu)!.GetRawConstantValue()!;
         object originalThreshold = threshold.GetValue(null)!;
         object originalSynchronous = synchronous.GetValue(null)!;
         object originalCycles = cycles.GetValue(null)!;
@@ -39,13 +40,13 @@ internal static class CpuJitCacheChecks
         try
         {
             reset(); synchronous.SetValue(null, true); threshold.SetValue(null, 1); cycles.SetValue(null, 0UL);
-            for (uint i = 0; i < 128; i++)
+            for (uint i = 0; i < capacity; i++)
             {
                 uint pc = 0x80010000 + i * 64; Code(pc);
                 if (compile(pc) == null) throw new Exception("Initial JIT cache filled prematurely");
             }
-            uint next = 0x80014000; Code(next);
-            if (compile(next) != null || versions.Count != 128) throw new Exception("Recent native code was evicted or cap exceeded");
+            uint next = 0x80010000 + (uint)capacity * 64; Code(next);
+            if (compile(next) != null || versions.Count != capacity) throw new Exception("Recent native code was evicted or cap exceeded");
             Execute(0x80010000); // Keep an address entry referring to the oldest code.
             object oldest = cache.GetValue((0x80010000u >> 2) & 65535)!;
             object oldHolder = oldest.GetType().GetField("Code", instance)!.GetValue(oldest)!;
@@ -56,7 +57,7 @@ internal static class CpuJitCacheChecks
             Execute(0x80010040); // This code must survive the eviction.
             object active = cache.GetValue((0x80010040u >> 2) & 65535)!;
             object activeHolder = active.GetType().GetField("Code", instance)!.GetValue(active)!;
-            if (compile(next) == null || versions.Count != 128) throw new Exception("Cold native code did not make room");
+            if (compile(next) == null || versions.Count != capacity) throw new Exception("Cold native code did not make room");
             if (oldHolder.GetType().GetField("Run", instance)!.GetValue(oldHolder) != null ||
                 activeHolder.GetType().GetField("Run", instance)!.GetValue(activeHolder) == null)
                 throw new Exception("Retirement retained old executable code or evicted active code");
@@ -79,7 +80,7 @@ internal static class CpuJitCacheChecks
             reset();
             if (versions.Count != 0 || entries.Count != 0 || cache.Cast<object>().Any(e => e != null))
                 throw new Exception("Reset retained derived code/address state");
-            Console.WriteLine("cpuJitCacheChecks=passed recentCode=retained coldCode=replaced retiredCode=released lateAddress=compiled nativeCap=128 reset=empty");
+            Console.WriteLine($"cpuJitCacheChecks=passed recentCode=retained coldCode=replaced retiredCode=released lateAddress=compiled nativeCap={capacity} reset=empty");
         }
         finally { reset(); synchronous.SetValue(null, originalSynchronous); threshold.SetValue(null, originalThreshold); cycles.SetValue(null, originalCycles); }
     }

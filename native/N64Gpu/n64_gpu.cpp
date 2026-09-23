@@ -7,6 +7,7 @@
 #include "thread_group.hpp"
 #include "aligned_alloc.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -109,12 +110,13 @@ struct FramebufferRanges {
             && !overlaps(low, high, depth, width * 1024 * 2);
     }
 };
-// Narrow read bound for the pinned renderer's ordinary 16-bit LoadBlock.
+// Narrow read bounds for the pinned renderer's texture uploads.
 // load_tile_iteration() keeps Block S/T in full pixels (not quarter pixels),
 // rounds width to four pixels, and sets upload height to one. With a matching
 // 16-bit non-YUV tile and zero tile stride, update_tmem_16() reads that linear
 // span; DXT only permutes halfwords within each eight-byte group. Other tile
-// layouts, LoadTile/TLUT and out-of-installed-RAM reads retain the barrier.
+// layouts and out-of-installed-RAM reads retain the barrier. Single-row
+// LoadTile and TLUT have their own source bounds below.
 struct LoadBlockRange {
     uint32_t address = 0, width = 0, size = 0;
     struct Tile { uint32_t size = 0, format = 0, stride = 0; bool known = false; } tiles[8];
@@ -136,6 +138,44 @@ struct LoadBlockRange {
         begin &= ~3u; end = (end + 3) & ~3u;
         return low >= end || high <= begin;
     }
+    bool disjoint_tlut(uint32_t low, uint32_t high, uint32_t w0, uint32_t w1) const {
+        // Pinned load_tile_iteration() gives 16-bit TLUT uploads an effective
+        // width of exactly pixel_count. update_tmem_lut() rejects every source
+        // index beyond it, regardless of the destination's TMEM wraparound.
+        // The RGBA destination tile can be 4/8/16-bit: all three shader cases
+        // bound their source index by the same 16-bit effective width.
+        // Keep the proof to aligned, single-row loads. Other source sizes,
+        // tile layouts and reads outside installed RAM still wait.
+        const auto &tile = tiles[(w1 >> 24) & 7];
+        if (!width || size != 2 || !tile.known || tile.size > 2 || tile.format != 0 || tile.stride) return false;
+        uint32_t s = ((w0 >> 12) & 4095) >> 2, t = (w0 & 4095) >> 2;
+        if (((w1 & 4095) >> 2) != t) return false;
+        uint32_t pixels = (((((w1 >> 12) & 4095) >> 2) - s) + 1) & 4095;
+        if (!pixels || pixels > 256) return false;
+        uint32_t begin = address + 2 * (s + width * t), end = begin + 2 * pixels;
+        if ((begin & 1) || end > ram_size) return false;
+        begin &= ~3u; end = (end + 3) & ~3u;
+        return low >= end || high <= begin;
+    }
+    bool disjoint_tile(uint32_t low, uint32_t high, uint32_t w0, uint32_t w1) const {
+        // For a single row and matching 8/16-bit source/tile sizes,
+        // load_tile_iteration() rounds the source span to eight bytes.
+        // update_tmem_16() clamps upload_y to zero and bounds upload_x by
+        // that rounded width. Tile stride and TMEM wrap cannot expand it.
+        // Mismatched sizes, YUV, multiple rows and wrapped S remain barriers.
+        const auto &tile = tiles[(w1 >> 24) & 7];
+        if (!width || (size != 1 && size != 2) || !tile.known || tile.size != size
+            || tile.format == 1 || tile.format > 4) return false;
+        uint32_t s = ((w0 >> 12) & 4095) >> 2, t = (w0 & 4095) >> 2;
+        uint32_t last_s = ((w1 >> 12) & 4095) >> 2;
+        if (((w1 & 4095) >> 2) != t || last_s < s) return false;
+        uint32_t pixel_bytes = 1u << (size - 1);
+        uint32_t begin = address + pixel_bytes * (s + width * t);
+        uint32_t end = begin + (((last_s - s + 1) * pixel_bytes + 7) & ~7u);
+        if ((begin & 1) || end > ram_size) return false;
+        begin &= ~3u; end = (end + 3) & ~3u;
+        return low >= end || high <= begin;
+    }
 };
 struct Context : RDP::ValidationInterface {
     Managers managers;
@@ -152,6 +192,46 @@ struct Context : RDP::ValidationInterface {
     FramebufferRanges framebuffers;
     LoadBlockRange texture;
     uint32_t vi_registers[14] = {};
+    // Derived readback metadata, not checkpoint state. The live caller owns
+    // CPU writes in its RDRAM; only GPU-written pages need to be returned.
+    static constexpr uint32_t page_size = 4096, page_count = ram_size / page_size;
+    std::array<uint64_t, page_count / 64> gpu_dirty_pages{};
+    bool gpu_targets_marked = false, live_readback_initialized = false;
+
+    void mark_page_range(uint32_t begin, uint32_t end) {
+        uint32_t page = begin / page_size, limit = (end + page_size - 1) / page_size;
+        while (page < limit) {
+            uint32_t bit = page & 63, count = std::min(limit - page, 64u - bit);
+            gpu_dirty_pages[page >> 6] |= (UINT64_MAX >> (64 - count)) << bit;
+            page += count;
+        }
+    }
+    void mark_target(uint32_t address, uint32_t bytes) {
+        uint32_t begin = address & (ram_size - 4), end = begin + bytes + 4;
+        mark_page_range(begin, std::min(end, ram_size));
+        if (end > ram_size) mark_page_range(0, end - ram_size);
+    }
+    void mark_draw_targets() {
+        if (gpu_targets_marked) return;
+        if (!framebuffers.width || !framebuffers.have_depth) gpu_dirty_pages.fill(UINT64_MAX);
+        else {
+            mark_target(framebuffers.color, framebuffers.width * 1024 * framebuffers.pixel_bytes);
+            mark_target(framebuffers.depth, framebuffers.width * 1024 * 2);
+        }
+        gpu_targets_marked = true;
+    }
+    uint32_t copy_gpu_pages(uint8_t *destination) const {
+        uint32_t copied = 0, page = 0;
+        while (page < page_count) {
+            if (!gpu_dirty_pages[page >> 6]) { page = (page + 64) & ~63u; continue; }
+            if (!(gpu_dirty_pages[page >> 6] & (uint64_t(1) << (page & 63)))) { page++; continue; }
+            uint32_t begin = page++;
+            while (page < page_count && (gpu_dirty_pages[page >> 6] & (uint64_t(1) << (page & 63)))) page++;
+            uint32_t offset = begin * page_size, size = (page - begin) * page_size;
+            swap_words(destination + offset, ram.get() + offset, size); copied += size;
+        }
+        return copied;
+    }
 
     Context(uint32_t flags, const uint8_t *initial_ram, const uint8_t *initial_hidden)
         : factory((flags & ED_N64_GPU_VALIDATE) != 0),
@@ -248,7 +328,7 @@ void validate_batch(const uint8_t *bytes, uint32_t size) {
 // Unknown commands take the barrier path. Draws can additionally pass only
 // when DEFER_DISJOINT_WRITES proves their entire memory bounds disjoint.
 // FULL_SYNC and public submit boundaries always flush writes. The separate
-// LoadBlock whitelist must prove a texture read disjoint before deferring it.
+// Texture-load whitelists must prove the read disjoint before deferring it.
 bool state_only(uint32_t op) {
     switch (op) {
     case 0x26: case 0x27: case 0x28:
@@ -299,13 +379,36 @@ int ed_n64_gpu_submit(uint64_t handle, const uint8_t *bytes, uint32_t size, uint
                 bool defer = ctx.batch_state_writes && (kind == 3 || state_only(op)
                     || (ctx.defer_disjoint_writes && draw && ctx.framebuffers.disjoint(pending_low, pending_high))
                     || (ctx.defer_disjoint_load_blocks && op == 0x33
-                        && ctx.texture.disjoint(pending_low, pending_high, le32(data), le32(data + 4))));
+                        && ctx.texture.disjoint(pending_low, pending_high, le32(data), le32(data + 4)))
+                    || (ctx.defer_disjoint_load_blocks && op == 0x30
+                        && ctx.texture.disjoint_tlut(pending_low, pending_high, le32(data), le32(data + 4)))
+                    || (ctx.defer_disjoint_load_blocks && op == 0x34
+                        && ctx.texture.disjoint_tile(pending_low, pending_high, le32(data), le32(data + 4))));
+                // The cheap enclosing interval can straddle a texture even
+                // though none of the actual CPU patches touches it. Reuse the
+                // same source proof for every patch in a small pending list.
+                // Cap the scan so large or unproven batches keep a cheap wait.
+                if (!defer && ctx.defer_disjoint_load_blocks && !pending.empty() && pending.size() <= 128
+                    && (op == 0x30 || op == 0x33 || op == 0x34)) {
+                    defer = std::all_of(pending.begin(), pending.end(), [&](const Patch &patch) {
+                        uint32_t high = patch.address + patch.size, w0 = le32(data), w1 = le32(data + 4);
+                        if (op == 0x30) return ctx.texture.disjoint_tlut(patch.address, high, w0, w1);
+                        if (op == 0x33) return ctx.texture.disjoint(patch.address, high, w0, w1);
+                        return ctx.texture.disjoint_tile(patch.address, high, w0, w1);
+                    });
+                }
                 if (!defer) flush();
                 if (kind == 2) {
                     uint32_t words[44];
                     for (uint32_t i = 0; i < length / 4; i++) words[i] = le32(data + i * 4);
+                    if (draw) ctx.mark_draw_targets();
+                    // State, texture-upload and sync commands do not introduce
+                    // RDRAM writes. Preserve a full readback for unknown commands.
+                    else if (!state_only(op) && op != 0x29 && op != 0x30 && op != 0x33 && op != 0x34)
+                        ctx.gpu_dirty_pages.fill(UINT64_MAX);
                     ctx.gpu->enqueue_command(length / 4, words); ctx.stats.commands++;
                     ctx.framebuffers.command(op, words[0], words[1]);
+                    if (op == 0x3f || op == 0x3e) ctx.gpu_targets_marked = false;
                     ctx.texture.command(op, words[0], words[1]);
                 } else for (unsigned reg = 0; reg < 14; reg++) {
                     auto *p = data + reg * 4;
@@ -323,19 +426,34 @@ int ed_n64_gpu_submit(uint64_t handle, const uint8_t *bytes, uint32_t size, uint
 int ed_n64_gpu_wait(uint64_t handle, uint64_t timeline, char *error, uint32_t capacity) {
     return boundary(error, capacity, [&] { get(handle).wait(timeline); });
 }
-int ed_n64_gpu_readback(uint64_t handle, uint64_t timeline, uint8_t *ram, uint32_t size,
-    uint8_t *hidden, uint32_t hidden_bytes, uint8_t *tmem, uint32_t tmem_bytes, char *error, uint32_t capacity) {
+static int readback(uint64_t handle, uint64_t timeline, uint8_t *ram, uint32_t size,
+    uint8_t *hidden, uint32_t hidden_bytes, uint8_t *tmem, uint32_t tmem_bytes, bool live, char *error, uint32_t capacity) {
     return boundary(error, capacity, [&] {
         auto &ctx = get(handle);
         require(ram && hidden && tmem && size == ram_size && hidden_bytes == hidden_size && tmem_bytes == 4096, "Invalid readback buffers");
         require(timeline == ctx.stats.last_timeline && timeline != 0, "Readback requires latest submitted timeline");
         ctx.wait(timeline);
-        ctx.gpu->begin_read_rdram(); swap_words(ram, ctx.ram.get(), ram_size);
+        ctx.gpu->begin_read_rdram();
+        uint32_t copied = ram_size;
+        if (live && ctx.live_readback_initialized) copied = ctx.copy_gpu_pages(ram);
+        else swap_words(ram, ctx.ram.get(), ram_size);
         swap_halfwords(hidden, static_cast<const uint8_t *>(ctx.gpu->begin_read_hidden_rdram()), hidden_size);
         std::memcpy(tmem, ctx.gpu->get_tmem(), 4096);
-        ctx.stats.readback_bytes += ram_size + hidden_size + 4096;
+        ctx.stats.readback_bytes += copied + hidden_size + 4096;
         ctx.gpu->begin_frame_context(); ctx.healthy();
+        if (live) {
+            ctx.gpu_dirty_pages.fill(0); ctx.gpu_targets_marked = false;
+            ctx.live_readback_initialized = true;
+        }
     });
+}
+int ed_n64_gpu_readback(uint64_t handle, uint64_t timeline, uint8_t *ram, uint32_t size,
+    uint8_t *hidden, uint32_t hidden_bytes, uint8_t *tmem, uint32_t tmem_bytes, char *error, uint32_t capacity) {
+    return readback(handle, timeline, ram, size, hidden, hidden_bytes, tmem, tmem_bytes, false, error, capacity);
+}
+int ed_n64_gpu_readback_live(uint64_t handle, uint64_t timeline, uint8_t *ram, uint32_t size,
+    uint8_t *hidden, uint32_t hidden_bytes, uint8_t *tmem, uint32_t tmem_bytes, char *error, uint32_t capacity) {
+    return readback(handle, timeline, ram, size, hidden, hidden_bytes, tmem, tmem_bytes, true, error, capacity);
 }
 int ed_n64_gpu_get_stats(uint64_t handle, ed_n64_gpu_stats *stats, uint32_t size, char *error, uint32_t capacity) {
     return boundary(error, capacity, [&] {

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Interleave savestate runs with neutral input at identical controller reads.
 
-Uses the software renderer and a raw Ryu64Core savestate. Requires probes
+Uses a raw Ryu64Core savestate, with software rendering unless both GPU
+libraries are supplied. GPU states also require N64LiveGpu=true. Requires probes
 built with N64PerformanceProbe=true, without N64CpuJitProfile.
 Timings include all emulation work between two actual Joybus checkpoints.
 """
@@ -21,15 +22,22 @@ def main():
     parser.add_argument("--cores", default="6,7")
     parser.add_argument("--start", type=int, default=5)
     parser.add_argument("--end", type=int, default=15)
+    parser.add_argument("--reference-gpu-library", type=Path)
+    parser.add_argument("--candidate-gpu-library", type=Path)
     args = parser.parse_args()
     if args.start < 5 or args.end <= args.start or args.start % 5 or args.end % 5:
         parser.error("start/end must be increasing multiples of 5")
+    if bool(args.reference_gpu_library) != bool(args.candidate_gpu_library):
+        parser.error("supply both GPU libraries or neither")
     args.output.mkdir(parents=True, exist_ok=False)
     env = os.environ.copy()
     env.pop("EUTHERDRIVE_N64_GPU_AUDIT", None)
     env.pop("EUTHERDRIVE_N64_GPU_VALIDATE", None)
     env.pop("EUTHERDRIVE_N64_GPU_LIBRARY", None)
     env.pop("DOTNET_PerfMapEnabled", None)
+    if args.reference_gpu_library:
+        env.update(PARALLEL_RDP_SMALL_TYPES="1", PARALLEL_RDP_FORCE_SYNC_SHADER="1",
+                   GRANITE_NUM_WORKER_THREADS="2", GRANITE_VULKAN_NO_VALIDATION="1")
     expected = None
     expected_frames = None
     results = []
@@ -38,6 +46,8 @@ def main():
     for index, mode in enumerate(("reference", "candidate", "candidate", "reference"), 1):
         name = f"{index}-{mode}"
         output = args.output / name
+        if args.reference_gpu_library:
+            env["EUTHERDRIVE_N64_GPU_LIBRARY"] = str(getattr(args, mode + "_gpu_library").resolve())
         print("running", name, flush=True)
         with (args.output / (name + ".log")).open("w") as log:
             subprocess.run(["taskset", "-c", args.cores, "dotnet", str(getattr(args, mode).resolve()),

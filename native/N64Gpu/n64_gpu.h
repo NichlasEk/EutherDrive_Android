@@ -13,7 +13,8 @@ extern "C" {
 enum { ED_N64_GPU_ABI = 1, ED_N64_GPU_RAM_SIZE = 8 << 20, ED_N64_GPU_HIDDEN_SIZE = 4 << 20, ED_N64_GPU_TMEM_SIZE = 4096 };
 enum { ED_N64_GPU_VALIDATE = 1, ED_N64_GPU_BATCH_STATE_WRITES = 2, ED_N64_GPU_REQUIRE_DISCRETE = 4,
        ED_N64_GPU_DEFER_DISJOINT_WRITES = 8, // Includes state-write batching.
-       ED_N64_GPU_DEFER_DISJOINT_LOAD_BLOCKS = 16 }; // Includes both previous batching modes.
+       // Includes previous modes, narrow TLUT and single-row LoadTile reads.
+       ED_N64_GPU_DEFER_DISJOINT_LOAD_BLOCKS = 16 };
 enum { ED_N64_GPU_OK = 0, ED_N64_GPU_ARGUMENT = 1, ED_N64_GPU_BACKEND = 2 };
 // All fields and pointers belong to the caller. Functions retain no caller
 // buffers after returning. Handles are IDs, never addresses. Calls serialize.
@@ -45,6 +46,14 @@ ED_N64_GPU_API int ed_n64_gpu_readback(uint64_t handle, uint64_t timeline,
     uint8_t *tmem, uint32_t tmem_size, char *error, uint32_t error_capacity);
 ED_N64_GPU_API int ed_n64_gpu_get_stats(uint64_t handle, ed_n64_gpu_stats *stats, uint32_t size,
     char *error, uint32_t error_capacity);
+// Optional ABI-1 extension for a live owner of RDRAM. The caller retains its
+// previous result and applies every submitted CPU write to that same logical
+// memory. First call copies all RAM; subsequent calls return GPU-written pages.
+// Hidden memory and TMEM are always complete. Ordinary readback stays full and
+// does not consume live dirty metadata. Fresh contexts restart with a full copy.
+ED_N64_GPU_API int ed_n64_gpu_readback_live(uint64_t handle, uint64_t timeline,
+    uint8_t *ram_be, uint32_t ram_size, uint8_t *hidden_logical, uint32_t hidden_size,
+    uint8_t *tmem, uint32_t tmem_size, char *error, uint32_t error_capacity);
 ED_N64_GPU_API int ed_n64_gpu_device_name(uint64_t handle, char *name, uint32_t capacity,
     char *error, uint32_t error_capacity);
 // Optional ABI-1 extension. A checkpoint drains pending work and serializes

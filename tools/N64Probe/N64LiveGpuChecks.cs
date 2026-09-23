@@ -81,7 +81,13 @@ internal static class N64LiveGpuChecks
                         if (memory.RDRAM[i] != expected[i ^ 3]) throw new Exception($"Live RDRAM mismatch frame={frame} at={i:x}");
                     for (int i = 0; i < memory.GpuHiddenBits.Length; i++)
                         if (memory.GpuHiddenBits[i] != expected[memory.RDRAM.Length + (i ^ 1)]) throw new Exception($"Live hidden mismatch {frame}:{i:x}");
+                    // The journal replays RSP submissions without advancing
+                    // its clock. GPU synchronization finishes before the
+                    // emulated DP event is retired on that clock.
+                    if ((memory.MI_INTR_REG_R[3] & 0x20) != 0) throw new Exception("Premature DP interrupt during RSP submission");
+                    memory.Tick(4000);
                     if ((memory.MI_INTR_REG_R[3] & 0x20) == 0) throw new Exception("Missing completed DP interrupt");
+                    memory.WriteUInt32(0x04300000, 0x800);
                     checks++; Console.WriteLine($"liveGpuOracleFrame={frame} exact=true");
                 }
             }
