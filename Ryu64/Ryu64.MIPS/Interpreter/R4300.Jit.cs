@@ -12,7 +12,7 @@ namespace Ryu64.MIPS
         // bytes on every entry; a store always ends the compiled region.
         private static readonly bool CpuJitEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CPU_JIT") != "0";
         private const uint CpuJitMaximumInstructions = 512;
-        private const int CpuJitMaximumVersions = 512;
+        private const int CpuJitMaximumVersions = 1024;
         private sealed class CpuJitEntry
         {
             internal uint Pc, First;
