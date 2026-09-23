@@ -115,8 +115,8 @@ struct FramebufferRanges {
 // rounds width to four pixels, and sets upload height to one. With a matching
 // 16-bit non-YUV tile and zero tile stride, update_tmem_16() reads that linear
 // span; DXT only permutes halfwords within each eight-byte group. Other tile
-// layouts and out-of-installed-RAM reads retain the barrier. Single-row
-// LoadTile and TLUT have their own source bounds below.
+// layouts and out-of-installed-RAM reads retain the barrier. LoadTile and
+// single-row TLUT have their own source bounds below.
 struct LoadBlockRange {
     uint32_t address = 0, width = 0, size = 0;
     struct Tile { uint32_t size = 0, format = 0, stride = 0; bool known = false; } tiles[8];
@@ -158,20 +158,22 @@ struct LoadBlockRange {
         return low >= end || high <= begin;
     }
     bool disjoint_tile(uint32_t low, uint32_t high, uint32_t w0, uint32_t w1) const {
-        // For a single row and matching 8/16-bit source/tile sizes,
-        // load_tile_iteration() rounds the source span to eight bytes.
-        // update_tmem_16() clamps upload_y to zero and bounds upload_x by
-        // that rounded width. Tile stride and TMEM wrap cannot expand it.
-        // Mismatched sizes, YUV, multiple rows and wrapped S remain barriers.
+        // For matching 8/16-bit source/tile sizes, load_tile_iteration()
+        // rounds each source row to eight bytes. update_tmem_16() bounds
+        // upload_y by height - 1 and upload_x by that rounded width, even
+        // when TMEM rows overlap or wrap. Enclose all source rows; unknown
+        // layouts and wrapped coordinates retain the barrier.
         const auto &tile = tiles[(w1 >> 24) & 7];
         if (!width || (size != 1 && size != 2) || !tile.known || tile.size != size
             || tile.format == 1 || tile.format > 4) return false;
         uint32_t s = ((w0 >> 12) & 4095) >> 2, t = (w0 & 4095) >> 2;
         uint32_t last_s = ((w1 >> 12) & 4095) >> 2;
-        if (((w1 & 4095) >> 2) != t || last_s < s) return false;
+        uint32_t last_t = (w1 & 4095) >> 2;
+        if (last_t < t || last_s < s) return false;
         uint32_t pixel_bytes = 1u << (size - 1);
         uint32_t begin = address + pixel_bytes * (s + width * t);
-        uint32_t end = begin + (((last_s - s + 1) * pixel_bytes + 7) & ~7u);
+        uint32_t end = begin + pixel_bytes * width * (last_t - t)
+            + (((last_s - s + 1) * pixel_bytes + 7) & ~7u);
         if ((begin & 1) || end > ram_size) return false;
         begin &= ~3u; end = (end + 3) & ~3u;
         return low >= end || high <= begin;
@@ -388,7 +390,7 @@ int ed_n64_gpu_submit(uint64_t handle, const uint8_t *bytes, uint32_t size, uint
                 // though none of the actual CPU patches touches it. Reuse the
                 // same source proof for every patch in a small pending list.
                 // Cap the scan so large or unproven batches keep a cheap wait.
-                if (!defer && ctx.defer_disjoint_load_blocks && !pending.empty() && pending.size() <= 128
+                if (!defer && ctx.defer_disjoint_load_blocks && !pending.empty() && pending.size() <= 4096
                     && (op == 0x30 || op == 0x33 || op == 0x34)) {
                     defer = std::all_of(pending.begin(), pending.end(), [&](const Patch &patch) {
                         uint32_t high = patch.address + patch.size, w0 = le32(data), w1 = le32(data + 4);

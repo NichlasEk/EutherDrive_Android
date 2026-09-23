@@ -163,13 +163,42 @@ internal static class N64GpuTextureChecks
         Write(0x100000, 100); Check("tile-source-word-padding", 2);
         Image(0x7ffff8); Write(0x100000, 101); LoadTile(1);
         Write(0x100004, 102); Check("tile-ram-end", 1);
-        // Multiline, odd, wrapped-coordinate and mismatched layouts retain
-        // their barrier. Include a valid 32-bit layout and YUV as fallbacks.
+        // Multiline source reads must include every row and its rounded word
+        // padding. Odd, wrapped-coordinate and mismatched layouts still wait.
         Image(0x700001); Write(0x100000, 103); LoadTile(16);
         Write(0x100004, 104); Check("tile-odd-source", 2);
         Image(0x700000, 32); Tile(stride: 8);
         Write(0x100000, 105); LoadTile(16, rows: 2);
-        Write(0x100004, 106); Check("tile-multiline", 2);
+        Write(0x100004, 106); Check("tile-multiline", 1);
+        foreach (uint size in new uint[] { 1, 2 })
+        foreach (uint stride in new uint[] { 0, 3, 8, 64 })
+        {
+            uint row = 0x700000 + (32u << (int)(size - 1));
+            uint lastRow = 0x700000 + (64u << (int)(size - 1));
+            uint roundedRowBytes = ((13u << (int)(size - 1)) + 7u) & ~7u;
+            Cmd(0xfd000000u | size << 19 | 31u, 0x700000);
+            Tile(size: size, stride: stride);
+            Write(0x100000, 127); Write(row + 1, 128); LoadTile(13, rows: 3);
+            Write(0x100004, 129); Check($"tile-multiline-overlap/{size}/{stride}", 2);
+            Write(0x100000, 130); Write(lastRow + roundedRowBytes - 1, 131); LoadTile(13, rows: 3);
+            Write(0x100004, 132);
+            Check($"tile-multiline-last-row-padding/{size}/{stride}", 2);
+            Write(0x100000, 133); LoadTile(13, rows: 3);
+            Write(lastRow + roundedRowBytes, 134);
+            Check($"tile-multiline-after-padding/{size}/{stride}", 1);
+        }
+        Image(0x7ffff8, 32); Tile(size: 2, stride: 3);
+        Write(0x100000, 135); LoadTile(13, rows: 3);
+        Write(0x100004, 136); Check("tile-multiline-ram-end", 2);
+        Image(0x700000, 32);
+        Write(0x100000, 137); LoadTile(13, t: 1023, rows: 2);
+        Write(0x100004, 138); Check("tile-multiline-wrapped-t", 2);
+        Tile(size: 2, stride: 3);
+        Write(0x100000, 139); LoadTile(13, s: 5, t: 3, rows: 3);
+        Write(0x100004, 140); Check("tile-multiline-offset-disjoint", 1);
+        Write(0x100000, 141); Write(0x700000 + 2u * (5u + 32u * 4u) + 1u, 142);
+        LoadTile(13, s: 5, t: 3, rows: 3); Write(0x100004, 143);
+        Check("tile-multiline-offset-overlap", 2);
         Tile(); Write(0x100000, 107); LoadTile(16, s: 1020);
         Write(0x100004, 108); Check("tile-wrapped-s", 2);
         foreach (var (sourceSize, tileSize, format) in new (uint, uint, uint)[] { (1, 2, 0), (2, 1, 0), (2, 2, 1), (3, 3, 0) })
@@ -197,11 +226,14 @@ internal static class N64GpuTextureChecks
             Image(0x700002); Write(0x700001, 121); Write(0x700030, 122); Load();
             Write(0x100000, 123); Check($"sparse-padding/{op:x}", 2);
             Image(0x700000);
-            foreach (int count in new int[] { 128, 129 })
+            foreach (int count in new int[] { 128, 129, 4096, 4097 })
             {
                 for (int i = 0; i < count; i++) Write((i & 1) == 0 ? 0x6ffffcu : 0x700024u, (byte)i);
-                Load(); Write(0x700001, 124); Check($"sparse-limit/{op:x}/{count}", count == 128 ? 1u : 2u);
+                Load(); Write(0x700001, 124); Check($"sparse-limit/{op:x}/{count}", count <= 4096 ? 1u : 2u);
             }
+            for (int i = 0; i < 128; i++) Write((i & 1) == 0 ? 0x6ffffcu : 0x700024u, (byte)i);
+            Write(0x700001, 125); Load(); Write(0x100000, 126);
+            Check($"sparse-overlap-after-128/{op:x}", 2);
         }
 
         Console.WriteLine($"gpuTextureChecks={checks} fullMemoryAndTmem=exact sourceOrdering=passed barriers=checked liveReadback={liveReadback}");
