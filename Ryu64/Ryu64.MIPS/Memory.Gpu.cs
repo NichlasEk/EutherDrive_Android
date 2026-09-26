@@ -260,6 +260,9 @@ namespace Ryu64.MIPS
             _gpuThread = Environment.CurrentManagedThreadId;
             Span<uint> words = stackalloc uint[length];
             for (int i = 0; i < length; i++) words[i] = ReadRdpCommandWord(address + (uint)i * 4, xbus);
+#if N64_PERF_PROBE
+            PerfRdpCommand?.Invoke(words.ToArray());
+#endif
 #if N64_RDP_JOURNAL
             if (RdpJournal != null) throw new InvalidOperationException("Live GPU and software journal capture cannot be combined");
 #endif

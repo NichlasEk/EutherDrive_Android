@@ -90,6 +90,44 @@ internal static class MemoryWordAccessChecks
             foreach (uint address in new uint[] { 0x10000,0x70020000,0xc0020000 }) Read(address);
         if (instructionFetch)
         {
+            // Repeated fetches on mapped pages, with live code writes, ASID
+            // switches, remapping, reset and save/load between cache hits.
+            var tlb = assembly.GetType("Ryu64.MIPS.TLB")!;
+            var cop0 = (ulong[])assembly.GetType("Ryu64.MIPS.Registers+COP0")!.GetField("Reg")!.GetValue(null)!;
+            var resetTlb = tlb.GetMethod("Reset")!.CreateDelegate<Action>();
+            var map = tlb.GetMethod("WriteTLBEntryIndexed")!.CreateDelegate<Action>();
+            var saveTlb = tlb.GetMethod("SaveState")!.CreateDelegate<Action<BinaryWriter>>();
+            var loadTlb = tlb.GetMethod("LoadState")!.CreateDelegate<Action<BinaryReader>>();
+            resetTlb();
+            for (uint phase = 0; phase < 64; phase++)
+            {
+                for (uint asid = 0; asid < 2; asid++)
+                {
+                    cop0[Registers.COP0.INDEX_REG] = asid;
+                    cop0[Registers.COP0.ENTRYHI_REG] = 0xe0000000u | asid;
+                    cop0[Registers.COP0.PAGEMASK_REG] = (phase % 2 == 0 ? 0u : 3u) << 13;
+                    cop0[Registers.COP0.ENTRYLO0_REG] = ((0x100u + phase * 8 + asid * 4) << 6) | 6u;
+                    cop0[Registers.COP0.ENTRYLO1_REG] = ((0x104u + phase * 8 + asid * 4) << 6) | 6u;
+                    map();
+                }
+                for (uint asid = 0; asid < 2; asid++)
+                {
+                    cop0[Registers.COP0.ENTRYHI_REG] = asid;
+                    for (uint offset = 0; offset < 0x8000; offset += 0x3fc)
+                    {
+                        Read(0xe0000000u + offset);
+                        write(0x80100000u + phase * 0x8000u + asid * 0x4000u + offset, phase ^ offset);
+                        Read(0xe0000000u + offset);
+                    }
+                }
+                using var tlbBytes = new MemoryStream();
+                using (var w = new BinaryWriter(tlbBytes, System.Text.Encoding.UTF8, true)) saveTlb(w);
+                Read(0xe0000000u);
+                resetTlb(); Read(0xe0000000u);
+                tlbBytes.Position = 0;
+                using (var r = new BinaryReader(tlbBytes, System.Text.Encoding.UTF8, true)) loadTlb(r);
+                Read(0xe0000000u);
+            }
             var fast = memoryType.GetMethod("TryReadRdramUInt32PhysicalFast", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .CreateDelegate<ReadPhysical>(memory);
             void Physical(uint address)

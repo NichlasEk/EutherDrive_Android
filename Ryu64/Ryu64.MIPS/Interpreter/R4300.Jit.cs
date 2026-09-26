@@ -11,6 +11,13 @@ namespace Ryu64.MIPS
         // Compile only hot, event-free direct-RAM blocks. Validate complete code
         // bytes on every entry; a store always ends the compiled region.
         private static readonly bool CpuJitEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CPU_JIT") != "0";
+        // Default to the measured CACHE-entry path; broad mapped admission and
+        // mapped loads remain separate experiments, not implied by this switch.
+        private static readonly bool CpuJitMappedEnabled = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CPU_JIT_MAPPED") != "0";
+        private static readonly bool CpuJitMappedAdmission = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CPU_JIT_MAPPED_ADMISSION") != "0";
+        private static readonly bool CpuJitMappedLoads = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CPU_JIT_MAPPED_LOADS") == "1";
+        private static readonly bool CpuJitMappedCache = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CPU_JIT_MAPPED_CACHE") != "0";
+        private static readonly bool CpuJitMappedCacheOnly = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_CPU_JIT_MAPPED_CACHE_ONLY") != "0";
         private const uint CpuJitMaximumInstructions = 512;
         private const int CpuJitMaximumVersions = 1024;
         private sealed class CpuJitEntry
@@ -113,6 +120,58 @@ namespace Ryu64.MIPS
             if (result == 0) ProfileCpuJit(pc, "guardExit", 1);
 #endif
             return result;
+        }
+
+        // Mapped code used to pay translation and quiet-budget discovery on
+        // every interpreted instruction. Warm its existing bounded JIT cache
+        // first; only a published delegate can justify that execution setup.
+        private static bool PrepareMappedCpuJit(uint pc, uint word, int kind)
+        {
+            if (!CpuJitEnabled || CpuJitUnavailable || kind == 16 || kind == 144 || CpuJitStore(kind)) return false;
+            if ((kind == 17 || (uint)(kind - 32) < 32)
+                && !(CpuJitMappedLoads && IsCpuJitIntegerLoad(kind))
+                && !CanAccessCpuBlockOperand(new OpcodeTable.OpcodeDesc(word), kind, -1, 0)) return false;
+            int slot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
+            var entry = CpuJitCache[slot];
+            if (entry == null || entry.Pc != pc)
+            {
+                if (!CpuJitEntries.TryGetValue(pc, out entry))
+                {
+                    entry = new CpuJitEntry { Pc = pc, First = word };
+                    // The bounded secondary lookup must not permanently bar
+                    // code first reached later in a game. The direct cache is
+                    // also bounded and can still learn those hot addresses.
+                    if (CpuJitEntries.Count < 8192) CpuJitEntries.Add(pc, entry);
+                }
+                CpuJitCache[slot] = entry;
+            }
+            if (entry.First != word)
+            {
+                CpuJitInvalidations++;
+                entry.First = word;
+                entry.Code = null;
+                entry.Hits = 0;
+            }
+            var code = entry.Code;
+            var run = code?.Run;
+            if (run == null)
+            {
+                if (code != null && !code.Retired) return false; // Worker still compiling.
+                if (++entry.Hits != CpuJitHotThreshold) return false;
+                entry.Hits = 0;
+                try { entry.Code = code = FindOrCompileCpuJit(pc); run = code?.Run; }
+                catch (PlatformNotSupportedException) { CpuJitUnavailable = true; return false; }
+                if (run == null)
+                {
+                    if (code == null)
+                    {
+                        CpuJitRejectedCompilations++;
+                        entry.Hits = -1024;
+                    }
+                    return false;
+                }
+            }
+            return true;
         }
 
         private static void RecordCpuJitHistory(RecentInst[] pattern, int period, uint entries, uint elapsed)
@@ -268,18 +327,24 @@ namespace Ryu64.MIPS
 
         private static CpuJitCode FindOrCompileCpuJit(uint start)
         {
+            bool mapped = start < 0x80000000u || start >= 0xc0000000u;
+            uint physical = start & 0x1fffffffu;
+            uint asid = (uint)Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG] & 255;
+            if (mapped && (!CpuJitMappedEnabled || !TryResolveMappedCode(start, out physical))) return null;
             var words = new List<uint>();
-            for (int i = 0; i < 16; i++)
+            int maximumWords = mapped ? Math.Min(16, (int)((4096 - (start & 4095)) / 4)) : 16;
+            for (int i = 0; i < maximumWords; i++)
             {
                 uint pc = start + (uint)i * 4;
-                if (!memory.TryReadRdramUInt32PhysicalFast(pc & 0x1fffffffu, out uint word)) break;
-                int kind = GetCpuBlockOpcodeKind(word);
-                if (kind < 0 || (i != 0 && IsExistingLoopEntry(pc, word))) break;
+                if (!memory.TryReadRdramUInt32PhysicalFast(physical + (uint)i * 4, out uint word)) break;
+                int kind = GetCpuJitOpcodeKind(word, mapped);
+                if (kind < 0 || (mapped && (kind == 16 || kind == 144))
+                    || (i != 0 && !mapped && IsExistingLoopEntry(pc, word))) break;
                 if (CpuJitBranch(kind))
                 {
-                    if (i == 15 || !memory.TryReadRdramUInt32PhysicalFast((pc + 4) & 0x1fffffffu, out uint delay)) break;
+                    if (i + 1 == maximumWords || !memory.TryReadRdramUInt32PhysicalFast(physical + (uint)(i + 1) * 4, out uint delay)) break;
                     int dk = GetCpuBlockOpcodeKind(delay);
-                    if (dk < 0 || CpuJitBranch(dk)) break;
+                    if (dk < 0 || CpuJitBranch(dk) || (mapped && (dk == 16 || dk == 144))) break;
                     words.Add(word); words.Add(delay);
                     break;
                 }
@@ -293,15 +358,16 @@ namespace Ryu64.MIPS
 #endif
                 return null;
             }
-            ExtendInvariantCpuJitLoop(start, words);
+            if (!mapped) ExtendInvariantCpuJitLoop(start, words);
             var key = new System.Text.StringBuilder(start.ToString("x8"));
+            if (mapped) key.Append("@m:").Append(physical).Append(':').Append(asid);
             foreach (uint word in words) key.Append(':').Append(word.ToString("x8"));
             string identity = key.ToString();
             if (CpuJitVersions.TryGetValue(identity, out var existing)) return existing;
             if (CpuJitSynchronous)
             {
                 if (!MakeRoomForCpuJit()) return null;
-                var direct = BuildCpuJit(start, words);
+                var direct = BuildCpuJitResolved(start, words, physical, mapped, asid);
                 var ready = new CpuJitCode { Run = direct, LastUsed = CycleCounter };
                 CpuJitVersions.Add(identity, ready);
                 CpuJitCompilations++;
@@ -327,7 +393,7 @@ namespace Ryu64.MIPS
             CpuJitCompilations++;
             ThreadPool.QueueUserWorkItem(_ =>
             {
-                try { holder.Run = BuildCpuJit(start, words); }
+                try { holder.Run = BuildCpuJitResolved(start, words, physical, mapped, asid); }
                 catch (PlatformNotSupportedException) { CpuJitUnavailable = true; }
                 catch (Exception ex)
                 {
@@ -337,6 +403,52 @@ namespace Ryu64.MIPS
                 finally { Volatile.Write(ref CpuJitCompilePending, 0); }
             });
             return holder;
+        }
+
+        private static int GetCpuJitOpcodeKind(uint word, bool mapped)
+            => mapped && CpuJitMappedCache && (word >> 26) == 47 ? 47 : GetCpuBlockOpcodeKind(word);
+
+        private static bool IsCpuJitIntegerLoad(int kind)
+            => kind == 32 || kind == 33 || kind == 35 || kind == 36 || kind == 37 || kind == 39 || kind == 55;
+
+        // Resolve before touching guest state. The caller falls back at the
+        // original virtual PC on alignment, TLB or non-RAM failure. An aligned
+        // integer operand cannot cross a 4 KiB translation subpage.
+        private static bool TryResolveCpuJitLoad(uint address, uint width, out uint physical)
+        {
+            physical = 0;
+            if ((address & (width - 1)) != 0) return false;
+            if (address >= 0x80000000u && address < 0xc0000000u)
+                physical = address & 0x1fffffffu;
+            else
+            {
+                try { physical = TLB.TranslateAddress(address, true) & 0x1fffffffu; }
+                catch (Common.Exceptions.TLBMissException) { return false; }
+            }
+            return (ulong)physical + width <= (ulong)memory.RDRAM.Length;
+        }
+
+        // Strict fetch translation: no low-physical bring-up fallback for compiled code.
+        private static bool TryResolveMappedCode(uint pc, out uint physical)
+        {
+            physical = 0;
+            if ((pc & 3) != 0) return false;
+            try { physical = TLB.TranslateAddress(pc, true) & 0x1fffffffu; }
+            catch (Common.Exceptions.TLBMissException) { return false; }
+            return physical >= 0x4000 && (ulong)physical + 4 <= (ulong)memory.RDRAM.Length;
+        }
+
+        // Worker consumes only captured mapping identity and copied words. Validate
+        // the live translation on every entry, so remaps/reset/load cannot run stale code.
+        private static Func<uint, uint, bool, uint> BuildCpuJitResolved(uint start, List<uint> words,
+            uint physical, bool mapped, uint asid)
+        {
+            var run = BuildCpuJitAt(start, words, physical);
+            if (!mapped) return run;
+            return (budget, elapsed, history) =>
+                ((uint)Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG] & 255) == asid
+                && TryResolveMappedCode(start, out uint current) && current == physical
+                    ? run(budget, elapsed, history) : uint.MaxValue;
         }
 
         private static readonly FieldInfo JitMemoryField = typeof(R4300).GetField(nameof(memory));
@@ -360,6 +472,9 @@ namespace Ryu64.MIPS
         // Build from copied instruction words only. The worker never reads or
         // writes live emulated state. The history pattern is the closed first argument.
         private static Func<uint, uint, bool, uint> BuildCpuJit(uint start, List<uint> words)
+            => BuildCpuJitAt(start, words, start & 0x1fffffffu);
+
+        private static Func<uint, uint, bool, uint> BuildCpuJitAt(uint start, List<uint> words, uint physical)
         {
             for (int i = 0; i < words.Count - 2; i++)
                 if (CpuJitBranch(GetCpuBlockOpcodeKind(words[i])))
@@ -371,7 +486,7 @@ namespace Ryu64.MIPS
                 && unchecked(branchPc + 4u + (uint)((int)(short)branchWord << 2)) == start;
             foreach (uint word in words)
             {
-                int kind = GetCpuBlockOpcodeKind(word);
+                int kind = GetCpuJitOpcodeKind(word, start < 0x80000000u || start >= 0xc0000000u);
                 // No code writes or time-dependent CP0 reads/writes inside a
                 // native backedge. Hardware cannot run within the quiet budget.
                 if (CpuJitStore(kind) || kind == 16 || kind == 144) loop = false;
@@ -401,18 +516,18 @@ namespace Ryu64.MIPS
             il.Emit(OpCodes.Ldarg_1); U((uint)words.Count); il.Emit(OpCodes.Blt_Un, zero);
             il.Emit(OpCodes.Ldsfld, JitMemoryField); il.Emit(OpCodes.Ldfld, JitRamField); il.Emit(OpCodes.Stloc, ram);
 #if N64_LIVE_GPU
-            il.Emit(OpCodes.Ldsfld, JitMemoryField); U(start & 0x1fffffffu); U((uint)words.Count * 4);
+            il.Emit(OpCodes.Ldsfld, JitMemoryField); U(physical); U((uint)words.Count * 4);
             il.Emit(OpCodes.Call, typeof(Memory).GetMethod(nameof(Memory.GpuBeforeRead)));
 #endif
             il.Emit(OpCodes.Ldloc, ram); il.Emit(OpCodes.Ldlen); il.Emit(OpCodes.Conv_U4);
-            U((start & 0x1fffffffu) + (uint)words.Count * 4); il.Emit(OpCodes.Blt_Un, invalid);
+            U(physical + (uint)words.Count * 4); il.Emit(OpCodes.Blt_Un, invalid);
             for (int i = 0; i < words.Count; i += 2)
             {
                 bool pair = i + 1 < words.Count;
                 byte[] bytes = new byte[pair ? 8 : 4];
                 System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(), words[i]);
                 if (pair) System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(bytes.AsSpan(4), words[i + 1]);
-                il.Emit(OpCodes.Ldloc, ram); U((start & 0x1fffffffu) + (uint)i * 4);
+                il.Emit(OpCodes.Ldloc, ram); U(physical + (uint)i * 4);
                 il.Emit(OpCodes.Call, pair ? JitCode64 : JitCode32);
                 if (pair) il.Emit(OpCodes.Ldc_I8, unchecked((long)BitConverter.ToUInt64(bytes, 0)));
                 else U(BitConverter.ToUInt32(bytes, 0));
@@ -424,7 +539,7 @@ namespace Ryu64.MIPS
             for (int i = 0; i < words.Count; i++)
             {
                 uint pc = start + (uint)i * 4, word = words[i];
-                int kind = GetCpuBlockOpcodeKind(word);
+                int kind = GetCpuJitOpcodeKind(word, start < 0x80000000u || start >= 0xc0000000u);
                 var desc = new OpcodeTable.OpcodeDesc(word);
                 bool branch = CpuJitBranch(kind);
                 bool directMemory = kind == 32 || kind == 33 || kind == 35 || kind == 36 || kind == 37 || kind == 39 || kind == 43 || kind == 55;
@@ -437,17 +552,26 @@ namespace Ryu64.MIPS
                     else registers.Read(desc.op1);
                     il.Emit(OpCodes.Ldc_I8, (long)(short)desc.Imm); il.Emit(OpCodes.Add); il.Emit(OpCodes.Conv_U4); il.Emit(OpCodes.Stloc, address);
                     var badAddress = il.DefineLabel(); var validAddress = il.DefineLabel();
-                    il.Emit(OpCodes.Ldloc, address); U(0xc0000000u | (width - 1)); il.Emit(OpCodes.And);
-                    U(0x80000000u); il.Emit(OpCodes.Bne_Un, badAddress);
-                    il.Emit(OpCodes.Ldloc, address); U(0x1fffffffu); il.Emit(OpCodes.And);
-                    il.Emit(OpCodes.Ldloc, ram); il.Emit(OpCodes.Ldlen); il.Emit(OpCodes.Conv_U4); U(width); il.Emit(OpCodes.Sub);
-                    il.Emit(OpCodes.Ble_Un, validAddress);
+                    if (CpuJitMappedLoads && (start < 0x80000000u || start >= 0xc0000000u) && IsCpuJitIntegerLoad(kind))
+                    {
+                        il.Emit(OpCodes.Ldloc, address); U(width); il.Emit(OpCodes.Ldloca, address);
+                        il.Emit(OpCodes.Call, JitMethod(nameof(TryResolveCpuJitLoad)));
+                        il.Emit(OpCodes.Brtrue, validAddress);
+                    }
+                    else
+                    {
+                        il.Emit(OpCodes.Ldloc, address); U(0xc0000000u | (width - 1)); il.Emit(OpCodes.And);
+                        U(0x80000000u); il.Emit(OpCodes.Bne_Un, badAddress);
+                        il.Emit(OpCodes.Ldloc, address); U(0x1fffffffu); il.Emit(OpCodes.And);
+                        il.Emit(OpCodes.Ldloc, ram); il.Emit(OpCodes.Ldlen); il.Emit(OpCodes.Conv_U4); U(width); il.Emit(OpCodes.Sub);
+                        il.Emit(OpCodes.Ble_Un, validAddress);
+                    }
                     il.MarkLabel(badAddress); Pc(pc); Exit((uint)i);
                     il.MarkLabel(validAddress);
                 }
                 // ALU/NOP delay slots were validated at compilation. COP1 also
                 // needs a live CU1 check; loads/stores need an address guard.
-                else if ((branch ? dk : kind) == 17 || (uint)((branch ? dk : kind) - 32) < 32)
+                else if (kind != 47 && ((branch ? dk : kind) == 17 || (uint)((branch ? dk : kind) - 32) < 32))
                 {
                     var valid = il.DefineLabel();
                     Desc(branch ? delay : word); U((uint)(branch ? dk : kind));
@@ -556,6 +680,12 @@ namespace Ryu64.MIPS
                         }
                         registers.EndWrite(desc.op2);
                     }
+                }
+                else if (kind == 47)
+                {
+                    // Preserve the interpreter's existing CACHE stub (PC only).
+                    // Admission is restricted to opt-in mapped-code blocks.
+                    Pc(pc + 4);
                 }
                 else if (!EmitCpuJitAlu(il, registers, desc, kind))
                 {

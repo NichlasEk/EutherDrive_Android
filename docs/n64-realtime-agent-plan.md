@@ -10,6 +10,44 @@ kunna göra mer användbart arbete mellan sina kontroller. GPU:n ska behålla
 data längre utan att CPU:n får läsa gamla värden. Spelens tid, ljud, grafik och
 input ska samtidigt fortsätta vara rätt.
 
+Aktuell standard 2026-09-26: CPU-ägd instruktionssidcache och CACHE-filtrerad
+mappad JIT är aktiverade. De uppmätta GPU-vinsterna behåller sina tidigare
+standardinställningar och ROM-avgränsningar. Bred mappad JIT, mappade läsningar,
+trådlokal sidcache och RSP-försöken utan stabil vinst är inte standard.
+Se [senaste resultat, start och återställning](n64-gauntlet-instruction-page-cache-2026-09-26.md).
+
+Tidigare utgångspunkt 2026-09-26: efter Gauntlets texture-read-overlap-pass
+finns en ny [profil av hela emulatorn](n64-gauntlet-phase-profile-2026-09-26.md).
+CPU-tolken och TLB-översättningen är tydliga kandidater utöver RSP/GPU-väntan.
+Nuvarande CPU-JIT tar inte emot Gauntlets mappade programkod. Nästa större
+CPU-milstolpe är därför korrekt stöd för mappade instruktionssidor, med
+TLB-generation/ASID, fysiska kodkontroller och oförändrade virtuella PC-värden.
+Rapporten beskriver avgränsning, tester och resultat från det mindre TLB-försöket.
+
+Senare samma dag byggdes en [prototyp för mappade JIT-block](n64-gauntlet-mapped-jit-2026-09-26.md).
+Den klarar riktade tillståndstester och exakt Gauntlet-replay, men två iterationer
+blev långsammare än ordinarie väg. Den sparas opt-in och är avstängd som standard.
+Prototypen kontrollerar aktuell översättning och ASID vid varje inträde i stället
+för att kasta kod vid varje orelaterad TLB-generationsändring. Nästa iteration
+ska utgå från blockprofilen och kostnaden per faktiskt utförd instruktion.
+
+Nästa iteration finns i [mappade läsningar och CACHE-loopar](n64-gauntlet-mapped-loads-2026-09-26.md).
+Brett stöd för mappade läsningar och CACHE gav ingen stabil vinst i längre test.
+En smalare variant som bara startar mappade block vid CACHE gav +3,21 procent
+i ett fyrkörningstest över gästsekund 5–15, med exakta tillstånd och bildkontroller.
+Den är fortfarande opt-in; rapporten innehåller startkommando och begränsningar.
+Nästa steg är fler sekvenser och profilering med det smalare filtret aktivt.
+
+Fortsättningen finns i [instruktionssidans översättningscache](n64-gauntlet-instruction-page-cache-2026-09-26.md).
+Profilen med CACHE-filtret aktivt pekade fortsatt på adressöversättning.
+En första trådlokal cache gav ingen vinst över åtta körningar. Maskinkoden
+visade kvarvarande trådlokal uppslagning; en andra, CPU-ägd variant minskar den
+kostnaden och gav +7,47 procent i ett nytt ABBA-test med exakta kontrollresultat.
+På användarens begäran är CPU-ägd sidcache (läge 2) och CACHE-filtrerad mappad
+JIT nu standard. Bred mappad JIT, mappade läsningar och de långsammare RSP-
+experimenten förblir avstängda. Nästa steg är fler sekvenser och ett annat spel med mappad programkod,
+följt av ny profilering innan bredare JIT-inträden aktiveras.
+
 ## 1. Vad vi faktiskt ska uppnå
 
 **100 procent betyder att en sekund emulerad tid tar högst en verklig sekund.**
@@ -372,6 +410,23 @@ nuvarande synkrona väg måste finnas för okända eller överlappande fall.
 Den senaste readback-rapporten visar mycket liten slutlig timeline-väntan
 men större kopierings- och patchkostnader. G3 ska därför bara gå före G1/G2
 om en ny väggtidsprofil visar att verklig överlappning har tillräcklig potential.
+
+Ny RE2-slot-1-profil med direkt RDP-kommandoväg (2026-09-24): 989
+`FULL_SYNC`-väntor tog cirka 2,8 s under tio gästsekunder. Alla väntande
+CPU-patchar låg utanför de kända framebufferintervallen, men texturkällor
+och okända GPU-läsningar är ännu inte bevisat oberoende. `FULL_SYNC` anropar
+dessutom omedelbart readback och publicering före DP-avbrottet. Att bara
+skjuta upp patchbarriären flyttar därför normalt väntan till readback; G3
+måste först definiera när CPU:n får fortsätta, när DP-avbrottet blir synligt
+och vilka minnesregioner som får förbli GPU-ägda. Även en perfekt eliminering
+av dessa 2,8 s räcker inte ensam för RE2:s realtid i den uppmätta scenen.
+
+Ett första, mindre överlappningssteg är nu provat: färdiga RDP-batchar kan
+skickas till GPU:n medan CPU/RSP bygger nästa batch, men samma synkrona
+readback och DP-publicering används fortfarande vid `FULL_SYNC`. Se
+[mätningen av tidig RDP-submit](n64-gpu-overlap-experiment-2026-09-24.md).
+Det gav stor vinst i Mega Mans senare scen men i princip ingen i RE2; därför
+är läget än så länge opt-in. G3:s större minnesägarskapskontrakt återstår.
 
 ### G4. Presentation och filmer
 

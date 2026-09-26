@@ -3,6 +3,7 @@ using System;
 using System.IO;
 using System.Numerics;
 using System.Diagnostics;
+using System.Threading.Tasks;
 using Ryu64.MIPS;
 
 namespace Ryu64Core
@@ -24,14 +25,48 @@ namespace Ryu64Core
         private byte[] _auditShadow;
         private ulong[] _auditWrites;
         private long _syncs, _ticks;
-        private string _status = "gpu=waiting-for-first-command";
-        public string Status => _status;
+        private readonly bool _overlapSubmissions = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_OVERLAP") == "1";
+        private readonly int _overlapBatchBytes;
+        private Task<ulong> _pendingSubmit;
+        private ulong _lastSubmittedToken;
+        private long _overlapChunks;
 
-        public N64LiveGpu(Memory memory, string library, bool validate)
+        private static int ParseOverlapBatchBytes(int defaultKiB)
+        {
+            string value = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_OVERLAP_BATCH_KIB");
+            return (int.TryParse(value, out int kib) && kib >= 64 && kib <= 4096 ? kib : defaultKiB) * 1024;
+        }
+        private string _status = "gpu=waiting-for-first-command";
+#if N64_GPU_BATCH_PROFILE
+        private long _batchCommandCalls, _batchCommandTicks, _batchWritesCalls, _batchWritesTicks;
+        private long _batchSubmitTicks, _batchReadbackTicks, _batchCompleteTicks;
+        public string Status => _status +
+            $" batchCommands={_batchCommandCalls} commandMs={_batchCommandTicks * 1000.0 / Stopwatch.Frequency:F3}" +
+            $" writesCalls={_batchWritesCalls} writesMs={_batchWritesTicks * 1000.0 / Stopwatch.Frequency:F3}" +
+            $" submitMs={_batchSubmitTicks * 1000.0 / Stopwatch.Frequency:F3}" +
+            $" readbackMs={_batchReadbackTicks * 1000.0 / Stopwatch.Frequency:F3}" +
+            $" completeMs={_batchCompleteTicks * 1000.0 / Stopwatch.Frequency:F3}";
+#else
+        public string Status => _status;
+#endif
+
+        public N64LiveGpu(Memory memory, string library, bool validate, int defaultOverlapBatchKiB = 256,
+            bool defaultNarrowTriangleWrites = false)
         {
             if (!File.Exists(library)) throw new FileNotFoundException("N64 GPU library not found", library);
+            if (defaultOverlapBatchKiB < 64 || defaultOverlapBatchKiB > 4096)
+                throw new ArgumentOutOfRangeException(nameof(defaultOverlapBatchKiB));
             _memory = memory; _library = library;
-            _flags = N64GpuFlags.RequireDiscrete | N64GpuFlags.DeferDisjointLoadBlocks | (validate ? N64GpuFlags.Validate : 0);
+            _overlapBatchBytes = ParseOverlapBatchBytes(defaultOverlapBatchKiB);
+            string narrowSetting = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_NARROW_TRIANGLE_WRITES");
+            bool narrowTriangleWrites = narrowSetting == "1" || (narrowSetting != "0" && defaultNarrowTriangleWrites);
+            string textureReadSetting = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_TRACK_TEXTURE_READS");
+            bool trackTextureReads = narrowTriangleWrites &&
+                (textureReadSetting == "1" || (textureReadSetting != "0" && defaultNarrowTriangleWrites));
+            _flags = N64GpuFlags.RequireDiscrete | N64GpuFlags.DeferDisjointLoadBlocks
+                | (validate ? N64GpuFlags.Validate : 0)
+                | (narrowTriangleWrites ? N64GpuFlags.NarrowTriangleWrites : 0)
+                | (trackTextureReads ? N64GpuFlags.TrackTextureReads : 0);
             _writer = new BinaryWriter(_batch);
             if (Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_AUDIT") == "1")
                 _auditWrites = new ulong[_dirty.Length];
@@ -58,6 +93,10 @@ namespace Ryu64Core
 
         private void Writes()
         {
+#if N64_GPU_BATCH_PROFILE
+            long profileStart = Stopwatch.GetTimestamp();
+            _batchWritesCalls++;
+#endif
             // Enumerate only dirty pages, in the same address order as the
             // old full scan. CPU-byte ownership and command order are unchanged.
             uint groups = _pageGroups;
@@ -87,10 +126,17 @@ namespace Ryu64Core
                     }
                 }
             }
+#if N64_GPU_BATCH_PROFILE
+            _batchWritesTicks += Stopwatch.GetTimestamp() - profileStart;
+#endif
         }
 
         public void Command(ReadOnlySpan<uint> words)
         {
+#if N64_GPU_BATCH_PROFILE
+            long profileStart = Stopwatch.GetTimestamp();
+            _batchCommandCalls++;
+#endif
             if (_gpu == null)
             {
                 try { _gpu = new N64GpuBackend(_library, _memory.RDRAM, _memory.GpuHiddenBits, _flags); }
@@ -105,6 +151,34 @@ namespace Ryu64Core
             if (_batch.Length > 8 * 1024 * 1024) Synchronize();
             Writes(); _writer.Write(2u); _writer.Write((uint)words.Length * 4);
             foreach (uint word in words) _writer.Write(word);
+            if (_overlapSubmissions && _batch.Length >= _overlapBatchBytes)
+                QueueOverlapBatch();
+#if N64_GPU_BATCH_PROFILE
+            _batchCommandTicks += Stopwatch.GetTimestamp() - profileStart;
+#endif
+        }
+
+        private void CompleteOverlapBatch()
+        {
+            var pending = _pendingSubmit;
+            if (pending == null) return;
+            _pendingSubmit = null;
+            _lastSubmittedToken = pending.GetAwaiter().GetResult();
+        }
+
+        private void QueueOverlapBatch()
+        {
+            if (_pendingSubmit != null)
+            {
+                if (!_pendingSubmit.IsCompleted) return;
+                CompleteOverlapBatch();
+            }
+            // The emulation thread keeps writing the next batch. Submit only
+            // immutable bytes; the native GPU owns a separate RDRAM image.
+            byte[] batch = _batch.ToArray();
+            _batch.SetLength(0); _batch.Position = 0;
+            _pendingSubmit = Task.Run(() => _gpu.Submit(batch));
+            _overlapChunks++;
         }
 
         public void Synchronize()
@@ -125,11 +199,29 @@ namespace Ryu64Core
                                 throw new InvalidOperationException($"Untracked CPU RDRAM write at {offset + bit:x6}");
                     }
                 Writes();
-                if (_batch.Length == 0) return;
-                ulong token = _gpu.Submit(_batch.GetBuffer().AsSpan(0, checked((int)_batch.Length)));
+                if (_batch.Length == 0 && _pendingSubmit == null) return;
+#if N64_GPU_BATCH_PROFILE
+                long phaseStart = Stopwatch.GetTimestamp();
+#endif
+                CompleteOverlapBatch();
+                ulong token = _batch.Length == 0 ? _lastSubmittedToken :
+                    _gpu.Submit(_batch.GetBuffer().AsSpan(0, checked((int)_batch.Length)));
+#if N64_GPU_BATCH_PROFILE
+                _batchSubmitTicks += Stopwatch.GetTimestamp() - phaseStart;
+                phaseStart = Stopwatch.GetTimestamp();
+#endif
                 _gpu.ReadbackLive(token, _memory.RDRAM, _memory.GpuHiddenBits, _tmem);
+#if N64_GPU_BATCH_PROFILE
+                _batchReadbackTicks += Stopwatch.GetTimestamp() - phaseStart;
+#endif
                 _batch.SetLength(0); _batch.Position = 0;
+#if N64_GPU_BATCH_PROFILE
+                phaseStart = Stopwatch.GetTimestamp();
+#endif
                 _memory.GpuReadbackCompleted();
+#if N64_GPU_BATCH_PROFILE
+                _batchCompleteTicks += Stopwatch.GetTimestamp() - phaseStart;
+#endif
                 if (_auditShadow != null)
                 {
                     _memory.RDRAM.CopyTo(_auditShadow, 0);
@@ -138,6 +230,7 @@ namespace Ryu64Core
                 _syncs++; _ticks += Stopwatch.GetTimestamp() - start;
                 var stats = _gpu.GetStats();
                 _status = $"gpu=Vulkan cmds={stats.Commands} syncs={_syncs} readHazards={_memory.GpuReadHazards} frames={_memory.GpuFrames} writeBarriers={stats.WriteBarriers} writeBytes={stats.WriteBytes} waitCopyRenderMs={_ticks * 1000.0 / Stopwatch.Frequency:F1} errors={stats.ValidationErrors}";
+                if (_overlapSubmissions) _status += $" overlapChunks={_overlapChunks} overlapBatchKiB={_overlapBatchBytes / 1024}";
             }
             catch (Exception ex) { _status = "gpu=FAILED " + ex.Message; throw; }
         }
@@ -154,6 +247,7 @@ namespace Ryu64Core
 
         public void LoadState(byte[] state)
         {
+            CompleteOverlapBatch();
             N64GpuBackend replacement = null;
             try
             {
@@ -173,10 +267,15 @@ namespace Ryu64Core
                 _auditShadow = _gpu == null ? null : (byte[])_memory.RDRAM.Clone();
             }
             _syncs = _ticks = 0;
+            _overlapChunks = 0;
             _status = _gpu == null ? "gpu=waiting-for-first-command" : "gpu=Vulkan savestate restored";
         }
 
-        public void Dispose() { _gpu?.Dispose(); _gpu = null; _writer.Dispose(); _batch.Dispose(); }
+        public void Dispose()
+        {
+            try { CompleteOverlapBatch(); }
+            finally { _gpu?.Dispose(); _gpu = null; _writer.Dispose(); _batch.Dispose(); }
+        }
     }
 }
 #endif

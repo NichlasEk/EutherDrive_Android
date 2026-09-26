@@ -15,7 +15,7 @@ internal static class N64GpuChecks
             throw new Exception($"Expected {typeof(T).Name}");
         }
         Reject<ArgumentException>(() => new N64GpuBackend(library, new byte[1], hidden, flags));
-        Reject<InvalidOperationException>(() => new N64GpuBackend(library, ram, hidden, (N64GpuFlags)32));
+        Reject<InvalidOperationException>(() => new N64GpuBackend(library, ram, hidden, (N64GpuFlags)64));
         using (var gpu = new N64GpuBackend(library, ram, hidden, flags))
         {
             Reject<InvalidOperationException>(() => gpu.Submit(ReadOnlySpan<byte>.Empty));

@@ -2,6 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq.Expressions;
 using System.Reflection;
+#if N64_RSP_PROFILE
+using System.Diagnostics;
+using System.Linq;
+#endif
 
 namespace Ryu64.MIPS
 {
@@ -11,6 +15,10 @@ namespace Ryu64.MIPS
         // interpreter override for diagnosis and platform fallback below.
         private static readonly bool BlockJitEnabled =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT") != "0";
+        // Experimental: exact-state safe, but mixed gameplay timings. Keep the
+        // normal progress path until a repeatable multi-game win is measured.
+        private static readonly bool FastProgressEnabled =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_FAST_PROGRESS") == "1";
         private const int MaxBlockInstructions = 16;
         // Per interpreter: no cross-emulator mutable compilation cache.
         [NonSerialized] private readonly Func<RspInterpreter, uint, uint, int>[] _blocks = BlockJitEnabled ? new Func<RspInterpreter, uint, uint, int>[1024] : null;
@@ -19,12 +27,65 @@ namespace Ryu64.MIPS
         [NonSerialized] private readonly Dictionary<string, Func<RspInterpreter, uint, uint, int>> _compiledBlocks = BlockJitEnabled ? new Dictionary<string, Func<RspInterpreter, uint, uint, int>>() : null;
         [NonSerialized] private long _blockInstructions;
         [NonSerialized] private int _blockCompilations;
+#if N64_RSP_PROFILE
+        [NonSerialized] private long _profileBlockAttempts;
+        [NonSerialized] private long _profileBlockExecuted;
+        [NonSerialized] private long _profileBlockTicks;
+        [NonSerialized] private long _profileDispatchTicks;
+        [NonSerialized] private long _profileDelegateTicks;
+        [NonSerialized] private long _profileEndTicks;
+        [NonSerialized] private long _profileProgressTicks;
+        [NonSerialized] private long _profileProgressCalls;
+        [NonSerialized] private long _profileLifecycleSkips;
+        [NonSerialized] private long _profileNoBlockSkips;
+        [NonSerialized] private long _profileGuardSkips;
+        [NonSerialized] private readonly long[] _profileVectorInstructions = new long[64];
+        [NonSerialized] private readonly long[] _profileVectorMemoryInstructions = new long[24];
+        [NonSerialized] private readonly long[] _profileVectorByteFast = new long[8];
+        [NonSerialized] private readonly long[] _profileVectorByteFallback = new long[8];
+        [NonSerialized] private long _profileScalarInstructions;
+
+        private string GetInstructionMixProfile()
+        {
+            string vectorOps = string.Join(",", _profileVectorInstructions.Select((calls, op) => (calls, op))
+                .Where(item => item.calls != 0).OrderByDescending(item => item.calls)
+                .Select(item => $"{item.op:x2}:{item.calls}"));
+            string vectorMemory = string.Join(",", _profileVectorMemoryInstructions.Select((calls, op) => (calls, op))
+                .Where(item => item.calls != 0).OrderByDescending(item => item.calls)
+                .Select(item => $"{(item.op >= 12 ? 'S' : 'L')}{item.op % 12:x1}:{item.calls}"));
+            string byteTransfers = string.Join(",", Enumerable.Range(0, 8).Select(i =>
+                $"{(i >= 4 ? 'S' : 'L')}{i % 4}:fast={_profileVectorByteFast[i]}:fallback={_profileVectorByteFallback[i]}"));
+            return $"scalarInstructions={_profileScalarInstructions} vectorOps={vectorOps} vectorMemory={vectorMemory} vectorBytes={byteTransfers}";
+        }
+
+        internal string GetBlockProfile() =>
+            $"attempts={_profileBlockAttempts} executed={_profileBlockExecuted} instructions={_blockInstructions} " +
+            $"blockMs={_profileBlockTicks * 1000.0 / Stopwatch.Frequency:F3} " +
+            $"dispatchMs={_profileDispatchTicks * 1000.0 / Stopwatch.Frequency:F3} " +
+            $"delegateMs={_profileDelegateTicks * 1000.0 / Stopwatch.Frequency:F3} " +
+            $"endMs={_profileEndTicks * 1000.0 / Stopwatch.Frequency:F3} " +
+            $"progressMs={_profileProgressTicks * 1000.0 / Stopwatch.Frequency:F3} " +
+            $"progressCalls={_profileProgressCalls} lifecycleSkips={_profileLifecycleSkips} " +
+            $"noBlockSkips={_profileNoBlockSkips} guardSkips={_profileGuardSkips} compilations={_blockCompilations} " +
+            GetInstructionMixProfile();
+#endif
 
         private int TryExecuteBlock(uint budget, uint stagnantLimit)
         {
+#if N64_RSP_PROFILE
+            long blockStart = Stopwatch.GetTimestamp();
+            _profileBlockAttempts++;
+#endif
             // Only DMEM/register operations and a final branch/delay pair compile.
             // Without pending lifecycle work, neither code nor MMIO can change.
-            if (_blockJitUnavailable || _memory.RspLifecyclePending) return 0;
+            if (_blockJitUnavailable || _memory.RspLifecyclePending)
+            {
+#if N64_RSP_PROFILE
+                _profileLifecycleSkips++;
+                _profileBlockTicks += Stopwatch.GetTimestamp() - blockStart;
+#endif
+                return 0;
+            }
             uint pc = _pc & 0xffc;
             int slot = (int)(pc >> 2);
             uint word = _memory.ReadSpImemWord(pc);
@@ -32,14 +93,49 @@ namespace Ryu64.MIPS
             if (block == null || _blockFirstWords[slot] != word)
             {
                 block = GetOrCompileBlock(pc, slot, word);
-                if (block == null) return 0;
+                if (block == null)
+                {
+#if N64_RSP_PROFILE
+                    _profileBlockTicks += Stopwatch.GetTimestamp() - blockStart;
+#endif
+                    return 0;
+                }
             }
+#if N64_RSP_PROFILE
+            long delegateStart = Stopwatch.GetTimestamp();
+            _profileDispatchTicks += delegateStart - blockStart;
+#endif
             int count = block(this, budget, stagnantLimit);
+#if N64_RSP_PROFILE
+            long delegateEnd = Stopwatch.GetTimestamp();
+            _profileDelegateTicks += delegateEnd - delegateStart;
+            if (count > 0)
+            {
+                _profileBlockExecuted++;
+                // Diagnostic build only. A compiled block cannot modify IMEM;
+                // its pre-execution guard covered every word counted here.
+                for (int i = 0; i < count; i++)
+                {
+                    uint instruction = _memory.ReadSpImemWord(pc + (uint)i * 4);
+                    uint opcode = instruction >> 26;
+                    if ((instruction >> 25) == 0x25)
+                        _profileVectorInstructions[(int)(instruction & 63)]++;
+                    else if (opcode == 0x32 || opcode == 0x3a)
+                        _profileVectorMemoryInstructions[(int)((opcode == 0x3a ? 12 : 0) + ((instruction >> 11) & 31))]++;
+                    else _profileScalarInstructions++;
+                }
+            }
+            else if (block == NoBlock) _profileNoBlockSkips++;
+            else _profileGuardSkips++;
+#endif
             _blockInstructions += count;
             // The complete block is checked before executing anything. A changed
             // interior word invalidates this entry; the interpreter takes over.
             if (count == 0 && block != NoBlock && budget > 0 && _stagnantInstructionCount < stagnantLimit)
                 _blocks[slot] = null;
+#if N64_RSP_PROFILE
+            _profileBlockTicks += Stopwatch.GetTimestamp() - blockStart;
+#endif
             return count;
         }
 
@@ -169,7 +265,14 @@ namespace Ryu64.MIPS
                 }
             }
             if (pendingProgress != 0)
-                code.Add(Call(nameof(UpdateBlockProgress), Expression.Constant((uint)pendingProgress)));
+            {
+                // The tail contains no write to a progress GPR. Normally the
+                // preceding instruction already cleared the dirty bit, so the
+                // signature comparison can be skipped. Retain the full path
+                // for resumed or externally restored dirty state.
+                code.Add(Call(FastProgressEnabled ? nameof(AdvanceBlockProgress) : nameof(UpdateBlockProgress),
+                    Expression.Constant((uint)pendingProgress)));
+            }
             code.Add(Call(nameof(EndBlock), Expression.Constant(start), Expression.Constant(words), nextPc));
             guards.Insert(0, Expression.IfThen(Expression.OrElse(
                 Expression.LessThan(budget, Expression.Constant((uint)count)),
@@ -268,6 +371,9 @@ namespace Ryu64.MIPS
 
         private void EndBlock(uint start, uint[] words, uint nextPc)
         {
+#if N64_RSP_PROFILE
+            long profileStart = Stopwatch.GetTimestamp();
+#endif
             // No block can stop partway: its budget and code were checked first.
             // Preserve the exact ring history, but publish it once per block.
             int index = _recentIndex;
@@ -289,17 +395,36 @@ namespace Ryu64.MIPS
             _lastInstr = words[words.Length - 1];
             _samePcRunLength = 0;
             _pc = nextPc;
+#if N64_RSP_PROFILE
+            _profileEndTicks += Stopwatch.GetTimestamp() - profileStart;
+#endif
         }
 
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
         private void UpdateBlockProgress(uint instructions)
         {
+#if N64_RSP_PROFILE
+            long profileStart = Stopwatch.GetTimestamp();
+            _profileProgressCalls++;
+#endif
             ulong signature = _progressRegistersDirty
                 ? ComputeProgressSignature(true) : _lastProgressSignature;
             _progressRegistersDirty = false;
             if (signature != _lastProgressSignature)
             { _lastProgressSignature = signature; _stagnantInstructionCount = 0; }
             else _stagnantInstructionCount += instructions;
+#if N64_RSP_PROFILE
+            _profileProgressTicks += Stopwatch.GetTimestamp() - profileStart;
+#endif
+        }
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private void AdvanceBlockProgress(uint instructions)
+        {
+            if (_progressRegistersDirty)
+                UpdateBlockProgress(instructions);
+            else
+                _stagnantInstructionCount += instructions;
         }
 
         private static Expression CompileScalarExpression(ParameterExpression self, uint word)

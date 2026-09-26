@@ -28,7 +28,13 @@ export EUTHERDRIVE_N64_GPU_LIBRARY
 export EUTHERDRIVE_N64_GPU_VALIDATE=${EUTHERDRIVE_N64_GPU_VALIDATE:-0}
 export PARALLEL_RDP_SMALL_TYPES=1
 export PARALLEL_RDP_FORCE_SYNC_SHADER=1
+# Direct command processing avoids the RDP command-ring cost in measured
+# gameplay. Keep an explicit override for graphics bisects.
+export PARALLEL_RDP_SINGLE_THREADED_COMMAND=${PARALLEL_RDP_SINGLE_THREADED_COMMAND:-1}
 export GRANITE_NUM_WORKER_THREADS=${GRANITE_NUM_WORKER_THREADS:-2}
+# Gauntlet slot 1 and later Mega Man states benefit from early GPU submission.
+# Preserve an explicit off switch for other scenes and graphics bisects.
+export EUTHERDRIVE_N64_GPU_OVERLAP=${EUTHERDRIVE_N64_GPU_OVERLAP:-1}
 case "$EUTHERDRIVE_N64_GPU_VALIDATE" in
     0) export GRANITE_VULKAN_NO_VALIDATION=1 ;;
     1) export GRANITE_VULKAN_NO_VALIDATION=0 ;;

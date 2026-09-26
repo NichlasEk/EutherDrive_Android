@@ -49,6 +49,19 @@ namespace Ryu64Core
         private bool _resumeLoadedState;
 #if N64_LIVE_GPU
         private bool _executionInitialized;
+        private int _gpuOverlapBatchKiB = 256;
+        private bool _gpuNarrowTriangleWrites;
+
+        private static bool IsGauntletLegendsEurope(byte[] image)
+        {
+            // Gauntlet Legends (Europe), CRC1 D543BCD6 / CRC2 2BA5E256.
+            // This is the only ROM with measured benefit from the smaller GPU
+            // batch and narrow triangle write bounds.
+            return image.Length >= 0x40 && image[0x10] == 0xd5 && image[0x11] == 0x43
+                && image[0x12] == 0xbc && image[0x13] == 0xd6 && image[0x14] == 0x2b
+                && image[0x15] == 0xa5 && image[0x16] == 0xe2 && image[0x17] == 0x56
+                && image[0x3e] == 0x50;
+        }
 #endif
 
         // Retained only for version-1 savestate layout compatibility.
@@ -221,10 +234,13 @@ namespace Ryu64Core
             Settings.Parse($"{AppDomain.CurrentDomain.BaseDirectory}/Settings.ini");
             _loadedMemory = R4300.memory = new Memory(rom.AllData);
 #if N64_LIVE_GPU
+            _gpuNarrowTriangleWrites = IsGauntletLegendsEurope(rom.AllData);
+            _gpuOverlapBatchKiB = _gpuNarrowTriangleWrites ? 64 : 256;
             string gpuLibrary = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_LIBRARY");
             if (!string.IsNullOrEmpty(gpuLibrary))
                 R4300.memory.AttachGpu(new N64LiveGpu(R4300.memory, gpuLibrary,
-                    Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_VALIDATE") == "1"));
+                    Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_VALIDATE") == "1",
+                    _gpuOverlapBatchKiB, _gpuNarrowTriangleWrites));
 #else
             if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_LIBRARY")))
                 throw new InvalidOperationException("Build with -p:N64LiveGpu=true to use the GPU backend");
@@ -874,7 +890,9 @@ namespace Ryu64Core
                 string library = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_LIBRARY");
                 if (string.IsNullOrEmpty(library)) throw new InvalidOperationException("This savestate requires the N64 GPU launcher (scripts/run-n64-gpu-desktop.sh).");
                 N64GpuBackend.RequireStateSupport(library);
-                gpu = new N64LiveGpu(R4300.memory, library, Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_VALIDATE") == "1");
+                gpu = new N64LiveGpu(R4300.memory, library,
+                    Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_GPU_VALIDATE") == "1",
+                    _gpuOverlapBatchKiB, _gpuNarrowTriangleWrites);
             }
 #else
             if (version == 2) throw new InvalidOperationException("This savestate requires the N64 GPU launcher (scripts/run-n64-gpu-desktop.sh).");

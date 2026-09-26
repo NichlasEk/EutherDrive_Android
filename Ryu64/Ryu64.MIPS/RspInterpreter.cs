@@ -1410,8 +1410,17 @@ namespace Ryu64.MIPS
         private void TransferVectorBytes(bool isLoad, int vt, int element, uint address, int count, bool partialLoad = false)
         {
             uint contiguousAddress = address & 0xfffu;
+#if N64_RSP_PROFILE
+            bool fast = !TraceRspFlow && element + count <= 16 && contiguousAddress + (uint)count <= 0x1000u
+                && (isLoad || !Memory.IsRspDescriptorDmemAddress(contiguousAddress, (uint)count));
+            int profileIndex = (isLoad ? 0 : 4) + (count == 1 ? 0 : count == 2 ? 1 : count == 4 ? 2 : 3);
+            if (fast) _profileVectorByteFast[profileIndex]++;
+            else _profileVectorByteFallback[profileIndex]++;
+            if (fast)
+#else
             if (!TraceRspFlow && element + count <= 16 && contiguousAddress + (uint)count <= 0x1000u
                 && (isLoad || !Memory.IsRspDescriptorDmemAddress(contiguousAddress, (uint)count)))
+#endif
             {
                 // Full scalar-sized vector transfers need neither per-byte
                 // address wrapping nor byte-order conversion. Partial loads,

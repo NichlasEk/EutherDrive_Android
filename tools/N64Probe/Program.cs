@@ -2,6 +2,13 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 using Ryu64.MIPS;
 
+#if N64_PERF_PROBE
+if (args.Length == 2 && args[0] == "--bench-rsp-slice")
+{
+    RspSliceCapture.Benchmark(args[1]);
+    return;
+}
+#endif
 if (args.Length is 4 or 5 && args[0] == "--bench-state")
 {
 #if N64_PERF_PROBE
@@ -20,6 +27,44 @@ if (args.Length is 3 or 4 or 5 && args[0] == "--check-gpu-state-game")
     return;
 }
 #endif
+
+if (args.Length >= 4 && args[0] == "--inspect-cpu-state")
+{
+    using var inspectCore = new Ryu64Core.Ryu64Core();
+    inspectCore.LoadROM(args[1]);
+    using (var reader = new BinaryReader(File.OpenRead(args[2]))) R4300.LoadState(reader);
+    foreach (string address in args.Skip(3))
+    {
+        uint start = Convert.ToUInt32(address, 16);
+        for (uint i = 0; i < 8; i++)
+        {
+            uint pc = start + i * 4, physical = (pc >= 0x80000000u && pc < 0xc0000000u ? pc : TLB.TranslateAddress(pc, true)) & 0x1fffffffu;
+            if ((ulong)physical + 4 > (ulong)R4300.memory.RDRAM.Length)
+                throw new InvalidDataException("Instruction inspection is restricted to RDRAM");
+#if N64_LIVE_GPU
+            R4300.memory.GpuBeforeRead(physical, 4);
+#endif
+            uint word = BinaryPrimitives.ReadUInt32BigEndian(R4300.memory.RDRAM.AsSpan((int)physical, 4));
+            var desc = new OpcodeTable.OpcodeDesc(word);
+            Console.WriteLine($"pc={pc:x8} physical={physical:x8} word={word:x8} op={OpcodeTable.GetOpcodeInfo(word).Interpret.Method.Name} rs={desc.op1} rt={desc.op2} rd={desc.op3} imm={(short)desc.Imm}");
+        }
+    }
+    return;
+}
+
+#if N64_LIVE_GPU && N64_RDP_JOURNAL
+if (args.Length == 2 && args[0] == "--check-mapped-gpu-loads")
+{
+    CpuMappedJitChecks.GpuLoads(args[1]);
+    return;
+}
+#endif
+
+if (args.Length == 1 && args[0] == "--check-cpu-jit-mapped")
+{
+    CpuMappedJitChecks.Run();
+    return;
+}
 
 if (args.Length == 1 && args[0] == "--check-cpu-jit-cache")
 {
@@ -165,6 +210,11 @@ if (args.Length == 1 && args[0] == "--check-sprites")
 if (args.Length == 1 && args[0] == "--bench-cop1-block-thread")
 {
     CpuThreadBenchmark.Run(cpuBlock: true, cop1Block: true);
+    return;
+}
+if (args.Length == 2 && args[0] == "--check-instruction-translation")
+{
+    TlbCacheChecks.Run(args[1], instruction: true);
     return;
 }
 if (args.Length == 2 && (args[0] == "--check-word-access" || args[0] == "--check-opcode-fetch"))
@@ -407,6 +457,10 @@ if (Environment.GetEnvironmentVariable("N64_PROBE_RDP_JOURNAL_FRAMES") != null)
 #endif
 using var rdpCapture = captureRdp ? new RdpCapture(output) : null;
 using var rspCapture = captureRsp ? new RspTaskCapture(output) : null;
+#if N64_PERF_PROBE
+using var rspSliceCapture = Environment.GetEnvironmentVariable("N64_PROBE_CAPTURE_RSP_SLICE") == "1"
+    ? new RspSliceCapture(R4300.memory, output) : null;
+#endif
 if (Environment.GetEnvironmentVariable("N64_PROBE_REPLAY_RDP") == "1")
 {
     var memory = R4300.memory;

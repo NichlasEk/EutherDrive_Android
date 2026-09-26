@@ -35,6 +35,7 @@ internal static class StateGameplayBenchmark
         long audioFrames = 0, reads = 0;
         double audioSeconds = 0;
         int nextSecond = 5;
+        bool phaseProfile = Environment.GetEnvironmentVariable("N64_PROBE_PHASE_PROFILE") == "1";
         Exception? failure = null;
         memory.SetControllerState(0, 0, 0);
         memory.PerfAudioCapture = (pcm, rate) =>
@@ -65,6 +66,9 @@ internal static class StateGameplayBenchmark
                 if (second >= nextSecond)
                 {
                     double wallSeconds = timer.Elapsed.TotalSeconds;
+                    if (phaseProfile)
+                        Console.WriteLine("statePerformance=" + JsonSerializer.Serialize(new {
+                            targetSecond = nextSecond, wallSeconds, summary = core.LastPerformanceStatus }));
                     string ramSha256 = Convert.ToHexString(SHA256.HashData(memory.RDRAM));
                     string? frameSha256 = null;
                     int width = 0, height = 0, bpp = 0;
@@ -109,7 +113,21 @@ internal static class StateGameplayBenchmark
             R4300.CpuJitProfile.OrderByDescending(p => p.Value.GetValueOrDefault("attempt"))
                 .Select(p => new { pc = p.Key.ToString("x8"), counts = p.Value }), new JsonSerializerOptions { WriteIndented = true }));
 #endif
+        if (phaseProfile)
+        {
+            const System.Reflection.BindingFlags flags = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic;
+            var stats = new Dictionary<string, object?>();
+            foreach (string name in new[] { "CpuJitCompilations", "CpuJitInstructions", "CpuJitInvalidations", "CpuJitRejectedCompilations", "CpuJitUnavailable" })
+                stats[name] = typeof(R4300).GetField(name, flags)!.GetValue(null);
+            Console.WriteLine("cpuJitTotals=" + JsonSerializer.Serialize(stats));
+        }
         Console.WriteLine(core.LastPerformanceStatus);
+#if N64_RSP_PROFILE
+        Console.WriteLine("rspBlockProfile=" + memory.GetRspBlockProfile());
+#endif
+#if N64_CPU_DISPATCH_PROFILE
+        Console.WriteLine("cpuDispatchProfile=" + R4300.GetCpuDispatchProfile());
+#endif
         Console.WriteLine($"stateBenchmark=passed cycles={core.GetCycleCounter()} reads={reads}");
     }
 

@@ -6,6 +6,15 @@
   <PropertyGroup Condition="'$(N64CpuJitProfile)' == 'true'">
     <DefineConstants>$(DefineConstants);N64_CPU_JIT_PROFILE</DefineConstants>
   </PropertyGroup>
+  <PropertyGroup Condition="'$(N64RspProfile)' == 'true'">
+    <DefineConstants>$(DefineConstants);N64_RSP_PROFILE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(N64CpuDispatchProfile)' == 'true'">
+    <DefineConstants>$(DefineConstants);N64_CPU_DISPATCH_PROFILE</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(N64GpuBatchProfile)' == 'true'">
+    <DefineConstants>$(DefineConstants);N64_GPU_BATCH_PROFILE</DefineConstants>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(N64LiveGpu)' == 'true'">
     <DefineConstants>$(DefineConstants);N64_LIVE_GPU</DefineConstants>
   </PropertyGroup>

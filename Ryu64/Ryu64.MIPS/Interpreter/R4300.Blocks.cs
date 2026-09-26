@@ -258,32 +258,84 @@ namespace Ryu64.MIPS
         // The caller has already recorded the first history entry.
         private static uint TryAdvanceCpuBlock(uint pc, uint opcode, uint maximumInstructions, bool recordHistory)
         {
-            int kind = GetCpuBlockOpcodeKind(opcode);
+            bool mapped = CpuJitMappedEnabled && (pc < 0x80000000u || pc >= 0xc0000000u);
+            if (mapped && CpuJitMappedCacheOnly && (opcode >> 26) != 47) return 0;
+            int kind = GetCpuJitOpcodeKind(opcode, mapped);
             if (kind < 0 || !FastIdleLoop || maximumInstructions < 2 || CpuBatchTracingEnabled
                 || Common.Variables.Debug || Common.Settings.STEP_MODE || CpuWindowTracingEnabled
                 || TraceSm64DispatchWindow || TraceHotPcSamples || InstInterp.BranchTracingEnabled
                 || _executingDelaySlot || _delaySlotExceptionPending || (pc & 3) != 0
-                || pc < 0x80004000u || pc >= 0xc0000000u
+                || (!mapped && (pc < 0x80004000u || pc >= 0xc0000000u))
                 || memory.HasPendingRcpInterrupt
                 || (Registers.COP0.Reg[Registers.COP0.CAUSE_REG] & CauseIpMask) != 0)
+            {
+#if N64_CPU_DISPATCH_PROFILE
+                if (kind < 0)
+                {
+                    _dispatchKindReject++;
+                    _dispatchKindRejectByPrimary[opcode >> 26]++;
+                    if ((opcode >> 26) == 0) _dispatchSpecialRejectByFunction[opcode & 63]++;
+                }
+                else if (!FastIdleLoop || maximumInstructions < 2 || CpuBatchTracingEnabled
+                    || Common.Variables.Debug || Common.Settings.STEP_MODE || CpuWindowTracingEnabled
+                    || TraceSm64DispatchWindow || TraceHotPcSamples || InstInterp.BranchTracingEnabled
+                    || _executingDelaySlot || _delaySlotExceptionPending) _dispatchModeReject++;
+                else if ((pc & 3) != 0 || pc < 0x80004000u || pc >= 0xc0000000u) _dispatchAddressReject++;
+                else _dispatchInterruptReject++;
+#endif
                 return 0;
+            }
+            if (mapped && CpuJitMappedAdmission && !PrepareMappedCpuJit(pc, opcode, kind)) return 0;
             uint physical = pc & 0x1fffffffu;
+            if (mapped && !TryResolveMappedCode(pc, out physical)) return 0;
             if (physical < 0x4000 || (ulong)physical + 8 > (ulong)memory.RDRAM.Length)
+            {
+#if N64_CPU_DISPATCH_PROFILE
+                _dispatchAddressReject++;
+#endif
                 return 0;
+            }
+#if N64_CPU_DISPATCH_PROFILE
+            long quietStart = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
             uint limit = memory.GetQuietCpuCycles(Math.Min(maximumInstructions, CpuJitEnabled ? CpuJitMaximumInstructions : 32u));
+#if N64_CPU_DISPATCH_PROFILE
+            _dispatchQuietTicks += System.Diagnostics.Stopwatch.GetTimestamp() - quietStart;
+#endif
             ulong count = Registers.COP0.Reg[Registers.COP0.COUNT_REG];
             if (limit < 2 || count >= uint.MaxValue || (Count >> 1) != count
                 || ((Count + limit) >> 1) >= uint.MaxValue
                 || CountCompareReached((uint)count, (uint)((Count + limit) >> 1), (uint)Registers.COP0.Reg[Registers.COP0.COMPARE_REG]))
+            {
+#if N64_CPU_DISPATCH_PROFILE
+                _dispatchQuietReject++;
+#endif
                 return 0;
+            }
             uint done = 0;
             bool tryCompiled = true;
             while (done < limit)
             {
+#if N64_CPU_DISPATCH_PROFILE
+                long jitStart = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
                 uint compiled = tryCompiled ? TryRunCpuJit(pc, opcode, limit - done, done, recordHistory) : 0;
+#if N64_CPU_DISPATCH_PROFILE
+                if (tryCompiled)
+                {
+                    _dispatchJitCalls++;
+                    _dispatchJitTicks += System.Diagnostics.Stopwatch.GetTimestamp() - jitStart;
+                    if (compiled != 0)
+                    {
+                        _dispatchJitSuccess++;
+                        _dispatchJitInstructions += compiled;
+                    }
+                }
+#endif
                 if (compiled != 0)
                 {
                     done += compiled;
+                    if (mapped) break; // One guarded mapped block per outer iteration.
                     // A terminal self-branch must keep the outer watchdog cadence.
                     uint terminalPc = pc + (compiled >= 2 ? compiled - 2 : 0) * 4;
                     if (Registers.R4300.PC == terminalPc) break;
@@ -295,8 +347,12 @@ namespace Ryu64.MIPS
                         break;
                     continue;
                 }
+                if (mapped) break; // No direct-address interpreter fallback for mapped PCs.
                 if (done == 0) limit = Math.Min(limit, 32);
                 tryCompiled = false;
+#if N64_CPU_DISPATCH_PROFILE
+                long fallbackStart = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
                 var desc = new OpcodeTable.OpcodeDesc(opcode);
                 // COP1 needs a live usability check, and loads/stores need
                 // operand validation. Integer ALU and CP0 need neither here.
@@ -330,14 +386,30 @@ namespace Ryu64.MIPS
                     ExecuteCpuBlockInstruction(desc, kind, done);
                     done++;
                 }
+#if N64_CPU_DISPATCH_PROFILE
+                _dispatchFallbackInstructions += branch ? 2 : 1;
+                _dispatchFallbackTicks += System.Diagnostics.Stopwatch.GetTimestamp() - fallbackStart;
+#endif
                 pc = Registers.R4300.PC;
                 physical = pc & 0x1fffffffu;
                 if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
                     || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
                     || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
                     break;
+#if N64_CPU_DISPATCH_PROFILE
+                int nextSlot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
+                var successor = CpuJitCache[nextSlot];
+                if (successor != null && successor.Pc == pc && successor.First == opcode
+                    && successor.Code?.Run != null) _dispatchCachedSuccessor++;
+#endif
             }
-            if (done == 0) return 0;
+            if (done == 0)
+            {
+#if N64_CPU_DISPATCH_PROFILE
+                _dispatchZeroResult++;
+#endif
+                return 0;
+            }
             CycleCounter += done;
             Count += done;
             memory.TickQuietCpuCycles(done);

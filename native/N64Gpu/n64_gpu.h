@@ -14,7 +14,9 @@ enum { ED_N64_GPU_ABI = 1, ED_N64_GPU_RAM_SIZE = 8 << 20, ED_N64_GPU_HIDDEN_SIZE
 enum { ED_N64_GPU_VALIDATE = 1, ED_N64_GPU_BATCH_STATE_WRITES = 2, ED_N64_GPU_REQUIRE_DISCRETE = 4,
        ED_N64_GPU_DEFER_DISJOINT_WRITES = 8, // Includes state-write batching.
        // Includes previous modes, narrow TLUT and single-row LoadTile reads.
-       ED_N64_GPU_DEFER_DISJOINT_LOAD_BLOCKS = 16 };
+       ED_N64_GPU_DEFER_DISJOINT_LOAD_BLOCKS = 16,
+       ED_N64_GPU_NARROW_TRIANGLE_WRITES = 32,
+       ED_N64_GPU_TRACK_TEXTURE_READS = 64 }; // Bound prior LoadBlock/TLUT RDRAM reads.
 enum { ED_N64_GPU_OK = 0, ED_N64_GPU_ARGUMENT = 1, ED_N64_GPU_BACKEND = 2 };
 // All fields and pointers belong to the caller. Functions retain no caller
 // buffers after returning. Handles are IDs, never addresses. Calls serialize.

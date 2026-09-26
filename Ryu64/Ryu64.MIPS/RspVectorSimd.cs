@@ -13,6 +13,8 @@ namespace Ryu64.MIPS
         // hosts without SSSE3. No architectural state depends on this choice.
         private static readonly bool VectorSimdEnabled = Ssse3.IsSupported
             && Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_SIMD") != "0";
+        private static readonly bool FastVmadhEnabled =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_FAST_VMADH") == "1";
         private static class VectorSimdMasks
         {
             // Initialize after the outer type's shuffle setting, independently
@@ -152,7 +154,9 @@ namespace Ryu64.MIPS
                 methods[0x0c] = definition.MakeGenericMethod(typeof(VectorOperation0C));
                 methods[0x0d] = definition.MakeGenericMethod(typeof(VectorOperation0D));
                 methods[0x0e] = definition.MakeGenericMethod(typeof(VectorOperation0E));
-                methods[0x0f] = definition.MakeGenericMethod(typeof(VectorOperation0F));
+                methods[0x0f] = FastVmadhEnabled
+                    ? typeof(RspInterpreter).GetMethod(nameof(ExecuteVectorSimdHighFast), BindingFlags.Instance | BindingFlags.NonPublic)
+                    : definition.MakeGenericMethod(typeof(VectorOperation0F));
                 methods[0x10] = definition.MakeGenericMethod(typeof(VectorOperation10));
                 methods[0x11] = definition.MakeGenericMethod(typeof(VectorOperation11));
                 methods[0x13] = definition.MakeGenericMethod(typeof(VectorOperation13));
@@ -388,6 +392,26 @@ namespace Ryu64.MIPS
             WriteVectorPlane(_accMd, md);
             WriteVectorPlane(_accHi, hi);
             Ssse3.Shuffle(result.AsByte(), swap).StoreUnsafe(ref _vr[vd * 16]);
+        }
+
+        // Opt-in block specialization. VMADH adds the signed product at bit
+        // 16, so the low accumulator plane and its carry are unchanged.
+        private void ExecuteVectorSimdHighFast(int op, int vd, int vs, int vt, int element)
+        {
+            if (ProfileVectorOps) _vectorOpCounts[0x0f]++;
+            var masks = VectorSimdMasks.ByteShuffles;
+            var lhs = Ssse3.Shuffle(Vector128.LoadUnsafe(ref _vr[vs * 16]), masks[0]).AsUInt16();
+            var rhs = Ssse3.Shuffle(Vector128.LoadUnsafe(ref _vr[vt * 16]), masks[element]).AsUInt16();
+            var productLo = Sse2.MultiplyLow(lhs, rhs);
+            var productHi = Sse2.MultiplyHigh(lhs.AsInt16(), rhs.AsInt16()).AsUInt16();
+            var oldMd = ReadVectorPlane(_accMd);
+            var md = Sse2.Add(oldMd, productLo);
+            var carryMd = VectorLessUnsigned(md, oldMd);
+            var hi = Sse2.Subtract(Sse2.Add(ReadVectorPlane(_accHi), productHi), carryMd);
+            var result = VectorSignedClamp(hi, md);
+            WriteVectorPlane(_accMd, md);
+            WriteVectorPlane(_accHi, hi);
+            Ssse3.Shuffle(result.AsByte(), masks[0]).StoreUnsafe(ref _vr[vd * 16]);
         }
     }
 }

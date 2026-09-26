@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Threading;
+using System.Runtime.CompilerServices;
 
 namespace Ryu64.MIPS
 {
@@ -44,6 +45,44 @@ namespace Ryu64.MIPS
         [ThreadStatic] private static Translation[] Translations;
         [ThreadStatic] private static int CachedTranslationVersion;
         private static int TranslationVersion;
+
+        // Fetch locality is independent of the data translation cache. Store
+        // translations only, never instruction bytes; GPU/CPU writes still go
+        // through the ordinary physical fetch and ownership checks.
+        internal struct InstructionTranslation
+        {
+            public bool Valid;
+            public uint Tag, PhysicalPage;
+            public int Version;
+        }
+        [ThreadStatic] private static InstructionTranslation LastInstructionTranslation;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static uint TranslateInstructionAddress(uint address)
+            => TranslateInstructionAddress(address, ref LastInstructionTranslation);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal static uint TranslateInstructionAddress(uint address, ref InstructionTranslation cached)
+        {
+            uint tag = ((address >> 12) << 8) | ((uint)Registers.COP0.Reg[Registers.COP0.ENTRYHI_REG] & 0xffu);
+            int version = Volatile.Read(ref TranslationVersion);
+            if (cached.Valid && cached.Tag == tag && cached.Version == version)
+                return cached.PhysicalPage | (address & 0xfffu);
+            return TranslateInstructionMiss(address, tag, version, ref cached);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static uint TranslateInstructionMiss(uint address, uint tag, int version, ref InstructionTranslation cached)
+        {
+            // A strict miss throws before publication. The caller's low-physical
+            // bring-up fallback must never become a successful cached mapping.
+            uint physical = TranslateAddress(address, true);
+            cached = new InstructionTranslation
+            {
+                Valid = true, Tag = tag, PhysicalPage = physical & ~0xfffu, Version = version
+            };
+            return physical;
+        }
 
         private static void InvalidateTranslations() => Interlocked.Increment(ref TranslationVersion);
 

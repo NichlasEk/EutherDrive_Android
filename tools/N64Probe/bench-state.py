@@ -24,11 +24,22 @@ def main():
     parser.add_argument("--end", type=int, default=15)
     parser.add_argument("--reference-gpu-library", type=Path)
     parser.add_argument("--candidate-gpu-library", type=Path)
+    parser.add_argument("--reference-env", action="append", default=[], metavar="NAME=VALUE")
+    parser.add_argument("--candidate-env", action="append", default=[], metavar="NAME=VALUE")
     args = parser.parse_args()
     if args.start < 5 or args.end <= args.start or args.start % 5 or args.end % 5:
         parser.error("start/end must be increasing multiples of 5")
     if bool(args.reference_gpu_library) != bool(args.candidate_gpu_library):
         parser.error("supply both GPU libraries or neither")
+    mode_env = {}
+    for mode in ("reference", "candidate"):
+        overrides = {}
+        for item in getattr(args, mode + "_env"):
+            name, separator, value = item.partition("=")
+            if not separator or not name or not name.replace("_", "").isalnum():
+                parser.error(f"invalid {mode} environment assignment: {item!r}")
+            overrides[name] = value
+        mode_env[mode] = overrides
     args.output.mkdir(parents=True, exist_ok=False)
     env = os.environ.copy()
     env.pop("EUTHERDRIVE_N64_GPU_AUDIT", None)
@@ -46,13 +57,15 @@ def main():
     for index, mode in enumerate(("reference", "candidate", "candidate", "reference"), 1):
         name = f"{index}-{mode}"
         output = args.output / name
+        run_env = env.copy()
+        run_env.update(mode_env[mode])
         if args.reference_gpu_library:
-            env["EUTHERDRIVE_N64_GPU_LIBRARY"] = str(getattr(args, mode + "_gpu_library").resolve())
+            run_env["EUTHERDRIVE_N64_GPU_LIBRARY"] = str(getattr(args, mode + "_gpu_library").resolve())
         print("running", name, flush=True)
         with (args.output / (name + ".log")).open("w") as log:
             subprocess.run(["taskset", "-c", args.cores, "dotnet", str(getattr(args, mode).resolve()),
                             "--bench-state", str(args.rom.resolve()), str(args.state.resolve()), str(output.resolve()), str(args.end)],
-                           env=env, stdout=log, stderr=subprocess.STDOUT, check=True)
+                           env=run_env, stdout=log, stderr=subprocess.STDOUT, check=True)
         if (output / "jit-profile.json").exists():
             raise RuntimeError("Instrumented JIT profile cannot be used as a timing sample")
         points = json.loads((output / "checkpoints.json").read_text())
@@ -68,7 +81,7 @@ def main():
         end = next(p for p in points if p["targetSecond"] == args.end)
         elapsed = end["wallSeconds"] - begin["wallSeconds"]
         audio = end["audioSeconds"] - begin["audioSeconds"]
-        result = dict(run=name, mode=mode, start=args.start, end=args.end, wallSeconds=elapsed,
+        result = dict(run=name, mode=mode, environment=mode_env[mode], start=args.start, end=args.end, wallSeconds=elapsed,
                       audioSeconds=audio, realTimePercent=100 * audio / elapsed)
         results.append(result)
         print(json.dumps(result), flush=True)

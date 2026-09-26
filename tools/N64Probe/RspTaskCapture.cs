@@ -68,7 +68,7 @@ internal sealed class RspTaskCapture : TextWriter
         }
         return stream.ToArray();
     }
-    private static void LoadRegisters(object rsp, byte[] bytes)
+    internal static void LoadRegisters(object rsp, byte[] bytes)
     {
         using var reader = new BinaryReader(new MemoryStream(bytes, false));
         while (reader.BaseStream.Position < reader.BaseStream.Length)

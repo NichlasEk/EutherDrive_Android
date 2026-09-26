@@ -173,6 +173,14 @@ namespace Ryu64.MIPS
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_BOOT_ASSET_DECODE"), "0", StringComparison.Ordinal);
         private static readonly bool FastRdramInstructionFetch =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_RDRAM_FETCH"), "0", StringComparison.Ordinal);
+        private static readonly bool InstructionPageTranslationCache =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_INSTRUCTION_PAGE_CACHE") == "1";
+        private static readonly bool CpuOwnedInstructionPageTranslationCache =
+            (Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_INSTRUCTION_PAGE_CACHE") ?? "2") == "2";
+        // ReadOpcode is private to CPU execution (main loop and delay slots),
+        // which already owns the static architectural registers. UI diagnostics
+        // use TLB.TranslateAddress and cannot publish into this fetch cache.
+        private static TLB.InstructionTranslation CpuInstructionTranslation;
         private static readonly bool FastIdleLoop =
             !string.Equals(Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_FAST_IDLE_LOOP"), "0", StringComparison.Ordinal);
         private static readonly uint IdleLoopFastForwardCycles =
@@ -629,7 +637,11 @@ namespace Ryu64.MIPS
                 uint translated;
                 try
                 {
-                    translated = TLB.TranslateAddress(pc, throwOnMiss: true) & 0x1FFFFFFFu;
+                    translated = (CpuOwnedInstructionPageTranslationCache
+                        ? TLB.TranslateInstructionAddress(pc, ref CpuInstructionTranslation)
+                        : InstructionPageTranslationCache
+                        ? TLB.TranslateInstructionAddress(pc)
+                        : TLB.TranslateAddress(pc, throwOnMiss: true)) & 0x1FFFFFFFu;
                 }
                 catch (Common.Exceptions.TLBMissException)
                 {
@@ -3795,8 +3807,21 @@ namespace Ryu64.MIPS
                                 }
                             }
                             int historyBeforeBlock = _recentInstPos;
-                            uint blockInstructions = pc >= 0x80004000u && pc < 0xc0000000u
+#if N64_CPU_DISPATCH_PROFILE
+                            long dispatchStart = System.Diagnostics.Stopwatch.GetTimestamp();
+#endif
+                            uint blockInstructions = (pc >= 0x80004000u && pc < 0xc0000000u)
+                                || (CpuJitMappedEnabled && (!CpuJitMappedCacheOnly || (Opcode >> 26) == 47))
                                 ? TryAdvanceCpuBlock(pc, Opcode, CpuJitMaximumInstructions, true) : 0;
+#if N64_CPU_DISPATCH_PROFILE
+                            _dispatchCalls++;
+                            _dispatchTicks += System.Diagnostics.Stopwatch.GetTimestamp() - dispatchStart;
+                            if (blockInstructions != 0)
+                            {
+                                _dispatchAccepted++;
+                                _dispatchInstructions += blockInstructions;
+                            }
+#endif
                             if (blockInstructions != 0)
                             {
                                 uint lastBlockPc = _recentInst[(_recentInstPos - 1) & RecentInstHistoryMask].Pc;

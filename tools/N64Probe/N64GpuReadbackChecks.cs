@@ -51,14 +51,16 @@ internal static class N64GpuReadbackChecks
             ulong before = live.GetStats().ReadbackBytes;
             live.ReadbackLive(timeline, actual[0], actual[1], actual[2]);
             var stats = live.GetStats();
-            ulong copiedRam = stats.ReadbackBytes - before - N64GpuBackend.HiddenSize - 4096;
+            ulong copiedMemory = stats.ReadbackBytes - before - 4096;
             for (int i = 0; i < expected.Length; i++)
                 if (!expected[i].AsSpan().SequenceEqual(actual[i]))
                     throw new Exception($"{name}: live memory component {i} differs");
-            if ((ramBytes >= 0 && copiedRam != (ulong)ramBytes) || (ramBytes < 0 && (copiedRam == 0 || copiedRam >= N64GpuBackend.RamSize)))
-                throw new Exception($"{name}: unexpected RAM copy size {copiedRam}");
+            ulong fullMemory = N64GpuBackend.RamSize + N64GpuBackend.HiddenSize;
+            if ((ramBytes >= 0 && copiedMemory != (ulong)ramBytes * 3 / 2)
+                || (ramBytes < 0 && (copiedMemory == 0 || copiedMemory >= fullMemory)))
+                throw new Exception($"{name}: unexpected RAM/hidden copy size {copiedMemory}");
             if (stats.ValidationErrors != 0) throw new Exception(name + ": GPU validation error");
-            Console.WriteLine($"gpuReadback={name} copiedRam={copiedRam} allMemory=exact"); checks++;
+            Console.WriteLine($"gpuReadback={name} copiedMemory={copiedMemory} allMemory=exact"); checks++;
         }
         Check("first-full", N64GpuBackend.RamSize);
         Write(0x123401, 1, 2, 3, 4, 5); Write(0x7ffffc, 6, 7, 8, 9);

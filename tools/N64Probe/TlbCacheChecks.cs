@@ -5,18 +5,18 @@ using Ryu64.MIPS;
 
 internal static class TlbCacheChecks
 {
-    internal static void Run(string reference)
+    internal static void Run(string reference, bool instruction = false)
     {
         var context = new AssemblyLoadContext("tlb-reference", true);
-        string expected = Check(context.LoadFromAssemblyPath(Path.GetFullPath(reference)));
-        string actual = Check(typeof(TLB).Assembly);
+        string expected = Check(context.LoadFromAssemblyPath(Path.GetFullPath(reference)), instruction);
+        string actual = Check(typeof(TLB).Assembly, instruction);
         if (actual != expected) throw new Exception($"TLB translation/state differs: {expected}/{actual}");
         context.Unload();
-        CheckReaderThread();
-        Console.WriteLine($"tlbCacheDifferential=passed translations=264192 readerThreadUpdates=128 sha256={actual}");
+        CheckReaderThread(instruction);
+        Console.WriteLine($"tlbCacheDifferential=passed instruction={instruction} translations=264192 readerThreadUpdates=128 sha256={actual}");
     }
 
-    private static void CheckReaderThread()
+    private static void CheckReaderThread(bool instruction)
     {
         TLB.Reset();
         Registers.COP0.Reg[Registers.COP0.INDEX_REG] = 0;
@@ -28,7 +28,7 @@ internal static class TlbCacheChecks
         var reader = Task.Run(() =>
         {
             foreach (uint address in requests.GetConsumingEnumerable())
-                responses.Add(TLB.TranslateAddress(address, true));
+                responses.Add(instruction ? TLB.TranslateInstructionAddress(address) : TLB.TranslateAddress(address, true));
         });
         try
         {
@@ -47,7 +47,7 @@ internal static class TlbCacheChecks
         finally { requests.CompleteAdding(); reader.GetAwaiter().GetResult(); }
     }
 
-    private static string Check(Assembly assembly)
+    private static string Check(Assembly assembly, bool instruction)
     {
         Type type = assembly.GetType("Ryu64.MIPS.TLB")!;
         var regs = (ulong[])assembly.GetType("Ryu64.MIPS.Registers+COP0")!.GetField("Reg")!.GetValue(null)!;
@@ -59,6 +59,12 @@ internal static class TlbCacheChecks
         var load = type.GetMethod("LoadState")!.CreateDelegate<Action<BinaryReader>>();
         var translate = type.GetMethod("TranslateAddress", new[] { typeof(uint), typeof(bool), typeof(bool) })!
             .CreateDelegate<Func<uint, bool, bool, uint>>();
+        if (instruction)
+        {
+            var ordinary = translate;
+            var fetch = type.GetMethod("TranslateInstructionAddress")?.CreateDelegate<Func<uint,uint>>();
+            translate = (address, _, _) => fetch != null ? fetch(address) : ordinary(address, true, false);
+        }
         var random = new Random(64920);
         uint[] masks = { 0, 3, 15, 63, 255, 1023, 4095, 7 }; // include malformed masks, retaining existing behavior
         using var result = new MemoryStream();
@@ -113,7 +119,8 @@ internal static class TlbCacheChecks
                 {
                     regs[Registers.COP0.INDEX_REG] = (uint)random.Next(32);
                     read(); // changes ASID without modifying any TLB entry
-                    output.Write(translate(address, false, false));
+                    try { output.Write(translate(address, false, false)); }
+                    catch (Exception ex) when (instruction) { output.Write(ex.GetType().FullName!); output.Write(ex.Message); }
                 }
             }
             save(output);

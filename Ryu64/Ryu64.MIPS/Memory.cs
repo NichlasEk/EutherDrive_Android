@@ -19,6 +19,10 @@ namespace Ryu64.MIPS
         // not depend on the host poller's scheduling. Diagnostic builds only.
         public Action PerfControllerRead;
         public Action<short[], uint> PerfAudioCapture;
+        public Action<uint[]> PerfRdpCommand;
+        // Diagnostic capture at the exact ExecuteSlice boundary. No guest
+        // scheduling can run between these two callbacks.
+        public Action<bool, bool, uint, uint, string> PerfRspSliceCapture;
 #endif
 
         public short[] DequeueAudio(out uint sampleRate)
@@ -8431,7 +8435,14 @@ namespace Ryu64.MIPS
             long rspPerfStart = StartPerfTimer();
             try
             {
-                completed = _rspInterpreter.ExecuteSlice(out executedInstructions, out stopReason, resume, hasTask ? RspSliceInstructions : uint.MaxValue);
+                uint sliceBudget = hasTask ? RspSliceInstructions : uint.MaxValue;
+#if N64_PERF_PROBE
+                PerfRspSliceCapture?.Invoke(true, resume, sliceBudget, 0, null);
+#endif
+                completed = _rspInterpreter.ExecuteSlice(out executedInstructions, out stopReason, resume, sliceBudget);
+#if N64_PERF_PROBE
+                PerfRspSliceCapture?.Invoke(false, resume, sliceBudget, executedInstructions, stopReason);
+#endif
             }
             finally
             {
@@ -8812,6 +8823,9 @@ namespace Ryu64.MIPS
             signature = (signature * 1099511628211ul) ^ (_spQueuedDmaValid ? 1ul : 0ul);
             return signature;
         }
+#if N64_RSP_PROFILE
+        public string GetRspBlockProfile() => _rspInterpreter.GetBlockProfile();
+#endif
 
         internal bool HasActiveRspTask()
         {

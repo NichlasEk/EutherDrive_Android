@@ -22,6 +22,10 @@ target_compile_options(granite-util PUBLIC "$<$<COMPILE_LANGUAGE:CXX>:-include>"
 
 # This dependency graph deliberately excludes alp-core and rdp-utils.
 add_library(euther_n64_gpu SHARED n64_gpu.cpp n64_gpu_state.cpp)
+option(N64_GPU_PROFILE "Instrument native submit phases for diagnostics" OFF)
+if (N64_GPU_PROFILE)
+    target_compile_definitions(euther_n64_gpu PRIVATE N64_GPU_PROFILE=1)
+endif()
 target_link_libraries(euther_n64_gpu PRIVATE parallel-rdp granite-application-global-init granite-threading)
 granite_setup_default_link_libraries(euther_n64_gpu)
 target_compile_options(euther_n64_gpu PRIVATE -Wall -Wextra -Werror)
