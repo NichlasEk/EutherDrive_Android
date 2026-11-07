@@ -16,7 +16,7 @@ index fb95eef5..194131d7 100644
          [NonSerialized] private readonly long[] _profileVectorByteFallback = new long[8];
          [NonSerialized] private long _profileScalarInstructions;
 +        [NonSerialized] private readonly int[] _profileBlockLengths = new int[1024];
- 
+
          private string GetInstructionMixProfile()
          {
 @@ -116,7 +119,7 @@ namespace Ryu64.MIPS
@@ -29,9 +29,9 @@ index fb95eef5..194131d7 100644
                      if ((instruction >> 25) == 0x25)
                          _profileVectorInstructions[(int)(instruction & 63)]++;
 @@ -153,18 +156,41 @@ namespace Ryu64.MIPS
- 
+
          private static readonly Func<RspInterpreter, uint, uint, int> NoBlock = (r, b, s) => 0;
- 
+
 +        private int GetBlockInstructionLimit(uint start)
 +        {
 +            if (!BlockLoopsEnabled) return MaxBlockInstructions;
