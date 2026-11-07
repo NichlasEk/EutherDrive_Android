@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--reference-runtime", help="Explicit installed .NET runtime version (dotnet --fx-version)")
     parser.add_argument("--candidate-runtime", help="Explicit installed .NET runtime version (dotnet --fx-version)")
     parser.add_argument("--cores", default="6,7")
+    parser.add_argument("--candidate-cores", help="Candidate CPU affinity; defaults to --cores")
     parser.add_argument("--start", type=int, default=70)
     parser.add_argument("--end", type=int, default=90)
     args = parser.parse_args()
@@ -44,7 +45,7 @@ def main():
     results = []
     manifest = dict(
         runtimes=subprocess.check_output(["dotnet", "--list-runtimes"], text=True).splitlines(),
-        cores=args.cores, start=args.start, end=args.end,
+        cores=args.cores, candidateCores=args.candidate_cores or args.cores, start=args.start, end=args.end,
         romSha256=hashlib.sha256(args.rom.read_bytes()).hexdigest(),
         gpuLibraries={mode: dict(path=str(library.resolve()), sha256=hashlib.sha256(library.read_bytes()).hexdigest())
                       for mode, library in (("reference", args.reference_library or args.library),
@@ -71,7 +72,8 @@ def main():
         run_env = env.copy()
         if mode == "reference" and args.reference_library:
             run_env["EUTHERDRIVE_N64_GPU_LIBRARY"] = str(args.reference_library.resolve())
-        command = ["taskset", "-c", args.cores, "dotnet"]
+        cores = args.candidate_cores if mode == "candidate" and args.candidate_cores else args.cores
+        command = ["taskset", "-c", cores, "dotnet"]
         runtime = getattr(args, mode + "_runtime")
         if runtime:
             command.extend(["--fx-version", runtime])
