@@ -20,6 +20,8 @@ def main():
     parser.add_argument("--library", type=Path)
     parser.add_argument("--reference-library", type=Path,
                         help="Compare two GPU libraries; defaults to --library")
+    parser.add_argument("--reference-runtime", help="Explicit installed .NET runtime version (dotnet --fx-version)")
+    parser.add_argument("--candidate-runtime", help="Explicit installed .NET runtime version (dotnet --fx-version)")
     parser.add_argument("--cores", default="6,7")
     parser.add_argument("--start", type=int, default=70)
     parser.add_argument("--end", type=int, default=90)
@@ -40,6 +42,26 @@ def main():
     expected = None
     expected_frames = None
     results = []
+    manifest = dict(
+        runtimes=subprocess.check_output(["dotnet", "--list-runtimes"], text=True).splitlines(),
+        cores=args.cores, start=args.start, end=args.end,
+        romSha256=hashlib.sha256(args.rom.read_bytes()).hexdigest(),
+        gpuLibraries={mode: dict(path=str(library.resolve()), sha256=hashlib.sha256(library.read_bytes()).hexdigest())
+                      for mode, library in (("reference", args.reference_library or args.library),
+                                            ("candidate", args.library)) if library},
+        environment={key: env.get(key) for key in (
+            "PARALLEL_RDP_SMALL_TYPES", "PARALLEL_RDP_FORCE_SYNC_SHADER",
+            "PARALLEL_RDP_SINGLE_THREADED_COMMAND", "GRANITE_NUM_WORKER_THREADS",
+            "GRANITE_VULKAN_NO_VALIDATION", "EUTHERDRIVE_N64_GPU_OVERLAP",
+            "EUTHERDRIVE_N64_CPU_JIT", "EUTHERDRIVE_N64_RSP_BLOCK_JIT",
+            "DOTNET_TieredCompilation", "DOTNET_TieredPGO")},
+        variants={mode: dict(probe=str(getattr(args, mode).resolve()),
+                            runtime=getattr(args, mode + "_runtime"),
+                            files={p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                                   for p in sorted(getattr(args, mode).parent.glob("*"))
+                                   if p.is_file() and p.suffix in (".dll", ".json")})
+                  for mode in ("reference", "candidate")})
+    (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     invariant = ("targetSecond", "cycles", "reads", "audioFrames", "audioSeconds", "audioSha256",
                  "inputSha256", "ramSha256", "action", "x", "y", "z", "graphicsTasks", "audioTasks")
     for index, mode in enumerate(("reference", "candidate", "candidate", "reference"), 1):
@@ -49,9 +71,14 @@ def main():
         run_env = env.copy()
         if mode == "reference" and args.reference_library:
             run_env["EUTHERDRIVE_N64_GPU_LIBRARY"] = str(args.reference_library.resolve())
+        command = ["taskset", "-c", args.cores, "dotnet"]
+        runtime = getattr(args, mode + "_runtime")
+        if runtime:
+            command.extend(["--fx-version", runtime])
+        command.extend([str(getattr(args, mode).resolve()), "--bench-sm64",
+                        str(args.rom.resolve()), str(output.resolve()), str(args.end)])
         with (args.output / (name + ".log")).open("w") as log:
-            subprocess.run(["taskset", "-c", args.cores, "dotnet", str(getattr(args, mode).resolve()),
-                            "--bench-sm64", str(args.rom.resolve()), str(output.resolve()), str(args.end)],
+            subprocess.run(command,
                            env=run_env, stdout=log, stderr=subprocess.STDOUT, check=True)
         if (output / "jit-profile.json").exists():
             raise RuntimeError("Instrumented JIT profile cannot be used as a timing sample")
@@ -68,7 +95,13 @@ def main():
         elapsed = end["wallSeconds"] - begin["wallSeconds"]
         audio = end["audioSeconds"] - begin["audioSeconds"]
         result = dict(run=name, mode=mode, start=args.start, end=args.end, wallSeconds=elapsed,
-                      audioSeconds=audio, realTimePercent=100 * audio / elapsed)
+                      audioSeconds=audio, realTimePercent=100 * audio / elapsed,
+                      cycleRealTimePercent=100 * (end["cycles"] - begin["cycles"]) / 93_750_000 / elapsed,
+                      intervals=[dict(start=a["targetSecond"], end=b["targetSecond"],
+                                      realTimePercent=100 * (b["audioSeconds"] - a["audioSeconds"]) /
+                                                      (b["wallSeconds"] - a["wallSeconds"]))
+                                 for a, b in zip(points, points[1:])
+                                 if args.start <= a["targetSecond"] < b["targetSecond"] <= args.end])
         results.append(result)
         print(json.dumps(result), flush=True)
         (args.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")

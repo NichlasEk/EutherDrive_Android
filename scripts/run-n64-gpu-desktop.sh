@@ -46,4 +46,9 @@ dotnet build EutherDrive.UI/EutherDrive.UI.csproj -c Release -m:1 \
 echo 'Experimental N64 Vulkan RDP: start from ROM/reset. Loading an old save uses software.'
 echo 'New GPU savestates resume with GPU rendering; use Save/Load in the savestate panel.'
 if [ "$build_only" = 1 ]; then exit 0; fi
+if [ -n "${EUTHERDRIVE_DOTNET_RUNTIME:-}" ]; then
+    # Select an already installed runtime without changing other applications
+    # or the desktop project's target framework. Useful for measured JIT runs.
+    exec dotnet --fx-version "$EUTHERDRIVE_DOTNET_RUNTIME" "$build_dir/desktop/EutherDrive.UI.dll" "$@"
+fi
 exec dotnet "$build_dir/desktop/EutherDrive.UI.dll" "$@"

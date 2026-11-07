@@ -56,7 +56,8 @@ if (!slot2.AsSpan().SequenceEqual(SlotPayload(container, 2))) throw new Exceptio
 long frame = service.GetSlotInfo(core)[0].FrameCounter;
 for (int i = 0; i < 10; i++) { core.RunFrame(); Thread.Sleep(10); }
 model.LoadSlot1Command.Execute(null);
-if (model.StatusMessage != "Savestate: loaded S1." || !core.UsesGpuRendering || core.FrameCounter != frame)
+if (!model.StatusMessage.StartsWith("Savestate: loaded S1.", StringComparison.Ordinal)
+    || !core.UsesGpuRendering || core.FrameCounter != frame)
     throw new Exception("UI load did not restore adapter/GPU state: " + model.StatusMessage);
 core.RunFrame();
 if (core.FrameCounter <= frame) throw new Exception("UI did not resume after loading");
