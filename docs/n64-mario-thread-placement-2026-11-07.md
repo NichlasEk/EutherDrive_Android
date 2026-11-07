@@ -62,3 +62,17 @@ Artifacts under `.build-tmp/n64-mario-2026-11-07/`:
 `thread-placement-v2-abba/`, `bench-thread-placement.py`, `state-probe/`,
 `mario-state60/`, `state-continuation-proof.json`, `warm-hint-abba/`, and
 `bench-warm-hint.py`. ROMs, GPU states and captures stay local.
+
+## Unrestricted desktop-affinity control
+
+A further resumed ABBA compared the actual unrestricted scheduling scope
+(all 28 logical CPUs) with the fixed core-8/helper-6/7/9 placement. Wall times
+were 21.1813867, 21.2560449, 21.4961992 and 21.7829897 seconds. The mean gain
+is only +0.50%, and pair signs differ. All six checkpoints/images and complete
+final states match. Artifact directory: `unrestricted-vs-pin-abba/`.
+
+Therefore the earlier +10.52% does not establish an improvement over the
+ordinary desktop launcher. Fixed thread placement remains a diagnostic
+option; the delivered launcher keeps unrestricted scheduling. Further core
+timings should avoid confusing a restrictive benchmark affinity with the
+user's actual launch configuration.
