@@ -35,6 +35,11 @@ internal static class Sm64Benchmark
         File.WriteAllBytes(normalized, rom);
         using var core = new Ryu64Core.Ryu64Core();
         core.LoadROM(normalized);
+        string? statePath = Environment.GetEnvironmentVariable("N64_PROBE_SM64_STATE");
+        if (!string.IsNullOrEmpty(statePath)) core.LoadState(statePath);
+        ulong startCycle = core.GetCycleCounter();
+        if (startCycle >= (ulong)endSecond * Clock)
+            throw new InvalidOperationException("The resume state must precede the requested end time");
         var memory = R4300.memory;
         var points = new List<object>();
         var timer = new Stopwatch();
@@ -44,7 +49,7 @@ internal static class Sm64Benchmark
         long audioFrames = 0, reads = 0;
         double audioSeconds = 0;
         bool enteredGame = false;
-        int nextSecond = 5;
+        int nextSecond = ((int)(startCycle / Clock) / 5 + 1) * 5;
         Exception? failure = null;
         object Jit(string field) => typeof(R4300).GetField(field, JitFlags)!.GetValue(null)!;
         memory.PerfAudioCapture = (pcm, rate) =>
@@ -130,6 +135,10 @@ internal static class Sm64Benchmark
         memory.GpuRenderer?.Synchronize();
 #endif
         File.WriteAllBytes(Path.Combine(output, "rdram.bin"), memory.RDRAM);
+        if (!string.IsNullOrEmpty(statePath))
+            using (var writer = new BinaryWriter(File.Create(Path.Combine(output, "cpu-state.bin")))) R4300.SaveState(writer);
+        if (Environment.GetEnvironmentVariable("N64_PROBE_SM64_SAVE_STATE") == "1")
+            core.SaveState(Path.Combine(output, "core-state.bin"));
 #if N64_CPU_JIT_PROFILE
         File.WriteAllText(Path.Combine(output, "jit-profile.json"), JsonSerializer.Serialize(
             R4300.CpuJitProfile.OrderByDescending(p => p.Value.GetValueOrDefault("attempt"))
