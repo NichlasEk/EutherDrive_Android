@@ -42,29 +42,44 @@ internal static class DmaChecks
         using var writer = new BinaryWriter(state);
         int cases = 0;
         var timer = Stopwatch.StartNew();
-        foreach (bool read in new[] { true, false })
-        foreach (uint bank in new[] { 0u, 0x1000u })
-        foreach (uint start in new[] { 0u, 0x3f8u, 0xffbu })
-        foreach (uint dram in new[] { 0x1003u, 0x7ffff8u, 0xfffff9u })
-        foreach (uint length in new[] { 0u, 0xfffu, 0x01703017u })
+        foreach (bool tracked in new[] { false, true })
         {
-            Reg("SP_MEM_ADDR_REG_RW", bank | start);
-            Reg("SP_DRAM_ADDR_REG_RW", dram);
-            Reg(read ? "SP_RD_LEN_REG_RW" : "SP_WR_LEN_REG_RW", length);
-            execute(read);
-            // Serialize busy state, pixels, dirty-page epochs, and register progress.
-            Record();
-            // Queue a second DMA while busy; its captured descriptors must survive.
-            Reg("SP_MEM_ADDR_REG_RW", bank | 0xff8u);
-            Reg("SP_DRAM_ADDR_REG_RW", 0x7ffff8u);
-            Reg(read ? "SP_RD_LEN_REG_RW" : "SP_WR_LEN_REG_RW", 0x0100201fu);
-            execute(read);
-            Record();
-            tick(0x100000);
-            Record();
-            tick(0x100000);
-            Record();
-            cases++;
+            if (tracked)
+            {
+                var register = type.GetMethod("RegisterFramebufferInfo", Private)!
+                    .CreateDelegate<Action<uint, uint, uint, uint>>(memory);
+                // Different overlap endpoints must retain their own last byte's
+                // epoch, including at RAM wrap and across a page boundary.
+                register(0x1ff0, 1, 32, 1);
+                register(0x2000, 1, 256, 1);
+                register(0x7ffff0, 1, 16, 1);
+            }
+            foreach (bool read in new[] { true, false })
+            foreach (uint bank in new[] { 0u, 0x1000u })
+            foreach (uint start in new[] { 0u, 0x3f8u, 0xffbu })
+            foreach (uint dram in new[] { 0x1003u, 0x7ffff8u, 0xfffff9u })
+            foreach (uint length in new[] { 0u, 0xfffu, 0x01703017u })
+            {
+                if (tracked)
+                    type.GetField("_rdramWriteEpoch", Private)!.SetValue(memory, uint.MaxValue - 15);
+                Reg("SP_MEM_ADDR_REG_RW", bank | start);
+                Reg("SP_DRAM_ADDR_REG_RW", dram);
+                Reg(read ? "SP_RD_LEN_REG_RW" : "SP_WR_LEN_REG_RW", length);
+                execute(read);
+                // Serialize busy state, pixels, dirty-page epochs, and register progress.
+                Record();
+                // Queue a second DMA while busy; its captured descriptors must survive.
+                Reg("SP_MEM_ADDR_REG_RW", bank | 0xff8u);
+                Reg("SP_DRAM_ADDR_REG_RW", 0x7ffff8u);
+                Reg(read ? "SP_RD_LEN_REG_RW" : "SP_WR_LEN_REG_RW", 0x0100201fu);
+                execute(read);
+                Record();
+                tick(0x100000);
+                Record();
+                tick(0x100000);
+                Record();
+                cases++;
+            }
         }
         Console.WriteLine($"dmaCases={cases} milliseconds={timer.Elapsed.TotalMilliseconds:F2}");
         return Convert.ToHexString(hash.GetHashAndReset());

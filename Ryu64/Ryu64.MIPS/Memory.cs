@@ -8120,16 +8120,53 @@ namespace Ryu64.MIPS
                 else
                 {
                     Buffer.BlockCopy(SP_MEM_RW, (int)(memBank | memAddr), RDRAM, (int)rdAddress, chunk);
-                    // Preserve the existing per-byte write epochs as well as dirty
-                    // framebuffer pages; consumers use these for buffer selection.
-                    for (uint i = 0; i < (uint)chunk; i++)
-                        NoteRdramWriteRange(rdAddress + i, 1);
+                    NoteSpDmaWriteRange(rdAddress, (uint)chunk);
                 }
                 remaining -= chunk;
                 memAddr = (memAddr + (uint)chunk) & 0x0FFFu;
                 dramAddr += (uint)chunk;
             }
             return true;
+        }
+
+        private void NoteSpDmaWriteRange(uint address, uint length)
+        {
+#if N64_RDP_JOURNAL
+            // Retain the journal's original byte-granular records.
+            for (uint i = 0; i < length; i++)
+                NoteRdramWriteRange(address + i, 1);
+#else
+            // The contiguous chunk has already been copied, with no device work
+            // between its bytes. Preserve every observable final byte-write epoch
+            // while notifying GPU ownership only once for the whole chunk.
+            uint firstEpoch = _rdramWriteEpoch;
+            uint end = address + length - 1;
+            _rdramWriteEpoch = unchecked(firstEpoch + length);
+            for (uint page = address / RdramPageSize; page <= end / RdramPageSize; page++)
+            {
+                uint lastByte = Math.Min(end, (page + 1) * RdramPageSize - 1);
+                _rdramPageLastWriteEpoch[page] = unchecked(firstEpoch + lastByte - address + 1);
+            }
+#if N64_LIVE_GPU
+            GpuExternalWrite(address, length);
+#endif
+            if (_fbInfos[0].Addr == 0)
+                return;
+            for (int i = 0; i < _fbInfos.Length; i++)
+            {
+                ref TrackedFramebufferInfo info = ref _fbInfos[i];
+                uint size = GetFramebufferBufferSize(info);
+                if (size == 0)
+                    continue;
+                uint fbEnd = info.Addr + size - 1;
+                if (address > fbEnd || end < info.Addr)
+                    continue;
+                uint overlapBegin = Math.Max(address, info.Addr);
+                uint overlapEnd = Math.Min(end, fbEnd);
+                info.WriteEpoch = unchecked(firstEpoch + overlapEnd - address + 1);
+                MarkFramebufferPagesDirty(overlapBegin, overlapEnd - overlapBegin + 1);
+            }
+#endif
         }
 
         private byte ReadSpMemoryByte(uint spAddress)
