@@ -1,0 +1,229 @@
+diff --git a/Ryu64/Ryu64.MIPS/Memory.cs b/Ryu64/Ryu64.MIPS/Memory.cs
+index b97a6b7d..203108b8 100644
+--- a/Ryu64/Ryu64.MIPS/Memory.cs
++++ b/Ryu64/Ryu64.MIPS/Memory.cs
+@@ -23,6 +23,7 @@ namespace Ryu64.MIPS
+         // Diagnostic capture at the exact ExecuteSlice boundary. No guest
+         // scheduling can run between these two callbacks.
+         public Action<bool, bool, uint, uint, string> PerfRspSliceCapture;
++        public long PerfRspDmaPollingInstructions => _rspInterpreter.DmaPollingInstructions;
+ #endif
+
+         public short[] DequeueAudio(out uint sampleRate)
+@@ -8837,6 +8838,16 @@ namespace Ryu64.MIPS
+         internal bool RspLifecyclePending => _spDmaDelayArmed || _rspTaskActive
+             || _rspInterruptDelayArmed || _dpInterruptDelayArmed;
+
++        internal uint GetRspDmaPollingBudget()
++        {
++            if (!_spDmaDelayArmed || _spDmaDelayRemaining <= 1 || _rspTaskActive
++                || _rspInterruptDelayArmed || _dpInterruptDelayArmed
++                || TraceN64Io || IsTraceN64SpDmaEnabled())
++                return 0;
++            // Stop strictly before completion: queued DMA can replace IMEM.
++            return _spDmaDelayRemaining - 1;
++        }
++
+         internal bool IsRspDmaDelayArmed()
+         {
+             return _spDmaDelayArmed;
+diff --git a/Ryu64/Ryu64.MIPS/RspBlockJit.cs b/Ryu64/Ryu64.MIPS/RspBlockJit.cs
+index 45863810..d9ed2cb6 100644
+--- a/Ryu64/Ryu64.MIPS/RspBlockJit.cs
++++ b/Ryu64/Ryu64.MIPS/RspBlockJit.cs
+@@ -83,12 +83,13 @@ namespace Ryu64.MIPS
+             // Without pending lifecycle work, neither code nor MMIO can change.
+             if (_blockJitUnavailable || _memory.RspLifecyclePending)
+             {
++                int polled = _blockJitUnavailable ? 0 : TryAdvanceDmaPolling(budget, stagnantLimit);
+ #if N64_RSP_PROFILE
+                 _profileLifecycleSkips++;
+                 _profileLifecycleMasks[_memory.RspLifecycleProfileMask]++;
+                 _profileBlockTicks += Stopwatch.GetTimestamp() - blockStart;
+ #endif
+-                return 0;
++                return polled;
+             }
+             uint pc = _pc & 0xffc;
+             int slot = (int)(pc >> 2);
+diff --git a/tools/N64Probe/RspBlockChecks.cs b/tools/N64Probe/RspBlockChecks.cs
+index e1c57b62..a82fed53 100644
+--- a/tools/N64Probe/RspBlockChecks.cs
++++ b/tools/N64Probe/RspBlockChecks.cs
+@@ -11,6 +11,11 @@ internal static class RspBlockChecks
+
+     internal static void Run(string reference)
+     {
++        if (Environment.GetEnvironmentVariable("N64_PROBE_DMA_POLLING") == "1")
++        {
++            RspDmaPollingChecks.Run(reference);
++            return;
++        }
+         if (Environment.GetEnvironmentVariable("N64_PROBE_LONG_RSP_LOOPS") == "1")
+         {
+             CheckLongLoops(reference);
+diff --git a/tools/N64Probe/Sm64Benchmark.cs b/tools/N64Probe/Sm64Benchmark.cs
+index 745e38e3..86bc0461 100644
+--- a/tools/N64Probe/Sm64Benchmark.cs
++++ b/tools/N64Probe/Sm64Benchmark.cs
+@@ -136,6 +136,7 @@ internal static class Sm64Benchmark
+                 .Select(p => new { pc = p.Key.ToString("x8"), counts = p.Value }), new JsonSerializerOptions { WriteIndented = true }));
+ #endif
+         Console.WriteLine(core.LastPerformanceStatus);
++        Console.WriteLine($"rspDmaPollingInstructions={memory.PerfRspDmaPollingInstructions}");
+ #if N64_RSP_PROFILE
+         string rspProfile = memory.GetRspBlockProfile();
+         File.WriteAllText(Path.Combine(output, "rsp-profile.txt"), rspProfile);
+diff --git a/Ryu64/Ryu64.MIPS/RspDmaPolling.cs b/Ryu64/Ryu64.MIPS/RspDmaPolling.cs
+new file mode 100644
+--- /dev/null
++++ b/Ryu64/Ryu64.MIPS/RspDmaPolling.cs
+@@ -0,0 +1,62 @@
++using System;
++
++namespace Ryu64.MIPS
++{
++    internal sealed partial class RspInterpreter
++    {
++        [NonSerialized] private long _dmaPollingInstructions;
++        internal long DmaPollingInstructions => _dmaPollingInstructions;
++        private int TryAdvanceDmaPolling(uint budget, uint stagnantLimit)
++        {
++            // MFC0 DMA_BUSY; BNE rt,r0,-2; NOP. No status-delay-slot shortcut,
++            // other CP0 register, side effect, or crossed device deadline.
++            uint limit = Math.Min(Math.Min(budget, 256u), _memory.GetRspDmaPollingBudget());
++            if (limit < 3 || stagnantLimit <= 1 || _stagnantInstructionCount >= stagnantLimit - 1)
++                return 0;
++            uint pc = _pc & 0xffc;
++            if (pc > 0xff4) return 0;
++            uint read = _memory.ReadSpImemWord(pc);
++            uint rt = (read >> 16) & 31;
++            if (rt == 0 || (read & 0xffe0ffffu) != 0x40003000u)
++                return 0;
++            uint branch = _memory.ReadSpImemWord(pc + 4);
++            if (branch != (0x1400fffeu | (rt << 21)) || _memory.ReadSpImemWord(pc + 8) != 0)
++                return 0;
++            uint busy = _memory.ReadRspCp0(6);
++            if (busy == 0) return 0;
++
++            uint count = limit / 3 * 3;
++            WriteGpr(rt, busy);
++            _gpr[0] = 0;
++            _memory.TickRspInterpreter(count);
++            // After the first read, only the countdown changes. For fixed
++            // registers the FNV folding is bijective in that countdown, so
++            // each following instruction necessarily resets stagnation.
++            // The initial guard also leaves room for a first-read collision.
++            _lastProgressSignature = ComputeProgressSignature(true);
++            _progressRegistersDirty = false;
++            _stagnantInstructionCount = 0;
++
++            int index = _recentIndex;
++            for (uint i = count > RecentInstructionCount ? count - RecentInstructionCount : 0; i < count; i++)
++            {
++                uint offset = i % 3;
++                int slot = (index + (int)i) & (RecentInstructionCount - 1);
++                _recentPcs[slot] = pc + offset * 4;
++                _recentInstrs[slot] = offset == 0 ? read : offset == 1 ? branch : 0;
++            }
++            _recentIndex = (index + (int)count) & (RecentInstructionCount - 1);
++            _lastPc = pc + 8;
++            _lastInstr = 0;
++            _samePcRunLength = 0;
++            _pc = pc;
++            _branchPending = false;
++            _branchTarget = pc;
++            _skipNextInstruction = false;
++            _memory.SetActiveRspTracePc(pc + 8);
++            _memory.ClearActiveRspTracePc();
++            _dmaPollingInstructions += count;
++            return (int)count;
++        }
++    }
++}
+diff --git a/tools/N64Probe/RspDmaPollingChecks.cs b/tools/N64Probe/RspDmaPollingChecks.cs
+new file mode 100644
+--- /dev/null
++++ b/tools/N64Probe/RspDmaPollingChecks.cs
+@@ -0,0 +1,81 @@
++using System.Buffers.Binary;
++using System.Reflection;
++using System.Runtime.Loader;
++using System.Security.Cryptography;
++using Ryu64.MIPS;
++
++internal static class RspDmaPollingChecks
++{
++    private const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
++    private delegate bool Slice(out uint instructions, out string reason, bool resume, uint budget);
++
++    internal static void Run(string reference)
++    {
++        Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_TASK_MAX_INSTRUCTIONS", "4096");
++        string actual = Check(typeof(Memory).Assembly, true);
++        string? previous = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT");
++        var context = new AssemblyLoadContext("reference-dma-polling", true);
++        try
++        {
++            Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT", "0");
++            string expected = Check(context.LoadFromAssemblyPath(Path.GetFullPath(reference)), false);
++            if (actual != expected) throw new Exception($"DMA polling differs: {actual}/{expected}");
++        }
++        finally
++        {
++            Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT", previous);
++            context.Unload();
++        }
++        Console.WriteLine($"rspDmaPolling=passed checkpoints=756 sha256={actual}");
++    }
++
++    private static string Check(Assembly assembly, bool requirePolling)
++    {
++        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
++        Type memoryType = assembly.GetType("Ryu64.MIPS.Memory")!;
++        long accelerated = 0;
++        foreach (uint rt in new uint[] { 0, 1, 8 })
++        foreach (uint remaining in new uint[] { 1, 3, 4, 8, 17, 257, 513 })
++        foreach (uint budget in new uint[] { 0, 1, 2, 3, 4, 16, 31, 255, 257 })
++        foreach (bool queued in new[] { false, true })
++        {
++            object memory = Activator.CreateInstance(memoryType, new object[] { new byte[4096] })!;
++            assembly.GetType("Ryu64.MIPS.R4300")!.GetField("memory")!.SetValue(null, memory);
++            object rsp = memoryType.GetField("_rspInterpreter", Private)!.GetValue(memory)!;
++            var taskField = memoryType.GetField("_activeRspTask", Private)!;
++            object task = Activator.CreateInstance(taskField.FieldType)!;
++            taskField.FieldType.GetField("Type")!.SetValue(task, 1u);
++            taskField.SetValue(memory, task);
++            memoryType.GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);
++            var cp0 = memoryType.GetMethod("WriteRspCp0", Private)!.CreateDelegate<Action<int, uint>>(memory);
++            cp0(0, 0x800); cp0(1, 0x200); cp0(2, 4095);
++            memoryType.GetField("_spDmaDelayRemaining", Private)!.SetValue(memory, remaining);
++            if (queued)
++            {
++                // Completion replaces the poll's first two IMEM words with
++                // NOPs. The shortcut must leave this boundary to ordinary work.
++                cp0(0, 0x1000); cp0(1, 0x400); cp0(2, 7);
++            }
++            byte[] sp = (byte[])memoryType.GetField("SP_MEM_RW")!.GetValue(memory)!;
++            uint[] program = { 0x40003000u | (rt << 16), 0x1400fffeu | (rt << 21), 0, 0x24420001, 0x0000000d };
++            for (int i = 0; i < program.Length; i++)
++                BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + i * 4), program[i]);
++            var execute = rsp.GetType().GetMethod("ExecuteSlice", Private)!.CreateDelegate<Slice>(rsp);
++            var save = memoryType.GetMethod("SaveState")!.CreateDelegate<Action<BinaryWriter>>(memory);
++            for (int phase = 0; phase < 2; phase++)
++            {
++                bool complete = execute(out uint instructions, out string reason, phase != 0, phase == 0 ? budget : 7u);
++                using var stream = new MemoryStream();
++                using var writer = new BinaryWriter(stream);
++                save(writer);
++                writer.Write(RspTaskCapture.SaveRegisters(rsp, includeScratch: false));
++                writer.Write(complete); writer.Write(instructions); writer.Write(reason); writer.Flush();
++                hash.AppendData(stream.GetBuffer(), 0, (int)stream.Length);
++            }
++            accelerated += (long)(rsp.GetType().GetField("_dmaPollingInstructions", Private)?.GetValue(rsp) ?? 0L);
++        }
++        if (requirePolling && accelerated == 0) throw new Exception("DMA polling shortcut was not exercised");
++        Console.WriteLine($"dmaPollingInstructions={accelerated}");
++        return Convert.ToHexString(hash.GetHashAndReset());
++    }
++}
