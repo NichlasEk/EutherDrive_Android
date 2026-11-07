@@ -102,6 +102,10 @@ def main():
     args.output.mkdir(parents=True, exist_ok=False)
     env = dict(os.environ, PARALLEL_RDP_SMALL_TYPES="1", PARALLEL_RDP_FORCE_SYNC_SHADER="1",
                GRANITE_NUM_WORKER_THREADS="2", GRANITE_VULKAN_NO_VALIDATION="1")
+    # Match the desktop launcher even when invoked from a fresh shell. Keep
+    # explicit overrides so either GPU scheduling path can still be compared.
+    env.setdefault("PARALLEL_RDP_SINGLE_THREADED_COMMAND", "1")
+    env.setdefault("EUTHERDRIVE_N64_GPU_OVERLAP", "1")
     env.pop("EUTHERDRIVE_N64_GPU_AUDIT", None)
     env.pop("EUTHERDRIVE_N64_GPU_VALIDATE", None)
     env.pop("EUTHERDRIVE_N64_GPU_LIBRARY", None)

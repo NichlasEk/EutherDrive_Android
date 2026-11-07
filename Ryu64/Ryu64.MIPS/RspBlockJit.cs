@@ -19,6 +19,10 @@ namespace Ryu64.MIPS
         // normal progress path until a repeatable multi-game win is measured.
         private static readonly bool FastProgressEnabled =
             Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_FAST_PROGRESS") == "1";
+        // Constant PC/opcode stores avoid EndBlock's loop and word-array loads.
+        // Exact histories and full GPU replays match; retain the old path for bisects.
+        private static readonly bool InlineHistoryEnabled =
+            Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_INLINE_HISTORY") != "0";
         private const int MaxBlockInstructions = 16;
         // Per interpreter: no cross-emulator mutable compilation cache.
         [NonSerialized] private readonly Func<RspInterpreter, uint, uint, int>[] _blocks = BlockJitEnabled ? new Func<RspInterpreter, uint, uint, int>[1024] : null;
@@ -277,7 +281,8 @@ namespace Ryu64.MIPS
                 code.Add(Call(FastProgressEnabled ? nameof(AdvanceBlockProgress) : nameof(UpdateBlockProgress),
                     Expression.Constant((uint)pendingProgress)));
             }
-            code.Add(Call(nameof(EndBlock), Expression.Constant(start), Expression.Constant(words), nextPc));
+            code.Add(InlineHistoryEnabled ? CompileInlineHistory(self, start, words, nextPc)
+                : Call(nameof(EndBlock), Expression.Constant(start), Expression.Constant(words), nextPc));
             guards.Insert(0, Expression.IfThen(Expression.OrElse(
                 Expression.LessThan(budget, Expression.Constant((uint)count)),
                 Expression.OrElse(Expression.LessThan(limit, Expression.Constant((uint)count)),
@@ -371,6 +376,49 @@ namespace Ryu64.MIPS
             if (op != 3) return branch;
             return Expression.Block(Expression.Call(self, typeof(RspInterpreter).GetMethod("WriteGpr", BindingFlags.Instance | BindingFlags.NonPublic),
                 Expression.Constant(31u), Expression.Constant((pc + 8) & 0xffc)), branch);
+        }
+
+        private static Expression CompileInlineHistory(ParameterExpression self, uint start, uint[] words, Expression nextPc)
+        {
+            // Every guard runs before the block. No partial execution or CP0
+            // observer can see the history until these exact stores complete.
+            var index = Expression.Variable(typeof(int), "historyIndex");
+            var slot = Expression.Variable(typeof(int), "historySlot");
+            var pcs = Expression.Variable(typeof(uint[]), "historyPcs");
+            var ops = Expression.Variable(typeof(uint[]), "historyOps");
+            var locals = new List<ParameterExpression> { index, slot, pcs, ops };
+            var code = new List<Expression>();
+#if N64_RSP_PROFILE
+            var profileStart = Expression.Variable(typeof(long), "historyProfileStart");
+            locals.Add(profileStart);
+            var timestamp = typeof(Stopwatch).GetMethod(nameof(Stopwatch.GetTimestamp));
+            code.Add(Expression.Assign(profileStart, Expression.Call(timestamp)));
+#endif
+            code.Add(Expression.Assign(index, Expression.Field(self, "_recentIndex")));
+            code.Add(Expression.Assign(pcs, Expression.Field(self, "_recentPcs")));
+            code.Add(Expression.Assign(ops, Expression.Field(self, "_recentInstrs")));
+            for (int i = 0; i < words.Length; i++)
+            {
+                code.Add(Expression.Assign(slot, Expression.And(Expression.Add(index, Expression.Constant(i)),
+                    Expression.Constant(RecentInstructionCount - 1))));
+                code.Add(Expression.Assign(Expression.ArrayAccess(pcs, slot), Expression.Constant(start + (uint)i * 4)));
+                code.Add(Expression.Assign(Expression.ArrayAccess(ops, slot), Expression.Constant(words[i])));
+            }
+            code.Add(Expression.Assign(Expression.Field(self, "_recentIndex"),
+                Expression.And(Expression.Add(index, Expression.Constant(words.Length)), Expression.Constant(RecentInstructionCount - 1))));
+            uint lastPc = start + (uint)(words.Length - 1) * 4;
+            var memory = Expression.Field(self, "_memory");
+            code.Add(Expression.Call(memory, typeof(Memory).GetMethod("SetActiveRspTracePc", BindingFlags.Instance | BindingFlags.NonPublic), Expression.Constant(lastPc)));
+            code.Add(Expression.Call(memory, typeof(Memory).GetMethod("ClearActiveRspTracePc", BindingFlags.Instance | BindingFlags.NonPublic)));
+            code.Add(Expression.Assign(Expression.Field(self, "_lastPc"), Expression.Constant(lastPc)));
+            code.Add(Expression.Assign(Expression.Field(self, "_lastInstr"), Expression.Constant(words[words.Length - 1])));
+            code.Add(Expression.Assign(Expression.Field(self, "_samePcRunLength"), Expression.Constant(0u)));
+            code.Add(Expression.Assign(Expression.Field(self, "_pc"), nextPc));
+#if N64_RSP_PROFILE
+            code.Add(Expression.AddAssign(Expression.Field(self, "_profileEndTicks"), Expression.Subtract(Expression.Call(timestamp), profileStart)));
+#endif
+            code.Add(Expression.Empty());
+            return Expression.Block(locals, code);
         }
 
         private void EndBlock(uint start, uint[] words, uint nextPc)
