@@ -82,8 +82,8 @@ def main():
         with (args.output / (name + ".log")).open("w") as log:
             subprocess.run(command,
                            env=run_env, stdout=log, stderr=subprocess.STDOUT, check=True)
-        if (output / "jit-profile.json").exists():
-            raise RuntimeError("Instrumented JIT profile cannot be used as a timing sample")
+        if (output / "jit-profile.json").exists() or (output / "rsp-profile.txt").exists():
+            raise RuntimeError("Instrumented CPU/RSP profile cannot be used as a timing sample")
         points = json.loads((output / "checkpoints.json").read_text())
         state = [{key: point[key] for key in invariant} for point in points]
         state.append({"finalRamSha256": hashlib.sha256((output / "rdram.bin").read_bytes()).hexdigest()})

@@ -136,6 +136,11 @@ internal static class Sm64Benchmark
                 .Select(p => new { pc = p.Key.ToString("x8"), counts = p.Value }), new JsonSerializerOptions { WriteIndented = true }));
 #endif
         Console.WriteLine(core.LastPerformanceStatus);
+#if N64_RSP_PROFILE
+        string rspProfile = memory.GetRspBlockProfile();
+        File.WriteAllText(Path.Combine(output, "rsp-profile.txt"), rspProfile);
+        Console.WriteLine("rspBlockProfile=" + rspProfile);
+#endif
         Console.WriteLine($"sm64Benchmark=passed cycles={core.GetCycleCounter()} reads={reads} enteredGame={enteredGame} " +
             $"ramSha256={Convert.ToHexString(SHA256.HashData(memory.RDRAM))} audioSha256={Convert.ToHexString(audioHash.GetCurrentHash())} " +
             $"inputSha256={Convert.ToHexString(inputHash.GetCurrentHash())}");

@@ -20,8 +20,7 @@ internal static class RspBlockChecks
             throw new Exception("Remove EUTHERDRIVE_N64_RSP_BLOCK_JIT=0 for this check.");
         Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_TASK_MAX_INSTRUCTIONS", "61");
         string actual = Check(typeof(Memory).Assembly, true);
-        string sliced = CheckSlicedProgress(typeof(Memory).Assembly);
-        string exits = CheckSliceExits(typeof(Memory).Assembly);
+        string sliced, exits, deadlines;
         var context = new AssemblyLoadContext("reference-blocks", true);
         string previousBlocks = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT");
         try
@@ -32,10 +31,17 @@ internal static class RspBlockChecks
             var referenceAssembly = context.LoadFromAssemblyPath(Path.GetFullPath(reference));
             string expected = Check(referenceAssembly, false);
             if (actual != expected) throw new Exception($"Block execution differs: {actual}/{expected}");
+            Console.WriteLine("rspBlockPrograms=passed; checking sliced progress");
+            sliced = CheckSlicedProgress(typeof(Memory).Assembly);
             if (sliced != CheckSlicedProgress(referenceAssembly))
                 throw new Exception("RSP progress/history differs across CPU writes, DMA or slice boundaries");
+            Console.WriteLine("rspSlicedProgress=passed; checking exits and deadlines");
+            exits = CheckSliceExits(typeof(Memory).Assembly);
             if (exits != CheckSliceExits(referenceAssembly))
                 throw new Exception("RSP exit count/state differs across budget, BREAK, invalid opcode or watchdog exits");
+            deadlines = CheckProgressDeadlines(typeof(Memory).Assembly);
+            if (deadlines != CheckProgressDeadlines(referenceAssembly))
+                throw new Exception("RSP progress differs across DMA/task/interrupt deadlines");
         }
         finally
         {
@@ -43,9 +49,58 @@ internal static class RspBlockChecks
             context.Unload();
         }
         Console.WriteLine($"rspBlockCases=96 sha256={actual} differential=passed");
-        Console.WriteLine($"rspProgressSlices=768 sha256={sliced} differential=passed");
+        Console.WriteLine($"rspProgressSlices=1024 sha256={sliced} differential=passed");
         Console.WriteLine($"rspSliceExits=126 sha256={exits} differential=passed");
+        Console.WriteLine($"rspProgressDeadlines=192 sha256={deadlines} differential=passed");
         CheckLoopDispatch();
+    }
+
+    private static string CheckProgressDeadlines(Assembly assembly)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        Type memoryType = assembly.GetType("Ryu64.MIPS.Memory")!;
+        var events = new[] {
+            ("_spDmaDelayArmed", "_spDmaDelayRemaining"),
+            ("_rspTaskActive", "_rspTaskCyclesRemaining"),
+            ("_rspInterruptDelayArmed", "_rspInterruptDelayRemaining"),
+            ("_dpInterruptDelayArmed", "_dpInterruptDelayRemaining")
+        };
+        foreach (bool validTask in new[] { false, true })
+        foreach (var pending in events)
+        foreach (uint deadline in new uint[] { 3, 17 })
+        foreach (uint budget in new uint[] { 1, 7, 31 })
+        {
+            object memory = Activator.CreateInstance(memoryType, new object[] { new byte[4096] })!;
+            assembly.GetType("Ryu64.MIPS.R4300")!.GetField("memory")!.SetValue(null, memory);
+            object rsp = memoryType.GetField("_rspInterpreter", Private)!.GetValue(memory)!;
+            if (validTask)
+            {
+                var field = memoryType.GetField("_activeRspTask", Private)!;
+                object task = Activator.CreateInstance(field.FieldType)!;
+                field.FieldType.GetField("Type")!.SetValue(task, 1u);
+                field.SetValue(memory, task);
+            }
+            memoryType.GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);
+            memoryType.GetField(pending.Item1, Private)!.SetValue(memory, true);
+            memoryType.GetField(pending.Item2, Private)!.SetValue(memory, deadline);
+            byte[] sp = (byte[])memoryType.GetField("SP_MEM_RW")!.GetValue(memory)!;
+            uint[] program = { 0x24210001, 0x08000000, 0 }; // tracked r1, branch, delay
+            for (int i = 0; i < program.Length; i++)
+                BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + i * 4), program[i]);
+            var execute = rsp.GetType().GetMethod("ExecuteSlice", Private)!.CreateDelegate<ExecuteSlice>(rsp);
+            var save = memoryType.GetMethod("SaveState")!.CreateDelegate<Action<BinaryWriter>>(memory);
+            for (int phase = 0; phase < 4; phase++)
+            {
+                bool complete = execute(out uint instructions, out string reason, phase != 0, budget);
+                using var stream = new MemoryStream();
+                using var writer = new BinaryWriter(stream);
+                save(writer);
+                writer.Write(RspTaskCapture.SaveRegisters(rsp, includeScratch: false));
+                writer.Write(complete); writer.Write(instructions); writer.Write(reason); writer.Flush();
+                hash.AppendData(stream.GetBuffer(), 0, (int)stream.Length);
+            }
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     private static void CheckLoopDispatch()
@@ -217,7 +272,7 @@ internal static class RspBlockChecks
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream);
         foreach (bool validTask in new[] { false, true })
-        foreach (int variant in new[] { 0, 1, 2 })
+        foreach (int variant in new[] { 0, 1, 2, 3 })
         foreach (uint budget in new uint[] { 1, 2, 3, 7, 15, 16, 17, 31 })
         {
             Type memoryType = assembly.GetType("Ryu64.MIPS.Memory")!;
@@ -237,8 +292,8 @@ internal static class RspBlockChecks
             memoryType.GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);
             byte[] sp = (byte[])memoryType.GetField("SP_MEM_RW")!.GetValue(memory)!;
             uint[] gpr = (uint[])rspType.GetField("_gpr", Private)!.GetValue(rsp)!;
-            gpr[3] = 0x400; gpr[4] = 0x200; gpr[5] = 15;
-            bool dmaProgram = variant == 1;
+            gpr[3] = 0x400; gpr[4] = 0x200; gpr[5] = variant == 3 ? 4095u : 15u;
+            bool dmaProgram = variant == 1 || variant == 3;
             uint[] program = {
                 0x24210001, 0x34300000, 0x34310000, 0x24420001,
                 dmaProgram ? 0x40830000u : 0u, // SP_MEM_ADDR

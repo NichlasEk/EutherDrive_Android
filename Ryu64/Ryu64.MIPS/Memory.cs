@@ -831,6 +831,8 @@ namespace Ryu64.MIPS
         private bool _dpCompletionPending;
         private RspTask _activeRspTask;
         private readonly RspInterpreter _rspInterpreter;
+        [NonSerialized] private ulong _rspProgressMemoryPrefix;
+        [NonSerialized] private bool _rspProgressMemoryPrefixValid;
         private uint _rdpColorImageAddress;
         private uint _rdpColorImageWidth;
         private uint _rdpColorImageSize;
@@ -7067,6 +7069,7 @@ namespace Ryu64.MIPS
                     _spDmaDelayRemaining = 0;
                     _spDmaDelayArmed = false;
                     FinalizeSpDma();
+                    InvalidateRspProgressMemoryPrefix();
                 }
                 else
                 {
@@ -7087,6 +7090,7 @@ namespace Ryu64.MIPS
                         WriteBigEndianWord(SP_STATUS_REG_R, status);
                     }
                     else CompleteRspTask();
+                    InvalidateRspProgressMemoryPrefix();
                 }
                 else
                 {
@@ -7101,6 +7105,7 @@ namespace Ryu64.MIPS
                     _rspInterruptDelayRemaining = 0;
                     _rspInterruptDelayArmed = false;
                     FinalizeRspInterrupt();
+                    InvalidateRspProgressMemoryPrefix();
                 }
                 else
                 {
@@ -7115,6 +7120,7 @@ namespace Ryu64.MIPS
                     _dpInterruptDelayRemaining = 0;
                     _dpInterruptDelayArmed = false;
                     FinalizeDpInterrupt();
+                    InvalidateRspProgressMemoryPrefix();
                 }
                 else
                 {
@@ -8846,7 +8852,26 @@ namespace Ryu64.MIPS
             return _spQueuedDmaValid;
         }
 
+        internal void InvalidateRspProgressMemoryPrefix() => _rspProgressMemoryPrefixValid = false;
+
+        internal ulong GetCachedRspProgressSignature()
+        {
+            // Register bytes stay fixed between CP0 operations and completed
+            // lifecycle events. Keep DMA countdown/armed/queue fields live at
+            // every observation. The cache belongs to Memory, so all RSP
+            // executors using this memory observe the same invalidations.
+            if (!_rspProgressMemoryPrefixValid)
+            {
+                _rspProgressMemoryPrefix = GetRspProgressRegisterSignature();
+                _rspProgressMemoryPrefixValid = true;
+            }
+            return CompleteRspProgressSignature(_rspProgressMemoryPrefix);
+        }
+
         internal ulong GetRspProgressSignature()
+            => CompleteRspProgressSignature(GetRspProgressRegisterSignature());
+
+        internal ulong GetRspProgressRegisterSignature()
         {
             ulong signature = ReadBigEndianWord(SP_MEM_ADDR_REG_RW);
             signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_DRAM_ADDR_REG_RW);
@@ -8855,12 +8880,19 @@ namespace Ryu64.MIPS
             signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_STATUS_REG_R);
             signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_DMA_FULL_REG_R);
             signature = (signature * 1099511628211ul) ^ ReadBigEndianWord(SP_DMA_BUSY_REG_R);
+            return signature;
+        }
+
+        internal ulong CompleteRspProgressSignature(ulong signature)
+        {
             signature = (signature * 1099511628211ul) ^ (_spDmaDelayArmed ? 1ul : 0ul);
             signature = (signature * 1099511628211ul) ^ _spDmaDelayRemaining;
             signature = (signature * 1099511628211ul) ^ (_spQueuedDmaValid ? 1ul : 0ul);
             return signature;
         }
 #if N64_RSP_PROFILE
+        internal int RspLifecycleProfileMask => (_spDmaDelayArmed ? 1 : 0)
+            | (_rspTaskActive ? 2 : 0) | (_rspInterruptDelayArmed ? 4 : 0) | (_dpInterruptDelayArmed ? 8 : 0);
         public string GetRspBlockProfile() => _rspInterpreter.GetBlockProfile();
 #endif
 

@@ -37,6 +37,8 @@ namespace Ryu64.MIPS
         [NonSerialized] private long _profileProgressTicks;
         [NonSerialized] private long _profileProgressCalls;
         [NonSerialized] private long _profileLifecycleSkips;
+        [NonSerialized] private readonly long[] _profileLifecycleMasks = new long[16];
+        [NonSerialized] private readonly long[] _profileFallbackPrimary = new long[64];
         [NonSerialized] private long _profileNoBlockSkips;
         [NonSerialized] private long _profileGuardSkips;
         [NonSerialized] private readonly long[] _profileVectorInstructions = new long[64];
@@ -67,7 +69,8 @@ namespace Ryu64.MIPS
             $"progressMs={_profileProgressTicks * 1000.0 / Stopwatch.Frequency:F3} " +
             $"progressCalls={_profileProgressCalls} lifecycleSkips={_profileLifecycleSkips} " +
             $"noBlockSkips={_profileNoBlockSkips} guardSkips={_profileGuardSkips} compilations={_blockCompilations} " +
-            GetInstructionMixProfile();
+            GetInstructionMixProfile() + " lifecycleMasks=" + string.Join(",", _profileLifecycleMasks)
+                + " fallbackPrimary=" + string.Join(",", _profileFallbackPrimary);
 #endif
 
         private int TryExecuteBlock(uint budget, uint stagnantLimit)
@@ -82,6 +85,7 @@ namespace Ryu64.MIPS
             {
 #if N64_RSP_PROFILE
                 _profileLifecycleSkips++;
+                _profileLifecycleMasks[_memory.RspLifecycleProfileMask]++;
                 _profileBlockTicks += Stopwatch.GetTimestamp() - blockStart;
 #endif
                 return 0;

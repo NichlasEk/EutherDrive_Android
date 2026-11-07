@@ -172,6 +172,7 @@ namespace Ryu64.MIPS
             _hi = reader.ReadUInt32();
             _lo = reader.ReadUInt32();
             _stagnantInstructionCount = 0;
+            _memory.InvalidateRspProgressMemoryPrefix();
             _lastProgressSignature = ComputeProgressSignature(_memory.HasActiveRspTask());
         }
 
@@ -200,6 +201,8 @@ namespace Ryu64.MIPS
 
         internal bool ExecuteSlice(out uint executedInstructions, out string stopReason, bool resume, uint budget)
         {
+            // CPU writes and state loads may change any SP register between slices.
+            _memory.InvalidateRspProgressMemoryPrefix();
             bool hasValidTask = _memory.HasActiveRspTask();
             uint activeTaskType = _memory.GetActiveRspTaskType();
             bool enforceWatchdog = !hasValidTask;
@@ -244,6 +247,9 @@ namespace Ryu64.MIPS
 
                 uint pc = _pc & 0x0FFCu;
                 uint instr = _memory.ReadSpImemWord(pc);
+#if N64_RSP_PROFILE
+                _profileFallbackPrimary[instr >> 26]++;
+#endif
                 _recentPcs[_recentIndex] = pc;
                 _recentInstrs[_recentIndex] = instr;
                 _recentIndex = (_recentIndex + 1) & (RecentInstructionCount - 1);
@@ -275,6 +281,7 @@ namespace Ryu64.MIPS
                 // Only CP0 operations and pending lifecycle events can change
                 // the memory-side watchdog inputs during this synchronous task.
                 bool progressMemoryDirty = (instr >> 26) == 0x10 || _memory.RspLifecyclePending;
+                if ((instr >> 26) == 0x10) _memory.InvalidateRspProgressMemoryPrefix();
 
                 if (!Step(pc, instr, out stopReason))
                 {
@@ -358,7 +365,7 @@ namespace Ryu64.MIPS
 
         private ulong ComputeProgressSignature(bool hasValidTask)
         {
-            ulong signature = _memory.GetRspProgressSignature();
+            ulong signature = _memory.GetCachedRspProgressSignature();
             if (!hasValidTask)
                 return signature;
 
