@@ -10996,7 +10996,17 @@ namespace Ryu64.MIPS
 #if N64_LIVE_GPU
             GpuBeforeRead(physical, 4);
 #endif
+#if NET8_0_OR_GREATER
+            // The masked address and four-byte bounds check above cover this
+            // unaligned read. RDRAM is readonly; GPU synchronization updates its
+            // bytes in place. Read only after synchronization, including code.
+            uint native = System.Runtime.CompilerServices.Unsafe.ReadUnaligned<uint>(
+                ref System.Runtime.CompilerServices.Unsafe.Add(
+                    ref MemoryMarshal.GetArrayDataReference(RDRAM), (int)physical));
+            value = BitConverter.IsLittleEndian ? BinaryPrimitives.ReverseEndianness(native) : native;
+#else
             value = BinaryPrimitives.ReadUInt32BigEndian(RDRAM.AsSpan((int)physical, 4));
+#endif
             return true;
         }
 
