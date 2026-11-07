@@ -1,0 +1,123 @@
+diff --git a/Ryu64/Ryu64.MIPS/RspBlockJit.cs b/Ryu64/Ryu64.MIPS/RspBlockJit.cs
+index fb95eef5..194131d7 100644
+--- a/Ryu64/Ryu64.MIPS/RspBlockJit.cs
++++ b/Ryu64/Ryu64.MIPS/RspBlockJit.cs
+@@ -20,6 +20,8 @@ namespace Ryu64.MIPS
+         private static readonly bool FastProgressEnabled =
+             Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_FAST_PROGRESS") == "1";
+         private const int MaxBlockInstructions = 16;
++        private static readonly bool BlockLoopsEnabled =
++            Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_LOOPS") == "1";
+         // Per interpreter: no cross-emulator mutable compilation cache.
+         [NonSerialized] private readonly Func<RspInterpreter, uint, uint, int>[] _blocks = BlockJitEnabled ? new Func<RspInterpreter, uint, uint, int>[1024] : null;
+         [NonSerialized] private readonly uint[] _blockFirstWords = BlockJitEnabled ? new uint[1024] : null;
+@@ -44,6 +46,7 @@ namespace Ryu64.MIPS
+         [NonSerialized] private readonly long[] _profileVectorByteFast = new long[8];
+         [NonSerialized] private readonly long[] _profileVectorByteFallback = new long[8];
+         [NonSerialized] private long _profileScalarInstructions;
++        [NonSerialized] private readonly int[] _profileBlockLengths = new int[1024];
+ 
+         private string GetInstructionMixProfile()
+         {
+@@ -116,7 +119,7 @@ namespace Ryu64.MIPS
+                 // its pre-execution guard covered every word counted here.
+                 for (int i = 0; i < count; i++)
+                 {
+-                    uint instruction = _memory.ReadSpImemWord(pc + (uint)i * 4);
++                    uint instruction = _memory.ReadSpImemWord(pc + (uint)(i % _profileBlockLengths[slot]) * 4);
+                     uint opcode = instruction >> 26;
+                     if ((instruction >> 25) == 0x25)
+                         _profileVectorInstructions[(int)(instruction & 63)]++;
+@@ -153,18 +156,41 @@ namespace Ryu64.MIPS
+ 
+         private static readonly Func<RspInterpreter, uint, uint, int> NoBlock = (r, b, s) => 0;
+ 
++        private int GetBlockInstructionLimit(uint start)
++        {
++            if (!BlockLoopsEnabled) return MaxBlockInstructions;
++            // Only extend a straight-line body ending in a direct backedge to
++            // its entry. Other code keeps the established 16-instruction limit.
++            for (int i = 0; i < 63 && start + (uint)(i + 1) * 4 < 4096; i++)
++            {
++                uint word = _memory.ReadSpImemWord(start + (uint)i * 4);
++                if (IsBlockBranch(word))
++                {
++                    uint op = word >> 26;
++                    uint target = op <= 3 ? ((word & 0x03ffffff) << 2) & 0xffcu
++                        : BranchTarget(start + (uint)i * 4, unchecked((short)word));
++                    return op != 0 && target == start
++                        && IsBlockInstruction(_memory.ReadSpImemWord(start + (uint)(i + 1) * 4))
++                        ? i + 2 : MaxBlockInstructions;
++                }
++                if (!IsBlockInstruction(word)) break;
++            }
++            return MaxBlockInstructions;
++        }
++
+         private Func<RspInterpreter, uint, uint, int> CompileBlock(uint start)
+         {
+             // Overlay switches often revisit an already compiled block. Look up
+             // its complete identity before allocating any expression nodes.
+             var key = new System.Text.StringBuilder(start.ToString("x3"));
++            int blockLimit = GetBlockInstructionLimit(start);
+             int length = 0;
+-            for (; length < MaxBlockInstructions && start + length * 4 < 4096; length++)
++            for (; length < blockLimit && start + length * 4 < 4096; length++)
+             {
+                 uint word = _memory.ReadSpImemWord(start + (uint)length * 4);
+                 if (IsBlockBranch(word))
+                 {
+-                    if (length < MaxBlockInstructions - 1 && start + length * 4 + 4 < 4096)
++                    if (length < blockLimit - 1 && start + length * 4 + 4 < 4096)
+                     {
+                         uint delay = _memory.ReadSpImemWord(start + (uint)length * 4 + 4);
+                         if (IsBlockInstruction(delay))
+@@ -179,6 +205,9 @@ namespace Ryu64.MIPS
+                 key.Append(':').Append(word.ToString("x8"));
+             }
+             if (length < 2) return NoBlock;
++#if N64_RSP_PROFILE
++            _profileBlockLengths[start >> 2] = length;
++#endif
+             string identity = key.ToString();
+             if (_compiledBlocks.TryGetValue(identity, out var cached)) return cached;
+             if (_compiledBlocks.Count >= 2048) return NoBlock;
+@@ -280,8 +309,36 @@ namespace Ryu64.MIPS
+                     Expression.GreaterThanOrEqual(Expression.Field(self, "_stagnantInstructionCount"), Expression.Subtract(limit, Expression.Constant((uint)count))))),
+                 Expression.Return(done, Expression.Constant(0))));
+             code.InsertRange(0, guards);
+-            code.Add(Expression.Label(done, Expression.Constant(count)));
+-            var compiled = Expression.Lambda<Func<RspInterpreter, uint, uint, int>>(Expression.Block(new[] { nextPc }, code), self, budget, limit).Compile();
++            var locals = new List<ParameterExpression> { nextPc };
++            uint branchWord = words[length - 2];
++            uint branchOp = branchWord >> 26;
++            bool selfLoop = BlockLoopsEnabled && IsBlockBranch(branchWord) && branchOp != 0
++                && (branchOp <= 3 ? ((branchWord & 0x03ffffff) << 2) & 0xffcu
++                    : BranchTarget(start + (uint)(length - 2) * 4, unchecked((short)branchWord))) == start;
++            if (selfLoop)
++            {
++                // No admitted operation writes IMEM, touches CP0 or ticks a
++                // lifecycle event. The entry guard therefore covers repeated
++                // iterations until this bounded, synchronous call returns.
++                // Keep history and progress publication at every original block.
++                var total = Expression.Variable(typeof(int), "total");
++                var repeat = Expression.Label("repeat");
++                locals.Add(total);
++                code.Insert(guards.Count, Expression.Label(repeat));
++                code.Add(Expression.AddAssign(total, Expression.Constant(count)));
++                code.Add(Expression.IfThen(Expression.AndAlso(
++                    Expression.Equal(nextPc, Expression.Constant(start)),
++                    Expression.AndAlso(Expression.LessThanOrEqual(total, Expression.Constant(256 - count)),
++                        Expression.AndAlso(
++                            Expression.LessThanOrEqual(Expression.Convert(total, typeof(uint)),
++                                Expression.Subtract(budget, Expression.Constant((uint)count))),
++                            Expression.LessThan(Expression.Field(self, "_stagnantInstructionCount"),
++                                Expression.Subtract(limit, Expression.Constant((uint)count)))))),
++                    Expression.Goto(repeat)));
++                code.Add(Expression.Label(done, total));
++            }
++            else code.Add(Expression.Label(done, Expression.Constant(count)));
++            var compiled = Expression.Lambda<Func<RspInterpreter, uint, uint, int>>(Expression.Block(locals, code), self, budget, limit).Compile();
+             _compiledBlocks.Add(identity, compiled);
+             _blockCompilations++;
+             return compiled;

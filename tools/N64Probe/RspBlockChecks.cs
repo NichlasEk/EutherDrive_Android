@@ -11,11 +11,17 @@ internal static class RspBlockChecks
 
     internal static void Run(string reference)
     {
+        if (Environment.GetEnvironmentVariable("N64_PROBE_LONG_RSP_LOOPS") == "1")
+        {
+            CheckLongLoops(reference);
+            return;
+        }
         if (Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT") == "0")
             throw new Exception("Remove EUTHERDRIVE_N64_RSP_BLOCK_JIT=0 for this check.");
         Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_TASK_MAX_INSTRUCTIONS", "61");
         string actual = Check(typeof(Memory).Assembly, true);
         string sliced = CheckSlicedProgress(typeof(Memory).Assembly);
+        string exits = CheckSliceExits(typeof(Memory).Assembly);
         var context = new AssemblyLoadContext("reference-blocks", true);
         string previousBlocks = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT");
         try
@@ -28,6 +34,8 @@ internal static class RspBlockChecks
             if (actual != expected) throw new Exception($"Block execution differs: {actual}/{expected}");
             if (sliced != CheckSlicedProgress(referenceAssembly))
                 throw new Exception("RSP progress/history differs across CPU writes, DMA or slice boundaries");
+            if (exits != CheckSliceExits(referenceAssembly))
+                throw new Exception("RSP exit count/state differs across budget, BREAK, invalid opcode or watchdog exits");
         }
         finally
         {
@@ -36,9 +44,172 @@ internal static class RspBlockChecks
         }
         Console.WriteLine($"rspBlockCases=96 sha256={actual} differential=passed");
         Console.WriteLine($"rspProgressSlices=768 sha256={sliced} differential=passed");
+        Console.WriteLine($"rspSliceExits=126 sha256={exits} differential=passed");
+        CheckLoopDispatch();
+    }
+
+    private static void CheckLoopDispatch()
+    {
+        Type rspType = typeof(Memory).Assembly.GetType("Ryu64.MIPS.RspInterpreter")!;
+        bool loops = (bool)(rspType.GetField("BlockLoopsEnabled", BindingFlags.Static | BindingFlags.NonPublic)
+            ?.GetValue(null) ?? false);
+        foreach (uint iterations in new uint[] { 5, 1000 })
+        foreach (int length in loops ? new[] { 3, 17, 32, 64 } : new[] { 3 })
+        foreach (uint budget in new uint[] { 0, 1, 2, 3, 4, 7, 15, 16, 63, 64, 65, 127, 255, 256, 257, 511 })
+        {
+            var memory = new Memory(new byte[4096]);
+            R4300.memory = memory;
+            object rsp = typeof(Memory).GetField("_rspInterpreter", Private)!.GetValue(memory)!;
+            uint[] gpr = (uint[])rspType.GetField("_gpr", Private)!.GetValue(rsp)!;
+            gpr[1] = iterations;
+            // Count down, branch to the same block, execute its NOP delay slot.
+            uint[] words = new uint[length];
+            words[0] = 0x2421ffff;
+            words[length - 2] = 0x14200000u | unchecked((ushort)(1 - length));
+            for (int i = 0; i < words.Length; i++)
+                BinaryPrimitives.WriteUInt32BigEndian(memory.SP_MEM_RW.AsSpan(0x1000 + i * 4), words[i]);
+            var execute = rspType.GetMethod("TryExecuteBlock", Private)!.CreateDelegate<Func<uint, uint, int>>(rsp);
+            uint expected = Math.Min(iterations, Math.Min(budget, loops ? 256u : (uint)length) / (uint)length) * (uint)length;
+            int actual = execute(budget, 20_000_000);
+            if (actual != expected || gpr[1] != iterations - expected / (uint)length
+                || (uint)rspType.GetField("_pc", Private)!.GetValue(rsp)! != (gpr[1] == 0 ? (uint)length * 4 : 0u))
+                throw new Exception($"RSP loop dispatch exceeded budget or lost its branch: budget={budget} count={actual}/{expected}");
+            if (actual > 0)
+            {
+                // An interior code edit between calls must reject the old loop
+                // before executing its unchanged first instruction again.
+                rspType.GetField("_pc", Private)!.SetValue(rsp, 0u);
+                gpr[1] = 5;
+                BinaryPrimitives.WriteUInt32BigEndian(memory.SP_MEM_RW.AsSpan(0x1000 + (length - 2) * 4), 0x14200000);
+                if (execute(256, 20_000_000) != 0 || gpr[1] != 5)
+                    throw new Exception("RSP loop ran stale interior code on reentry");
+            }
+        }
+        Console.WriteLine($"rspLoopDispatch={(loops ? 128 : 32)} enabled={loops} budget=passed branch=passed codeMutation=passed");
     }
 
     private delegate bool ExecuteSlice(out uint count, out string reason, bool resume, uint budget);
+
+    private static void CheckLongLoops(string reference)
+    {
+        Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_TASK_MAX_INSTRUCTIONS", "4096");
+        string actual = LongLoopStates(typeof(Memory).Assembly);
+        string previous = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT");
+        var context = new AssemblyLoadContext("reference-long-loops", true);
+        try
+        {
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT", "0");
+            if (actual != LongLoopStates(context.LoadFromAssemblyPath(Path.GetFullPath(reference))))
+                throw new Exception("Long RSP loops differ from single-step execution");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT", previous);
+            context.Unload();
+        }
+        CheckLoopDispatch();
+        Console.WriteLine($"rspLongLoopStates=240 sha256={actual} differential=passed codeMutation=passed resume=passed");
+    }
+
+    private static string LongLoopStates(Assembly assembly)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (uint iterations in new uint[] { 5, 1000 })
+        foreach (int length in new[] { 3, 17, 32, 64 })
+        foreach (uint budget in new uint[] { 0, 1, 15, 16, 17, 31, 32, 33, 63, 64, 65, 255, 256, 257, 511 })
+        {
+            Type memoryType = assembly.GetType("Ryu64.MIPS.Memory")!;
+            object memory = Activator.CreateInstance(memoryType, new object[] { new byte[4096] })!;
+            assembly.GetType("Ryu64.MIPS.R4300")!.GetField("memory")!.SetValue(null, memory);
+            memoryType.GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);
+            var taskField = memoryType.GetField("_activeRspTask", Private)!;
+            object task = Activator.CreateInstance(taskField.FieldType)!;
+            taskField.FieldType.GetField("Type")!.SetValue(task, 1u);
+            taskField.SetValue(memory, task);
+            object rsp = memoryType.GetField("_rspInterpreter", Private)!.GetValue(memory)!;
+            Type rspType = rsp.GetType();
+            uint[] gpr = (uint[])rspType.GetField("_gpr", Private)!.GetValue(rsp)!;
+            gpr[1] = iterations;
+            byte[] sp = (byte[])memoryType.GetField("SP_MEM_RW")!.GetValue(memory)!;
+            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000), 0x2421ffff);
+            int branch = 0x1000 + (length - 2) * 4;
+            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(branch), 0x14200000u | unchecked((ushort)(1 - length)));
+            BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + length * 4), 0x0000000d);
+            var execute = rspType.GetMethod("ExecuteSlice", Private)!.CreateDelegate<ExecuteSlice>(rsp);
+            var save = memoryType.GetMethod("SaveState")!.CreateDelegate<Action<BinaryWriter>>(memory);
+            for (int phase = 0; phase < 2; phase++)
+            {
+                if (phase == 1) BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(branch), 0x14200000);
+                bool completed = execute(out uint instructions, out string reason, phase == 1, phase == 0 ? budget : 17u);
+                using var stream = new MemoryStream();
+                using var writer = new BinaryWriter(stream);
+                save(writer); writer.Write(RspTaskCapture.SaveRegisters(rsp, includeScratch: false));
+                writer.Write(completed); writer.Write(instructions); writer.Write(reason); writer.Flush();
+                hash.AppendData(stream.GetBuffer(), 0, (int)stream.Length);
+            }
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
+
+    private static string CheckSliceExits(Assembly assembly)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (bool validTask in new[] { false, true })
+        foreach (int variant in Enumerable.Range(0, 7))
+        foreach (uint budget in new uint[] { 0, 1, 2, 3, 15, 16, 17, 61, 64 })
+        {
+            Type memoryType = assembly.GetType("Ryu64.MIPS.Memory")!;
+            object memory = Activator.CreateInstance(memoryType, new object[] { new byte[4096] })!;
+            assembly.GetType("Ryu64.MIPS.R4300")!.GetField("memory")!.SetValue(null, memory);
+            object rsp = memoryType.GetField("_rspInterpreter", Private)!.GetValue(memory)!;
+            Type rspType = rsp.GetType();
+            memoryType.GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);
+            if (validTask)
+            {
+                var field = memoryType.GetField("_activeRspTask", Private)!;
+                object task = Activator.CreateInstance(field.FieldType)!;
+                field.FieldType.GetField("Type")!.SetValue(task, 1u);
+                field.SetValue(memory, task);
+            }
+            byte[] sp = (byte[])memoryType.GetField("SP_MEM_RW")!.GetValue(memory)!;
+            if (variant < 3)
+            {
+                // Immediate BREAK, BREAK after two instructions, unsupported opcode.
+                int offset = variant == 1 ? 8 : 0;
+                BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + offset),
+                    variant == 2 ? 0x70000000u : 0x0000000du);
+            }
+            // Variant 3 is a NOP stream, including the configured 61-instruction cap.
+            if (variant == 4)
+            {
+                rspType.GetField("_lastPc", Private)!.SetValue(rsp, 0u);
+                rspType.GetField("_lastInstr", Private)!.SetValue(rsp, 0u);
+                rspType.GetField("_samePcRunLength", Private)!.SetValue(rsp, 2047u);
+            }
+            if (variant == 5)
+                rspType.GetField("_stagnantInstructionCount", Private)!.SetValue(rsp,
+                    validTask ? 20_000_000u : 2_000_000u);
+            if (variant == 6)
+            {
+                // Reach the progress watchdog inside repeated blocks, including
+                // the final interpreted prefix that cannot fit a whole block.
+                BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1004), 0x08000000);
+                rspType.GetField("_stagnantInstructionCount", Private)!.SetValue(rsp,
+                    (validTask ? 20_000_000u : 2_000_000u) - 9);
+            }
+            var execute = rspType.GetMethod("ExecuteSlice", Private)!.CreateDelegate<ExecuteSlice>(rsp);
+            bool completed = execute(out uint instructions, out string reason, variant >= 4, budget);
+            if (instructions > budget || (budget == 0 && instructions != 0))
+                throw new Exception("RSP exceeded its slice budget");
+            using var stream = new MemoryStream();
+            using var writer = new BinaryWriter(stream);
+            memoryType.GetMethod("SaveState")!.CreateDelegate<Action<BinaryWriter>>(memory)(writer);
+            writer.Write(RspTaskCapture.SaveRegisters(rsp, includeScratch: false));
+            writer.Write(completed); writer.Write(instructions); writer.Write(reason); writer.Flush();
+            hash.AppendData(stream.GetBuffer(), 0, (int)stream.Length);
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
+    }
 
     private static string CheckSlicedProgress(Assembly assembly)
     {

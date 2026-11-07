@@ -53,7 +53,7 @@ def main():
             "PARALLEL_RDP_SMALL_TYPES", "PARALLEL_RDP_FORCE_SYNC_SHADER",
             "PARALLEL_RDP_SINGLE_THREADED_COMMAND", "GRANITE_NUM_WORKER_THREADS",
             "GRANITE_VULKAN_NO_VALIDATION", "EUTHERDRIVE_N64_GPU_OVERLAP",
-            "EUTHERDRIVE_N64_CPU_JIT", "EUTHERDRIVE_N64_RSP_BLOCK_JIT",
+            "EUTHERDRIVE_N64_CPU_JIT", "EUTHERDRIVE_N64_RSP_BLOCK_JIT", "EUTHERDRIVE_N64_RSP_BLOCK_LOOPS",
             "DOTNET_TieredCompilation", "DOTNET_TieredPGO")},
         variants={mode: dict(probe=str(getattr(args, mode).resolve()),
                             runtime=getattr(args, mode + "_runtime"),
