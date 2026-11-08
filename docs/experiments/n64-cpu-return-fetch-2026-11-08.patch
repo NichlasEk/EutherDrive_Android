@@ -1,0 +1,139 @@
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+index acbe7774..d67600f3 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+@@ -316,6 +316,7 @@ namespace Ryu64.MIPS
+             bool tryCompiled = true;
+             while (done < limit)
+             {
++                long nextWord;
+ #if N64_CPU_DISPATCH_PROFILE
+                 long jitStart = System.Diagnostics.Stopwatch.GetTimestamp();
+ #endif
+@@ -342,8 +343,8 @@ namespace Ryu64.MIPS
+                     pc = Registers.R4300.PC;
+                     physical = pc & 0x1fffffffu;
+                     if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
+-                        || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
+-                        || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
++                        || physical < 0x4000 || (nextWord = memory.ReadRdramInstructionPhysical(physical)) < 0
++                        || (kind = GetNextCpuBlockOpcodeKind(pc, opcode = (uint)nextWord)) < 0)
+                         break;
+                     continue;
+                 }
+@@ -359,10 +360,11 @@ namespace Ryu64.MIPS
+                 if ((kind == 17 || (uint)(kind - 32) < 32) && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
+                 bool branch = CpuJitBranch(kind);
+                 uint delayOpcode = 0;
++                long delayWord;
+                 int delayKind = -1;
+                 if (branch && (done + 2 > limit
+-                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 4, out delayOpcode)
+-                    || (delayKind = GetCpuBlockOpcodeKind(delayOpcode)) < 0
++                    || (delayWord = memory.ReadRdramInstructionPhysical(physical + 4)) < 0
++                    || (delayKind = GetCpuBlockOpcodeKind(delayOpcode = (uint)delayWord)) < 0
+                     || CpuJitBranch(delayKind)
+                     || !CanAccessCpuBlockOperand(new OpcodeTable.OpcodeDesc(delayOpcode), delayKind,
+                         kind == 3 ? 31 : kind == 73 ? desc.op3 : -1, pc + 8)))
+@@ -393,8 +395,8 @@ namespace Ryu64.MIPS
+                 pc = Registers.R4300.PC;
+                 physical = pc & 0x1fffffffu;
+                 if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
+-                    || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
+-                    || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
++                    || physical < 0x4000 || (nextWord = memory.ReadRdramInstructionPhysical(physical)) < 0
++                    || (kind = GetNextCpuBlockOpcodeKind(pc, opcode = (uint)nextWord)) < 0)
+                     break;
+ #if N64_CPU_DISPATCH_PROFILE
+                 int nextSlot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
+diff --git a/Ryu64/Ryu64.MIPS/Memory.cs b/Ryu64/Ryu64.MIPS/Memory.cs
+index b97a6b7d..f3f5ec88 100644
+--- a/Ryu64/Ryu64.MIPS/Memory.cs
++++ b/Ryu64/Ryu64.MIPS/Memory.cs
+@@ -11024,7 +11024,23 @@ namespace Ryu64.MIPS
+                 value = 0;
+                 return false;
+             }
++            value = ReadValidatedInstructionWord(physical);
++            return true;
++        }
+ 
++        // Nonnegative instruction bits, or -1 outside RAM. Unlike an out
++        // parameter, this result need not give the CPU loop's opcode a stack
++        // address. All uint opcodes, including 0xffffffff, remain valid values.
++        internal long ReadRdramInstructionPhysical(uint physical)
++        {
++            physical &= 0x1FFFFFFFu;
++            if (physical + 3u >= RDRAM.Length) return -1;
++            return ReadValidatedInstructionWord(physical);
++        }
++
++        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
++        private uint ReadValidatedInstructionWord(uint physical)
++        {
+ #if N64_LIVE_GPU
+             GpuBeforeRead(physical, 4);
+ #endif
+@@ -11035,11 +11051,10 @@ namespace Ryu64.MIPS
+             uint native = System.Runtime.CompilerServices.Unsafe.ReadUnaligned<uint>(
+                 ref System.Runtime.CompilerServices.Unsafe.Add(
+                     ref MemoryMarshal.GetArrayDataReference(RDRAM), (int)physical));
+-            value = BitConverter.IsLittleEndian ? BinaryPrimitives.ReverseEndianness(native) : native;
++            return BitConverter.IsLittleEndian ? BinaryPrimitives.ReverseEndianness(native) : native;
+ #else
+-            value = BinaryPrimitives.ReadUInt32BigEndian(RDRAM.AsSpan((int)physical, 4));
++            return BinaryPrimitives.ReadUInt32BigEndian(RDRAM.AsSpan((int)physical, 4));
+ #endif
+-            return true;
+         }
+ 
+         public void WriteUInt32(uint index, uint value)
+diff --git a/tools/N64Probe/MemoryWordAccessChecks.cs b/tools/N64Probe/MemoryWordAccessChecks.cs
+index 0d5129e1..1673295c 100644
+--- a/tools/N64Probe/MemoryWordAccessChecks.cs
++++ b/tools/N64Probe/MemoryWordAccessChecks.cs
+@@ -130,13 +130,28 @@ internal static class MemoryWordAccessChecks
+             }
+             var fast = memoryType.GetMethod("TryReadRdramUInt32PhysicalFast", BindingFlags.Instance | BindingFlags.NonPublic)!
+                 .CreateDelegate<ReadPhysical>(memory);
++            Func<uint, long> returned = memoryType.GetMethod("ReadRdramInstructionPhysical", BindingFlags.Instance | BindingFlags.NonPublic)
++                ?.CreateDelegate<Func<uint, long>>(memory)
++                ?? (address => fast(address, out uint word) ? word : -1L);
+             void Physical(uint address)
+             {
+-                writer.Write(address); writer.Write(fast(address, out uint word)); writer.Write(word); operations++;
++                bool valid = fast(address, out uint word);
++                long instruction = returned(address);
++                if (instruction != (valid ? (long)word : -1L))
++                    throw new Exception($"Returned instruction protocol differs at {address:x8}");
++                writer.Write(address); writer.Write(valid); writer.Write(word); writer.Write(instruction); operations += 2;
+             }
+             foreach (uint segment in new uint[] { 0,0x80000000,0xa0000000,0xe0000000 })
+             foreach (uint offset in new uint[] { 0,1,2,3,4,0x7ffff8,0x7ffffb,0x7ffffc,0x7ffffd,0x7ffffe,0x7fffff,0x800000,0x1fffffff })
+                 Physical(segment | offset);
++            // Distinguish signed failure (-1L) from valid high-bit opcodes,
++            // including the all-ones uint instruction.
++            foreach (uint bits in new uint[] { 0, 1, 0x7fffffff, 0x80000000, 0xfffffffe, 0xffffffff })
++            {
++                write(0x80004000, bits);
++                Physical(0x4000); Physical(0xa0004000);
++                if (returned(0x4000) != (long)bits) throw new Exception("Instruction sign extension");
++            }
+             uint sample = 6400930;
+             for (int i = 0; i < 65536; i++)
+             {
+diff --git a/tools/N64Probe/N64LiveGpuChecks.cs b/tools/N64Probe/N64LiveGpuChecks.cs
+index e2af01b8..6218a833 100644
+--- a/tools/N64Probe/N64LiveGpuChecks.cs
++++ b/tools/N64Probe/N64LiveGpuChecks.cs
+@@ -131,6 +131,10 @@ internal static class N64LiveGpuChecks
+             Read(() => memory.ReadUInt16(0x80300000), 0xff01);
+             Read(() => memory.ReadUInt32(0x80300000), 0xff01ff01);
+             Read(() => memory.ReadUInt32(0x00300000), 0xff01ff01); // Slow low-physical path.
++            var fetchInstruction = typeof(Memory).GetMethod("ReadRdramInstructionPhysical", Private)!
++                .CreateDelegate<Func<uint, long>>(memory);
++            Read(() => (ulong)fetchInstruction(0x00300000), 0xff01ff01);
++            Read(() => (ulong)fetchInstruction(0x80300000), 0xff01ff01);
+             Read(() => memory.ReadUInt64(0x80300000), 0xff01ff01ff01ff01);
+             Read(() => memory.FastMemoryRead(0x80300000, 8)[0], 0xff);
+             Read(() => {
