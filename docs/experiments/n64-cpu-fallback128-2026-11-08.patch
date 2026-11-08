@@ -1,0 +1,21 @@
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+index acbe7774..d5fe751f 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+@@ -5,6 +5,7 @@ namespace Ryu64.MIPS
+ {
+     public partial class R4300
+     {
++        private const uint CpuFallbackMaximumInstructions = 128;
+         // The dispatch key is the primary opcode, SPECIAL function + 64, or
+         // 128/129 for BLTZ/BGEZ, or 144 for MTC0 STATUS.
+         // Match the reserved bits used by OpcodeTable.
+@@ -348,7 +349,7 @@ namespace Ryu64.MIPS
+                     continue;
+                 }
+                 if (mapped) break; // No direct-address interpreter fallback for mapped PCs.
+-                if (done == 0) limit = Math.Min(limit, 32);
++                if (done == 0) limit = Math.Min(limit, CpuFallbackMaximumInstructions);
+                 tryCompiled = false;
+ #if N64_CPU_DISPATCH_PROFILE
+                 long fallbackStart = System.Diagnostics.Stopwatch.GetTimestamp();

@@ -14,6 +14,17 @@ import subprocess
 import time
 
 
+def cpu_timing(begin, end):
+    if begin.get("threadCpuSeconds") is None or end.get("threadCpuSeconds") is None:
+        return {}
+    elapsed = end["wallSeconds"] - begin["wallSeconds"]
+    cpu = end["threadCpuSeconds"] - begin["threadCpuSeconds"]
+    if cpu <= 0 or cpu > elapsed + 0.05:
+        raise RuntimeError("Invalid emulation-thread CPU clock delta")
+    return dict(threadCpuSeconds=cpu, nonCpuWallSeconds=max(0, elapsed - cpu),
+                threadCpuBusyPercent=100 * cpu / elapsed)
+
+
 def pin_candidate_threads(game, output, cpu_core, helper_cores, window_start):
     """Identify the dominant emulation thread before the measured window."""
     while True:
@@ -136,6 +147,7 @@ def main():
             "EUTHERDRIVE_N64_CPU_JIT_REGISTERS", "EUTHERDRIVE_N64_RSP_INLINE_HISTORY",
             "EUTHERDRIVE_N64_RSP_SLICE_CODE_VALIDATION", "EUTHERDRIVE_N64_RSP_FAST_PROGRESS",
             "EUTHERDRIVE_N64_RSP_FAST_VMADH",
+            "EUTHERDRIVE_N64_RSP_LAZY_PROGRESS",
             "DOTNET_TieredCompilation", "DOTNET_TieredPGO")},
         variants={mode: dict(probe=str(getattr(args, mode).resolve()),
                             runtime=getattr(args, mode + "_runtime"),
@@ -199,6 +211,11 @@ def main():
                                                       (b["wallSeconds"] - a["wallSeconds"]))
                                  for a, b in zip(points, points[1:])
                                  if args.start <= a["targetSecond"] < b["targetSecond"] <= args.end])
+        result.update(cpu_timing(begin, end))
+        for interval in result["intervals"]:
+            a = next(p for p in points if p["targetSecond"] == interval["start"])
+            b = next(p for p in points if p["targetSecond"] == interval["end"])
+            interval.update(cpu_timing(a, b))
         results.append(result)
         print(json.dumps(result), flush=True)
         (args.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
@@ -206,6 +223,11 @@ def main():
              for mode in ("reference", "candidate")}
     summary = dict(meanWallSeconds=means, throughputGainPercent=100 * (means["reference"] / means["candidate"] - 1),
                    identicalCheckpoints=len(expected) - (2 if args.state else 1), identicalFrames=len(expected_frames))
+    if all("threadCpuSeconds" in r for r in results):
+        cpu_means = {mode: statistics.mean(r["threadCpuSeconds"] for r in results if r["mode"] == mode)
+                     for mode in ("reference", "candidate")}
+        summary.update(meanThreadCpuSeconds=cpu_means,
+                       threadCpuThroughputGainPercent=100 * (cpu_means["reference"] / cpu_means["candidate"] - 1))
     (args.output / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     print(json.dumps(summary), flush=True)
 

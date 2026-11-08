@@ -1,7 +1,7 @@
 # Additional Mario Linux trials, November 8
 
 The accepted core remains the November 7 DMA/fetch/prefix/inline-history build.
-Five further trials did not establish useful performance gains and were
+Eight further trials did not establish useful performance gains and were
 restored. All use .NET 10.0.14, the same saved GPU state at guest second 60,
 all 28 CPUs allowed, direct GPU commands, overlap and two GPU workers.
 ABBA measures guest seconds 70–90 (19.7122401 audio seconds). Every completed
@@ -42,11 +42,33 @@ ExecuteSlice (10.66%), ComputeProgressSignature (4.59%), CPU fallback
 instruction execution (3.55%) and TryRunCpuJit (3.23%). Sample shares are not
 independently achievable speedups.
 
-The next bounded trial is a larger CPU interpreter fallback batch, still
-restricted by the existing quiet-device/event budget. No result for that
-trial is claimed here yet.
+The larger CPU interpreter fallback batch (128 instead of 32, bounded by
+unchanged quiet-device/event limits) also failed its speed gate. ABBA wall
+seconds were 21.1912884 / 21.3917870 / 20.3392563 / 19.7804373, a 1.82%
+throughput loss with both candidate/reference pairs negative. All six Mario
+checkpoints/images and complete state match. The full CPU/JIT suites and
+cross-game GPU states pass as recorded in the fallback-boundary report.
+The core change was restored and archived in
+`docs/experiments/n64-cpu-fallback128-2026-11-08.patch`.
 
-Local evidence: `.build-tmp/n64-mario-2026-11-08/`, the five ABBA directories,
+Disabling the CPU JIT under .NET 10 loses 2.10% throughput (20.7673035
+reference versus 21.2119519 candidate seconds). The CPU JIT stays enabled.
+
+Retaining local Memory and opcode-cache references in the CPU loop initially
+gains 1.60% wall throughput and 1.90% thread CPU throughput. A second ABBA
+loses 0.50% wall and 0.52% CPU throughput (20.3222713 versus 20.4251400 wall
+seconds). Full CPU/JIT checks and Mega Man/RE2 complete states pass, but the
+unstable speed result does not qualify. The production change is restored.
+Its core-only patch is archived as `n64-cpu-locals-2026-11-08.patch`.
+
+The benchmark now records CLOCK_THREAD_CPUTIME_ID at checkpoints on 64-bit
+Linux. CPU time excludes waits and descheduling, but remains sensitive to
+frequency changes; non-CPU wall time includes both waits and descheduling.
+Wall/audio throughput remains the acceptance gate. Older probes and other
+hosts retain wall-only comparisons. The live pilot and both local-reference
+ABBA runs validate the new telemetry with identical complete game states.
+
+Local evidence: `.build-tmp/n64-mario-2026-11-08/`, the ABBA directories,
 `trial-options.json`, `profile-current/`, `profile-current-proof.json`, the
 RSP logs and per-candidate cross-game proof JSON files. Private ROMs and
 states remain local. The established `../n64-mario-2026-11-07/play/run.sh`

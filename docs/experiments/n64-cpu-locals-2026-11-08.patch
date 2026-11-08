@@ -1,0 +1,98 @@
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+index acbe7774..ca7e9368 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+@@ -80,15 +80,19 @@ namespace Ryu64.MIPS
+ 
+         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+         private static int GetNextCpuBlockOpcodeKind(uint pc, uint opcode)
++            => GetNextCpuBlockOpcodeKindCached(pc, opcode, CpuBlockNextKinds);
++
++        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
++        private static int GetNextCpuBlockOpcodeKindCached(uint pc, uint opcode, ulong[] nextKinds)
+         {
+             // NOP's loop-entry status depends on the preceding live word, not
+             // just its own bits. It also cannot match an empty cache entry.
+             if (opcode == 0) return IsExistingLoopEntry(pc, opcode) ? -1 : 64;
+-            int slot = (int)((pc >> 2) & (CpuBlockNextKinds.Length - 1));
+-            ulong cached = CpuBlockNextKinds[slot];
++            int slot = (int)((pc >> 2) & (nextKinds.Length - 1));
++            ulong cached = nextKinds[slot];
+             if ((uint)cached == opcode) return unchecked((int)(cached >> 32));
+             int kind = IsExistingLoopEntry(pc, opcode) ? -1 : GetCpuBlockOpcodeKind(opcode);
+-            CpuBlockNextKinds[slot] = ((ulong)(uint)kind << 32) | opcode;
++            nextKinds[slot] = ((ulong)(uint)kind << 32) | opcode;
+             return kind;
+         }
+ 
+@@ -286,9 +290,12 @@ namespace Ryu64.MIPS
+                 return 0;
+             }
+             if (mapped && CpuJitMappedAdmission && !PrepareMappedCpuJit(pc, opcode, kind)) return 0;
++            // Quiet blocks cannot replace the memory instance. Keep its
++            // reference across instruction helpers; reads remain live.
++            Memory blockMemory = memory;
+             uint physical = pc & 0x1fffffffu;
+             if (mapped && !TryResolveMappedCode(pc, out physical)) return 0;
+-            if (physical < 0x4000 || (ulong)physical + 8 > (ulong)memory.RDRAM.Length)
++            if (physical < 0x4000 || (ulong)physical + 8 > (ulong)blockMemory.RDRAM.Length)
+             {
+ #if N64_CPU_DISPATCH_PROFILE
+                 _dispatchAddressReject++;
+@@ -298,7 +305,7 @@ namespace Ryu64.MIPS
+ #if N64_CPU_DISPATCH_PROFILE
+             long quietStart = System.Diagnostics.Stopwatch.GetTimestamp();
+ #endif
+-            uint limit = memory.GetQuietCpuCycles(Math.Min(maximumInstructions, CpuJitEnabled ? CpuJitMaximumInstructions : 32u));
++            uint limit = blockMemory.GetQuietCpuCycles(Math.Min(maximumInstructions, CpuJitEnabled ? CpuJitMaximumInstructions : 32u));
+ #if N64_CPU_DISPATCH_PROFILE
+             _dispatchQuietTicks += System.Diagnostics.Stopwatch.GetTimestamp() - quietStart;
+ #endif
+@@ -312,6 +319,7 @@ namespace Ryu64.MIPS
+ #endif
+                 return 0;
+             }
++            ulong[] nextKinds = CpuBlockNextKinds;
+             uint done = 0;
+             bool tryCompiled = true;
+             while (done < limit)
+@@ -342,8 +350,8 @@ namespace Ryu64.MIPS
+                     pc = Registers.R4300.PC;
+                     physical = pc & 0x1fffffffu;
+                     if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
+-                        || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
+-                        || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
++                        || physical < 0x4000 || !blockMemory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
++                        || (kind = GetNextCpuBlockOpcodeKindCached(pc, opcode, nextKinds)) < 0)
+                         break;
+                     continue;
+                 }
+@@ -361,7 +369,7 @@ namespace Ryu64.MIPS
+                 uint delayOpcode = 0;
+                 int delayKind = -1;
+                 if (branch && (done + 2 > limit
+-                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 4, out delayOpcode)
++                    || !blockMemory.TryReadRdramUInt32PhysicalFast(physical + 4, out delayOpcode)
+                     || (delayKind = GetCpuBlockOpcodeKind(delayOpcode)) < 0
+                     || CpuJitBranch(delayKind)
+                     || !CanAccessCpuBlockOperand(new OpcodeTable.OpcodeDesc(delayOpcode), delayKind,
+@@ -393,8 +401,8 @@ namespace Ryu64.MIPS
+                 pc = Registers.R4300.PC;
+                 physical = pc & 0x1fffffffu;
+                 if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
+-                    || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
+-                    || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
++                    || physical < 0x4000 || !blockMemory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
++                    || (kind = GetNextCpuBlockOpcodeKindCached(pc, opcode, nextKinds)) < 0)
+                     break;
+ #if N64_CPU_DISPATCH_PROFILE
+                 int nextSlot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
+@@ -412,7 +420,7 @@ namespace Ryu64.MIPS
+             }
+             CycleCounter += done;
+             Count += done;
+-            memory.TickQuietCpuCycles(done);
++            blockMemory.TickQuietCpuCycles(done);
+             Registers.COP0.Reg[Registers.COP0.COUNT_REG] = (uint)(Count >> 1);
+             Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = GetRandomAfterInstructions(done);
+             Common.Measure.InstructionCount += done;

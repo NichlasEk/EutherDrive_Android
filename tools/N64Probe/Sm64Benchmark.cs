@@ -14,6 +14,22 @@ internal static class Sm64Benchmark
     private const ulong Clock = 93_750_000;
     private const BindingFlags JitFlags = BindingFlags.Static | BindingFlags.NonPublic;
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LinuxTimespec { public long Seconds; public long Nanoseconds; }
+
+    [DllImport("libc", EntryPoint = "clock_gettime")]
+    private static extern int ClockGetTime(int clockId, out LinuxTimespec time);
+
+    private static double? CurrentThreadCpuSeconds()
+    {
+        // CLOCK_THREAD_CPUTIME_ID: includes this emulation thread's user and
+        // kernel CPU time, excluding waits and time spent descheduled. This
+        // ABI is for 64-bit Linux; other probe hosts retain wall-only timing.
+        if (!OperatingSystem.IsLinux() || IntPtr.Size != 8) return null;
+        return ClockGetTime(3, out var time) == 0
+            ? time.Seconds + time.Nanoseconds / 1_000_000_000.0 : null;
+    }
+
     internal static void Run(string romPath, string output, int endSecond)
     {
         if (endSecond < 10 || endSecond > 600) throw new ArgumentOutOfRangeException(nameof(endSecond));
@@ -95,8 +111,9 @@ internal static class Sm64Benchmark
                 if (second >= nextSecond || second >= endSecond)
                 {
                     double wall = timer.Elapsed.TotalSeconds;
+                    double? threadCpuSeconds = CurrentThreadCpuSeconds();
                     string ramHash = Convert.ToHexString(SHA256.HashData(memory.RDRAM));
-                    var point = new { targetSecond = Math.Min(nextSecond, endSecond), cycles, reads, wallSeconds = wall,
+                    var point = new { targetSecond = Math.Min(nextSecond, endSecond), cycles, reads, wallSeconds = wall, threadCpuSeconds,
                         audioFrames, audioSeconds, audioSha256 = Convert.ToHexString(audioHash.GetCurrentHash()),
                         inputSha256 = Convert.ToHexString(inputHash.GetCurrentHash()), ramSha256 = ramHash,
                         action = action.ToString("x8"), x, y, z,
