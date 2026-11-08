@@ -1,0 +1,24 @@
+diff --git a/Ryu64/Ryu64.MIPS/Memory.cs b/Ryu64/Ryu64.MIPS/Memory.cs
+index b97a6b7d..96ffb49a 100644
+--- a/Ryu64/Ryu64.MIPS/Memory.cs
++++ b/Ryu64/Ryu64.MIPS/Memory.cs
+@@ -8854,6 +8854,7 @@ namespace Ryu64.MIPS
+ 
+         internal void InvalidateRspProgressMemoryPrefix() => _rspProgressMemoryPrefixValid = false;
+ 
++        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+         internal ulong GetCachedRspProgressSignature()
+         {
+             // Register bytes stay fixed between CP0 operations and completed
+diff --git a/Ryu64/Ryu64.MIPS/RspInterpreter.cs b/Ryu64/Ryu64.MIPS/RspInterpreter.cs
+index 12ea0f69..53ba7f0d 100644
+--- a/Ryu64/Ryu64.MIPS/RspInterpreter.cs
++++ b/Ryu64/Ryu64.MIPS/RspInterpreter.cs
+@@ -363,6 +363,7 @@ namespace Ryu64.MIPS
+             return false;
+         }
+ 
++        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+         private ulong ComputeProgressSignature(bool hasValidTask)
+         {
+             ulong signature = _memory.GetCachedRspProgressSignature();

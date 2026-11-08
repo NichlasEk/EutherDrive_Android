@@ -1,0 +1,83 @@
+diff --git a/Ryu64/Ryu64.MIPS/RspBlockJit.cs b/Ryu64/Ryu64.MIPS/RspBlockJit.cs
+index 61772d5a..02f1489b 100644
+--- a/Ryu64/Ryu64.MIPS/RspBlockJit.cs
++++ b/Ryu64/Ryu64.MIPS/RspBlockJit.cs
+@@ -24,6 +24,20 @@ namespace Ryu64.MIPS
+         private static readonly bool InlineHistoryEnabled =
+             Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_INLINE_HISTORY") != "0";
+         private const int MaxBlockInstructions = 16;
++        private static readonly bool SliceCodeValidationEnabled =
++            Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_SLICE_CODE_VALIDATION") == "1";
++        [NonSerialized] private readonly uint[] _blockValidatedEpochs = SliceCodeValidationEnabled ? new uint[1024] : null;
++        [NonSerialized] private uint _blockValidationEpoch;
++        [NonSerialized] private bool _blockValidationActive;
++
++        private void InvalidateBlockCodeValidation()
++        {
++            if (++_blockValidationEpoch == 0)
++            {
++                Array.Clear(_blockValidatedEpochs, 0, _blockValidatedEpochs.Length);
++                _blockValidationEpoch = 1;
++            }
++        }
+         // Per interpreter: no cross-emulator mutable compilation cache.
+         [NonSerialized] private readonly Func<RspInterpreter, uint, uint, int>[] _blocks = BlockJitEnabled ? new Func<RspInterpreter, uint, uint, int>[1024] : null;
+         [NonSerialized] private readonly uint[] _blockFirstWords = BlockJitEnabled ? new uint[1024] : null;
+@@ -283,6 +297,20 @@ namespace Ryu64.MIPS
+             }
+             code.Add(InlineHistoryEnabled ? CompileInlineHistory(self, start, words, nextPc)
+                 : Call(nameof(EndBlock), Expression.Constant(start), Expression.Constant(words), nextPc));
++            if (SliceCodeValidationEnabled)
++            {
++                // During a synchronous slice, compiled blocks can change DMEM
++                // and registers, never IMEM or lifecycle state. Every fallback
++                // instruction invalidates this proof before CP0/DMA can run.
++                var validated = Expression.ArrayAccess(Expression.Field(self, "_blockValidatedEpochs"),
++                    Expression.Constant((int)(start >> 2)));
++                var epoch = Expression.Field(self, "_blockValidationEpoch");
++                guards.Add(Expression.Assign(validated, epoch));
++                guards.Add(Expression.Empty());
++                guards = new List<Expression> { Expression.IfThen(Expression.OrElse(
++                    Expression.Not(Expression.Field(self, "_blockValidationActive")),
++                    Expression.NotEqual(validated, epoch)), Expression.Block(guards)) };
++            }
+             guards.Insert(0, Expression.IfThen(Expression.OrElse(
+                 Expression.LessThan(budget, Expression.Constant((uint)count)),
+                 Expression.OrElse(Expression.LessThan(limit, Expression.Constant((uint)count)),
+diff --git a/Ryu64/Ryu64.MIPS/RspInterpreter.cs b/Ryu64/Ryu64.MIPS/RspInterpreter.cs
+index 12ea0f69..fdb6ff32 100644
+--- a/Ryu64/Ryu64.MIPS/RspInterpreter.cs
++++ b/Ryu64/Ryu64.MIPS/RspInterpreter.cs
+@@ -200,6 +200,24 @@ namespace Ryu64.MIPS
+             => ExecuteSlice(out executedInstructions, out stopReason, false, uint.MaxValue);
+ 
+         internal bool ExecuteSlice(out uint executedInstructions, out string stopReason, bool resume, uint budget)
++        {
++            if (!SliceCodeValidationEnabled)
++                return ExecuteSliceCore(out executedInstructions, out stopReason, resume, budget);
++            bool previousScope = _blockValidationActive;
++            _blockValidationActive = true;
++            InvalidateBlockCodeValidation();
++            try
++            {
++                return ExecuteSliceCore(out executedInstructions, out stopReason, resume, budget);
++            }
++            finally
++            {
++                _blockValidationActive = previousScope;
++                InvalidateBlockCodeValidation();
++            }
++        }
++
++        private bool ExecuteSliceCore(out uint executedInstructions, out string stopReason, bool resume, uint budget)
+         {
+             // CPU writes and state loads may change any SP register between slices.
+             _memory.InvalidateRspProgressMemoryPrefix();
+@@ -283,6 +301,7 @@ namespace Ryu64.MIPS
+                 bool progressMemoryDirty = (instr >> 26) == 0x10 || _memory.RspLifecyclePending;
+                 if ((instr >> 26) == 0x10) _memory.InvalidateRspProgressMemoryPrefix();
+ 
++                if (SliceCodeValidationEnabled) InvalidateBlockCodeValidation();
+                 if (!Step(pc, instr, out stopReason))
+                 {
+                     _memory.ClearActiveRspTracePc();

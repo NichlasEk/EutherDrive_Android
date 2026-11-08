@@ -18,6 +18,10 @@ internal static class CpuBlockChecks
         }
         else typeof(R4300).GetField("CpuJitUnavailable", cpuFlags)!.SetValue(null, true);
         int compiledCases = 0;
+        uint fallbackCap = (uint)(typeof(R4300).GetField("CpuFallbackMaximumInstructions", cpuFlags)
+            ?.GetRawConstantValue() ?? 32u);
+        if (!(bool)typeof(R4300).GetField("CpuJitEnabled", cpuFlags)!.GetValue(null)!)
+            fallbackCap = Math.Min(fallbackCap, 32u);
         var batch = typeof(R4300).GetMethod("TryAdvanceCpuBlock", cpuFlags)!.CreateDelegate<Func<uint,uint,uint,bool,uint>>();
         var fetch = typeof(R4300).GetMethod("ReadOpcode", cpuFlags)!.CreateDelegate<Func<uint,uint>>();
         var randomAfter = typeof(R4300).GetMethod("GetRandomAfterInstructions", cpuFlags)!.CreateDelegate<Func<uint,uint>>();
@@ -161,8 +165,30 @@ internal static class CpuBlockChecks
             }
             cases++;
         }
+        void CheckFallbackBoundaries()
+        {
+            // Long interpreter fallback batches must preserve full state/history
+            // and stop before the same device deadline as single stepping.
+            var unavailable = typeof(R4300).GetField("CpuJitUnavailable", cpuFlags)!;
+            bool wasUnavailable = (bool)unavailable.GetValue(null)!;
+            foreach (uint budget in new uint[] { 33, 64, 127, 128, 129 })
+            foreach (uint deadline in new uint[] { 0, 17, 65, 129 })
+            {
+                Reset(); unavailable.SetValue(null, true);
+                for (int i = 0; i < 160; i++) Code(i, 0x24420001);
+                if (deadline != 0)
+                { Set("_aiInterruptDelayArmed", true); Set("_aiInterruptDelayRemaining", deadline); }
+                uint expected = Math.Min(budget, fallbackCap);
+                if (deadline != 0) expected = Math.Min(expected, deadline - 1);
+                Check(expected, budget);
+            }
+            unavailable.SetValue(null, wasUnavailable);
+            Console.WriteLine($"cpuFallbackBoundaries=20 cap={fallbackCap} state=passed history={(jit ? "passed" : "disabled")} deadlines=passed");
+        }
         if (Environment.GetEnvironmentVariable("N64_PROBE_EXPECT_BATCH_DISABLED") == "1")
         { Reset(); Check(0); Console.WriteLine("cpuBlockDisabled=passed"); return; }
+        if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_FALLBACK_ONLY") == "1")
+        { CheckFallbackBoundaries(); return; }
         uint[] special = { 0,2,3,4,6,7,20,22,23,33,35,36,37,38,39,42,43,45,47,56,58,59,60,62,63 };
         uint[] shifts = { 0,2,3,56,58,59,60,62,63 };
         var random = new Random(640020);
@@ -346,7 +372,7 @@ internal static class CpuBlockChecks
         Reset(); Code(0, 0x3c250001); Check(0); // Invalid LUI rs.
         foreach (uint op in new uint[] { 0x40824800, 0x42000018, 0x46000000, 0x0000000c, 0xffffffff })
         { Reset(); Code(0, op); Check(0); Reset(); Code(3, op); Check(3); }
-        foreach (uint budget in new uint[] { 0,1,2,7,31,32,33,127,128,511,512,1023,1024,2047,2048 }) { Reset(); Check(budget < 2 ? 0 : Math.Min(budget,jit ? 512u : 32u), budget); }
+        foreach (uint budget in new uint[] { 0,1,2,7,31,32,33,127,128,511,512,1023,1024,2047,2048 }) { Reset(); Check(budget < 2 ? 0 : Math.Min(budget,jit ? 512u : fallbackCap), budget); }
         foreach (uint wired in new uint[] { 0,1,30,31 })
         foreach (uint r in new uint[] { 0,1,15,30,31 })
         { Reset(); Registers.COP0.Reg[6] = wired; Registers.COP0.Reg[1] = r; Check(32); }
@@ -410,6 +436,7 @@ internal static class CpuBlockChecks
         Reset(); Registers.COP0.Reg[9] = 1; Check(0);
         Reset(); Ryu64.Common.Variables.Debug = true; Check(0); Ryu64.Common.Variables.Debug = false;
         Reset(); Ryu64.Common.Settings.STEP_MODE = true; Check(0); Ryu64.Common.Settings.STEP_MODE = false;
+        CheckFallbackBoundaries();
         if (jit)
         {
             var invariant = typeof(R4300).GetMethod("IsInvariantCpuJitLoop", cpuFlags)!

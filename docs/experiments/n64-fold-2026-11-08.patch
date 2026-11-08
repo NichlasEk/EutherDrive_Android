@@ -1,0 +1,29 @@
+diff --git a/Ryu64/Ryu64.MIPS/Memory.cs b/Ryu64/Ryu64.MIPS/Memory.cs
+index b97a6b7d..cdc65214 100644
+--- a/Ryu64/Ryu64.MIPS/Memory.cs
++++ b/Ryu64/Ryu64.MIPS/Memory.cs
+@@ -8857,15 +8857,20 @@ namespace Ryu64.MIPS
+         internal ulong GetCachedRspProgressSignature()
+         {
+             // Register bytes stay fixed between CP0 operations and completed
+-            // lifecycle events. Keep DMA countdown/armed/queue fields live at
+-            // every observation. The cache belongs to Memory, so all RSP
++            // lifecycle events. The DMA armed flag changes at those same
++            // boundaries, so include it and the next multiply in the prefix.
++            // Keep the countdown and queue fields live at every observation.
++            // The cache belongs to Memory, so all RSP
+             // executors using this memory observe the same invalidations.
+             if (!_rspProgressMemoryPrefixValid)
+             {
+-                _rspProgressMemoryPrefix = GetRspProgressRegisterSignature();
++                _rspProgressMemoryPrefix =
++                    ((GetRspProgressRegisterSignature() * 1099511628211ul)
++                        ^ (_spDmaDelayArmed ? 1ul : 0ul)) * 1099511628211ul;
+                 _rspProgressMemoryPrefixValid = true;
+             }
+-            return CompleteRspProgressSignature(_rspProgressMemoryPrefix);
++            return ((_rspProgressMemoryPrefix ^ _spDmaDelayRemaining) * 1099511628211ul)
++                ^ (_spQueuedDmaValid ? 1ul : 0ul);
+         }
+ 
+         internal ulong GetRspProgressSignature()
