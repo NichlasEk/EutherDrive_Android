@@ -148,7 +148,7 @@ def main():
             "EUTHERDRIVE_N64_RSP_SLICE_CODE_VALIDATION", "EUTHERDRIVE_N64_RSP_FAST_PROGRESS",
             "EUTHERDRIVE_N64_RSP_FAST_VMADH",
             "EUTHERDRIVE_N64_RSP_LAZY_PROGRESS",
-            "DOTNET_TieredCompilation", "DOTNET_TieredPGO")},
+            "DOTNET_TieredCompilation", "DOTNET_TieredPGO", "N64_PROBE_SM64_TIMING")},
         variants={mode: dict(probe=str(getattr(args, mode).resolve()),
                             runtime=getattr(args, mode + "_runtime"),
                             files={p.name: hashlib.sha256(p.read_bytes()).hexdigest()

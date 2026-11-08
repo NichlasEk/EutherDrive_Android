@@ -12,6 +12,9 @@ using Ryu64.MIPS;
 internal static class Sm64Benchmark
 {
     private const ulong Clock = 93_750_000;
+    private readonly record struct TimingSample(ulong cycles, double wallSeconds,
+        double? threadCpuSeconds, double audioSeconds);
+
     private const BindingFlags JitFlags = BindingFlags.Static | BindingFlags.NonPublic;
 
     [StructLayout(LayoutKind.Sequential)]
@@ -58,6 +61,10 @@ internal static class Sm64Benchmark
             throw new InvalidOperationException("The resume state must precede the requested end time");
         var memory = R4300.memory;
         var points = new List<object>();
+        // Observe each existing Joybus read without new guest work, framebuffer
+        // synchronization or disk writes. Flush only after the measured run.
+        List<TimingSample>? timing = Environment.GetEnvironmentVariable("N64_PROBE_SM64_TIMING") == "1"
+            ? new List<TimingSample>(endSecond * 100) : null;
         var timer = new Stopwatch();
         using var done = new ManualResetEventSlim();
         using var audioHash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -83,6 +90,8 @@ internal static class Sm64Benchmark
             try
             {
                 ulong cycles = core.GetCycleCounter();
+                timing?.Add(new TimingSample(cycles, timer.Elapsed.TotalSeconds,
+                    CurrentThreadCpuSeconds(), audioSeconds));
                 int second = (int)(cycles / Clock);
 #if N64_CPU_JIT_PROFILE
                 if (second >= 70) R4300.CpuJitProfileActive = true;
@@ -146,6 +155,8 @@ internal static class Sm64Benchmark
         }
         finally { core.Stop(); }
         if (failure != null) throw new InvalidOperationException("Gameplay observation failed", failure);
+        if (timing != null)
+            File.WriteAllText(Path.Combine(output, "timing.json"), JsonSerializer.Serialize(timing));
         if (core.GetCycleCounter() < (ulong)endSecond * Clock || (endSecond >= 70 && !enteredGame) || R4300.GetUnknownOpcodeCount() != 0)
             throw new InvalidOperationException("Mario did not complete the expected gameplay sequence cleanly");
 #if N64_LIVE_GPU
