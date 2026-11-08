@@ -1,0 +1,140 @@
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+index acbe7774..9fa97fb6 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+@@ -313,15 +313,14 @@ namespace Ryu64.MIPS
+                 return 0;
+             }
+             uint done = 0;
+-            bool tryCompiled = true;
++            bool useFallback = false;
+             while (done < limit)
+             {
+ #if N64_CPU_DISPATCH_PROFILE
+                 long jitStart = System.Diagnostics.Stopwatch.GetTimestamp();
+ #endif
+-                uint compiled = tryCompiled ? TryRunCpuJit(pc, opcode, limit - done, done, recordHistory) : 0;
++                uint compiled = TryRunCpuJit(pc, opcode, limit - done, done, recordHistory);
+ #if N64_CPU_DISPATCH_PROFILE
+-                if (tryCompiled)
+                 {
+                     _dispatchJitCalls++;
+                     _dispatchJitTicks += System.Diagnostics.Stopwatch.GetTimestamp() - jitStart;
+@@ -347,61 +346,69 @@ namespace Ryu64.MIPS
+                         break;
+                     continue;
+                 }
+-                if (mapped) break; // No direct-address interpreter fallback for mapped PCs.
++                useFallback = !mapped; // No direct-address fallback for mapped PCs.
++                break;
++            }
++            // Once native execution declines, the original block stays in
++            // interpreter mode. Keep that loop free of repeated JIT dispatch.
++            if (useFallback)
++            {
+                 if (done == 0) limit = Math.Min(limit, 32);
+-                tryCompiled = false;
++                while (done < limit)
++                {
+ #if N64_CPU_DISPATCH_PROFILE
+-                long fallbackStart = System.Diagnostics.Stopwatch.GetTimestamp();
++                    long fallbackStart = System.Diagnostics.Stopwatch.GetTimestamp();
+ #endif
+-                var desc = new OpcodeTable.OpcodeDesc(opcode);
+-                // COP1 needs a live usability check, and loads/stores need
+-                // operand validation. Integer ALU and CP0 need neither here.
+-                if ((kind == 17 || (uint)(kind - 32) < 32) && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
+-                bool branch = CpuJitBranch(kind);
+-                uint delayOpcode = 0;
+-                int delayKind = -1;
+-                if (branch && (done + 2 > limit
+-                    || !memory.TryReadRdramUInt32PhysicalFast(physical + 4, out delayOpcode)
+-                    || (delayKind = GetCpuBlockOpcodeKind(delayOpcode)) < 0
+-                    || CpuJitBranch(delayKind)
+-                    || !CanAccessCpuBlockOperand(new OpcodeTable.OpcodeDesc(delayOpcode), delayKind,
+-                        kind == 3 ? 31 : kind == 73 ? desc.op3 : -1, pc + 8)))
+-                    break;
+-                Registers.R4300.Reg[0] = 0;
+-                if (recordHistory && done != 0)
+-                {
+-                    _recentInst[_recentInstPos] = new RecentInst { Pc = pc, Op = opcode };
+-                    _recentInstPos = (_recentInstPos + 1) & RecentInstHistoryMask;
+-                }
+-                if (branch)
+-                {
+-                    ExecuteQuietBranch(desc, kind, delayOpcode, delayKind, done);
+-                    done += 2;
+-                    // A branch to itself remains one outer-loop iteration, so
+-                    // the existing stuck-PC watchdog keeps its exact cadence.
+-                    if (Registers.R4300.PC == pc) break;
+-                }
+-                else
+-                {
+-                    ExecuteCpuBlockInstruction(desc, kind, done);
+-                    done++;
+-                }
++                    var desc = new OpcodeTable.OpcodeDesc(opcode);
++                    // COP1 needs a live usability check, and loads/stores need
++                    // operand validation. Integer ALU and CP0 need neither here.
++                    if ((kind == 17 || (uint)(kind - 32) < 32) && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
++                    bool branch = CpuJitBranch(kind);
++                    uint delayOpcode = 0;
++                    int delayKind = -1;
++                    if (branch && (done + 2 > limit
++                        || !memory.TryReadRdramUInt32PhysicalFast(physical + 4, out delayOpcode)
++                        || (delayKind = GetCpuBlockOpcodeKind(delayOpcode)) < 0
++                        || CpuJitBranch(delayKind)
++                        || !CanAccessCpuBlockOperand(new OpcodeTable.OpcodeDesc(delayOpcode), delayKind,
++                            kind == 3 ? 31 : kind == 73 ? desc.op3 : -1, pc + 8)))
++                        break;
++                    Registers.R4300.Reg[0] = 0;
++                    if (recordHistory && done != 0)
++                    {
++                        _recentInst[_recentInstPos] = new RecentInst { Pc = pc, Op = opcode };
++                        _recentInstPos = (_recentInstPos + 1) & RecentInstHistoryMask;
++                    }
++                    if (branch)
++                    {
++                        ExecuteQuietBranch(desc, kind, delayOpcode, delayKind, done);
++                        done += 2;
++                        // A branch to itself remains one outer-loop iteration, so
++                        // the existing stuck-PC watchdog keeps its exact cadence.
++                        if (Registers.R4300.PC == pc) break;
++                    }
++                    else
++                    {
++                        ExecuteCpuBlockInstruction(desc, kind, done);
++                        done++;
++                    }
+ #if N64_CPU_DISPATCH_PROFILE
+-                _dispatchFallbackInstructions += branch ? 2 : 1;
+-                _dispatchFallbackTicks += System.Diagnostics.Stopwatch.GetTimestamp() - fallbackStart;
++                    _dispatchFallbackInstructions += branch ? 2 : 1;
++                    _dispatchFallbackTicks += System.Diagnostics.Stopwatch.GetTimestamp() - fallbackStart;
+ #endif
+-                pc = Registers.R4300.PC;
+-                physical = pc & 0x1fffffffu;
+-                if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
+-                    || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
+-                    || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
+-                    break;
++                    pc = Registers.R4300.PC;
++                    physical = pc & 0x1fffffffu;
++                    if (done == limit || (pc & 3) != 0 || pc < 0x80000000u || pc >= 0xc0000000u
++                        || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
++                        || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
++                        break;
+ #if N64_CPU_DISPATCH_PROFILE
+-                int nextSlot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
+-                var successor = CpuJitCache[nextSlot];
+-                if (successor != null && successor.Pc == pc && successor.First == opcode
+-                    && successor.Code?.Run != null) _dispatchCachedSuccessor++;
++                    int nextSlot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
++                    var successor = CpuJitCache[nextSlot];
++                    if (successor != null && successor.Pc == pc && successor.First == opcode
++                        && successor.Code?.Run != null) _dispatchCachedSuccessor++;
+ #endif
++                }
+             }
+             if (done == 0)
+             {

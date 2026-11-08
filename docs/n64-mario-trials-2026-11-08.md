@@ -73,3 +73,32 @@ Local evidence: `.build-tmp/n64-mario-2026-11-08/`, the ABBA directories,
 RSP logs and per-candidate cross-game proof JSON files. Private ROMs and
 states remain local. The established `../n64-mario-2026-11-07/play/run.sh`
 launcher remains the delivery/rollback point until another change qualifies.
+
+## Further CPU loop trials
+
+The return-value instruction-fetch trial passes full CPU/JIT, GPU and
+cross-game state checks, but gains only 0.613% wall throughput. It is
+restored; see `n64-cpu-return-fetch-2026-11-08.md` for exact evidence.
+
+A separate experiment splits native dispatch and interpreter fallback into
+two loops, removing the repeated tryCompiled condition from the fallback
+backedge. It uses the accepted fetch helpers and no local-reference trial.
+Mario ABBA wall seconds are 19.6399224 / 19.7279759 / 19.6285605 /
+19.9049257. Mean wall throughput gains 0.478%; CPU throughput gains 1.027%.
+Adjacent wall pairs disagree. All six checkpoints/images and full final
+CPU/device/GPU state match. This does not qualify as a stable performance
+win: the core is restored and archived in
+`docs/experiments/n64-cpu-split-loop-2026-11-08.patch`. The full CPU/JIT and
+cross-game suites were not repeated for this rejected split-loop candidate.
+Local evidence: `split-loop-abba/` and `split-loop-abba.log`.
+
+The accepted reference in that final series reaches about 99.0–100.4% audio
+realtime on average, but its heavy five-second intervals remain about
+91.2–94.0%. Neither averages above 100% nor these rejected experiments
+establish full realtime. No delivery binary or launcher was replaced.
+
+Next investigation: profile the heavy 70–80 second interval separately,
+including which guest instructions fall back from JIT and their code guards.
+The current profile covers 70–90 and mixes those CPU-heavy intervals with
+lighter sections. Do not repeat larger fallback batches, register caching,
+local references, return-value fetch, or loop splitting without new evidence.
