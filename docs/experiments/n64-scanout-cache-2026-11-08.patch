@@ -1,0 +1,89 @@
+diff --git a/Ryu64/Ryu64.MIPS/Memory.Gpu.cs b/Ryu64/Ryu64.MIPS/Memory.Gpu.cs
+index 16ad1d99..beed7f47 100644
+--- a/Ryu64/Ryu64.MIPS/Memory.Gpu.cs
++++ b/Ryu64/Ryu64.MIPS/Memory.Gpu.cs
+@@ -39,6 +39,10 @@ namespace Ryu64.MIPS
+         private readonly Dictionary<ulong, GpuFrame> _gpuTargets = new Dictionary<ulong, GpuFrame>();
+         private readonly List<GpuFrame> _gpuCompleted = new List<GpuFrame>();
+         private byte[] _gpuLastPixels = Array.Empty<byte>();
++        // Completed frames are immutable. Cache the VI crop across frontend
++        // polls; callers still receive an owned copy of the selected pixels.
++        private GpuFrame _gpuScanoutSource;
++        private uint _gpuScanoutOffset;
+         private int _gpuLastWidth, _gpuLastHeight, _gpuLastBpp;
+         public long GpuReadHazards { get; private set; }
+         public long GpuFrames { get; private set; }
+@@ -67,6 +71,7 @@ namespace Ryu64.MIPS
+             lock (_gpuFrameLock)
+             {
+                 _gpuTargets.Clear(); _gpuCompleted.Clear(); _gpuLastPixels = Array.Empty<byte>();
++                _gpuScanoutSource = null;
+                 _gpuLastWidth = _gpuLastHeight = _gpuLastBpp = 0;
+             }
+             GpuFrames = GpuReadHazards = 0;
+@@ -165,6 +170,7 @@ namespace Ryu64.MIPS
+             {
+                 _gpuTargets.Clear(); foreach (var target in targets) _gpuTargets.Add(target.Key, target.Value);
+                 _gpuCompleted.Clear(); _gpuCompleted.AddRange(completed);
++                _gpuScanoutSource = null;
+                 _gpuLastPixels = pixels; _gpuLastWidth = width; _gpuLastHeight = height; _gpuLastBpp = bpp;
+             }
+         }
+@@ -364,9 +370,14 @@ namespace Ryu64.MIPS
+                     if (frame.Width != viWidth || frame.Bpp != viBpp || origin < frame.Address) continue;
+                     ulong offset = origin - frame.Address, bytes = (ulong)viWidth * rows * viBpp;
+                     if (offset + bytes > (ulong)frame.Pixels.Length) continue;
+-                    _gpuLastPixels = new byte[(int)bytes];
+-                    Buffer.BlockCopy(frame.Pixels, (int)offset, _gpuLastPixels, 0, (int)bytes);
+-                    _gpuLastWidth = (int)viWidth; _gpuLastHeight = (int)rows; _gpuLastBpp = (int)viBpp;
++                    if (!ReferenceEquals(_gpuScanoutSource, frame) || _gpuScanoutOffset != offset
++                        || _gpuLastWidth != viWidth || _gpuLastHeight != rows || _gpuLastBpp != viBpp)
++                    {
++                        _gpuLastPixels = new byte[(int)bytes];
++                        Buffer.BlockCopy(frame.Pixels, (int)offset, _gpuLastPixels, 0, (int)bytes);
++                        _gpuLastWidth = (int)viWidth; _gpuLastHeight = (int)rows; _gpuLastBpp = (int)viBpp;
++                        _gpuScanoutSource = frame; _gpuScanoutOffset = (uint)offset;
++                    }
+                     break;
+                 }
+                 // Hold the last completed VI-selected image while a newly
+diff --git a/tools/N64Probe/N64LiveGpuChecks.cs b/tools/N64Probe/N64LiveGpuChecks.cs
+index e2af01b8..e31346e1 100644
+--- a/tools/N64Probe/N64LiveGpuChecks.cs
++++ b/tools/N64Probe/N64LiveGpuChecks.cs
+@@ -223,6 +223,23 @@ internal static class N64LiveGpuChecks
+                 || w != 64 || h != 32 || bpp != 2 || BinaryPrimitives.ReadUInt16BigEndian(pixels) != 0xff01)
+                 throw new Exception("No VI-selected GPU frame");
+             checks++;
++            var scanoutField = typeof(Memory).GetField("_gpuLastPixels", Private)!;
++            object cachedPixels = scanoutField.GetValue(memory)!;
++            memory.TryGetGpuFramebuffer(out var repeated, out _, out _, out _);
++            if (!ReferenceEquals(cachedPixels, scanoutField.GetValue(memory))
++                || ReferenceEquals(pixels, repeated) || !pixels.AsSpan().SequenceEqual(repeated))
++                throw new Exception("Repeated scanout did not reuse internal crop with owned output");
++            repeated[0] ^= 0xff;
++            memory.TryGetGpuFramebuffer(out var isolated, out _, out _, out _);
++            if (!pixels.AsSpan().SequenceEqual(isolated)) throw new Exception("Caller modified cached scanout");
++            long allocationStart = GC.GetAllocatedBytesForCurrentThread();
++            for (int poll = 0; poll < 100; poll++)
++                memory.TryGetGpuFramebuffer(out _, out _, out _, out _);
++            long scanoutAllocated = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
++            if (scanoutAllocated > 100L * (pixels.Length + 64))
++                throw new Exception("Repeated scanout allocated more than its owned output");
++            Console.WriteLine($"scanoutPolls=100 allocatedBytes={scanoutAllocated} pixelBytes={pixels.Length}");
++            checks++;
+             long frames = memory.GpuFrames;
+             Cmd(0xf7000000, 0x003f003f); Cmd(0xf60fc07c, 0);
+             Cmd(0xff10003f, 0x500000); Cmd(0xf7000000, 0xffffffff); Cmd(0xf60fc07c, 0);
+@@ -246,6 +263,11 @@ internal static class N64LiveGpuChecks
+             if (memory.GpuRenderer == null) throw new Exception("GPU state resumed in software");
+             memory.TryGetGpuFramebuffer(out var restored, out _, out _, out _);
+             if (!restored.AsSpan().SequenceEqual(held)) throw new Exception("Savestate lost held GPU image");
++            if (typeof(Memory).GetField("_gpuScanoutSource", Private)!.GetValue(memory) != null)
++                throw new Exception("Savestate retained a stale scanout source");
++            memory.WriteUInt32(0x04400004, 0x300080);
++            memory.TryGetGpuFramebuffer(out var resumedCrop, out _, out _, out _);
++            if (!resumedCrop.AsSpan().SequenceEqual(offsetFrame)) throw new Exception("Savestate crop failed to rebuild");
+             checks++;
+         }
+         // Commands split across recycled DMEM must reach the live GPU only
