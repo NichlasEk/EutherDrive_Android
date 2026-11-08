@@ -85,3 +85,13 @@ Local directory: `.build-tmp/n64-mario-2026-11-08/`.
   These are exclusive sample shares, not guaranteed obtainable speedups.
 
 ROMs, saves and generated binaries remain local. No original save was edited.
+
+## Follow-up after GPU initialization recovered
+
+The prepared scanout-cache ABBA completed with six identical guest cycle/RAM/
+audio-count checkpoints. Wall seconds were 20.4630528 / 21.5835606 /
+23.6141163 / 23.8602384, or -1.935% mean throughput. Sampled warm underruns
+were 95 / 210 / 403 / 453. The large time drift and disagreeing adjacent
+pairs do not establish a useful audio/playback improvement. No scanout-cache
+change was promoted; the archived candidate remains outside the launcher.
+Evidence: `audio-crop-retry-abba.log` and its four output JSON sets.
