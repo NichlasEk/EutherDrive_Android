@@ -6,6 +6,12 @@ using EutherDrive.Core;
 using Ryu64.MIPS;
 using Ryu64Core;
 
+if (args.Length == 1 && args[0] == "--check-frame-conversion")
+{
+    FrameConversionChecks.Run();
+    return;
+}
+
 // Diagnostic frontend model: N64Adapter and the real timed AudioEngine,
 // with a null sink instead of Avalonia or the host audio driver.
 if ((args.Length != 4 && args.Length != 5) || (args[3] != "current" && args[3] != "all"))

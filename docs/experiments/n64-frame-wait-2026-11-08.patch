@@ -1,0 +1,13 @@
+diff --git a/EutherDrive.Core/N64Adapter.cs b/EutherDrive.Core/N64Adapter.cs
+index 1a0f4353..ee703574 100644
+--- a/EutherDrive.Core/N64Adapter.cs
++++ b/EutherDrive.Core/N64Adapter.cs
+@@ -503,7 +503,7 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable, IDisposable
+             if (sw.ElapsedMilliseconds == 0)
+                 Thread.SpinWait(512);
+             else
+-                Thread.Sleep(0);
++                Thread.Sleep(1);
+         }
+ 
+         if (_runFrameCount <= 10 || (_runFrameCount % 240) == 0)

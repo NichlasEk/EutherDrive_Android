@@ -1,0 +1,74 @@
+diff --git a/EutherDrive.Core/N64Adapter.cs b/EutherDrive.Core/N64Adapter.cs
+index 1a0f4353..f6dc956f 100644
+--- a/EutherDrive.Core/N64Adapter.cs
++++ b/EutherDrive.Core/N64Adapter.cs
+@@ -1,5 +1,7 @@
+ using System;
+ using System.Diagnostics;
++using System.Numerics;
++using System.Runtime.InteropServices;
+ using System.IO;
+ using System.Threading;
+ using EutherDrive.Core.Savestates;
+@@ -542,29 +544,40 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable, IDisposable
+     private static void ConvertRgba5551ToBgra(ReadOnlySpan<byte> src, Span<byte> dst, bool swapBytes)
+     {
+         int pixels = Math.Min(src.Length / 2, dst.Length / 4);
+-        int si = 0;
+-        int di = 0;
+-
+-        for (int i = 0; i < pixels; i++)
++        int i = 0;
++        if (Vector.IsHardwareAccelerated && BitConverter.IsLittleEndian)
+         {
+-            ushort p = swapBytes
+-                ? (ushort)((src[si + 1] << 8) | src[si])
+-                : (ushort)((src[si] << 8) | src[si + 1]);
+-            si += 2;
+-
+-            int r5 = (p >> 11) & 0x1F;
+-            int g5 = (p >> 6) & 0x1F;
+-            int b5 = (p >> 1) & 0x1F;
+-            dst[di + 0] = (byte)((b5 * 255) / 31);
+-            dst[di + 1] = (byte)((g5 * 255) / 31);
+-            dst[di + 2] = (byte)((r5 * 255) / 31);
+-            // The VI output is an opaque video signal; do not expose RGBA5551's alpha bit to UI compositing.
+-            dst[di + 3] = 0xFF;
+-            di += 4;
++            var input = MemoryMarshal.Cast<byte, ushort>(src[..(pixels * 2)]);
++            var output = MemoryMarshal.Cast<byte, uint>(dst[..(pixels * 4)]);
++            var mask = new Vector<ushort>(31);
++            // Exact floor(v * 255 / 31) for all five-bit values, without division.
++            var scale = new Vector<ushort>(1053);
++            var alpha = new Vector<ushort>(0xff00);
++            for (; i <= pixels - Vector<ushort>.Count; i += Vector<ushort>.Count)
++            {
++                var p = new Vector<ushort>(input.Slice(i, Vector<ushort>.Count));
++                if (!swapBytes)
++                    p = (p << 8) | (p >> 8);
++                var r = ((p >> 11) * scale) >> 7;
++                var g = (((p >> 6) & mask) * scale) >> 7;
++                var b = (((p >> 1) & mask) * scale) >> 7;
++                Vector.Widen(b | (g << 8), out Vector<uint> bgLo, out Vector<uint> bgHi);
++                Vector.Widen(r | alpha, out Vector<uint> raLo, out Vector<uint> raHi);
++                (bgLo | (raLo << 16)).CopyTo(output.Slice(i, Vector<uint>.Count));
++                (bgHi | (raHi << 16)).CopyTo(output.Slice(i + Vector<uint>.Count, Vector<uint>.Count));
++            }
+         }
+-
+-        if (di < dst.Length)
+-            dst[di..].Clear();
++        for (; i < pixels; i++)
++        {
++            int si = i * 2;
++            int p = swapBytes ? (src[si + 1] << 8) | src[si] : (src[si] << 8) | src[si + 1];
++            int di = i * 4;
++            dst[di] = (byte)(((p >> 1) & 31) * 255 / 31);
++            dst[di + 1] = (byte)(((p >> 6) & 31) * 255 / 31);
++            dst[di + 2] = (byte)((p >> 11) * 255 / 31);
++            dst[di + 3] = 255;
++        }
++        dst[(pixels * 4)..].Clear();
+     }
+ 
+     private static (bool Swap, int NormalScore, int SwappedScore) DetectRgba5551ByteOrder(ReadOnlySpan<byte> src)

@@ -1,0 +1,77 @@
+diff --git a/EutherDrive.Core/N64Adapter.cs b/EutherDrive.Core/N64Adapter.cs
+index 1a0f4353..6c5987b8 100644
+--- a/EutherDrive.Core/N64Adapter.cs
++++ b/EutherDrive.Core/N64Adapter.cs
+@@ -1,5 +1,7 @@
+ using System;
+ using System.Diagnostics;
++using System.Buffers.Binary;
++using System.Runtime.InteropServices;
+ using System.IO;
+ using System.Threading;
+ using EutherDrive.Core.Savestates;
+@@ -539,32 +541,43 @@ public sealed class N64Adapter : IEmulatorCore, ISavestateCapable, IDisposable
+         return fallback;
+     }
+ 
++    private static class VideoColors
++    {
++        // Alpha is discarded by the opaque VI output. Keep the original floor
++        // scaling (v * 255 / 31), which differs from simple bit replication.
++        internal static readonly uint[] Bgra555 = Create();
++        private static uint[] Create()
++        {
++            var colors = new uint[32768];
++            for (int rgb = 0; rgb < colors.Length; rgb++)
++            {
++                uint b = (uint)((rgb & 31) * 255 / 31);
++                uint g = (uint)(((rgb >> 5) & 31) * 255 / 31);
++                uint r = (uint)(((rgb >> 10) & 31) * 255 / 31);
++                uint packed = 0xff000000u | (r << 16) | (g << 8) | b;
++                colors[rgb] = BitConverter.IsLittleEndian ? packed : BinaryPrimitives.ReverseEndianness(packed);
++            }
++            return colors;
++        }
++    }
++
+     private static void ConvertRgba5551ToBgra(ReadOnlySpan<byte> src, Span<byte> dst, bool swapBytes)
+     {
+         int pixels = Math.Min(src.Length / 2, dst.Length / 4);
+-        int si = 0;
+-        int di = 0;
+-
+-        for (int i = 0; i < pixels; i++)
++        var input = MemoryMarshal.Cast<byte, ushort>(src[..(pixels * 2)]);
++        var output = MemoryMarshal.Cast<byte, uint>(dst[..(pixels * 4)]);
++        var colors = VideoColors.Bgra555;
++        if (swapBytes != BitConverter.IsLittleEndian)
+         {
+-            ushort p = swapBytes
+-                ? (ushort)((src[si + 1] << 8) | src[si])
+-                : (ushort)((src[si] << 8) | src[si + 1]);
+-            si += 2;
+-
+-            int r5 = (p >> 11) & 0x1F;
+-            int g5 = (p >> 6) & 0x1F;
+-            int b5 = (p >> 1) & 0x1F;
+-            dst[di + 0] = (byte)((b5 * 255) / 31);
+-            dst[di + 1] = (byte)((g5 * 255) / 31);
+-            dst[di + 2] = (byte)((r5 * 255) / 31);
+-            // The VI output is an opaque video signal; do not expose RGBA5551's alpha bit to UI compositing.
+-            dst[di + 3] = 0xFF;
+-            di += 4;
++            for (int i = 0; i < input.Length; i++)
++                output[i] = colors[BinaryPrimitives.ReverseEndianness(input[i]) >> 1];
+         }
+-
+-        if (di < dst.Length)
+-            dst[di..].Clear();
++        else
++        {
++            for (int i = 0; i < input.Length; i++)
++                output[i] = colors[input[i] >> 1];
++        }
++        dst[(pixels * 4)..].Clear();
+     }
+ 
+     private static (bool Swap, int NormalScore, int SwappedScore) DetectRgba5551ByteOrder(ReadOnlySpan<byte> src)
