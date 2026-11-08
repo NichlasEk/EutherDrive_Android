@@ -162,6 +162,9 @@ internal static class Sm64Benchmark
                 .Select(p => new { pc = p.Key.ToString("x8"), counts = p.Value }), new JsonSerializerOptions { WriteIndented = true }));
 #endif
         Console.WriteLine(core.LastPerformanceStatus);
+#if N64_CPU_DISPATCH_PROFILE
+        Console.WriteLine("cpuDispatchProfile=" + R4300.GetCpuDispatchProfile());
+#endif
 #if N64_RSP_PROFILE
         string rspProfile = memory.GetRspBlockProfile();
         File.WriteAllText(Path.Combine(output, "rsp-profile.txt"), rspProfile);

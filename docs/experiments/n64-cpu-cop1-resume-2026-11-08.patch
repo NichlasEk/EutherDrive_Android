@@ -1,0 +1,393 @@
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+index 93472a45..2dbf7573 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+@@ -38,7 +38,11 @@ namespace Ryu64.MIPS
+         private static int GetCpuBlockOpcodeKind(uint opcode)
+         {
+             int primary = (int)(opcode >> 26);
+-            if (primary == 17) return IsStraightCop1Instruction(opcode) ? 17 : -1;
++            if (primary == 17)
++            {
++                if ((opcode & 0xfffc0000u) == 0x45000000u) return 145 + (int)((opcode >> 16) & 3);
++                return IsStraightCop1Instruction(opcode) ? 17 : -1;
++            }
+             if (primary == 1)
+             {
+                 uint condition = (opcode >> 16) & 31;
+@@ -203,6 +207,7 @@ namespace Ryu64.MIPS
+
+         private static bool CpuLikelyTaken(OpcodeTable.OpcodeDesc desc, int kind)
+         {
++            if (IsCpuCop1Branch(kind)) return CpuCop1BranchTaken(kind);
+             // Rejected blocks must not normalize a stale r0 as a side effect.
+             ulong left = desc.op1 == 0 ? 0 : Registers.R4300.Reg[desc.op1];
+             ulong right = desc.op2 == 0 ? 0 : Registers.R4300.Reg[desc.op2];
+@@ -215,7 +220,7 @@ namespace Ryu64.MIPS
+         // exactly as the ordinary branch handlers do. Fetch the target live afterward.
+         private static void ExecuteQuietBranch(OpcodeTable.OpcodeDesc desc, int kind, uint delayOpcode, int delayKind, uint elapsed)
+         {
+-            if (CpuJitLikely(kind)) kind -= 16;
++            if ((uint)(kind - 20) < 4) kind -= 16;
+             uint branchPc = Registers.R4300.PC;
+             uint target;
+             if (kind == 2 || kind == 3)
+@@ -225,7 +230,8 @@ namespace Ryu64.MIPS
+             else
+             {
+                 long value = (long)Registers.R4300.Reg[desc.op1];
+-                bool take = kind == 128 ? value < 0 : kind == 129 ? value >= 0
++                bool take = IsCpuCop1Branch(kind) ? CpuCop1BranchTaken(kind)
++                    : kind == 128 ? value < 0 : kind == 129 ? value >= 0
+                     : kind == 6 ? value <= 0 : kind == 7 ? value > 0
+                     : kind == 4 ? Registers.R4300.Reg[desc.op1] == Registers.R4300.Reg[desc.op2]
+                     : Registers.R4300.Reg[desc.op1] != Registers.R4300.Reg[desc.op2];
+@@ -366,7 +372,10 @@ namespace Ryu64.MIPS
+                 var desc = new OpcodeTable.OpcodeDesc(opcode);
+                 // COP1 needs a live usability check, and loads/stores need
+                 // operand validation. Integer ALU and CP0 need neither here.
+-                if ((kind == 17 || (uint)(kind - 32) < 32) && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
++                if ((kind == 17 || IsCpuCop1Branch(kind) || (uint)(kind - 32) < 32) && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
++#if N64_CPU_DISPATCH_PROFILE
++                bool fallbackStore = CpuJitStore(kind);
++#endif
+                 bool branch = CpuJitBranch(kind);
+                 bool annul = CpuJitLikely(kind) && !CpuLikelyTaken(desc, kind);
+                 uint delayOpcode = 0;
+@@ -375,6 +384,9 @@ namespace Ryu64.MIPS
+                     || !memory.TryReadRdramUInt32PhysicalFast(physical + 4, out delayOpcode)
+                     || (delayKind = GetCpuBlockOpcodeKind(delayOpcode)) < 0
+                     || CpuJitBranch(delayKind)
++                    // Ordinary BC1F/T inspect the condition after their delay.
++                    // Keep condition-changing delays on that established path.
++                    || (IsCpuCop1Branch(kind) && ChangesCop1Condition(delayOpcode))
+                     || !CanAccessCpuBlockOperand(new OpcodeTable.OpcodeDesc(delayOpcode), delayKind,
+                         kind == 3 ? 31 : kind == 73 ? desc.op3 : -1, pc + 8)))
+                     break;
+@@ -391,6 +403,9 @@ namespace Ryu64.MIPS
+                     // A branch to itself remains one outer-loop iteration, so
+                     // the existing stuck-PC watchdog keeps its exact cadence.
+                     if (Registers.R4300.PC == pc) break;
++                    // These newly admitted branches previously returned to the
++                    // outer dispatcher, which trained/executed their successor.
++                    if (IsCpuCop1Branch(kind)) tryCompiled = true;
+                 }
+                 else
+                 {
+@@ -411,7 +426,12 @@ namespace Ryu64.MIPS
+                 int nextSlot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
+                 var successor = CpuJitCache[nextSlot];
+                 if (successor != null && successor.Pc == pc && successor.First == opcode
+-                    && successor.Code?.Run != null) _dispatchCachedSuccessor++;
++                    && successor.Code?.Run != null)
++                {
++                    _dispatchCachedSuccessor++;
++                    if (branch) _dispatchCachedAfterBranch++;
++                    if (fallbackStore) _dispatchCachedAfterStore++;
++                }
+ #endif
+             }
+             if (done == 0)
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Cop1Blocks.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Cop1Blocks.cs
+index d33c1904..e3988131 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Cop1Blocks.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Cop1Blocks.cs
+@@ -5,12 +5,31 @@ namespace Ryu64.MIPS
+     public partial class R4300
+     {
+         private static bool IsCpuBlockCop1(int kind)
+-            => kind == 17 || kind == 49 || kind == 53 || kind == 57 || kind == 61;
++            => kind == 17 || kind == 49 || kind == 53 || kind == 57 || kind == 61 || IsCpuCop1Branch(kind);
++
++        private static bool IsCpuCop1Branch(int kind) => (uint)(kind - 145) < 4;
++        private static bool CpuCop1BranchTaken(int kind)
++            => ((Registers.COP1.Control[31] & (1u << 23)) != 0) == ((kind & 1) == 0);
++
++        private static bool ChangesCop1Condition(uint word)
++        {
++            if ((word >> 26) != 17) return false;
++            uint format = (word >> 21) & 31;
++            return (format == 6 && ((word >> 11) & 31) == 31)
++                || ((format == 16 || format == 17) && (word & 63) >= 48);
++        }
++
++        private static void EmitCpuJitCop1Branch(ILGenerator il, int kind, Label taken)
++        {
++            il.Emit(OpCodes.Ldsfld, typeof(Registers.COP1).GetField(nameof(Registers.COP1.Control)));
++            il.Emit(OpCodes.Ldc_I4, 31); il.Emit(OpCodes.Ldelem_U4);
++            il.Emit(OpCodes.Ldc_I4, 1 << 23); il.Emit(OpCodes.And);
++            il.Emit((kind & 1) == 0 ? OpCodes.Brtrue : OpCodes.Brfalse, taken);
++        }
+
+         private static bool IsStraightCop1Instruction(uint word)
+         {
+-            // Match OpcodeTable's supported encodings. Branches (including
+-            // likely branches) retain their ordinary delay-slot handling.
++            // Match OpcodeTable's supported straight-line encodings.
+             uint format = (word >> 21) & 31, function = word & 63;
+             switch (format)
+             {
+@@ -25,7 +44,7 @@ namespace Ryu64.MIPS
+
+         private static bool EmitCpuJitCop1(ILGenerator il, OpcodeTable.OpcodeDesc desc, int kind)
+         {
+-            if (!IsCpuBlockCop1(kind)) return false;
++            if (!IsCpuBlockCop1(kind) || IsCpuCop1Branch(kind)) return false;
+             // Resolve dispatch once. Reuse the interpreter's arithmetic and
+             // FR-dependent register mapping, including NaNs, rounding, control
+             // registers and high halves of paired registers. The caller guards
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Jit.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Jit.cs
+index 5367cbe1..c11d8cb5 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Jit.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Jit.cs
+@@ -212,8 +212,8 @@ namespace Ryu64.MIPS
+         private static ulong ReadCpuJit16(byte[] ram, int address)
+             => System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(ram.AsSpan(address, 2));
+
+-        private static bool CpuJitLikely(int kind) => (uint)(kind - 20) < 4;
+-        private static bool CpuJitBranch(int kind) => (kind >= 2 && kind <= 7) || CpuJitLikely(kind) || kind == 72 || kind == 73 || kind == 128 || kind == 129;
++        private static bool CpuJitLikely(int kind) => (uint)(kind - 20) < 4 || (uint)(kind - 147) < 2;
++        private static bool CpuJitBranch(int kind) => (kind >= 2 && kind <= 7) || CpuJitLikely(kind) || IsCpuCop1Branch(kind) || kind == 72 || kind == 73 || kind == 128 || kind == 129;
+         private static bool CpuJitStore(int kind) => kind == 40 || kind == 41 || kind == 43 || kind == 57 || kind == 61 || kind == 63;
+
+         private static bool IsInvariantCpuJitLoop(List<uint> words)
+@@ -345,7 +345,8 @@ namespace Ryu64.MIPS
+                 {
+                     if (i + 1 == maximumWords || !memory.TryReadRdramUInt32PhysicalFast(physical + (uint)(i + 1) * 4, out uint delay)) break;
+                     int dk = GetCpuBlockOpcodeKind(delay);
+-                    if (dk < 0 || CpuJitBranch(dk) || (mapped && (dk == 16 || dk == 144))) break;
++                    if (dk < 0 || CpuJitBranch(dk) || (IsCpuCop1Branch(kind) && ChangesCop1Condition(delay))
++                        || (mapped && (dk == 16 || dk == 144))) break;
+                     words.Add(word); words.Add(delay);
+                     break;
+                 }
+@@ -546,22 +547,33 @@ namespace Ryu64.MIPS
+                 bool directMemory = kind == 32 || kind == 33 || kind == 35 || kind == 36 || kind == 37 || kind == 39 || kind == 43 || kind == 55;
+                 uint delay = branch ? words[i + 1] : 0;
+                 int dk = branch ? GetCpuBlockOpcodeKind(delay) : -1;
++                if (IsCpuCop1Branch(kind))
++                {
++                    var usable = il.DefineLabel();
++                    Desc(word); U((uint)kind); U(uint.MaxValue); U(0);
++                    il.Emit(OpCodes.Call, JitValidate); il.Emit(OpCodes.Brtrue, usable);
++                    Pc(pc); Exit((uint)i); il.MarkLabel(usable);
++                }
+                 if (CpuJitLikely(kind))
+                 {
+                     // An annulled delay slot has no operand checks or effects.
+                     var taken = il.DefineLabel();
+-                    if (desc.op1 == 0) il.Emit(OpCodes.Ldc_I8, 0L);
+-                    else registers.Read(desc.op1);
+-                    if (kind == 20 || kind == 21)
+-                    {
+-                        if (desc.op2 == 0) il.Emit(OpCodes.Ldc_I8, 0L);
+-                        else registers.Read(desc.op2);
+-                        il.Emit(kind == 20 ? OpCodes.Beq : OpCodes.Bne_Un, taken);
+-                    }
++                    if (IsCpuCop1Branch(kind)) EmitCpuJitCop1Branch(il, kind, taken);
+                     else
+                     {
+-                        il.Emit(OpCodes.Ldc_I8, 0L);
+-                        il.Emit(kind == 22 ? OpCodes.Ble : OpCodes.Bgt, taken);
++                        if (desc.op1 == 0) il.Emit(OpCodes.Ldc_I8, 0L);
++                        else registers.Read(desc.op1);
++                        if (kind == 20 || kind == 21)
++                        {
++                            if (desc.op2 == 0) il.Emit(OpCodes.Ldc_I8, 0L);
++                            else registers.Read(desc.op2);
++                            il.Emit(kind == 20 ? OpCodes.Beq : OpCodes.Bne_Un, taken);
++                        }
++                        else
++                        {
++                            il.Emit(OpCodes.Ldc_I8, 0L);
++                            il.Emit(kind == 22 ? OpCodes.Ble : OpCodes.Bgt, taken);
++                        }
+                     }
+                     registers.NormalizeZero(); Pc(pc + 8); Exit((uint)i + 1);
+                     il.MarkLabel(taken);
+@@ -613,17 +625,21 @@ namespace Ryu64.MIPS
+                     else
+                     {
+                         var taken = il.DefineLabel(); var selected = il.DefineLabel();
+-                        registers.Read(desc.op1);
+-                        if (kind == 4 || kind == 5)
+-                        {
+-                            registers.Read(desc.op2);
+-                            il.Emit(kind == 4 ? OpCodes.Beq : OpCodes.Bne_Un, taken);
+-                        }
++                        if (IsCpuCop1Branch(kind)) EmitCpuJitCop1Branch(il, kind, taken);
+                         else
+                         {
+-                            il.Emit(OpCodes.Ldc_I8, 0L);
+-                            il.Emit(kind == 128 ? OpCodes.Blt : kind == 129 ? OpCodes.Bge
+-                                : kind == 6 ? OpCodes.Ble : OpCodes.Bgt, taken);
++                            registers.Read(desc.op1);
++                            if (kind == 4 || kind == 5)
++                            {
++                                registers.Read(desc.op2);
++                                il.Emit(kind == 4 ? OpCodes.Beq : OpCodes.Bne_Un, taken);
++                            }
++                            else
++                            {
++                                il.Emit(OpCodes.Ldc_I8, 0L);
++                                il.Emit(kind == 128 ? OpCodes.Blt : kind == 129 ? OpCodes.Bge
++                                    : kind == 6 ? OpCodes.Ble : OpCodes.Bgt, taken);
++                            }
+                         }
+                         U(pc + 8); il.Emit(OpCodes.Br, selected);
+                         il.MarkLabel(taken); U(unchecked(pc + 4u + (uint)((int)(short)desc.Imm << 2)));
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.JitRegisters.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.JitRegisters.cs
+index e3acea33..50ef8c47 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.JitRegisters.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.JitRegisters.cs
+@@ -43,6 +43,7 @@ namespace Ryu64.MIPS
+                     uint reads = 0, writes = 0;
+                     if (CpuJitBranch(kind))
+                     {
++                        if (IsCpuCop1Branch(kind)) return;
+                         // Delay-slot memory/COP instructions use shared helpers.
+                         if (i + 1 >= words.Count || !IsCpuJitAlu(GetCpuBlockOpcodeKind(words[i + 1]))) return;
+                         if (kind != 2 && kind != 3) reads = 1u << d.op1;
+diff --git a/tools/N64Probe/CpuBlockChecks.cs b/tools/N64Probe/CpuBlockChecks.cs
+index 39bc34d0..65632482 100644
+--- a/tools/N64Probe/CpuBlockChecks.cs
++++ b/tools/N64Probe/CpuBlockChecks.cs
+@@ -48,7 +48,7 @@ internal static class CpuBlockChecks
+         var classify = typeof(R4300).GetMethod("GetCpuBlockOpcodeKind", cpuFlags)!.CreateDelegate<Func<uint,int>>();
+         var classifyNext = typeof(R4300).GetMethod("GetNextCpuBlockOpcodeKind", cpuFlags)!.CreateDelegate<Func<uint,uint,int>>();
+         var loopEntry = typeof(R4300).GetMethod("IsExistingLoopEntry", cpuFlags)!.CreateDelegate<Func<uint,uint,bool>>();
+-        var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR","BLTZ","BGEZ","BLEZ","BGTZ","BEQL","BNEL","BLEZL","BGTZL", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
++        var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR","BLTZ","BGEZ","BLEZ","BGTZ","BEQL","BNEL","BLEZL","BGTZL","BC1F","BC1T","BC1FL","BC1TL", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
+         allowed.Add("MFHI"); allowed.Add("MFLO");
+         uint sample = 0x430064;
+         int decoded = 0;
+@@ -189,6 +189,93 @@ internal static class CpuBlockChecks
+         { Reset(); Check(0); Console.WriteLine("cpuBlockDisabled=passed"); return; }
+         if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_FALLBACK_ONLY") == "1")
+         { CheckFallbackBoundaries(); return; }
++        void CheckCop1Branches()
++        {
++            int first = cases;
++            foreach (uint branch in new uint[] { 0, 1, 2, 3 })
++            foreach (bool condition in new[] { false, true })
++            foreach (bool usable in new[] { false, true })
++            foreach (int prefix in new[] { 0, 2 })
++            foreach (uint delay in new uint[] { 0, 0x24840001, 0xc4850000, 0xc4c50000,
++                0x44c5f800, 0x46000032, 0x40806000, 0x10000000, 0x0000000c })
++            {
++                Reset(); Registers.R4300.Reg[0] = 42;
++                Registers.R4300.Reg[4] = 0x80020000; Registers.R4300.Reg[6] = 0xa4400000;
++                Registers.COP0.Reg[12] = usable ? 0x20000000u : 0;
++                Registers.COP1.Control[31] = (condition ? 1u << 23 : 0) | 0x403;
++                for (int n = 0; n < prefix; n++) Code(n, 0x24420001);
++                Code(prefix, 0x45000002u | branch << 16); Code(prefix + 1, delay);
++                Code(prefix + 2, 0x0000000d); Code(prefix + 3, 0x0000000d);
++                bool taken = condition == ((branch & 1) != 0);
++                bool annul = branch >= 2 && !taken;
++                bool validDelay = delay is 0 or 0x24840001 or 0xc4850000 or 0x40806000;
++                Check((uint)prefix + (!usable ? 0u : annul ? 1u : validDelay ? 2u : 0u));
++                if (jit && usable && prefix == 0 && delay == 0
++                    && (long)typeof(R4300).GetField("CpuJitInstructions", cpuFlags)!.GetValue(null)! == 0)
++                    throw new Exception("COP1 branch did not execute native code");
++            }
++            foreach (uint branch in new uint[] { 0, 1, 2, 3 })
++            foreach (bool condition in new[] { false, true })
++            foreach (uint budget in new uint[] { 2, 3, 4 })
++            foreach (uint deadline in new uint[] { 0, 2, 3, 4 })
++            {
++                Reset(); Registers.COP0.Reg[12] = 0x20000000;
++                Registers.COP1.Control[31] = condition ? 1u << 23 : 0;
++                Code(0, 0x24420001); Code(1, 0x45000002u | branch << 16); Code(2, 0);
++                Code(3, 0x0000000d); Code(4, 0x0000000d);
++                if (deadline != 0) { Set("_aiInterruptDelayArmed", true); Set("_aiInterruptDelayRemaining", deadline); }
++                uint limit = deadline == 0 ? budget : Math.Min(budget, deadline - 1);
++                bool annul = branch >= 2 && condition != ((branch & 1) != 0);
++                Check(limit < 2 ? 0 : annul ? 2u : limit >= 3 ? 3u : 1u, budget);
++            }
++            foreach (uint branch in new uint[] { 0, 1, 2, 3 })
++            {
++                Reset(); Registers.COP0.Reg[12] = 0x20000000;
++                Registers.COP1.Control[31] = (branch & 1) != 0 ? 1u << 23 : 0;
++                Code(0, 0x4500ffffu | branch << 16); Code(1, 0); Check(2);
++                Reset(); Registers.COP0.Reg[12] = 0x20000000;
++                Registers.COP1.Control[31] = (branch & 1) != 0 ? 1u << 23 : 0;
++                Code(0, 0x24420001); Code(1, 0x4500fffeu | branch << 16); Code(2, 0); Check(30, 30);
++                foreach (bool enable in new[] { false, true })
++                {
++                    Reset(); Registers.COP0.Reg[12] = enable ? 0u : 0x20000000u;
++                    Registers.R4300.Reg[5] = enable ? 0x20000000u : 0u;
++                    Registers.R4300.Reg[6] = (branch & 1) != 0 ? 1u << 23 : 0;
++                    Code(0, 0x40856000); Code(1, 0x44c6f800); // Live STATUS and FCR31 writes.
++                    Code(2, 0x45000002u | branch << 16); Code(3, 0);
++                    Code(4, 0x0000000d); Code(5, 0x0000000d);
++                    Check(enable ? 4u : 1u);
++                }
++            }
++            if (jit)
++            {
++                var hot = typeof(R4300).GetField("CpuJitHotThreshold", cpuFlags)!;
++                var native = typeof(R4300).GetField("CpuJitInstructions", cpuFlags)!;
++                foreach (uint branch in new uint[] { 0, 1, 2, 3 })
++                foreach (bool condition in new[] { false, true })
++                {
++                    bool taken = condition == ((branch & 1) != 0);
++                    int target = taken ? 5 : 2;
++                    void Setup()
++                    {
++                        Reset(); Registers.COP0.Reg[12] = 0x20000000;
++                        Registers.COP1.Control[31] = condition ? 1u << 23 : 0;
++                        Code(0, 0x45000004u | branch << 16); Code(1, 0);
++                        Code(target + 8, 0x0000000d);
++                    }
++                    Setup(); Registers.R4300.PC = 0x80010000u + (uint)target * 4;
++                    Check(8, 8); // Warm only the target, leaving the branch cold.
++                    Setup(); hot.SetValue(null, 100); native.SetValue(null, 0L);
++                    Check((branch >= 2 && !taken ? 1u : 2u) + 8, clearJit: false);
++                    hot.SetValue(null, 1);
++                    if ((long)native.GetValue(null)! == 0)
++                        throw new Exception("Cold COP1 branch failed to resume its native successor");
++                }
++            }
++            Console.WriteLine($"cpuCop1BranchCases={cases - first} fullState=passed history={(jit ? "passed" : "disabled")} unusable=passed annul=passed conditionDelays=excluded deadlines=passed");
++        }
++        CheckCop1Branches();
++        if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_COP1_BRANCH_ONLY") == "1") return;
+         void CheckCountRollover()
+         {
+             int first = cases;
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
+index 3f905fc1..458ee6c9 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
+@@ -11,7 +11,7 @@ namespace Ryu64.MIPS
+         private static long _dispatchFallbackInstructions, _dispatchFallbackTicks;
+         private static long _dispatchKindReject, _dispatchModeReject, _dispatchInterruptReject;
+         private static long _dispatchAddressReject, _dispatchQuietReject, _dispatchZeroResult;
+-        private static long _dispatchCachedSuccessor;
++        private static long _dispatchCachedSuccessor, _dispatchCachedAfterBranch, _dispatchCachedAfterStore;
+         private static readonly long[] _dispatchKindRejectByPrimary = new long[64];
+         private static readonly long[] _dispatchSpecialRejectByFunction = new long[64];
+
+@@ -25,7 +25,7 @@ namespace Ryu64.MIPS
+             $"kindReject={_dispatchKindReject} modeReject={_dispatchModeReject} " +
+             $"interruptReject={_dispatchInterruptReject} addressReject={_dispatchAddressReject} " +
+             $"quietReject={_dispatchQuietReject} zeroResult={_dispatchZeroResult} " +
+-            $"cachedSuccessor={_dispatchCachedSuccessor} " +
++            $"cachedSuccessor={_dispatchCachedSuccessor} afterBranch={_dispatchCachedAfterBranch} afterStore={_dispatchCachedAfterStore} " +
+             "kindRejectPrimary=" + FormatCounts(_dispatchKindRejectByPrimary) + " " +
+             "specialRejectFunction=" + FormatCounts(_dispatchSpecialRejectByFunction);
+
+diff --git a/tools/N64Probe/Sm64Benchmark.cs b/tools/N64Probe/Sm64Benchmark.cs
+index ca97ea93..093b75b9 100644
+--- a/tools/N64Probe/Sm64Benchmark.cs
++++ b/tools/N64Probe/Sm64Benchmark.cs
+@@ -162,6 +162,9 @@ internal static class Sm64Benchmark
+                 .Select(p => new { pc = p.Key.ToString("x8"), counts = p.Value }), new JsonSerializerOptions { WriteIndented = true }));
+ #endif
+         Console.WriteLine(core.LastPerformanceStatus);
++#if N64_CPU_DISPATCH_PROFILE
++        Console.WriteLine("cpuDispatchProfile=" + R4300.GetCpuDispatchProfile());
++#endif
+ #if N64_RSP_PROFILE
+         string rspProfile = memory.GetRspBlockProfile();
+         File.WriteAllText(Path.Combine(output, "rsp-profile.txt"), rspProfile);

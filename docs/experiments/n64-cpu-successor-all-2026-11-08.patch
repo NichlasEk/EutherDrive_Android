@@ -1,0 +1,119 @@
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+index 93472a45..98a60dd0 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+@@ -367,6 +367,9 @@ namespace Ryu64.MIPS
+                 // COP1 needs a live usability check, and loads/stores need
+                 // operand validation. Integer ALU and CP0 need neither here.
+                 if ((kind == 17 || (uint)(kind - 32) < 32) && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
++#if N64_CPU_DISPATCH_PROFILE
++                bool fallbackStore = CpuJitStore(kind);
++#endif
+                 bool branch = CpuJitBranch(kind);
+                 bool annul = CpuJitLikely(kind) && !CpuLikelyTaken(desc, kind);
+                 uint delayOpcode = 0;
+@@ -407,12 +410,21 @@ namespace Ryu64.MIPS
+                     || physical < 0x4000 || !memory.TryReadRdramUInt32PhysicalFast(physical, out opcode)
+                     || (kind = GetNextCpuBlockOpcodeKind(pc, opcode)) < 0)
+                     break;
+-#if N64_CPU_DISPATCH_PROFILE
++                // A miss need not keep the rest of this quiet interval in the
++                // interpreter. Re-enter only a published, matching successor;
++                // TryRunCpuJit retains its complete code and operand guards.
+                 int nextSlot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
+                 var successor = CpuJitCache[nextSlot];
+                 if (successor != null && successor.Pc == pc && successor.First == opcode
+-                    && successor.Code?.Run != null) _dispatchCachedSuccessor++;
++                    && successor.Code?.Run != null)
++                {
++                    tryCompiled = true;
++#if N64_CPU_DISPATCH_PROFILE
++                    _dispatchCachedSuccessor++;
++                    if (branch) _dispatchCachedAfterBranch++;
++                    if (fallbackStore) _dispatchCachedAfterStore++;
+ #endif
++                }
+             }
+             if (done == 0)
+             {
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
+index 3f905fc1..458ee6c9 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
+@@ -11,7 +11,7 @@ namespace Ryu64.MIPS
+         private static long _dispatchFallbackInstructions, _dispatchFallbackTicks;
+         private static long _dispatchKindReject, _dispatchModeReject, _dispatchInterruptReject;
+         private static long _dispatchAddressReject, _dispatchQuietReject, _dispatchZeroResult;
+-        private static long _dispatchCachedSuccessor;
++        private static long _dispatchCachedSuccessor, _dispatchCachedAfterBranch, _dispatchCachedAfterStore;
+         private static readonly long[] _dispatchKindRejectByPrimary = new long[64];
+         private static readonly long[] _dispatchSpecialRejectByFunction = new long[64];
+
+@@ -25,7 +25,7 @@ namespace Ryu64.MIPS
+             $"kindReject={_dispatchKindReject} modeReject={_dispatchModeReject} " +
+             $"interruptReject={_dispatchInterruptReject} addressReject={_dispatchAddressReject} " +
+             $"quietReject={_dispatchQuietReject} zeroResult={_dispatchZeroResult} " +
+-            $"cachedSuccessor={_dispatchCachedSuccessor} " +
++            $"cachedSuccessor={_dispatchCachedSuccessor} afterBranch={_dispatchCachedAfterBranch} afterStore={_dispatchCachedAfterStore} " +
+             "kindRejectPrimary=" + FormatCounts(_dispatchKindRejectByPrimary) + " " +
+             "specialRejectFunction=" + FormatCounts(_dispatchSpecialRejectByFunction);
+
+diff --git a/tools/N64Probe/CpuBlockChecks.cs b/tools/N64Probe/CpuBlockChecks.cs
+index 39bc34d0..a44c95ae 100644
+--- a/tools/N64Probe/CpuBlockChecks.cs
++++ b/tools/N64Probe/CpuBlockChecks.cs
+@@ -189,6 +189,40 @@ internal static class CpuBlockChecks
+         { Reset(); Check(0); Console.WriteLine("cpuBlockDisabled=passed"); return; }
+         if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_FALLBACK_ONLY") == "1")
+         { CheckFallbackBoundaries(); return; }
++        void CheckPublishedSuccessors()
++        {
++            if (!jit) return;
++            int first = cases;
++            var instructions = typeof(R4300).GetField("CpuJitInstructions", cpuFlags)!;
++            foreach (bool branch in new[] { false, true })
++            foreach (int mode in new[] { 0, 1, 2, 3, 4 })
++            {
++                int target = branch ? 4 : 1;
++                void Setup()
++                {
++                    Reset(); Code(0, 0xac850000); // Store cannot form a native block alone.
++                    if (branch) { Code(1, 0x10000002); Code(2, 0x2400002a); Code(3, 0x0000000d); }
++                    Registers.R4300.Reg[6] = 0x80020000;
++                    for (int i = 0; i < 8; i++) Code(target + i, 0x24420001);
++                    if (mode >= 3) Code(target + (mode == 3 ? 0 : 3), 0x8cc50000);
++                    Code(target + 8, 0x0000000d);
++                }
++                Setup(); Registers.R4300.PC = 0x80010000u + (uint)target * 4;
++                Check(8, 8); // Publish the successor first, then restore guest state.
++                Setup();
++                if (mode == 1) Code(target, 0x24420002); // Entry-word mismatch.
++                if (mode == 2) Code(target + 2, 0x24420002); // Interior code guard.
++                if (mode >= 3) Registers.R4300.Reg[6] = 0xa4400000; // Live MMIO rejection.
++                instructions.SetValue(null, 0L);
++                uint prefix = branch ? 3u : 1u;
++                Check(prefix + (mode == 3 ? 0u : mode == 4 ? 3u : 8u), clearJit: false);
++                if ((mode == 0 || mode == 4) && (long)instructions.GetValue(null)! == 0)
++                    throw new Exception("Published successor was left in interpreter fallback");
++            }
++            Console.WriteLine($"cpuPublishedSuccessorCases={cases - first} fullState=passed history=passed staleCode=passed liveOperands=passed");
++        }
++        CheckPublishedSuccessors();
++        if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_SUCCESSOR_ONLY") == "1") return;
+         void CheckCountRollover()
+         {
+             int first = cases;
+diff --git a/tools/N64Probe/Sm64Benchmark.cs b/tools/N64Probe/Sm64Benchmark.cs
+index ca97ea93..093b75b9 100644
+--- a/tools/N64Probe/Sm64Benchmark.cs
++++ b/tools/N64Probe/Sm64Benchmark.cs
+@@ -162,6 +162,9 @@ internal static class Sm64Benchmark
+                 .Select(p => new { pc = p.Key.ToString("x8"), counts = p.Value }), new JsonSerializerOptions { WriteIndented = true }));
+ #endif
+         Console.WriteLine(core.LastPerformanceStatus);
++#if N64_CPU_DISPATCH_PROFILE
++        Console.WriteLine("cpuDispatchProfile=" + R4300.GetCpuDispatchProfile());
++#endif
+ #if N64_RSP_PROFILE
+         string rspProfile = memory.GetRspBlockProfile();
+         File.WriteAllText(Path.Combine(output, "rsp-profile.txt"), rspProfile);

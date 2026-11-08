@@ -367,6 +367,9 @@ namespace Ryu64.MIPS
                 // COP1 needs a live usability check, and loads/stores need
                 // operand validation. Integer ALU and CP0 need neither here.
                 if ((kind == 17 || (uint)(kind - 32) < 32) && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
+#if N64_CPU_DISPATCH_PROFILE
+                bool fallbackStore = CpuJitStore(kind);
+#endif
                 bool branch = CpuJitBranch(kind);
                 bool annul = CpuJitLikely(kind) && !CpuLikelyTaken(desc, kind);
                 uint delayOpcode = 0;
@@ -411,7 +414,12 @@ namespace Ryu64.MIPS
                 int nextSlot = (int)((pc >> 2) & (CpuJitCache.Length - 1));
                 var successor = CpuJitCache[nextSlot];
                 if (successor != null && successor.Pc == pc && successor.First == opcode
-                    && successor.Code?.Run != null) _dispatchCachedSuccessor++;
+                    && successor.Code?.Run != null)
+                {
+                    _dispatchCachedSuccessor++;
+                    if (branch) _dispatchCachedAfterBranch++;
+                    if (fallbackStore) _dispatchCachedAfterStore++;
+                }
 #endif
             }
             if (done == 0)
