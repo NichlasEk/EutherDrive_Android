@@ -11,6 +11,22 @@ internal static class RspBlockChecks
 
     internal static void Run(string reference)
     {
+        if (Environment.GetEnvironmentVariable("N64_PROBE_RSP_BASELINE_ONLY") == "1")
+        {
+            string actualBaseline = CheckProgressBaseline(typeof(Memory).Assembly, true);
+            var baselineContext = new AssemblyLoadContext("baseline-oracle", true);
+            string previous = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT");
+            try
+            {
+                Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT", "0");
+                var oracle = baselineContext.LoadFromAssemblyPath(Path.GetFullPath(reference));
+                if (actualBaseline != CheckProgressBaseline(oracle, false))
+                    throw new Exception("RSP resumed progress baseline differs from interpreter");
+            }
+            finally { Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT", previous); baselineContext.Unload(); }
+            Console.WriteLine($"rspProgressBaseline=4 staleHashCollision=passed dirtyRegister=passed sha256={actualBaseline}");
+            return;
+        }
         if (Environment.GetEnvironmentVariable("N64_PROBE_LONG_RSP_LOOPS") == "1")
         {
             CheckLongLoops(reference);
@@ -20,6 +36,7 @@ internal static class RspBlockChecks
             throw new Exception("Remove EUTHERDRIVE_N64_RSP_BLOCK_JIT=0 for this check.");
         Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_TASK_MAX_INSTRUCTIONS", "61");
         string actual = Check(typeof(Memory).Assembly, true);
+        string progressBaseline = CheckProgressBaseline(typeof(Memory).Assembly, true);
         string sliced, exits, deadlines, codeValidation;
         var context = new AssemblyLoadContext("reference-blocks", true);
         string previousBlocks = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT");
@@ -45,6 +62,8 @@ internal static class RspBlockChecks
             deadlines = CheckProgressDeadlines(typeof(Memory).Assembly);
             if (deadlines != CheckProgressDeadlines(referenceAssembly))
                 throw new Exception("RSP progress differs across DMA/task/interrupt deadlines");
+            if (progressBaseline != CheckProgressBaseline(referenceAssembly, false))
+                throw new Exception("RSP resumed progress baseline differs from interpreter");
         }
         finally
         {
@@ -56,7 +75,55 @@ internal static class RspBlockChecks
         Console.WriteLine($"rspSliceExits=126 sha256={exits} differential=passed");
         Console.WriteLine($"rspProgressDeadlines=192 sha256={deadlines} differential=passed");
         Console.WriteLine($"rspCodeValidation=32 sha256={codeValidation} differential=passed");
+        Console.WriteLine($"rspProgressBaseline=4 staleHashCollision=passed dirtyRegister=passed sha256={progressBaseline}");
         CheckLoopDispatch();
+    }
+
+    private static string CheckProgressBaseline(Assembly assembly, bool expectBlocks)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (bool futureSignature in new[] { false, true })
+        foreach (bool dirty in new[] { false, true })
+        {
+            Type memoryType = assembly.GetType("Ryu64.MIPS.Memory")!;
+            object memory = Activator.CreateInstance(memoryType, new object[] { new byte[4096] })!;
+            assembly.GetType("Ryu64.MIPS.R4300")!.GetField("memory")!.SetValue(null, memory);
+            object rsp = memoryType.GetField("_rspInterpreter", Private)!.GetValue(memory)!;
+            Type rspType = rsp.GetType();
+            var taskField = memoryType.GetField("_activeRspTask", Private)!;
+            object task = Activator.CreateInstance(taskField.FieldType)!;
+            taskField.FieldType.GetField("Type")!.SetValue(task, 1u);
+            taskField.SetValue(memory, task);
+            memoryType.GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);
+            byte[] sp = (byte[])memoryType.GetField("SP_MEM_RW")!.GetValue(memory)!;
+            uint[] program = { 0, 0x24210001, 0, 0x0000000d };
+            for (int i = 0; i < program.Length; i++)
+                BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + i * 4), program[i]);
+            uint[] gpr = (uint[])rspType.GetField("_gpr", Private)!.GetValue(rsp)!;
+            gpr[1] = futureSignature ? 1u : 0u;
+            ulong signature = (ulong)rspType.GetMethod("ComputeProgressSignature", Private)!.Invoke(rsp, new object[] { true })!;
+            gpr[1] = 0;
+            // A signature retained across a scheduling boundary can happen to
+            // equal the next instruction's result. Seed that collision exactly.
+            // Pending branch forces the initial NOP through the ordinary path.
+            rspType.GetField("_lastProgressSignature", Private)!.SetValue(rsp, signature);
+            rspType.GetField("_progressRegistersDirty", Private)!.SetValue(rsp, dirty);
+            rspType.GetField("_stagnantInstructionCount", Private)!.SetValue(rsp, 5u);
+            rspType.GetField("_branchPending", Private)!.SetValue(rsp, true);
+            rspType.GetField("_branchTarget", Private)!.SetValue(rsp, 4u);
+            var execute = rspType.GetMethod("ExecuteSlice", Private)!.CreateDelegate<ExecuteSlice>(rsp);
+            bool completed = execute(out uint instructions, out string reason, true, 3);
+            if (completed || instructions != 3 || reason != "slice") throw new Exception("Unexpected baseline-test exit");
+            if (expectBlocks && Convert.ToInt64(rspType.GetField("_blockInstructions", Private)!.GetValue(rsp)) == 0)
+                throw new Exception("Baseline test did not exercise compiled progress");
+            uint stagnant = (uint)rspType.GetField("_stagnantInstructionCount", Private)!.GetValue(rsp)!;
+            if (futureSignature && !dirty && stagnant != 8) throw new Exception("Stale matching signature reset progress");
+            using var bytes = new MemoryStream();
+            using (var writer = new BinaryWriter(bytes, System.Text.Encoding.UTF8, true))
+                memoryType.GetMethod("SaveState")!.Invoke(memory, new object[] { writer });
+            hash.AppendData(bytes.ToArray());
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     private static string CheckCodeValidation(Assembly assembly)

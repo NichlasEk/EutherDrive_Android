@@ -1,0 +1,31 @@
+--- a/tools/N64Probe/Sm64Benchmark.cs
++++ b/tools/N64Probe/Sm64Benchmark.cs
+@@ -11,6 +11,10 @@
+ // the stop request occur at Joybus reads, never at wall-clock poll boundaries.
+ internal static class Sm64Benchmark
+ {
++    [StructLayout(LayoutKind.Sequential)]
++    private struct CpuCounters { public ulong Count, Enabled, Running, Cycles, Instructions; }
++    [DllImport("thread-counters")] private static extern int counters_start();
++    [DllImport("thread-counters")] private static extern int counters_read(out CpuCounters result, int stop);
+     private const ulong Clock = 93_750_000;
+     private const BindingFlags JitFlags = BindingFlags.Static | BindingFlags.NonPublic;
+ 
+@@ -110,10 +114,16 @@
+                 inputHash.AppendData(input);
+                 if (second >= nextSecond || second >= endSecond)
+                 {
++                    CpuCounters counters = default;
++                    if (nextSecond == 70 && counters_start() != 0) throw new Exception("Cannot start CPU counters");
++                    if (nextSecond >= 70 && counters_read(out counters, nextSecond >= endSecond ? 1 : 0) != 0)
++                        throw new Exception("Cannot read CPU counters");
++                    if (counters.Count != 0 && (counters.Count != 2 || counters.Running != counters.Enabled))
++                        throw new Exception("CPU counters were multiplexed");
+                     double wall = timer.Elapsed.TotalSeconds;
+                     double? threadCpuSeconds = CurrentThreadCpuSeconds();
+                     string ramHash = Convert.ToHexString(SHA256.HashData(memory.RDRAM));
+-                    var point = new { targetSecond = Math.Min(nextSecond, endSecond), cycles, reads, wallSeconds = wall, threadCpuSeconds,
++                    var point = new { targetSecond = Math.Min(nextSecond, endSecond), cycles, reads, wallSeconds = wall, threadCpuSeconds, threadCycles = counters.Cycles, threadInstructions = counters.Instructions, counterEnabled = counters.Enabled, counterRunning = counters.Running,
+                         audioFrames, audioSeconds, audioSha256 = Convert.ToHexString(audioHash.GetCurrentHash()),
+                         inputSha256 = Convert.ToHexString(inputHash.GetCurrentHash()), ramSha256 = ramHash,
+                         action = action.ToString("x8"), x, y, z,

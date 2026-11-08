@@ -1,0 +1,133 @@
+diff --git a/Ryu64/Ryu64.MIPS/RspBlockJit.cs b/Ryu64/Ryu64.MIPS/RspBlockJit.cs
+index 61772d5a..68c45979 100644
+--- a/Ryu64/Ryu64.MIPS/RspBlockJit.cs
++++ b/Ryu64/Ryu64.MIPS/RspBlockJit.cs
+@@ -24,6 +24,18 @@ namespace Ryu64.MIPS
+         private static readonly bool InlineHistoryEnabled =
+             Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_INLINE_HISTORY") != "0";
+         private const int MaxBlockInstructions = 16;
++        private static readonly bool LazyBlockProgressEnabled =
++            Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_LAZY_PROGRESS") == "1";
++        [NonSerialized] private bool _progressDeferralActive;
++        [NonSerialized] private bool _progressBaselineValid;
++        [NonSerialized] private bool _progressSignaturePending;
++
++        private void FlushBlockProgress()
++        {
++            if (!_progressSignaturePending) return;
++            _lastProgressSignature = ComputeProgressSignature(true);
++            _progressSignaturePending = false;
++        }
+         // Per interpreter: no cross-emulator mutable compilation cache.
+         [NonSerialized] private readonly Func<RspInterpreter, uint, uint, int>[] _blocks = BlockJitEnabled ? new Func<RspInterpreter, uint, uint, int>[1024] : null;
+         [NonSerialized] private readonly uint[] _blockFirstWords = BlockJitEnabled ? new uint[1024] : null;
+@@ -459,8 +471,26 @@ namespace Ryu64.MIPS
+             long profileStart = Stopwatch.GetTimestamp();
+             _profileProgressCalls++;
+ #endif
+-            ulong signature = _progressRegistersDirty
++            bool dirty = _progressRegistersDirty;
++            if (LazyBlockProgressEnabled && _progressDeferralActive && _progressBaselineValid && dirty)
++            {
++                // Each compiled progress observation follows at most one
++                // tracked GPR write. WriteGpr marks dirty only for a changed
++                // value. With fixed memory/other GPRs, XOR and multiplication
++                // by the odd FNV prime are bijections: this hash must change.
++                // Publish the exact hash before fallback or slice observation.
++                _progressSignaturePending = true;
++                _progressRegistersDirty = false;
++                _stagnantInstructionCount = 0;
++#if N64_RSP_PROFILE
++                _profileProgressTicks += Stopwatch.GetTimestamp() - profileStart;
++#endif
++                return;
++            }
++            ulong signature = dirty
+                 ? ComputeProgressSignature(true) : _lastProgressSignature;
++            if (LazyBlockProgressEnabled && _progressDeferralActive && dirty)
++                _progressBaselineValid = true;
+             _progressRegistersDirty = false;
+             if (signature != _lastProgressSignature)
+             { _lastProgressSignature = signature; _stagnantInstructionCount = 0; }
+diff --git a/Ryu64/Ryu64.MIPS/RspInterpreter.cs b/Ryu64/Ryu64.MIPS/RspInterpreter.cs
+index 12ea0f69..b8243f76 100644
+--- a/Ryu64/Ryu64.MIPS/RspInterpreter.cs
++++ b/Ryu64/Ryu64.MIPS/RspInterpreter.cs
+@@ -133,6 +133,7 @@ namespace Ryu64.MIPS
+         // Architectural state must survive a CPU/RSP scheduling boundary and savestates.
+         internal void SaveExecutionState(System.IO.BinaryWriter writer)
+         {
++            if (LazyBlockProgressEnabled) FlushBlockProgress();
+             foreach (var value in _gpr) writer.Write(value);
+             foreach (var value in _vr) writer.Write(value);
+             foreach (var value in _vcc) writer.Write(value);
+@@ -154,6 +155,8 @@ namespace Ryu64.MIPS
+ 
+         internal void LoadExecutionState(System.IO.BinaryReader reader)
+         {
++            _progressSignaturePending = false;
++            _progressBaselineValid = false;
+             for (int i = 0; i < _gpr.Length; i++) _gpr[i] = reader.ReadUInt32();
+             for (int i = 0; i < _vr.Length; i++) _vr[i] = reader.ReadByte();
+             for (int i = 0; i < _vcc.Length; i++) _vcc[i] = reader.ReadUInt16();
+@@ -200,6 +203,26 @@ namespace Ryu64.MIPS
+             => ExecuteSlice(out executedInstructions, out stopReason, false, uint.MaxValue);
+ 
+         internal bool ExecuteSlice(out uint executedInstructions, out string stopReason, bool resume, uint budget)
++        {
++            if (!LazyBlockProgressEnabled)
++                return ExecuteSliceCore(out executedInstructions, out stopReason, resume, budget);
++            FlushBlockProgress();
++            bool previousScope = _progressDeferralActive;
++            _progressDeferralActive = true;
++            _progressBaselineValid = false;
++            try
++            {
++                return ExecuteSliceCore(out executedInstructions, out stopReason, resume, budget);
++            }
++            finally
++            {
++                FlushBlockProgress();
++                _progressBaselineValid = false;
++                _progressDeferralActive = previousScope;
++            }
++        }
++
++        private bool ExecuteSliceCore(out uint executedInstructions, out string stopReason, bool resume, uint budget)
+         {
+             // CPU writes and state loads may change any SP register between slices.
+             _memory.InvalidateRspProgressMemoryPrefix();
+@@ -219,6 +242,7 @@ namespace Ryu64.MIPS
+                 _lastInstr = 0;
+                 _samePcRunLength = 0;
+                 _lastProgressSignature = ComputeProgressSignature(hasValidTask);
++                if (LazyBlockProgressEnabled) _progressBaselineValid = hasValidTask;
+                 _progressRegistersDirty = false;
+                 _stagnantInstructionCount = 0;
+                 _recentIndex = 0;
+@@ -239,6 +263,14 @@ namespace Ryu64.MIPS
+                         continue;
+                     }
+                 }
++                // An interpreted instruction can perform CP0 operations or
++                // tick DMA/device lifecycle state. Materialize the preceding
++                // compiled signature while its memory inputs are still fixed.
++                if (LazyBlockProgressEnabled)
++                {
++                    FlushBlockProgress();
++                    _progressBaselineValid = false;
++                }
+                 if (_stagnantInstructionCount >= noProgressInstructionLimit)
+                 {
+                     stopReason = $"no-progress stagnant={_stagnantInstructionCount}";
+@@ -312,6 +344,10 @@ namespace Ryu64.MIPS
+                 ulong progressSignature = progressMemoryDirty || _progressRegistersDirty
+                     ? ComputeProgressSignature(hasValidTask)
+                     : _lastProgressSignature;
++                // Only an actual recomputation establishes a fresh baseline.
++                // A no-op after resume may still carry a pre-slice signature.
++                if (LazyBlockProgressEnabled && (progressMemoryDirty || _progressRegistersDirty))
++                    _progressBaselineValid = hasValidTask;
+                 _progressRegistersDirty = false;
+                 if (progressSignature != _lastProgressSignature)
+                 {
