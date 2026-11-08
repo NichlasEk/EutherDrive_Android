@@ -48,7 +48,7 @@ internal static class CpuBlockChecks
         var classify = typeof(R4300).GetMethod("GetCpuBlockOpcodeKind", cpuFlags)!.CreateDelegate<Func<uint,int>>();
         var classifyNext = typeof(R4300).GetMethod("GetNextCpuBlockOpcodeKind", cpuFlags)!.CreateDelegate<Func<uint,uint,int>>();
         var loopEntry = typeof(R4300).GetMethod("IsExistingLoopEntry", cpuFlags)!.CreateDelegate<Func<uint,uint,bool>>();
-        var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR","BLTZ","BGEZ","BLEZ","BGTZ", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
+        var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR","BLTZ","BGEZ","BLEZ","BGTZ","BEQL","BNEL","BLEZL","BGTZL", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
         allowed.Add("MFHI"); allowed.Add("MFLO");
         uint sample = 0x430064;
         int decoded = 0;
@@ -189,6 +189,74 @@ internal static class CpuBlockChecks
         { Reset(); Check(0); Console.WriteLine("cpuBlockDisabled=passed"); return; }
         if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_FALLBACK_ONLY") == "1")
         { CheckFallbackBoundaries(); return; }
+        void CheckLikelyBranches()
+        {
+            int firstCase = cases;
+            foreach (uint kind in new uint[] { 20, 21, 22, 23 })
+            foreach (ulong value in new ulong[] { 0, 1, ulong.MaxValue, 0x8000000000000000UL })
+            foreach (uint source in new uint[] { 0, 4 })
+            foreach (int prefix in new[] { 0, 1, 2 })
+            foreach (uint delay in new uint[] { 0x24840001, 0x24000001, 0xac850000, 0xc4850000, 0x0000000d })
+            {
+                Reset(); Registers.R4300.Reg[0] = 123;
+                Registers.R4300.Reg[4] = value; Registers.R4300.Reg[5] = 1;
+                Registers.COP0.Reg[12] = 0; // COP1 delay must be annulled or reject.
+                for (int i = 0; i < prefix; i++) Code(i, 0x24c60001);
+                uint right = kind < 22 ? 5u : 0;
+                Code(prefix, kind << 26 | source << 21 | right << 16 | 2);
+                Code(prefix + 1, delay); Code(prefix + 2, 0x0000000d); Code(prefix + 3, 0x0000000d);
+                ulong left = source == 0 ? 0 : value;
+                bool take = kind == 20 ? left == 1 : kind == 21 ? left != 1
+                    : kind == 22 ? (long)left <= 0 : (long)left > 0;
+                bool safe = delay == 0x24840001 || delay == 0x24000001;
+                Check((uint)prefix + (take ? safe ? 2u : 0u : 1u));
+            }
+            // Deadlines and budget edges may leave room for an annulled branch
+            // but not a taken branch and its mandatory delay instruction.
+            foreach (bool take in new[] { false, true })
+            foreach (uint budget in new uint[] { 2, 3, 4 })
+            foreach (uint deadline in new uint[] { 0, 2, 3, 4, 5 })
+            {
+                Reset(); Registers.R4300.Reg[4] = take ? 0UL : 1UL;
+                Code(0, 0x24c60001); Code(1, 0x50800002); Code(2, 0x24840001);
+                Code(3, 0x0000000d); Code(4, 0x0000000d);
+                if (deadline != 0) { Set("_aiInterruptDelayArmed", true); Set("_aiInterruptDelayRemaining", deadline); }
+                uint limit = deadline == 0 ? budget : Math.Min(budget, deadline - 1);
+                uint expected = limit < 2 ? 0 : take ? (limit >= 3 ? 3u : 1u) : 2u;
+                Check(expected, budget);
+            }
+            foreach (uint kind in new uint[] { 20, 21, 22, 23 })
+            foreach (bool take in new[] { false, true })
+            foreach (uint delay in new uint[] { 0xacc50000, 0x8cc50000, 0xc4c50000 })
+            {
+                Reset(); Registers.R4300.Reg[6] = 0x80020000;
+                Registers.R4300.Reg[4] = kind == 20 || kind == 22
+                    ? (take ? 0UL : 1UL) : (take ? 1UL : 0UL);
+                Registers.COP0.Reg[12] = 0x20000000;
+                Code(0, kind << 26 | 4u << 21 | 2); Code(1, delay);
+                Code(2, 0x0000000d); Code(3, 0x0000000d);
+                Check(take ? 2u : 1u);
+                // Keep the branch word unchanged while replacing its delay.
+                // Existing compiled entries must observe the changed code.
+                Reset(); Registers.R4300.Reg[4] = kind == 20 || kind == 22
+                    ? (take ? 0UL : 1UL) : (take ? 1UL : 0UL);
+                Code(0, kind << 26 | 4u << 21 | 2); Code(1, 0x24840001);
+                Code(2, 0x0000000d); Code(3, 0x0000000d);
+                Check(take ? 2u : 1u, clearJit: false);
+            }
+            foreach (uint kind in new uint[] { 20, 21, 22, 23 })
+            {
+                Reset(); Registers.R4300.Reg[4] = kind == 20 || kind == 22 ? 0UL : 1UL;
+                Code(0, kind << 26 | 4u << 21 | 0xffff); Code(1, 0);
+                Check(2); // A self branch retains the outer watchdog cadence.
+                Reset(); Registers.R4300.Reg[4] = kind == 20 || kind == 22 ? 0UL : 1UL;
+                Code(0, 0x24c60001); Code(1, kind << 26 | 4u << 21 | 0xfffe); Code(2, 0);
+                Check(30, 30); // Backedge history and accumulated cycles.
+            }
+            Console.WriteLine($"cpuLikelyCases={cases - firstCase} state=passed history={(jit ? "passed" : "disabled")} annul=passed deadlines=passed");
+        }
+        CheckLikelyBranches();
+        if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_LIKELY_ONLY") == "1") return;
         uint[] special = { 0,2,3,4,6,7,20,22,23,33,35,36,37,38,39,42,43,45,47,56,58,59,60,62,63 };
         uint[] shifts = { 0,2,3,56,58,59,60,62,63 };
         var random = new Random(640020);

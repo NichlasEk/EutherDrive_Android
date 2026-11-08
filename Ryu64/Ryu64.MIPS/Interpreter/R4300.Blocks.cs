@@ -20,10 +20,10 @@ namespace Ryu64.MIPS
         {
             var masks = new uint[128];
             for (int i = 0; i < masks.Length; i++) masks[i] = uint.MaxValue;
-            foreach (int primary in new[] { 2,3,4,5,9,10,11,12,13,14,25,32,33,35,36,37,39,40,41,43,49,53,55,57,61,63 })
+            foreach (int primary in new[] { 2,3,4,5,20,21,9,10,11,12,13,14,25,32,33,35,36,37,39,40,41,43,49,53,55,57,61,63 })
                 masks[primary] = 0;
             masks[15] = 0x03e00000u;
-            masks[6] = masks[7] = 0x001f0000u;
+            masks[6] = masks[7] = masks[22] = masks[23] = 0x001f0000u;
             foreach (int function in new[] { 0,2,3,56,58,59,60,62,63 })
                 masks[64 + function] = 0x03e00000u;
             foreach (int function in new[] { 4,6,7,20,22,23,33,35,36,37,38,39,42,43,45,47 })
@@ -201,11 +201,21 @@ namespace Ryu64.MIPS
                 + (ulong)(long)(short)desc.Imm)) & 0x1fffffffu);
         }
 
+        private static bool CpuLikelyTaken(OpcodeTable.OpcodeDesc desc, int kind)
+        {
+            // Rejected blocks must not normalize a stale r0 as a side effect.
+            ulong left = desc.op1 == 0 ? 0 : Registers.R4300.Reg[desc.op1];
+            ulong right = desc.op2 == 0 ? 0 : Registers.R4300.Reg[desc.op2];
+            return kind == 20 ? left == right : kind == 21 ? left != right
+                : kind == 22 ? (long)left <= 0 : (long)left > 0;
+        }
+
         // The delay instruction is validated before any branch/link state changes.
         // Resolve operands before it, and write the link before its register reads,
         // exactly as the ordinary branch handlers do. Fetch the target live afterward.
         private static void ExecuteQuietBranch(OpcodeTable.OpcodeDesc desc, int kind, uint delayOpcode, int delayKind, uint elapsed)
         {
+            if (CpuJitLikely(kind)) kind -= 16;
             uint branchPc = Registers.R4300.PC;
             uint target;
             if (kind == 2 || kind == 3)
@@ -358,9 +368,10 @@ namespace Ryu64.MIPS
                 // operand validation. Integer ALU and CP0 need neither here.
                 if ((kind == 17 || (uint)(kind - 32) < 32) && !CanAccessCpuBlockOperand(desc, kind, -1, 0)) break;
                 bool branch = CpuJitBranch(kind);
+                bool annul = CpuJitLikely(kind) && !CpuLikelyTaken(desc, kind);
                 uint delayOpcode = 0;
                 int delayKind = -1;
-                if (branch && (done + 2 > limit
+                if (branch && !annul && (done + 2 > limit
                     || !memory.TryReadRdramUInt32PhysicalFast(physical + 4, out delayOpcode)
                     || (delayKind = GetCpuBlockOpcodeKind(delayOpcode)) < 0
                     || CpuJitBranch(delayKind)
@@ -375,8 +386,8 @@ namespace Ryu64.MIPS
                 }
                 if (branch)
                 {
-                    ExecuteQuietBranch(desc, kind, delayOpcode, delayKind, done);
-                    done += 2;
+                    if (annul) { Registers.R4300.PC = pc + 8; done++; }
+                    else { ExecuteQuietBranch(desc, kind, delayOpcode, delayKind, done); done += 2; }
                     // A branch to itself remains one outer-loop iteration, so
                     // the existing stuck-PC watchdog keeps its exact cadence.
                     if (Registers.R4300.PC == pc) break;
@@ -387,7 +398,7 @@ namespace Ryu64.MIPS
                     done++;
                 }
 #if N64_CPU_DISPATCH_PROFILE
-                _dispatchFallbackInstructions += branch ? 2 : 1;
+                _dispatchFallbackInstructions += branch && !annul ? 2 : 1;
                 _dispatchFallbackTicks += System.Diagnostics.Stopwatch.GetTimestamp() - fallbackStart;
 #endif
                 pc = Registers.R4300.PC;

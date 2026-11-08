@@ -46,7 +46,7 @@ namespace Ryu64.MIPS
                         // Delay-slot memory/COP instructions use shared helpers.
                         if (i + 1 >= words.Count || !IsCpuJitAlu(GetCpuBlockOpcodeKind(words[i + 1]))) return;
                         if (kind != 2 && kind != 3) reads = 1u << d.op1;
-                        if (kind == 4 || kind == 5) reads |= 1u << d.op2;
+                        if (kind == 4 || kind == 5 || kind == 20 || kind == 21) reads |= 1u << d.op2;
                         if (kind == 3 || kind == 73) writes = 1u << (kind == 3 ? 31 : d.op3);
                     }
                     else if (kind == 32 || kind == 33 || kind == 35 || kind == 36

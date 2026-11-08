@@ -212,7 +212,8 @@ namespace Ryu64.MIPS
         private static ulong ReadCpuJit16(byte[] ram, int address)
             => System.Buffers.Binary.BinaryPrimitives.ReadUInt16BigEndian(ram.AsSpan(address, 2));
 
-        private static bool CpuJitBranch(int kind) => (kind >= 2 && kind <= 7) || kind == 72 || kind == 73 || kind == 128 || kind == 129;
+        private static bool CpuJitLikely(int kind) => (uint)(kind - 20) < 4;
+        private static bool CpuJitBranch(int kind) => (kind >= 2 && kind <= 7) || CpuJitLikely(kind) || kind == 72 || kind == 73 || kind == 128 || kind == 129;
         private static bool CpuJitStore(int kind) => kind == 40 || kind == 41 || kind == 43 || kind == 57 || kind == 61 || kind == 63;
 
         private static bool IsInvariantCpuJitLoop(List<uint> words)
@@ -545,6 +546,26 @@ namespace Ryu64.MIPS
                 bool directMemory = kind == 32 || kind == 33 || kind == 35 || kind == 36 || kind == 37 || kind == 39 || kind == 43 || kind == 55;
                 uint delay = branch ? words[i + 1] : 0;
                 int dk = branch ? GetCpuBlockOpcodeKind(delay) : -1;
+                if (CpuJitLikely(kind))
+                {
+                    // An annulled delay slot has no operand checks or effects.
+                    var taken = il.DefineLabel();
+                    if (desc.op1 == 0) il.Emit(OpCodes.Ldc_I8, 0L);
+                    else registers.Read(desc.op1);
+                    if (kind == 20 || kind == 21)
+                    {
+                        if (desc.op2 == 0) il.Emit(OpCodes.Ldc_I8, 0L);
+                        else registers.Read(desc.op2);
+                        il.Emit(kind == 20 ? OpCodes.Beq : OpCodes.Bne_Un, taken);
+                    }
+                    else
+                    {
+                        il.Emit(OpCodes.Ldc_I8, 0L);
+                        il.Emit(kind == 22 ? OpCodes.Ble : OpCodes.Bgt, taken);
+                    }
+                    registers.NormalizeZero(); Pc(pc + 8); Exit((uint)i + 1);
+                    il.MarkLabel(taken);
+                }
                 if (directMemory)
                 {
                     uint width = kind == 55 ? 8u : kind == 32 || kind == 36 ? 1u : kind == 33 || kind == 37 ? 2u : 4u;
@@ -583,7 +604,8 @@ namespace Ryu64.MIPS
                 if (branch)
                 {
                     // Capture the target before link writes or delay-slot operands.
-                    if (kind == 2 || kind == 3) U((pc & 0xf0000000u) | (desc.Target << 2));
+                    if (CpuJitLikely(kind)) U(unchecked(pc + 4u + (uint)((int)(short)desc.Imm << 2)));
+                    else if (kind == 2 || kind == 3) U((pc & 0xf0000000u) | (desc.Target << 2));
                     else if (kind == 72 || kind == 73)
                     {
                         registers.Read(desc.op1); il.Emit(OpCodes.Conv_U4);
