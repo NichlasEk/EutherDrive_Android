@@ -86,7 +86,16 @@ namespace Ryu64.MIPS
             if (opcode == 0) return IsExistingLoopEntry(pc, opcode) ? -1 : 64;
             int slot = (int)((pc >> 2) & (CpuBlockNextKinds.Length - 1));
             ulong cached = CpuBlockNextKinds[slot];
-            if ((uint)cached == opcode) return unchecked((int)(cached >> 32));
+            if ((uint)cached == opcode)
+            {
+#if N64_CPU_DISPATCH_PROFILE
+                _dispatchDecodeHits++;
+#endif
+                return unchecked((int)(cached >> 32));
+            }
+#if N64_CPU_DISPATCH_PROFILE
+            _dispatchDecodeMisses++;
+#endif
             int kind = IsExistingLoopEntry(pc, opcode) ? -1 : GetCpuBlockOpcodeKind(opcode);
             CpuBlockNextKinds[slot] = ((ulong)(uint)kind << 32) | opcode;
             return kind;

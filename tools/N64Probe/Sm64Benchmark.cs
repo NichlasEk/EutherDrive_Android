@@ -126,6 +126,9 @@ internal static class Sm64Benchmark
                         audioFrames, audioSeconds, audioSha256 = Convert.ToHexString(audioHash.GetCurrentHash()),
                         inputSha256 = Convert.ToHexString(inputHash.GetCurrentHash()), ramSha256 = ramHash,
                         action = action.ToString("x8"), x, y, z,
+#if N64_CPU_DISPATCH_PROFILE
+                        cpuDispatchProfile = R4300.GetCpuDispatchProfile(),
+#endif
                         jitInstructions = Jit("CpuJitInstructions"), jitCompilations = Jit("CpuJitCompilations"),
                         jitRejected = Jit("CpuJitRejectedCompilations"), graphicsTasks = memory.RspGraphicsTaskCount,
                         audioTasks = memory.RspAudioTaskCount };

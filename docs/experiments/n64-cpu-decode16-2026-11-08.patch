@@ -1,0 +1,96 @@
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+index 3e5bee68..8487af62 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+@@ -14,7 +14,7 @@ namespace Ryu64.MIPS
+         // Derived from instruction bits only. Each lookup still uses a freshly
+         // fetched word, so code writes, aliases and state loads need no cache
+         // invalidation. The PC merely selects a slot; the full word is the key.
+-        private static readonly ulong[] CpuBlockNextKinds = new ulong[4096];
++        private static readonly ulong[] CpuBlockNextKinds = new ulong[16384];
+
+         private static uint[] CreateCpuBlockReservedBits()
+         {
+@@ -86,7 +86,16 @@ namespace Ryu64.MIPS
+             if (opcode == 0) return IsExistingLoopEntry(pc, opcode) ? -1 : 64;
+             int slot = (int)((pc >> 2) & (CpuBlockNextKinds.Length - 1));
+             ulong cached = CpuBlockNextKinds[slot];
+-            if ((uint)cached == opcode) return unchecked((int)(cached >> 32));
++            if ((uint)cached == opcode)
++            {
++#if N64_CPU_DISPATCH_PROFILE
++                _dispatchDecodeHits++;
++#endif
++                return unchecked((int)(cached >> 32));
++            }
++#if N64_CPU_DISPATCH_PROFILE
++            _dispatchDecodeMisses++;
++#endif
+             int kind = IsExistingLoopEntry(pc, opcode) ? -1 : GetCpuBlockOpcodeKind(opcode);
+             CpuBlockNextKinds[slot] = ((ulong)(uint)kind << 32) | opcode;
+             return kind;
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
+index 458ee6c9..0dbc97ca 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
+@@ -12,6 +12,7 @@ namespace Ryu64.MIPS
+         private static long _dispatchKindReject, _dispatchModeReject, _dispatchInterruptReject;
+         private static long _dispatchAddressReject, _dispatchQuietReject, _dispatchZeroResult;
+         private static long _dispatchCachedSuccessor, _dispatchCachedAfterBranch, _dispatchCachedAfterStore;
++        private static long _dispatchDecodeHits, _dispatchDecodeMisses;
+         private static readonly long[] _dispatchKindRejectByPrimary = new long[64];
+         private static readonly long[] _dispatchSpecialRejectByFunction = new long[64];
+
+@@ -26,6 +27,7 @@ namespace Ryu64.MIPS
+             $"interruptReject={_dispatchInterruptReject} addressReject={_dispatchAddressReject} " +
+             $"quietReject={_dispatchQuietReject} zeroResult={_dispatchZeroResult} " +
+             $"cachedSuccessor={_dispatchCachedSuccessor} afterBranch={_dispatchCachedAfterBranch} afterStore={_dispatchCachedAfterStore} " +
++            $"decodeHits={_dispatchDecodeHits} decodeMisses={_dispatchDecodeMisses} " +
+             "kindRejectPrimary=" + FormatCounts(_dispatchKindRejectByPrimary) + " " +
+             "specialRejectFunction=" + FormatCounts(_dispatchSpecialRejectByFunction);
+
+diff --git a/tools/N64Probe/CpuBlockChecks.cs b/tools/N64Probe/CpuBlockChecks.cs
+index 39bc34d0..2af8b6a9 100644
+--- a/tools/N64Probe/CpuBlockChecks.cs
++++ b/tools/N64Probe/CpuBlockChecks.cs
+@@ -50,6 +50,7 @@ internal static class CpuBlockChecks
+         var loopEntry = typeof(R4300).GetMethod("IsExistingLoopEntry", cpuFlags)!.CreateDelegate<Func<uint,uint,bool>>();
+         var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR","BLTZ","BGEZ","BLEZ","BGTZ","BEQL","BNEL","BLEZL","BGTZL", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
+         allowed.Add("MFHI"); allowed.Add("MFLO");
++        int decodeSlots = ((Array)typeof(R4300).GetField("CpuBlockNextKinds", cpuFlags)!.GetValue(null)!).Length;
+         uint sample = 0x430064;
+         int decoded = 0;
+         for (int i = 0; i < 1_000_000; i++)
+@@ -62,7 +63,7 @@ internal static class CpuBlockChecks
+                 || classifyNext(samplePc, sample) != nextKind
+                 || classifyNext(samplePc ^ 0x20000000u, sample) != nextKind)
+                 throw new Exception($"Next block decode differs for {sample:x8}");
+-            classifyNext(samplePc + 0x4000u, ~sample);
++            classifyNext(samplePc + (uint)decodeSlots * 4, ~sample);
+             if (classifyNext(samplePc, sample) != nextKind)
+                 throw new Exception($"Next block decode collision differs for {sample:x8}");
+             if (classify(sample) < 0) continue;
+@@ -87,7 +88,8 @@ internal static class CpuBlockChecks
+         foreach (uint word in new uint[] { 0x1520fffb, 0x24420001, 0xffffffff, 0x24420001 })
+             if (classifyNext(0x80010004, word) != (loopEntry(0x80010004, word) ? -1 : classify(word)))
+                 throw new Exception("Next block changed instruction differs");
+-        Console.WriteLine("blockNextDecodeSamples=4000012 aliases=passed collisions=passed livePredecessor=passed");
++        Console.WriteLine($"blockNextDecodeSamples=4000012 cacheSlots={decodeSlots} aliases=passed collisions=passed livePredecessor=passed");
++        if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_DECODE_ONLY") == "1") return;
+         Registers.R4300.PC = 0x80010000;
+         Registers.COP0.Reg[11] = 0;
+         R4300.memory.WriteUInt32(0xa4400018, 524);
+diff --git a/tools/N64Probe/Sm64Benchmark.cs b/tools/N64Probe/Sm64Benchmark.cs
+index 8c5e57fe..c8563b24 100644
+--- a/tools/N64Probe/Sm64Benchmark.cs
++++ b/tools/N64Probe/Sm64Benchmark.cs
+@@ -126,6 +126,9 @@ internal static class Sm64Benchmark
+                         audioFrames, audioSeconds, audioSha256 = Convert.ToHexString(audioHash.GetCurrentHash()),
+                         inputSha256 = Convert.ToHexString(inputHash.GetCurrentHash()), ramSha256 = ramHash,
+                         action = action.ToString("x8"), x, y, z,
++#if N64_CPU_DISPATCH_PROFILE
++                        cpuDispatchProfile = R4300.GetCpuDispatchProfile(),
++#endif
+                         jitInstructions = Jit("CpuJitInstructions"), jitCompilations = Jit("CpuJitCompilations"),
+                         jitRejected = Jit("CpuJitRejectedCompilations"), graphicsTasks = memory.RspGraphicsTaskCount,
+                         audioTasks = memory.RspAudioTaskCount };

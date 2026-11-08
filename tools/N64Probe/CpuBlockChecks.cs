@@ -50,6 +50,7 @@ internal static class CpuBlockChecks
         var loopEntry = typeof(R4300).GetMethod("IsExistingLoopEntry", cpuFlags)!.CreateDelegate<Func<uint,uint,bool>>();
         var allowed = new HashSet<string> { "J","JAL","BEQ","BNE","JR","JALR","BLTZ","BGEZ","BLEZ","BGTZ","BEQL","BNEL","BLEZL","BGTZL", "ADDIU","SLTI","SLTIU","ANDI","ORI","XORI","LUI","MFC0","MTC0","DADDIU", "LB","LH","LW","LBU","LHU","LWU","SB","SH","SW","LD","SD", "SLL","SRL","SRA","SLLV","SRLV","SRAV","DSLLV","DSRLV","DSRAV", "ADDU","SUBU","AND","OR","XOR","NOR","SLT","SLTU","DADDU","DSUBU", "DSLL","DSRL","DSRA","DSLL32","DSRL32","DSRA32" };
         allowed.Add("MFHI"); allowed.Add("MFLO");
+        int decodeSlots = ((Array)typeof(R4300).GetField("CpuBlockNextKinds", cpuFlags)!.GetValue(null)!).Length;
         uint sample = 0x430064;
         int decoded = 0;
         for (int i = 0; i < 1_000_000; i++)
@@ -62,7 +63,7 @@ internal static class CpuBlockChecks
                 || classifyNext(samplePc, sample) != nextKind
                 || classifyNext(samplePc ^ 0x20000000u, sample) != nextKind)
                 throw new Exception($"Next block decode differs for {sample:x8}");
-            classifyNext(samplePc + 0x4000u, ~sample);
+            classifyNext(samplePc + (uint)decodeSlots * 4, ~sample);
             if (classifyNext(samplePc, sample) != nextKind)
                 throw new Exception($"Next block decode collision differs for {sample:x8}");
             if (classify(sample) < 0) continue;
@@ -87,7 +88,36 @@ internal static class CpuBlockChecks
         foreach (uint word in new uint[] { 0x1520fffb, 0x24420001, 0xffffffff, 0x24420001 })
             if (classifyNext(0x80010004, word) != (loopEntry(0x80010004, word) ? -1 : classify(word)))
                 throw new Exception("Next block changed instruction differs");
-        Console.WriteLine("blockNextDecodeSamples=4000012 aliases=passed collisions=passed livePredecessor=passed");
+        Console.WriteLine($"blockNextDecodeSamples=4000012 cacheSlots={decodeSlots} aliases=passed collisions=passed livePredecessor=passed");
+        // Exercise actual collisions independently of how words/PCs select
+        // cache slots. Locate the published full-word entry, then revisit the
+        // previous occupant after eviction. This also covers opcode hashing.
+        var decodeCache = (ulong[])typeof(R4300).GetField("CpuBlockNextKinds", cpuFlags)!.GetValue(null)!;
+        Array.Clear(decodeCache);
+        var occupants = new Dictionary<int, uint>();
+        int collisions = 0;
+        uint collisionWord = 0x974063;
+        for (int i = 0; i <= decodeSlots; i++)
+        {
+            collisionWord = unchecked(collisionWord * 1664525u + 1013904223u);
+            if (collisionWord == 0) continue;
+            uint pc = 0x80010000u + (uint)i * 4;
+            int expected = loopEntry(pc, collisionWord) ? -1 : classify(collisionWord);
+            if (classifyNext(pc, collisionWord) != expected) throw new Exception("Collision word differs");
+            int slot = Array.IndexOf(decodeCache, ((ulong)(uint)expected << 32) | collisionWord);
+            if (slot < 0) throw new Exception("Decode cache did not publish word");
+            if (occupants.TryGetValue(slot, out uint previous) && previous != collisionWord)
+            {
+                int previousKind = loopEntry(pc, previous) ? -1 : classify(previous);
+                if (classifyNext(pc, previous) != previousKind || classifyNext(pc, collisionWord) != expected)
+                    throw new Exception("Evicted decode word differs");
+                collisions++;
+            }
+            occupants[slot] = collisionWord;
+        }
+        if (collisions == 0) throw new Exception("No decode collision exercised");
+        Console.WriteLine($"blockDecodeEvictions={collisions} fullWord=passed");
+        if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_DECODE_ONLY") == "1") return;
         Registers.R4300.PC = 0x80010000;
         Registers.COP0.Reg[11] = 0;
         R4300.memory.WriteUInt32(0xa4400018, 524);

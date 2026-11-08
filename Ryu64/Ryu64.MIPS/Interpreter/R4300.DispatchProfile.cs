@@ -12,6 +12,7 @@ namespace Ryu64.MIPS
         private static long _dispatchKindReject, _dispatchModeReject, _dispatchInterruptReject;
         private static long _dispatchAddressReject, _dispatchQuietReject, _dispatchZeroResult;
         private static long _dispatchCachedSuccessor, _dispatchCachedAfterBranch, _dispatchCachedAfterStore;
+        private static long _dispatchDecodeHits, _dispatchDecodeMisses;
         private static readonly long[] _dispatchKindRejectByPrimary = new long[64];
         private static readonly long[] _dispatchSpecialRejectByFunction = new long[64];
 
@@ -26,6 +27,7 @@ namespace Ryu64.MIPS
             $"interruptReject={_dispatchInterruptReject} addressReject={_dispatchAddressReject} " +
             $"quietReject={_dispatchQuietReject} zeroResult={_dispatchZeroResult} " +
             $"cachedSuccessor={_dispatchCachedSuccessor} afterBranch={_dispatchCachedAfterBranch} afterStore={_dispatchCachedAfterStore} " +
+            $"decodeHits={_dispatchDecodeHits} decodeMisses={_dispatchDecodeMisses} " +
             "kindRejectPrimary=" + FormatCounts(_dispatchKindRejectByPrimary) + " " +
             "specialRejectFunction=" + FormatCounts(_dispatchSpecialRejectByFunction);
 

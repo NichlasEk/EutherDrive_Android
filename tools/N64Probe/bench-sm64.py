@@ -190,6 +190,8 @@ def main():
         if (output / "jit-profile.json").exists() or (output / "rsp-profile.txt").exists():
             raise RuntimeError("Instrumented CPU/RSP profile cannot be used as a timing sample")
         points = json.loads((output / "checkpoints.json").read_text())
+        if any("cpuDispatchProfile" in point for point in points):
+            raise RuntimeError("Instrumented CPU dispatch profile cannot be used as a timing sample")
         state = [{key: point[key] for key in invariant} for point in points]
         state.append({"finalRamSha256": hashlib.sha256((output / "rdram.bin").read_bytes()).hexdigest()})
         if args.state:
