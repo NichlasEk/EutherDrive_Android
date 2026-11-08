@@ -1,0 +1,57 @@
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+index f582fb2c..b45daa4e 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.Blocks.cs
+@@ -248,6 +248,7 @@ namespace Ryu64.MIPS
+             Registers.R4300.PC = target;
+         }
+
++        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+         private static bool CanAccessCpuBlockOperand(OpcodeTable.OpcodeDesc desc, int kind, int linkRegister, uint linkValue)
+         {
+             if (IsCpuBlockCop1(kind) && (Registers.COP0.Reg[Registers.COP0.STATUS_REG] & 0x20000000UL) == 0)
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
+index 0dbc97ca..cd8e8c16 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.DispatchProfile.cs
+@@ -13,6 +13,9 @@ namespace Ryu64.MIPS
+         private static long _dispatchAddressReject, _dispatchQuietReject, _dispatchZeroResult;
+         private static long _dispatchCachedSuccessor, _dispatchCachedAfterBranch, _dispatchCachedAfterStore;
+         private static long _dispatchDecodeHits, _dispatchDecodeMisses;
++        // Successful outer-loop MULTU dispatch and its ordinary timing boundary.
++        // Excludes surrounding loop/block-exit overhead and delay-slot multiplies.
++        private static long _dispatchMultiplyCalls, _dispatchMultiplyTicks;
+         private static readonly long[] _dispatchKindRejectByPrimary = new long[64];
+         private static readonly long[] _dispatchSpecialRejectByFunction = new long[64];
+
+@@ -28,6 +31,7 @@ namespace Ryu64.MIPS
+             $"quietReject={_dispatchQuietReject} zeroResult={_dispatchZeroResult} " +
+             $"cachedSuccessor={_dispatchCachedSuccessor} afterBranch={_dispatchCachedAfterBranch} afterStore={_dispatchCachedAfterStore} " +
+             $"decodeHits={_dispatchDecodeHits} decodeMisses={_dispatchDecodeMisses} " +
++            $"multiplyCalls={_dispatchMultiplyCalls} multiplyMs={_dispatchMultiplyTicks * 1000.0 / Stopwatch.Frequency:F3} " +
+             "kindRejectPrimary=" + FormatCounts(_dispatchKindRejectByPrimary) + " " +
+             "specialRejectFunction=" + FormatCounts(_dispatchSpecialRejectByFunction);
+
+diff --git a/Ryu64/Ryu64.MIPS/Interpreter/R4300.cs b/Ryu64/Ryu64.MIPS/Interpreter/R4300.cs
+index 76132a65..f0504bd1 100644
+--- a/Ryu64/Ryu64.MIPS/Interpreter/R4300.cs
++++ b/Ryu64/Ryu64.MIPS/Interpreter/R4300.cs
+@@ -3836,7 +3836,18 @@ namespace Ryu64.MIPS
+                                 }
+                                 continue;
+                             }
++#if N64_CPU_DISPATCH_PROFILE
++                            bool profileMultiply = (Opcode & 0xfc00ffffu) == 0x19u;
++                            long multiplyStart = profileMultiply ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
++#endif
+                             InterpretOpcode(Opcode);
++#if N64_CPU_DISPATCH_PROFILE
++                            if (profileMultiply)
++                            {
++                                _dispatchMultiplyCalls++;
++                                _dispatchMultiplyTicks += System.Diagnostics.Stopwatch.GetTimestamp() - multiplyStart;
++                            }
++#endif
+                         }
+                         catch (NotImplementedException ex)
+                         {

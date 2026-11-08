@@ -460,7 +460,7 @@ namespace Ryu64.MIPS
         private static readonly FieldInfo JitLoField = typeof(Registers.R4300).GetField(nameof(Registers.R4300.LO));
         private static readonly ConstructorInfo JitDescConstructor = typeof(OpcodeTable.OpcodeDesc).GetConstructor(new[] { typeof(uint) });
         private static MethodInfo JitMethod(string name) => typeof(R4300).GetMethod(name, BindingFlags.Static | BindingFlags.NonPublic);
-        private static readonly MethodInfo JitValidate = JitMethod(nameof(CanAccessCpuBlockOperand));
+        private static readonly MethodInfo JitValidate = JitMethod(nameof(CanAccessCpuJitOperand));
         private static readonly MethodInfo JitExecute = JitMethod(nameof(ExecuteCpuBlockInstruction));
         private static readonly MethodInfo JitHistory = JitMethod(nameof(RecordCpuJitHistory));
         private static readonly MethodInfo JitRead16 = JitMethod(nameof(ReadCpuJit16));

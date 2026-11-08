@@ -248,7 +248,14 @@ namespace Ryu64.MIPS
             Registers.R4300.PC = target;
         }
 
+        // Keep the variable-opcode interpreter call compact. Generated native
+        // blocks use the inline body directly to specialize constant operands.
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         private static bool CanAccessCpuBlockOperand(OpcodeTable.OpcodeDesc desc, int kind, int linkRegister, uint linkValue)
+            => CanAccessCpuJitOperand(desc, kind, linkRegister, linkValue);
+
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+        private static bool CanAccessCpuJitOperand(OpcodeTable.OpcodeDesc desc, int kind, int linkRegister, uint linkValue)
         {
             if (IsCpuBlockCop1(kind) && (Registers.COP0.Reg[Registers.COP0.STATUS_REG] & 0x20000000UL) == 0)
                 return false;

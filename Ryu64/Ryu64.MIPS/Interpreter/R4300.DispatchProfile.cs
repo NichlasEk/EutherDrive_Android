@@ -13,6 +13,9 @@ namespace Ryu64.MIPS
         private static long _dispatchAddressReject, _dispatchQuietReject, _dispatchZeroResult;
         private static long _dispatchCachedSuccessor, _dispatchCachedAfterBranch, _dispatchCachedAfterStore;
         private static long _dispatchDecodeHits, _dispatchDecodeMisses;
+        // Successful outer-loop MULTU dispatch and its ordinary timing boundary.
+        // Excludes surrounding loop/block-exit overhead and delay-slot multiplies.
+        private static long _dispatchMultiplyCalls, _dispatchMultiplyTicks;
         private static readonly long[] _dispatchKindRejectByPrimary = new long[64];
         private static readonly long[] _dispatchSpecialRejectByFunction = new long[64];
 
@@ -28,6 +31,7 @@ namespace Ryu64.MIPS
             $"quietReject={_dispatchQuietReject} zeroResult={_dispatchZeroResult} " +
             $"cachedSuccessor={_dispatchCachedSuccessor} afterBranch={_dispatchCachedAfterBranch} afterStore={_dispatchCachedAfterStore} " +
             $"decodeHits={_dispatchDecodeHits} decodeMisses={_dispatchDecodeMisses} " +
+            $"multiplyCalls={_dispatchMultiplyCalls} multiplyMs={_dispatchMultiplyTicks * 1000.0 / Stopwatch.Frequency:F3} " +
             "kindRejectPrimary=" + FormatCounts(_dispatchKindRejectByPrimary) + " " +
             "specialRejectFunction=" + FormatCounts(_dispatchSpecialRejectByFunction);
 

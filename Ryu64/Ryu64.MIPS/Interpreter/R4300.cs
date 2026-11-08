@@ -3836,7 +3836,18 @@ namespace Ryu64.MIPS
                                 }
                                 continue;
                             }
+#if N64_CPU_DISPATCH_PROFILE
+                            bool profileMultiply = (Opcode & 0xfc00ffffu) == 0x19u;
+                            long multiplyStart = profileMultiply ? System.Diagnostics.Stopwatch.GetTimestamp() : 0;
+#endif
                             InterpretOpcode(Opcode);
+#if N64_CPU_DISPATCH_PROFILE
+                            if (profileMultiply)
+                            {
+                                _dispatchMultiplyCalls++;
+                                _dispatchMultiplyTicks += System.Diagnostics.Stopwatch.GetTimestamp() - multiplyStart;
+                            }
+#endif
                         }
                         catch (NotImplementedException ex)
                         {
