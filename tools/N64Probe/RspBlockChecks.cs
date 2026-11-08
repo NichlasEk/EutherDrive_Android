@@ -20,7 +20,7 @@ internal static class RspBlockChecks
             throw new Exception("Remove EUTHERDRIVE_N64_RSP_BLOCK_JIT=0 for this check.");
         Environment.SetEnvironmentVariable("EUTHERDRIVE_N64_RSP_TASK_MAX_INSTRUCTIONS", "61");
         string actual = Check(typeof(Memory).Assembly, true);
-        string sliced, exits, deadlines;
+        string sliced, exits, deadlines, codeValidation;
         var context = new AssemblyLoadContext("reference-blocks", true);
         string previousBlocks = Environment.GetEnvironmentVariable("EUTHERDRIVE_N64_RSP_BLOCK_JIT");
         try
@@ -39,6 +39,9 @@ internal static class RspBlockChecks
             exits = CheckSliceExits(typeof(Memory).Assembly);
             if (exits != CheckSliceExits(referenceAssembly))
                 throw new Exception("RSP exit count/state differs across budget, BREAK, invalid opcode or watchdog exits");
+            codeValidation = CheckCodeValidation(typeof(Memory).Assembly);
+            if (codeValidation != CheckCodeValidation(referenceAssembly))
+                throw new Exception("RSP cached code differs across edits, queued IMEM DMA or epoch wrap");
             deadlines = CheckProgressDeadlines(typeof(Memory).Assembly);
             if (deadlines != CheckProgressDeadlines(referenceAssembly))
                 throw new Exception("RSP progress differs across DMA/task/interrupt deadlines");
@@ -52,7 +55,72 @@ internal static class RspBlockChecks
         Console.WriteLine($"rspProgressSlices=1024 sha256={sliced} differential=passed");
         Console.WriteLine($"rspSliceExits=126 sha256={exits} differential=passed");
         Console.WriteLine($"rspProgressDeadlines=192 sha256={deadlines} differential=passed");
+        Console.WriteLine($"rspCodeValidation=32 sha256={codeValidation} differential=passed");
         CheckLoopDispatch();
+    }
+
+    private static string CheckCodeValidation(Assembly assembly)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        foreach (bool inside in new[] { false, true })
+        foreach (bool queued in new[] { false, true })
+        foreach (bool wrap in new[] { false, true })
+        {
+            Type mt = assembly.GetType("Ryu64.MIPS.Memory")!;
+            object memory = Activator.CreateInstance(mt, new object[] { new byte[4096] })!;
+            assembly.GetType("Ryu64.MIPS.R4300")!.GetField("memory")!.SetValue(null, memory);
+            object rsp = mt.GetField("_rspInterpreter", Private)!.GetValue(memory)!;
+            Type rt = rsp.GetType();
+            var taskField = mt.GetField("_activeRspTask", Private)!;
+            object task = Activator.CreateInstance(taskField.FieldType)!;
+            taskField.FieldType.GetField("Type")!.SetValue(task, 1u);
+            taskField.SetValue(memory, task);
+            mt.GetField("_rspTaskDispatching", Private)!.SetValue(memory, true);
+            byte[] sp = (byte[])mt.GetField("SP_MEM_RW")!.GetValue(memory)!;
+            byte[] ram = (byte[])mt.GetField("RDRAM")!.GetValue(memory)!;
+            var execute = rt.GetMethod("ExecuteSlice", Private)!.CreateDelegate<ExecuteSlice>(rsp);
+            var cp0 = mt.GetMethod("WriteRspCp0", Private)!.CreateDelegate<Action<int, uint>>(memory);
+            var save = mt.GetMethod("SaveState")!.CreateDelegate<Action<BinaryWriter>>(memory);
+            uint[] words = { 0x24420001, 0x24630001, 0x08000000, 0 };
+            for (int i = 0; i < words.Length; i++)
+                BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + i * 4), words[i]);
+            if (inside)
+            {
+                // First execute the same cached block three times, then issue
+                // an IMEM DMA through CP0 and jump back to its unchanged first
+                // word. Its interior and branch have changed inside the slice.
+                uint[] dmaProgram = { 0x24420001, 0x2484ffff, 0x1480fffd, 0,
+                    0x40850000, 0x40860800, 0x40871000, 0x08000000, 0 };
+                for (int i = 0; i < dmaProgram.Length; i++)
+                    BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1000 + i * 4), dmaProgram[i]);
+                for (int i = 0; i < words.Length; i++)
+                    BinaryPrimitives.WriteUInt32BigEndian(ram.AsSpan(0x200 + i * 4), i == 1 ? 0x24630009u : words[i]);
+                uint[] gpr = (uint[])rt.GetField("_gpr", Private)!.GetValue(rsp)!;
+                gpr[4] = 3; gpr[5] = 0x1000; gpr[6] = 0x200; gpr[7] = 15;
+            }
+            for (int phase = 0; phase < 4; phase++)
+            {
+                // The first instruction stays unchanged; only an interior
+                // instruction changes between repeated 12-block slices.
+                if (!inside || phase != 0)
+                    BinaryPrimitives.WriteUInt32BigEndian(sp.AsSpan(0x1004), 0x24630001u + (uint)phase);
+                if (wrap) rt.GetField("_blockValidationEpoch", Private)?.SetValue(rsp, uint.MaxValue);
+                if (queued && phase == 2)
+                {
+                    for (int i = 0; i < words.Length; i++)
+                        BinaryPrimitives.WriteUInt32BigEndian(ram.AsSpan(0x200 + i * 4), i == 1 ? 0x24630009u : words[i]);
+                    cp0(0, 0x800); cp0(1, 0x200); cp0(2, 31);
+                    cp0(0, 0x1000); cp0(1, 0x200); cp0(2, 15);
+                }
+                bool complete = execute(out uint count, out string reason, phase != 0, 48);
+                using var stream = new MemoryStream();
+                using var writer = new BinaryWriter(stream);
+                save(writer); writer.Write(RspTaskCapture.SaveRegisters(rsp, includeScratch: false));
+                writer.Write(complete); writer.Write(count); writer.Write(reason); writer.Flush();
+                hash.AppendData(stream.GetBuffer(), 0, (int)stream.Length);
+            }
+        }
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 
     private static string CheckProgressDeadlines(Assembly assembly)
