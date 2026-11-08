@@ -105,8 +105,12 @@ internal static class CpuMultiplyBatchChecks
         { Reset(); Registers.COP0.Reg[6] = wired; Registers.COP0.Reg[1] = r; Check(true); }
         foreach (uint compare in new uint[] { 0, 1, 8, 9, 10, 11 })
         { Reset(); Registers.COP0.Reg[11] = compare; Check(compare == 0 || compare > 9); }
-        foreach (ulong c in new ulong[] { 1, 2, 0x1fffffffe, 0x1fffffffc, 0x1ffffffe0 })
-        { Reset(); count.SetValue(null, c); Registers.COP0.Reg[9] = c >> 1; Check(((c + 19) >> 1) < uint.MaxValue); }
+        foreach (ulong carry in new ulong[] { 0, 0x200000000, 0x400000000 })
+        foreach (ulong phase in new ulong[] { 1, 2, 0x1fffffffe, 0x1fffffffc, 0x1ffffffe0 })
+        {
+            Reset(); count.SetValue(null, carry + phase); Registers.COP0.Reg[9] = phase >> 1;
+            Check(phase == 1 || phase == 2 || phase == 0x1ffffffe0);
+        }
         (string active, string remaining)[] timers = {
             ("_spDmaDelayArmed", "_spDmaDelayRemaining"), ("_rspTaskActive", "_rspTaskCyclesRemaining"),
             ("_rspInterruptDelayArmed", "_rspInterruptDelayRemaining"), ("_dpInterruptDelayArmed", "_dpInterruptDelayRemaining"),

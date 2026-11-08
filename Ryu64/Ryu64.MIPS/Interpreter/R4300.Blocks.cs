@@ -313,8 +313,8 @@ namespace Ryu64.MIPS
             _dispatchQuietTicks += System.Diagnostics.Stopwatch.GetTimestamp() - quietStart;
 #endif
             ulong count = Registers.COP0.Reg[Registers.COP0.COUNT_REG];
-            if (limit < 2 || count >= uint.MaxValue || (Count >> 1) != count
-                || ((Count + limit) >> 1) >= uint.MaxValue
+            if (limit < 2 || count >= uint.MaxValue || (uint)(Count >> 1) != count
+                || (((Count & CountPhaseMask) + limit) >> 1) >= uint.MaxValue
                 || CountCompareReached((uint)count, (uint)((Count + limit) >> 1), (uint)Registers.COP0.Reg[Registers.COP0.COMPARE_REG]))
             {
 #if N64_CPU_DISPATCH_PROFILE

@@ -14,6 +14,10 @@ namespace Ryu64.MIPS
         public static Memory memory;
         public static ulong CycleCounter = 0;
         private static ulong Count = 0;
+        // CP0 COUNT exposes the low 32 bits of this half-rate clock. A
+        // multi-cycle instruction can carry past its wrap without visiting
+        // ffffffff, so retained high bits must not disable quiet execution.
+        private const ulong CountPhaseMask = 0x1ffffffffUL;
         private static long UnknownOpcodeCount = 0;
         private static readonly Dictionary<uint, long> UnknownOpcodeByPc = new Dictionary<uint, long>();
         private static readonly Dictionary<uint, long> UnknownOpcodeByValue = new Dictionary<uint, long>();
@@ -2004,8 +2008,8 @@ namespace Ryu64.MIPS
                 return 0;
             ulong count = Registers.COP0.Reg[Registers.COP0.COUNT_REG];
             uint nextCount = (uint)((Count + cycles) >> 1);
-            if (count >= uint.MaxValue || (Count >> 1) != count
-                || ((Count + cycles) >> 1) >= uint.MaxValue
+            if (count >= uint.MaxValue || (uint)(Count >> 1) != count
+                || (((Count & CountPhaseMask) + cycles) >> 1) >= uint.MaxValue
                 || CountCompareReached((uint)count, nextCount, (uint)Registers.COP0.Reg[Registers.COP0.COMPARE_REG])
                 || memory.GetQuietCpuCycles(cycles) < cycles)
                 return 0;
@@ -2069,7 +2073,7 @@ namespace Ryu64.MIPS
                 return 0;
 
             ulong count = Registers.COP0.Reg[Registers.COP0.COUNT_REG];
-            if (count >= uint.MaxValue || (Count >> 1) != count)
+            if (count >= uint.MaxValue || (uint)(Count >> 1) != count)
                 return 0;
             uint cycles = memory.GetQuietCpuCycles(Math.Min(maximumCycles, 65536u));
             // Leave the matching/wrapping instruction to the normal interpreter.

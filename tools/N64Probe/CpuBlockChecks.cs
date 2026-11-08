@@ -189,6 +189,37 @@ internal static class CpuBlockChecks
         { Reset(); Check(0); Console.WriteLine("cpuBlockDisabled=passed"); return; }
         if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_FALLBACK_ONLY") == "1")
         { CheckFallbackBoundaries(); return; }
+        void CheckCountRollover()
+        {
+            int first = cases;
+            // An ordinary eight-cycle multiply can skip COUNT == ffffffff,
+            // retaining the carry in the internal clock while CP0 wraps to 2.
+            Reset(); count.SetValue(null, 0x1fffffffcUL); Registers.COP0.Reg[9] = 0xfffffffe;
+            Registers.COP0.Reg[11] = 0x7fffffff; // No timer match across this wrap.
+            R4300.InterpretOpcode(0x0085001d); // DMULTU r4,r5
+            if ((ulong)count.GetValue(null)! != 0x200000004UL || Registers.COP0.Reg[9] != 2)
+                throw new Exception("Ordinary multiply did not reproduce COUNT carry");
+            Code(1, 0x40024800); Check(32); // MFC0 observes the wrapped value.
+            foreach (ulong carry in new ulong[] { 0x200000000, 0x400000000, 0xfffffff000000000 })
+            foreach (ulong phase in new ulong[] { 0, 1, 4, 5 })
+            {
+                Reset(); count.SetValue(null, carry + phase); Registers.COP0.Reg[9] = phase >> 1;
+                Code(2, 0x40024800); Check(32);
+                Reset(); count.SetValue(null, carry + phase); Registers.COP0.Reg[9] = phase >> 1;
+                Registers.COP0.Reg[11] = 8; Check(0); // Do not cross COMPARE.
+                Reset(); count.SetValue(null, carry + phase); Registers.COP0.Reg[9] = (phase >> 1) + 1;
+                Check(0); // A real low-word mismatch must still reject.
+            }
+            foreach (ulong carry in new ulong[] { 0, 0x200000000, 0x400000000 })
+            foreach (ulong phase in new ulong[] { 0x1fffffffc, 0x1fffffffd, 0x1fffffffe, 0x1ffffffff })
+            {
+                Reset(); count.SetValue(null, carry + phase); Registers.COP0.Reg[9] = phase >> 1;
+                Check(0); // Preserve the interpreter's boundary/reset behavior.
+            }
+            Console.WriteLine($"cpuCountRolloverCases={cases - first} fullState=passed compare=passed rejection=passed history={(jit ? "passed" : "disabled")}");
+        }
+        CheckCountRollover();
+        if (Environment.GetEnvironmentVariable("N64_PROBE_CPU_COUNT_ONLY") == "1") return;
         void CheckLikelyBranches()
         {
             int firstCase = cases;

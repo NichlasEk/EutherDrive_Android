@@ -66,8 +66,10 @@ These instrumented wall numbers are diagnostic, separate from ordinary
 performance acceptance.
 
 The longer candidate runs achieve 74.865% and 71.569% realtime in this host
-session, versus 71.828% and 68.809% for their adjacent references. The heavier
-post-90 section clearly still needs substantial work.
+session, versus 71.828% and 68.809% for their adjacent references. The later investigation in
+[n64-count-rollover-2026-11-08.md](n64-count-rollover-2026-11-08.md) identifies
+a COUNT rollover guard that stopped all CPU batching in this post-90 section.
+These historical measurements precede that correction.
 
 The adapter/audio diagnostic matches six guest checkpoints and reports no
 dropped output frames. Sampled buffer underruns are 375/322/256/174 across

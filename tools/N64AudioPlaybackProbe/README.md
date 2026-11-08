@@ -3,7 +3,11 @@
 Build with `dotnet build tools/N64AudioPlaybackProbe -c Release -m:1
 -p:N64LiveGpu=true -p:N64PerformanceProbe=true -p:N64RdpJournalCapture=false`.
 Pass a normalized, original Super Mario 64 USA ROM, a GPU core state at guest
-second 60, a new output JSON path, and `current`. Private fixtures stay local.
+second 60 or 90, a new output JSON path, and `current`. An optional fifth
+argument selects the final guest second (default 90, multiple of five, at
+most 180 and at least ten seconds after the state). For the COUNT rollover
+regression use state 90, end 120, and measure checkpoints 95 through 120.
+Private fixtures stay local.
 Run with the same GPU library/environment as the playable launcher.
 
 This models the desktop's 60 Hz N64Adapter polling, 44.1 kHz stereo output,
@@ -14,9 +18,10 @@ sound driver, Avalonia rendering, and listening validation.
 
 The host JSON records producer/consumer counts, submission skips, buffer
 occupancy, engine underruns and drops. `.guest.json` records CPU-thread
-checkpoints at 65, 70, 75, 80, 85 and 90 emulated seconds, including RAM hashes
-and generated audio counts. Compare timings between **70 and 90**, excluding
-JIT warmup, and require equal guest checkpoints before interpreting speed.
+checkpoints every five emulated seconds after the loaded state, including
+RAM hashes and generated audio counts. For state 60, compare timings between
+**70 and 90**; for state 90, compare **95 and 120**. Exclude JIT warmup and
+require equal guest checkpoints before interpreting speed.
 Host underrun counts are sampled approximately once per wall second and
 are not exact checkpoint deltas. They are engine events, not measured
 physical speaker gaps. PCM hashes and full device state are not checked by

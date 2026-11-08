@@ -82,14 +82,22 @@ internal static class CpuIdleEventChecks
                 Registers.COP0.Reg[Registers.COP0.RANDOM_REG] = random;
                 Check(maximum);
             }
+            foreach (ulong carry in new ulong[] { 0, 0x200000000, 0x400000000 })
             foreach (uint count in new uint[] { 0, 1, 0xfffffffc, 0xfffffffe, 0xffffffff })
             foreach (uint parity in new uint[] { 0, 1 })
             foreach (uint distance in new uint[] { 0, 1, 2, 10 })
             {
-                Load(); countField.SetValue(null, (ulong)count * 2 + parity);
+                Load(); countField.SetValue(null, carry + (ulong)count * 2 + parity);
                 Registers.COP0.Reg[Registers.COP0.COUNT_REG] = count;
                 Registers.COP0.Reg[Registers.COP0.COMPARE_REG] = unchecked(count + distance);
                 Check();
+            }
+            foreach (ulong carry in new ulong[] { 0x200000000, 0x400000000 })
+            {
+                LoadJump(0x80010000); countField.SetValue(null, carry + 4);
+                Registers.COP0.Reg[Registers.COP0.COUNT_REG] = 2;
+                Registers.COP0.Reg[Registers.COP0.COMPARE_REG] = 0;
+                Check(32, expected: true);
             }
             (string Armed, string Remaining)[] timers = {
                 ("_spDmaDelayArmed", "_spDmaDelayRemaining"), ("_rspTaskActive", "_rspTaskCyclesRemaining"),
